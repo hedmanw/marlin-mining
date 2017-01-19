@@ -35,11 +35,11 @@ def main(base, integration, result):
     merging_notice = "Merging {} with {}".format(base, integration)
     print merging_notice
     merge_output = merge(integration)
-    print merge_output
 
     print "Recorded merging status in README.txt"
     with open('README.txt', 'w') as f:
         f.write(merging_notice + "\n")
+        f.write("-------\n")
         f.write("Conflicts:\n")
         f.write("\n".join(format_conflicts(merge_output)))
 
@@ -78,7 +78,7 @@ def format_conflicts(merge_text):
     only_conflict_lines = lambda x: x.startswith("CONFLICT (content):")
     relevant_files = lambda x: not ("README.md" in x or ".gitignore" in x)
     only_filenames = lambda x: x[len("CONFLICT (content): Merge conflict in "):]
-    return filter(relevant_files, filter(only_conflict_lines, merge_lines))
+    return map(only_filenames, filter(relevant_files, filter(only_conflict_lines, merge_lines)))
 
 
 if __name__ == '__main__':
