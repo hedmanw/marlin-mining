@@ -3,6 +3,7 @@ from subprocess import Popen, PIPE
 workspace_dir = "merge_workspace"
 dry_run = False
 
+
 class Repo:
     def __init__(self, owner, repo_name):
         self.owner = owner
@@ -26,17 +27,21 @@ class Commit:
 
 def main(base, integration, result):
     print "Cloning {}...".format(base.repo)
-    # clone(base.repo)
+    clone(base.repo)
 
     print "Checking out {}".format(base.hash)
     checkout(base)
 
     merging_notice = "Merging {} with {}".format(base, integration)
     print merging_notice
-    merge(integration)
+    merge_output = merge(integration)
+    print merge_output
 
-    print "Recorded merging status in README"
-    # TODO: Write to file
+    print "Recorded merging status in README.txt"
+    with open('README.txt', 'w') as f:
+        f.write(merging_notice + "\n")
+        f.write("Conflicts:\n")
+        f.write("\n".join(format_conflicts(merge_output)))
 
 
 def clone(repository):
@@ -57,7 +62,8 @@ def merge(commit):
         github_url = commit.repo.clone_url()
         merge_process, stdout, stderr = git_process(["pull", github_url, commit.hash], cwd=workspace_dir)
         merge_process.wait()
-        print stderr
+        return stdout
+    return None
 
 
 def git_process(args, cwd=None):
@@ -66,32 +72,14 @@ def git_process(args, cwd=None):
     stdout, stderr = process.communicate()
     return process, stdout, stderr
 
-merge_output = """From github.com:MarlinFirmware/Marlin
- * branch            d75cd69de43afada517557b63a6c693eaa828580 -> FETCH_HEAD
-Auto-merging README.md
-CONFLICT (content): Merge conflict in README.md
-Auto-merging Marlin/ultralcd_implementation_hitachi_HD44780.h
-CONFLICT (content): Merge conflict in Marlin/ultralcd_implementation_hitachi_HD44780.h
-Auto-merging Marlin/ultralcd.cpp
-CONFLICT (content): Merge conflict in Marlin/ultralcd.cpp
-Auto-merging Marlin/thermistortables.h
-Auto-merging Marlin/temperature.h
-Auto-merging Marlin/temperature.cpp
-Auto-merging Marlin/planner.cpp
-Auto-merging Marlin/pins.h
-CONFLICT (content): Merge conflict in Marlin/pins.h
-Auto-merging Marlin/language.h
-CONFLICT (content): Merge conflict in Marlin/language.h
-Removing Marlin/createTemperatureLookupMarlin.py
-Auto-merging Marlin/Marlin_main.cpp
-CONFLICT (content): Merge conflict in Marlin/Marlin_main.cpp
-Auto-merging Marlin/Configuration_adv.h
-Auto-merging Marlin/Configuration.h
-CONFLICT (content): Merge conflict in Marlin/Configuration.h
-Removing Marlin/COPYING
-Auto-merging .gitignore
-CONFLICT (content): Merge conflict in .gitignore
-Automatic merge failed; fix conflicts and then commit the result"""
+
+def format_conflicts(merge_text):
+    merge_lines = merge_text.splitlines()
+    only_conflict_lines = lambda x: x.startswith("CONFLICT (content):")
+    relevant_files = lambda x: not ("README.md" in x or ".gitignore" in x)
+    only_filenames = lambda x: x[len("CONFLICT (content): Merge conflict in "):]
+    return filter(relevant_files, filter(only_conflict_lines, merge_lines))
+
 
 if __name__ == '__main__':
     base_repo = Repo("fsantini", "solidoodle2-marlin")
