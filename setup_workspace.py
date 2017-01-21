@@ -1,6 +1,9 @@
 from subprocess import Popen, PIPE
 
+import os
+
 workspace_dir = "merge_workspace"
+excerpts_dir = "merge_excerpts"
 dry_run = False
 
 
@@ -46,7 +49,9 @@ def main(base, integration, result):
 
     print "Recorded merging status in README.txt"
     conflict_files = format_conflicts(merge_output)
-    with open('README.txt', 'w') as f:
+
+    makedir(excerpts_dir)
+    with open(excerpts_dir + '/README.txt', 'w') as f:
         f.write(merging_notice + "\n")
         f.write("-------\n")
         f.write("Conflicts:\n")
@@ -79,7 +84,7 @@ def merge(commit):
     return None
 
 
-def sample_merge(file_names):
+def get_merge_excerpts(file_names):
     all_conflicts = []
 
     for file_name in file_names:
@@ -89,16 +94,25 @@ def sample_merge(file_names):
 
     return all_conflicts
 
-def print_samples(conflicts):
+
+def store_merge_excerpts(conflicts):
     counter = 0
     for conflict in conflicts:
         source_file = conflict.filename
-        # TODO: make a directory to store these files in
-        with open("{}_{}".format(source_file[source_file.index('/')+1:], counter), 'w') as f:
+        qualified_source_name = source_file[source_file.index('/') + 1:]
+        makedir(excerpts_dir)
+        with open("{}/{}_{}".format(excerpts_dir, qualified_source_name, counter), 'w') as f:
             f.write("// EXCERPT FROM MERGE  {}\n\n".format(source_file))
             f.write("<<<<<<<" + conflict.content + "\n")
         counter += 1
 
+
+def store_parents(conflicts):
+    pass
+
+
+def store_result(conflicts):
+    pass
 
 def awk(file_path):
     awk_process = Popen(["awk", "/<<<<<<< HEAD/,/>>>>>>>/", file_path], cwd=workspace_dir, stdout=PIPE, stderr=PIPE)
@@ -113,6 +127,10 @@ def git_process(args, cwd=None):
     stdout, stderr = process.communicate()
     return process, stdout, stderr
 
+
+def makedir(dir_name):
+    if not os.path.exists(dir_name):
+        os.makedirs(dir_name)
 
 def format_conflicts(merge_text):
     merge_lines = merge_text.splitlines()
@@ -137,6 +155,9 @@ if __name__ == '__main__':
     integration_repo = Repo("MarlinFirmware", "Marlin")
     integration = Commit(integration_repo, "d75cd69de43afada517557b63a6c693eaa828580")
     #main(base, integration, result)
-    sample = sample_merge(conflicts_sample.splitlines())
-    print_samples(sample)
+    conflict_files = conflicts_sample.splitlines()
+    sample = get_merge_excerpts(conflict_files)
+    store_merge_excerpts(sample)
+    store_parents(conflict_files)
+    store_result(conflict_files)
     #print awk("Marlin/Marlin_main.cpp")
