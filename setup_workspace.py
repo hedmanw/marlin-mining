@@ -25,6 +25,14 @@ class Commit:
         return "{}#{}".format(self.repo, self.hash)
 
 
+class Conflict:
+    def __init__(self, filename, content, line_begin, line_end):
+        self.filename = filename
+        self.content = content
+        self.line_begin = line_begin
+        self.line_end = line_end
+
+
 def main(base, integration, result):
     print "Cloning {}...".format(base.repo)
     clone(base.repo)
@@ -44,15 +52,9 @@ def main(base, integration, result):
         f.write("Conflicts:\n")
         f.write("\n".join(conflict_files))
 
-    # grep -Pzo Marlin/Marlin.h -e "(?s)<<<<<<< HEAD.*if.*>>>>>>>"
-    # grep -Pzo Marlin/Marlin_main.cpp -e "(?s)<<<<<<< HEAD.*?ifdef.*?>>>>>>>"
-    # awk '/<<<<<<< HEAD/,/>>>>>>>/' Marlin/Marlin_main.cpp
-    # TODO: pipe all files in merge_output into awk and then into grep(?)
-    # TODO: split output on merge characters
     # TODO: trace back to original file in order to extract line numbers
     # TODO: write metadata (filename, line numbers) and code to files
 
-    # TODO: manually check how the merge was resolved
 
 
 def clone(repository):
@@ -77,31 +79,31 @@ def merge(commit):
     return None
 
 
-def sample_merge(files):
-    merge_limits = map(lambda x: awk(x), files)
-    files_to_conflicts = {}
-    for index, source_file in enumerate(files):
-        files_to_conflicts[source_file] = merge_limits[index].split(">>>>>>>")
+def sample_merge(file_names):
+    all_conflicts = []
 
-    return files_to_conflicts
+    for file_name in file_names:
+        file_conflicts = awk(file_name).split("<<<<<<<")[1:]
+        for file_conflict in file_conflicts:
+            all_conflicts.append(Conflict(file_name, file_conflict, 0, 0))
 
+    return all_conflicts
 
-def print_samples(files_with_conflicts):
+def print_samples(conflicts):
     counter = 0
-    for source_file in files_with_conflicts:
-        all_conflicts = files_with_conflicts[source_file]
-        for conflict in all_conflicts:
-            with open("{}_{}".format(source_file[source_file.index('/')+1:], counter), 'w') as f:
-                f.write("// EXCERPT FROM {}\n\n".format(source_file))
-                f.write(conflict + "\n")
-            counter += 1
+    for conflict in conflicts:
+        source_file = conflict.filename
+        # TODO: make a directory to store these files in
+        with open("{}_{}".format(source_file[source_file.index('/')+1:], counter), 'w') as f:
+            f.write("// EXCERPT FROM MERGE  {}\n\n".format(source_file))
+            f.write("<<<<<<<" + conflict.content + "\n")
+        counter += 1
 
 
 def awk(file_path):
     awk_process = Popen(["awk", "/<<<<<<< HEAD/,/>>>>>>>/", file_path], cwd=workspace_dir, stdout=PIPE, stderr=PIPE)
     stdout, stderr = awk_process.communicate()
     awk_process.wait()
-    print stderr
     return stdout
 
 
