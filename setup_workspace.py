@@ -1,11 +1,20 @@
 from subprocess import Popen, PIPE
+from shutil import copyfile
 
 import os
 
 workspace_dir = "merge_workspace"
 excerpts_dir = "merge_excerpts"
+content_dir = "whole_files"
 dry_run = False
 
+
+class Merge:
+    def __init__(self, base_commit, integration_commit, result, conflicts):
+        self.base_commit = base_commit
+        self.integration_commit = integration_commit
+        self.result = result
+        self.conflicts = conflicts
 
 class Repo:
     def __init__(self, owner, repo_name):
@@ -47,7 +56,7 @@ def main(base, integration, result):
     print merging_notice
     merge_output = merge(integration)
 
-    print "Recorded merging status in README.txt"
+    print "Recorded merging status in merge_excerpts/README.txt"
     conflict_files = format_conflicts(merge_output)
 
     makedir(excerpts_dir)
@@ -57,31 +66,37 @@ def main(base, integration, result):
         f.write("Conflicts:\n")
         f.write("\n".join(conflict_files))
 
-    # TODO: trace back to original file in order to extract line numbers
-    # TODO: write metadata (filename, line numbers) and code to files
-
+    #conflict_files = conflicts_sample.splitlines()
+    print "Reading conflicts."
+    conflicts = get_merge_excerpts(conflict_files)
+    #conflicts = map(lambda x: Conflict(x, "", 0, 0), conflict_files)
+    merge_instance = Merge(base, integration, result, conflicts)
+    print "Storing excerpts of conflicts in merge_excerpts/"
+    store_merge_excerpts(conflicts)
+    print "Storing whole files in whole_files/"
+    store_commit_contents(merge_instance)
 
 
 def clone(repository):
     if not dry_run:
         github_url = repository.clone_url()
         process, _, _ = git_process(["clone", github_url, workspace_dir])
-        process.wait()
 
 
 def checkout(commit):
-    if not dry_run:
-        process, _, _ = git_process(["checkout", commit.hash], cwd=workspace_dir)
-        process.wait()
+    process, stdout, stderr = git_process(["checkout", commit.hash], cwd=workspace_dir)
 
 
 def merge(commit):
     if not dry_run:
         github_url = commit.repo.clone_url()
         merge_process, stdout, stderr = git_process(["pull", github_url, commit.hash], cwd=workspace_dir)
-        merge_process.wait()
         return stdout
     return None
+
+
+def abort_merge():
+    git_process(["merge", "--abort"], cwd=workspace_dir)
 
 
 def get_merge_excerpts(file_names):
@@ -91,6 +106,8 @@ def get_merge_excerpts(file_names):
         file_conflicts = awk(file_name).split("<<<<<<<")[1:]
         for file_conflict in file_conflicts:
             all_conflicts.append(Conflict(file_name, file_conflict, 0, 0))
+
+    abort_merge()
 
     return all_conflicts
 
@@ -107,12 +124,26 @@ def store_merge_excerpts(conflicts):
         counter += 1
 
 
-def store_parents(conflicts):
-    pass
+def store_commit_contents(merge):
+    print "  Storing files in first parent (base) #{}".format(merge.base_commit.hash)
+    copy_example_files(merge.base_commit, "base", merge.conflicts)
+    print "  Storing files in second parent (remote) #{}".format(merge.integration_commit.hash)
+    copy_example_files(merge.integration_commit, "remote", merge.conflicts)
+    print "  Storing files in outcome (result) #{}".format(merge.result.hash)
+    copy_example_files(merge.result, "result", merge.conflicts)
 
 
-def store_result(conflicts):
-    pass
+def copy_example_files(commit, prefix, conflicts):
+    makedir(content_dir)
+    checkout(commit)
+    for conflict in conflicts:
+        source_file = conflict.filename
+        qualified_source_name = source_file[source_file.index('/') + 1:]
+        dir_source_file = workspace_dir + "/" + source_file
+        dir_target_file = content_dir + "/" + prefix + "_" + qualified_source_name
+        #print "Copying {} to {}.".format(dir_source_file, dir_target_file)
+        copyfile(dir_source_file, dir_target_file)
+
 
 def awk(file_path):
     awk_process = Popen(["awk", "/<<<<<<< HEAD/,/>>>>>>>/", file_path], cwd=workspace_dir, stdout=PIPE, stderr=PIPE)
@@ -125,12 +156,14 @@ def git_process(args, cwd=None):
     args.insert(0, "git")
     process = Popen(args, cwd=cwd, stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
+    process.wait()
     return process, stdout, stderr
 
 
 def makedir(dir_name):
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
+
 
 def format_conflicts(merge_text):
     merge_lines = merge_text.splitlines()
@@ -139,25 +172,13 @@ def format_conflicts(merge_text):
     only_filenames = lambda x: x[len("CONFLICT (content): Merge conflict in "):]
     return map(only_filenames, filter(relevant_files, filter(only_conflict_lines, merge_lines)))
 
-conflicts_sample = """Marlin/ultralcd_implementation_hitachi_HD44780.h
-Marlin/ultralcd.cpp
-Marlin/pins.h
-Marlin/language.h
-Marlin/Marlin_main.cpp
-Marlin/Configuration.h"""
-
 
 if __name__ == '__main__':
     base_repo = Repo("fsantini", "solidoodle2-marlin")
     base = Commit(base_repo, "3c0afb4")
     result = Commit(base_repo, "87b8062")
-
     integration_repo = Repo("MarlinFirmware", "Marlin")
     integration = Commit(integration_repo, "d75cd69de43afada517557b63a6c693eaa828580")
-    #main(base, integration, result)
-    conflict_files = conflicts_sample.splitlines()
-    sample = get_merge_excerpts(conflict_files)
-    store_merge_excerpts(sample)
-    store_parents(conflict_files)
-    store_result(conflict_files)
-    #print awk("Marlin/Marlin_main.cpp")
+
+    main(base, integration, result)
+
