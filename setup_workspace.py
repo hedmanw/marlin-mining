@@ -60,11 +60,17 @@ def main(base, integration, result):
     conflict_files = format_conflicts(merge_output)
 
     makedir(excerpts_dir)
+    commit_url = "https://github.com/{}/{}/commit/".format(base.repo.owner, base.repo.repo_name)
     with open(excerpts_dir + '/README.txt', 'w') as f:
-        f.write(merging_notice + "\n")
-        f.write("-------\n")
-        f.write("Conflicts:\n")
-        f.write("\n".join(conflict_files))
+        def write(line):
+            writeline(f, line)
+        write(merging_notice)
+        write("First parent:  {}{}".format(commit_url, base.hash))
+        write("Second parent: {}{}".format(commit_url, integration.hash))
+        write("Outcome:       {}{}".format(commit_url, result.hash))
+        write("-------")
+        write("Conflicts:")
+        write("\n".join(conflict_files))
 
     #conflict_files = conflicts_sample.splitlines()
     print "Reading conflicts."
@@ -165,6 +171,9 @@ def makedir(dir_name):
         os.makedirs(dir_name)
 
 
+def writeline(file, line):
+    file.write(line + "\n")
+
 def format_conflicts(merge_text):
     merge_lines = merge_text.splitlines()
     only_conflict_lines = lambda x: x.startswith("CONFLICT (content):")
@@ -175,8 +184,8 @@ def format_conflicts(merge_text):
 
 if __name__ == '__main__':
     base_repo = Repo("fsantini", "solidoodle2-marlin")
-    base = Commit(base_repo, "3c0afb4")
-    result = Commit(base_repo, "87b8062")
+    base = Commit(base_repo, "3c0afb45a887f15df3419dbf552f1d2f3c541347")
+    result = Commit(base_repo, "87b80621384160da961e538e0aa46a161ee35a63")
     integration_repo = Repo("MarlinFirmware", "Marlin")
     integration = Commit(integration_repo, "d75cd69de43afada517557b63a6c693eaa828580")
 
