@@ -56,12 +56,12 @@ def main(base, integration, result):
     print merging_notice
     merge_output = merge(integration)
 
-    print "Recorded merging status in merge_excerpts/README.txt"
+    print "Recorded merging status in README.txt"
     conflict_files = format_conflicts(merge_output)
 
     makedir(excerpts_dir)
     commit_url = "https://github.com/{}/{}/commit/".format(base.repo.owner, base.repo.repo_name)
-    with open(excerpts_dir + '/README.txt', 'w') as f:
+    with open('README.txt', 'w') as f:
         def write(line):
             writeline(f, line)
         write(merging_notice)
@@ -187,10 +187,10 @@ def format_conflicts(merge_text):
 
 if __name__ == '__main__':
     base_repo = Repo("MarlinFirmware", "Marlin")
-    base = Commit(base_repo, "5dabc95409b0cb011a3cc3d84772c43e39973808")
-    result = Commit(base_repo, "bd96d22bfb116cf6199cad2cf8a3278f81572a42")
+    base = Commit(base_repo, "48b1c3822ffaff054b99d17df5c38f386e577c5b")
+    result = Commit(base_repo, "ea10601406dd24dd3e3bef3ec22319f73034fbf6")
     integration_repo = Repo("MarlinFirmware", "Marlin")
-    integration = Commit(integration_repo, "73f21cd5d6dc2516d3980d814568ddbd7f7f0a07")
+    integration = Commit(integration_repo, "cb02bc6db458bde59ddbf8ef37356a3eb5c0f4a8")
 
     main(base, integration, result)
 
