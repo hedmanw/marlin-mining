@@ -113,6 +113,8 @@ def get_merge_excerpts(file_names):
         for file_conflict in file_conflicts:
             all_conflicts.append(Conflict(file_name, file_conflict, 0, 0))
 
+    print "  Storing snapshots of the merge (merge) in {}/".format(content_dir)
+    copy_example_files(None, "merge", all_conflicts)
     abort_merge()
 
     return all_conflicts
@@ -141,7 +143,8 @@ def store_commit_contents(merge):
 
 def copy_example_files(commit, prefix, conflicts):
     makedir(content_dir)
-    checkout(commit)
+    if commit:
+        checkout(commit)
     for conflict in conflicts:
         source_file = conflict.filename
         qualified_source_name = source_file[source_file.index('/') + 1:]
@@ -183,11 +186,11 @@ def format_conflicts(merge_text):
 
 
 if __name__ == '__main__':
-    base_repo = Repo("fsantini", "solidoodle2-marlin")
-    base = Commit(base_repo, "3c0afb45a887f15df3419dbf552f1d2f3c541347")
-    result = Commit(base_repo, "87b80621384160da961e538e0aa46a161ee35a63")
+    base_repo = Repo("MarlinFirmware", "Marlin")
+    base = Commit(base_repo, "5dabc95409b0cb011a3cc3d84772c43e39973808")
+    result = Commit(base_repo, "bd96d22bfb116cf6199cad2cf8a3278f81572a42")
     integration_repo = Repo("MarlinFirmware", "Marlin")
-    integration = Commit(integration_repo, "d75cd69de43afada517557b63a6c693eaa828580")
+    integration = Commit(integration_repo, "73f21cd5d6dc2516d3980d814568ddbd7f7f0a07")
 
     main(base, integration, result)
 
