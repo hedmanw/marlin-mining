@@ -1,0 +1,372 @@
+commit 7f3252eea99983adbda5d6fe5c6044248979df75 (from 013a09dbe632fad0b6342a43fdc1dec59e53b2c2)
+Merge: 79633a7 013a09d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri May 8 04:39:59 2015 -0700
+
+    Merge pull request #1999 from paclema/Filrunout_configurable_script
+    
+    Added configurable script for filrunout from configuration.h
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 4f12d64..8b719bd 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -36,6 +36,7 @@
+   #endif
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
++#define HAS_LCD_BUZZ (defined(ULTRALCD) || (defined(BEEPER) && BEEPER >= 0) || defined(LCD_USE_I2C_BUZZER))
+ #define SERVO_LEVELING (defined(ENABLE_AUTO_BED_LEVELING) && PROBE_SERVO_DEACTIVATION_DELAY > 0)
+ 
+ #ifdef MESH_BED_LEVELING
+@@ -60,7 +61,7 @@
+ #endif
+ 
+ #if NUM_SERVOS > 0
+-  #include "Servo.h"
++  #include "servo.h"
+ #endif
+ 
+ #if HAS_DIGIPOTSS
+@@ -189,6 +190,7 @@
+  * M410 - Quickstop. Abort all the planned moves
+  * M420 - Enable/Disable Mesh Leveling (with current values) S1=enable S0=disable
+  * M421 - Set a single Z coordinate in the Mesh Leveling grid. X<mm> Y<mm> Z<mm>
++ * M428 - Set the home_offset logically based on the current_position
+  * M500 - Store parameters in EEPROM
+  * M501 - Read parameters from EEPROM (if you need reset them after you changed them temporarily).
+  * M502 - Revert to the default "factory settings". You still need to store them in EEPROM afterwards if you want to.
+@@ -500,7 +502,7 @@ void setup_filrunoutpin() {
+   #if HAS_FILRUNOUT
+     pinMode(FILRUNOUT_PIN, INPUT);
+     #ifdef ENDSTOPPULLUP_FIL_RUNOUT
+-      WRITE(FILLRUNOUT_PIN, HIGH);
++      WRITE(FILRUNOUT_PIN, HIGH);
+     #endif
+   #endif
+ }
+@@ -755,10 +757,9 @@ void get_command() {
+         gcode_N = (strtol(strchr_pointer + 1, NULL, 10));
+         if (gcode_N != gcode_LastN + 1 && strstr_P(command, PSTR("M110")) == NULL) {
+           SERIAL_ERROR_START;
+-          SERIAL_ERRORPGM(MSG_ERR_LINE_NO1);
+-          SERIAL_ERROR(gcode_LastN + 1);
+-          SERIAL_ERRORPGM(MSG_ERR_LINE_NO2);
+-          SERIAL_ERRORLN(gcode_N);
++          SERIAL_ERRORPGM(MSG_ERR_LINE_NO);
++          SERIAL_ERRORLN(gcode_LastN);
++          //Serial.println(gcode_N);
+           FlushSerialRequestResend();
+           serial_count = 0;
+           return;
+@@ -1266,13 +1267,14 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+ 
+       // Engage Z Servo endstop if enabled
+       if (servo_endstops[Z_AXIS] >= 0) {
++        Servo *srv = &servo[servo_endstops[Z_AXIS]];
+         #if SERVO_LEVELING
+-          servo[servo_endstops[Z_AXIS]].attach(0);
++          srv->attach(0);
+         #endif
+-        servo[servo_endstops[Z_AXIS]].write(servo_endstop_angles[Z_AXIS * 2]);
++        srv->write(servo_endstop_angles[Z_AXIS * 2]);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_endstops[Z_AXIS]].detach();
++          srv->detach();
+         #endif
+       }
+ 
+@@ -1318,7 +1320,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+ 
+   }
+ 
+-  static void stow_z_probe() {
++  static void stow_z_probe(bool doRaise=true) {
+ 
+     #ifdef SERVO_ENDSTOPS
+ 
+@@ -1326,19 +1328,21 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+       if (servo_endstops[Z_AXIS] >= 0) {
+ 
+         #if Z_RAISE_AFTER_PROBING > 0
+-          do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // this also updates current_position
+-          st_synchronize();
++          if (doRaise) {
++            do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // this also updates current_position
++            st_synchronize();
++          }
+         #endif
+ 
++        // Change the Z servo angle
++        Servo *srv = &servo[servo_endstops[Z_AXIS]];
+         #if SERVO_LEVELING
+-          servo[servo_endstops[Z_AXIS]].attach(0);
++          srv->attach(0);
+         #endif
+-
+-        servo[servo_endstops[Z_AXIS]].write(servo_endstop_angles[Z_AXIS * 2 + 1]);
+-
++        srv->write(servo_endstop_angles[Z_AXIS * 2 + 1]);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_endstops[Z_AXIS]].detach();
++          srv->detach();
+         #endif
+       }
+ 
+@@ -1522,19 +1526,25 @@ static void homeaxis(AxisEnum axis) {
+     current_position[axis] = 0;
+     sync_plan_position();
+ 
+-    // Engage Servo endstop if enabled
+-    #if defined(SERVO_ENDSTOPS) && !defined(Z_PROBE_SLED)
++    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+-      #if SERVO_LEVELING
+-        if (axis == Z_AXIS) deploy_z_probe(); else
+-      #endif
+-        {
+-          if (servo_endstops[axis] > -1)
+-            servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
+-        }
++      // Deploy a probe if there is one, and homing towards the bed
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) deploy_z_probe();
++      }
++      else
+ 
+-    #endif // SERVO_ENDSTOPS && !Z_PROBE_SLED
++    #endif
++
++    #ifdef SERVO_ENDSTOPS
++      {
++        // Engage Servo endstop if enabled
++        if (servo_endstops[axis] > -1)
++          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
++      }
++    #endif
+ 
++    // Set a flag for Z motor locking
+     #ifdef Z_DUAL_ENDSTOPS
+       if (axis == Z_AXIS) In_Homing_Process(true);
+     #endif
+@@ -1612,14 +1622,22 @@ static void homeaxis(AxisEnum axis) {
+     endstops_hit_on_purpose(); // clear endstop hit flags
+     axis_known_position[axis] = true;
+ 
+-    // Retract Servo endstop if enabled
+-    #ifdef SERVO_ENDSTOPS
+-      if (servo_endstops[axis] > -1)
+-        servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
++
++      // Deploy a probe if there is one, and homing towards the bed
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) stow_z_probe();
++      }
++      else
++
+     #endif
+ 
+-    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+-      if (axis == Z_AXIS) stow_z_probe();
++    #ifdef SERVO_ENDSTOPS
++      {
++        // Retract Servo endstop if enabled
++        if (servo_endstops[axis] > -1)
++          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++      }
+     #endif
+ 
+   }
+@@ -2996,7 +3014,7 @@ inline void gcode_M42() {
+     current_position[E_AXIS] = E_current = st_get_position_mm(E_AXIS);
+ 
+     // 
+-    // OK, do the inital probe to get us close to the bed.
++    // OK, do the initial probe to get us close to the bed.
+     // Then retrace the right amount and use that in subsequent probes
+     //
+ 
+@@ -3105,12 +3123,14 @@ inline void gcode_M42() {
+       plan_buffer_line(X_probe_location, Y_probe_location, Z_start_location, current_position[E_AXIS], homing_feedrate[Z_AXIS]/60, active_extruder);
+       st_synchronize();
+ 
++      // Stow between
+       if (deploy_probe_for_each_reading) {
+         stow_z_probe();
+         delay(1000);
+       }
+     }
+ 
++    // Stow after
+     if (!deploy_probe_for_each_reading) {
+       stow_z_probe();
+       delay(1000);
+@@ -4062,13 +4082,14 @@ inline void gcode_M226() {
+     if (code_seen('S')) {
+       servo_position = code_value();
+       if ((servo_index >= 0) && (servo_index < NUM_SERVOS)) {
++        Servo *srv = &servo[servo_index];
+         #if SERVO_LEVELING
+-          servo[servo_index].attach(0);
++          srv->attach(0);
+         #endif
+-        servo[servo_index].write(servo_position);
++        srv->write(servo_position);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_index].detach();
++          srv->detach();
+         #endif
+       }
+       else {
+@@ -4090,7 +4111,7 @@ inline void gcode_M226() {
+ 
+ #endif // NUM_SERVOS > 0
+ 
+-#if BEEPER > 0 || defined(ULTRALCD) || defined(LCD_USE_I2C_BUZZER)
++#if HAS_LCD_BUZZ
+ 
+   /**
+    * M300: Play beep sound S<frequency Hz> P<duration ms>
+@@ -4102,7 +4123,7 @@ inline void gcode_M226() {
+     lcd_buzz(beepP, beepS);
+   }
+ 
+-#endif // BEEPER>0 || ULTRALCD || LCD_USE_I2C_BUZZER
++#endif // HAS_LCD_BUZZ
+ 
+ #ifdef PIDTEMP
+ 
+@@ -4372,12 +4393,12 @@ inline void gcode_M303() {
+  */
+ inline void gcode_M400() { st_synchronize(); }
+ 
+-#if defined(ENABLE_AUTO_BED_LEVELING) && (defined(SERVO_ENDSTOPS) || defined(Z_PROBE_ALLEN_KEY)) && not defined(Z_PROBE_SLED)
++#if defined(ENABLE_AUTO_BED_LEVELING) && !defined(Z_PROBE_SLED) && (defined(SERVO_ENDSTOPS) || defined(Z_PROBE_ALLEN_KEY))
+ 
+   #ifdef SERVO_ENDSTOPS
+     void raise_z_for_servo() {
+       float zpos = current_position[Z_AXIS], z_dest = Z_RAISE_BEFORE_HOMING;
+-      if (!axis_known_position[Z_AXIS]) z_dest += zpos;
++      z_dest += axis_known_position[Z_AXIS] ? -zprobe_zoffset : zpos;
+       if (zpos < z_dest)
+         do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z_dest); // also updates current_position
+     }
+@@ -4400,7 +4421,7 @@ inline void gcode_M400() { st_synchronize(); }
+     #ifdef SERVO_ENDSTOPS
+       raise_z_for_servo();
+     #endif
+-    stow_z_probe();
++    stow_z_probe(false);
+   }
+ 
+ #endif
+@@ -4499,12 +4520,60 @@ inline void gcode_M410() { quickStop(); }
+       err = true;
+     }
+ 
+-    if (!err) mbl.set_z(select_x_index(x), select_y_index(y), z);
++    if (!err) mbl.set_z(mbl.select_x_index(x), mbl.select_y_index(y), z);
+   }
+ 
+ #endif
+ 
+ /**
++ * M428: Set home_offset based on the distance between the
++ *       current_position and the nearest "reference point."
++ *       If an axis is past center its endstop position
++ *       is the reference-point. Otherwise it uses 0. This allows
++ *       the Z offset to be set near the bed when using a max endstop.
++ *
++ *       M428 can't be used more than 2cm away from 0 or an endstop.
++ *
++ *       Use M206 to set these values directly.
++ */
++inline void gcode_M428() {
++  bool err = false;
++  float new_offs[3], new_pos[3];
++  memcpy(new_pos, current_position, sizeof(new_pos));
++  memcpy(new_offs, home_offset, sizeof(new_offs));
++  for (int8_t i = X_AXIS; i <= Z_AXIS; i++) {
++    if (axis_known_position[i]) {
++      float base = (new_pos[i] > (min_pos[i] + max_pos[i]) / 2) ? base_home_pos(i) : 0,
++            diff = new_pos[i] - base;
++      if (diff > -20 && diff < 20) {
++        new_offs[i] -= diff;
++        new_pos[i] = base;
++      }
++      else {
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM(MSG_ERR_M428_TOO_FAR);
++        LCD_ALERTMESSAGEPGM("Err: Too far!");
++        #if HAS_LCD_BUZZ
++          enqueuecommands_P(PSTR("M300 S40 P200"));
++        #endif
++        err = true;
++        break;
++      }
++    }
++  }
++
++  if (!err) {
++    memcpy(current_position, new_pos, sizeof(new_pos));
++    memcpy(home_offset, new_offs, sizeof(new_offs));
++    sync_plan_position();
++    LCD_ALERTMESSAGEPGM("Offset applied.");
++    #if HAS_LCD_BUZZ
++      enqueuecommands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
++    #endif
++  }
++}
++
++/**
+  * M500: Store settings in EEPROM
+  */
+ inline void gcode_M500() {
+@@ -5251,11 +5320,11 @@ void process_commands() {
+           break;
+       #endif // NUM_SERVOS > 0
+ 
+-      #if BEEPER > 0 || defined(ULTRALCD) || defined(LCD_USE_I2C_BUZZER)
++      #if HAS_LCD_BUZZ
+         case 300: // M300 - Play beep tone
+           gcode_M300();
+           break;
+-      #endif // BEEPER > 0 || ULTRALCD || LCD_USE_I2C_BUZZER
++      #endif // HAS_LCD_BUZZ
+ 
+       #ifdef PIDTEMP
+         case 301: // M301
+@@ -5353,6 +5422,10 @@ void process_commands() {
+           break;
+       #endif
+ 
++      case 428: // M428 Apply current_position to home_offset
++        gcode_M428();
++        break;
++
+       case 500: // M500 Store settings in EEPROM
+         gcode_M500();
+         break;
+@@ -5975,7 +6048,7 @@ void disable_all_steppers() {
+ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+   
+   #if HAS_FILRUNOUT
+-    if (card.sdprinting && !(READ(FILRUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
++    if (IS_SD_PRINTING && !(READ(FILRUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
+       filrunout();
+   #endif
+ 
+@@ -6022,7 +6095,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+     if (!READ(HOME_PIN)) {
+       if (!homeDebounceCount) {
+         enqueuecommands_P(PSTR("G28"));
+-        LCD_ALERTMESSAGEPGM(MSG_AUTO_HOME);
++        LCD_MESSAGEPGM(MSG_AUTO_HOME);
+       }
+       if (homeDebounceCount < HOME_DEBOUNCE_DELAY)
+         homeDebounceCount++;
+

@@ -1,0 +1,195 @@
+commit 52ac2a62eecaaa4e174451c4126ddb83357fae16 (from 7fb69e24fbb41b71403c9169ab22b511c1e10797)
+Merge: d2a00b7 7fb69e2
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jun 14 20:13:01 2016 -0700
+
+    Merge pull request #4013 from thinkyhead/rc_toolchange_no_move
+    
+    Use "Tn S1" to change tools without moving
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a9af2c4..7ae1a68 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -333,7 +333,7 @@ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ 
+ static int serial_count = 0;
+ 
+-// GCode parameter pointer used by code_seen(), code_value(), etc.
++// GCode parameter pointer used by code_seen(), code_value_float(), etc.
+ static char* seen_pointer;
+ 
+ // Next Immediate GCode Command pointer. NULL if none.
+@@ -487,6 +487,11 @@ static bool send_ok[BUFSIZE];
+ 
+ #if HAS_SERVOS
+   Servo servo[NUM_SERVOS];
++  #define MOVE_SERVO(I, P) servo[I].move(P)
++  #define SERVO_ENDSTOP_EXISTS(I) (servo_endstop_id[I] >= 0)
++  #define MOVE_SERVO_ENDSTOP(I, J) MOVE_SERVO(servo_endstop_id[I], servo_endstop_angle[I][J])
++  #define DEPLOY_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 0)
++  #define STOW_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 1)
+ #endif
+ 
+ #ifdef CHDK
+@@ -760,8 +765,8 @@ void servo_init() {
+      *
+      */
+     for (int i = 0; i < 3; i++)
+-      if (servo_endstop_id[i] >= 0)
+-        servo[servo_endstop_id[i]].move(servo_endstop_angle[i][1]);
++      if (SERVO_ENDSTOP_EXISTS(i))
++        STOW_SERVO_ENDSTOP(i);
+ 
+   #endif // HAS_SERVO_ENDSTOPS
+ 
+@@ -852,8 +857,6 @@ void setup() {
+   // loads data from EEPROM if available else uses defaults (and resets step acceleration rate)
+   Config_RetrieveSettings();
+ 
+-  lcd_init();
+-
+   thermalManager.init();    // Initialize temperature loop
+ 
+   #if ENABLED(DELTA) || ENABLED(SCARA)
+@@ -901,6 +904,18 @@ void setup() {
+     pinMode(STAT_LED_BLUE, OUTPUT);
+     digitalWrite(STAT_LED_BLUE, LOW); // turn it off
+   #endif
++
++  lcd_init();
++  #if ENABLED(SHOW_BOOTSCREEN)
++    #if ENABLED(DOGLCD)
++      delay(1000);
++    #elif ENABLED(ULTRA_LCD)
++      bootscreen();
++      lcd_init();
++    #endif
++  #endif
++
++
+ }
+ 
+ /**
+@@ -1825,7 +1840,8 @@ static void setup_for_endstop_move() {
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+ 
+       // Engage Z Servo endstop if enabled
+-      if (servo_endstop_id[Z_AXIS] >= 0) servo[servo_endstop_id[Z_AXIS]].move(servo_endstop_angle[Z_AXIS][0]);
++      if (SERVO_ENDSTOP_EXISTS(Z_AXIS)
++        DEPLOY_SERVO_ENDSTOP(Z_AXIS);
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+       feedrate = Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE;
+@@ -1921,7 +1937,7 @@ static void setup_for_endstop_move() {
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+ 
+       // Retract Z Servo endstop if enabled
+-      if (servo_endstop_id[Z_AXIS] >= 0) {
++      if (SERVO_ENDSTOP_EXISTS(Z_AXIS)) {
+ 
+         #if Z_RAISE_AFTER_PROBING > 0
+           if (doRaise) {
+@@ -1931,7 +1947,7 @@ static void setup_for_endstop_move() {
+         #endif
+ 
+         // Change the Z servo angle
+-        servo[servo_endstop_id[Z_AXIS]].move(servo_endstop_angle[Z_AXIS][1]);
++        STOW_SERVO_ENDSTOP(Z_AXIS);
+       }
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+@@ -2288,8 +2304,8 @@ static void homeaxis(AxisEnum axis) {
+ 
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+       // Engage an X, Y (or Z) Servo endstop if enabled
+-      if (_Z_SERVO_TEST && servo_endstop_id[axis] >= 0) {
+-        servo[servo_endstop_id[axis]].move(servo_endstop_angle[axis][0]);
++      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
++        DEPLOY_SERVO_ENDSTOP(axis);
+         if (_Z_SERVO_SUBTEST) endstops.z_probe_enabled = true;
+       }
+     #endif
+@@ -2419,7 +2435,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+     // Retract X, Y (or Z) Servo endstop if enabled
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      if (_Z_SERVO_TEST && servo_endstop_id[axis] >= 0) {
++      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
+         // Raise the servo probe before stow outside ABL context.
+         // This is a workaround to allow use of a Servo Probe without
+         // ABL until more global probe handling is implemented.
+@@ -2438,7 +2454,7 @@ static void homeaxis(AxisEnum axis) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> SERVO_ENDSTOPS > Stow with servo.move()");
+         #endif
+-        servo[servo_endstop_id[axis]].move(servo_endstop_angle[axis][1]);
++        STOW_SERVO_ENDSTOP(axis);
+         if (_Z_SERVO_SUBTEST) endstops.enable_z_probe(false);
+       }
+ 
+@@ -5673,7 +5689,7 @@ inline void gcode_M226() {
+     if (code_seen('S')) {
+       servo_position = code_value_int();
+       if (servo_index >= 0 && servo_index < NUM_SERVOS)
+-        servo[servo_index].move(servo_position);
++        MOVE_SERVO(servo_index, servo_position);
+       else {
+         SERIAL_ERROR_START;
+         SERIAL_ERROR("Servo ");
+@@ -6469,6 +6485,16 @@ inline void gcode_M503() {
+ 
+ #endif // DUAL_X_CARRIAGE
+ 
++#if ENABLED(LIN_ADVANCE)
++  /**
++   * M905: Set advance factor
++   */
++  inline void gcode_M905() {
++    stepper.synchronize();
++    stepper.advance_M905(code_seen('K') ? code_value_float() : -1.0);
++  }
++#endif
++
+ /**
+  * M907: Set digital trimpot motor current using axis codes X, Y, Z, E, B, S
+  */
+@@ -6601,7 +6627,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+   float stored_feedrate = feedrate;
+ 
+   if (code_seen('F')) {
+-    float next_feedrate = code_value_axis_units(E_AXIS);
++    float next_feedrate = code_value_axis_units(X_AXIS);
+     if (next_feedrate > 0.0) stored_feedrate = feedrate = next_feedrate;
+   }
+   else {
+@@ -6682,6 +6708,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+ 
+           offset_vec.apply_rotation(planner.bed_level_matrix.transpose(planner.bed_level_matrix));
+ 
++          // Adjust the current position
+           current_position[X_AXIS] += offset_vec.x;
+           current_position[Y_AXIS] += offset_vec.y;
+           current_position[Z_AXIS] += offset_vec.z;
+@@ -7342,6 +7369,12 @@ void process_next_command() {
+           gcode_M605();
+           break;
+       #endif // DUAL_X_CARRIAGE
++      
++      #if ENABLED(LIN_ADVANCE)
++        case 905: // M905 Set advance factor.
++          gcode_M905();
++          break;
++      #endif
+ 
+       case 907: // M907 Set digital trimpot motor current using axis codes.
+         gcode_M907();
+@@ -8278,6 +8311,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+ void kill(const char* lcd_msg) {
+   #if ENABLED(ULTRA_LCD)
++    lcd_init();
+     lcd_setalertstatuspgm(lcd_msg);
+   #else
+     UNUSED(lcd_msg);
+

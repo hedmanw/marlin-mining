@@ -1,0 +1,205 @@
+commit 7bf5d117e7856afebd0e524755d303384af7196e (from cf7c444aff0db9ea026c6c48a78702c4cebd19a5)
+Merge: 06332f2 cf7c444
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 20 17:09:18 2016 -0700
+
+    Merge pull request #3069 from thinkyhead/rc_delta_compat_m48
+    
+    Delta-compatible extensions to M48
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 7059abf..7fed654 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -491,23 +491,20 @@ extern "C" {
+  */
+ static bool drain_queued_commands_P() {
+   if (queued_commands_P != NULL) {
+-    // Get the next gcode to run
+     size_t i = 0;
+-    char c;
+-    while ((c = queued_commands_P[i++]) && c != '\n') { };
+-    if (i > 1) {
+-      char cmd[i];
+-      strncpy_P(cmd, queued_commands_P, i - 1);
+-      cmd[i - 1] = '\0';
+-      if (enqueue_and_echo_command(cmd)) {      // buffer was not full (else we will retry later)
+-        if (c)
+-          queued_commands_P += i;     // move to next command
+-        else
+-          queued_commands_P = NULL;   // no more commands in the sequence
+-      }
++    char c, cmd[30];
++    strncpy_P(cmd, queued_commands_P, sizeof(cmd) - 1);
++    cmd[sizeof(cmd) - 1] = '\0';
++    while ((c = cmd[i]) && c != '\n') i++; // find the end of this gcode command
++    cmd[i] = '\0';
++    if (enqueue_and_echo_command(cmd)) {   // success?
++      if (c)                               // newline char?
++        queued_commands_P += i + 1;        // advance to the next command
++      else
++        queued_commands_P = NULL;          // nul char? no more commands
+     }
+   }
+-  return (queued_commands_P != NULL); // any more left to add?
++  return (queued_commands_P != NULL);      // return whether any more remain
+ }
+ 
+ /**
+@@ -980,9 +977,9 @@ void get_command() {
+       ) {
+         if (card_eof) {
+           SERIAL_PROTOCOLLNPGM(MSG_FILE_PRINTED);
+-          print_job_stop_ms = millis();
++          print_job_stop(true);
+           char time[30];
+-          millis_t t = (print_job_stop_ms - print_job_start_ms) / 1000;
++          millis_t t = print_job_timer();
+           int hours = t / 60 / 60, minutes = (t / 60) % 60;
+           sprintf_P(time, PSTR("%i " MSG_END_HOUR " %i " MSG_END_MINUTE), hours, minutes);
+           SERIAL_ECHO_START;
+@@ -3456,7 +3453,7 @@ inline void gcode_M17() {
+    */
+   inline void gcode_M24() {
+     card.startFileprint();
+-    print_job_start_ms = millis();
++    print_job_start();
+   }
+ 
+   /**
+@@ -3512,8 +3509,7 @@ inline void gcode_M17() {
+  * M31: Get the time since the start of SD Print (or last M109)
+  */
+ inline void gcode_M31() {
+-  print_job_stop_ms = millis();
+-  millis_t t = (print_job_stop_ms - print_job_start_ms) / 1000;
++  millis_t t = print_job_timer();
+   int min = t / 60, sec = t % 60;
+   char time[30];
+   sprintf_P(time, PSTR("%i min, %i sec"), min, sec);
+@@ -3547,8 +3543,9 @@ inline void gcode_M31() {
+         card.setIndex(code_value_short());
+ 
+       card.startFileprint();
+-      if (!call_procedure)
+-        print_job_start_ms = millis(); //procedure calls count as normal print time.
++
++      // Procedure calls count as normal print time.
++      if (!call_procedure) print_job_start();
+     }
+   }
+ 
+@@ -3911,6 +3908,8 @@ inline void gcode_M104() {
+         setTargetHotend1(temp == 0.0 ? 0.0 : temp + duplicate_extruder_temp_offset);
+     #endif
+   }
++
++  print_job_stop();
+ }
+ 
+ #if HAS_TEMP_0 || HAS_TEMP_BED || ENABLED(HEATER_0_USES_MAX6675)
+@@ -4035,11 +4034,12 @@ inline void gcode_M105() {
+ inline void gcode_M109() {
+   bool no_wait_for_cooling = true;
+ 
++  // Start hook must happen before setTargetHotend()
++  print_job_start();
++
+   if (setTargetedHotend(109)) return;
+   if (marlin_debug_flags & DEBUG_DRYRUN) return;
+ 
+-  LCD_MESSAGEPGM(MSG_HEATING);
+-
+   no_wait_for_cooling = code_seen('S');
+   if (no_wait_for_cooling || code_seen('R')) {
+     float temp = code_value();
+@@ -4048,8 +4048,12 @@ inline void gcode_M109() {
+       if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && target_extruder == 0)
+         setTargetHotend1(temp == 0.0 ? 0.0 : temp + duplicate_extruder_temp_offset);
+     #endif
++
++    if (temp > degHotend(target_extruder)) LCD_MESSAGEPGM(MSG_HEATING);
+   }
+ 
++  if (print_job_stop()) LCD_MESSAGEPGM(WELCOME_MSG);
++
+   #if ENABLED(AUTOTEMP)
+     autotemp_enabled = code_seen('F');
+     if (autotemp_enabled) autotemp_factor = code_value();
+@@ -4109,7 +4113,6 @@ inline void gcode_M109() {
+   } // while(!cancel_heatup && TEMP_CONDITIONS)
+ 
+   LCD_MESSAGEPGM(MSG_HEATING_COMPLETE);
+-  print_job_start_ms = previous_cmd_ms;
+ }
+ 
+ #if HAS_TEMP_BED
+@@ -5535,7 +5538,7 @@ inline void gcode_M503() {
+     delay(100);
+     LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+     millis_t next_tick = 0;
+-    KEEPALIVE_STATE(WAIT_FOR_USER);
++    KEEPALIVE_STATE(PAUSED_FOR_USER);
+     while (!lcd_clicked()) {
+       #if DISABLED(AUTO_FILAMENT_CHANGE)
+         millis_t ms = millis();
+@@ -6055,6 +6058,7 @@ void process_next_command() {
+ 
+       case 105: // M105: Read current temperature
+         gcode_M105();
++        KEEPALIVE_STATE(NOT_BUSY);
+         return; // "ok" already printed
+ 
+       case 109: // M109: Wait for temperature
+@@ -7424,3 +7428,50 @@ void calculate_volumetric_multipliers() {
+   for (int i = 0; i < EXTRUDERS; i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
++
++/**
++ * Start the print job timer
++ *
++ * The print job is only started if all extruders have their target temp at zero
++ * otherwise the print job timew would be reset everytime a M109 is received.
++ *
++ * @param t start timer timestamp
++ *
++ * @return true if the timer was started at function call
++ */
++bool print_job_start(millis_t t /* = 0 */) {
++  for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_start_ms = (t) ? t : millis();
++  print_job_stop_ms = 0;
++  return true;
++}
++
++/**
++ * Output the print job timer in seconds
++ *
++ * @return the number of seconds
++ */
++millis_t print_job_timer() {
++  if (!print_job_start_ms) return 0;
++  return (((print_job_stop_ms > print_job_start_ms)
++    ? print_job_stop_ms : millis()) - print_job_start_ms) / 1000;
++}
++
++/**
++ * Check if the running print job has finished and stop the timer
++ *
++ * When the target temperature for all extruders is zero then we assume that the
++ * print job has finished printing. There are some special conditions under which
++ * this assumption may not be valid: If during a print job for some reason the
++ * user decides to bring a nozzle temp down and only then heat the other afterwards.
++ *
++ * @param force stops the timer ignoring all pre-checks
++ *
++ * @return boolean true if the print job has finished printing
++ */
++bool print_job_stop(bool force /* = false */) {
++  if (!print_job_start_ms) return false;
++  if (!force) for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_stop_ms = millis();
++  return true;
++}
+

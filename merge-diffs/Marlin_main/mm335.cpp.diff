@@ -1,0 +1,80 @@
+commit eb85342fd98b48b21801c045cfc72fc54c36186f (from 1c889cd303f9b4ac5125f4a972b0a6f3c8e3d7be)
+Merge: 14f3ca1 1c889cd
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Mar 5 21:30:17 2016 -0800
+
+    Merge pull request #2989 from AnHardt/fix2661
+    
+    Pre home display - Stepper release
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2302133..23fa319 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1754,7 +1754,9 @@ static void setup_for_endstop_move() {
+ 
+     void raise_z_for_servo() {
+       float zpos = current_position[Z_AXIS], z_dest = Z_RAISE_BEFORE_PROBING;
+-      z_dest += axis_known_position[Z_AXIS] ? zprobe_zoffset : zpos;
++      // The zprobe_zoffset is negative any switch below the nozzle, so
++      // multiply by Z_HOME_DIR (-1) to move enough away from bed for the probe
++      z_dest += axis_known_position[Z_AXIS] ? zprobe_zoffset * Z_HOME_DIR : zpos;
+       if (zpos < z_dest) do_blocking_move_to_z(z_dest); // also updates current_position
+     }
+ 
+@@ -3202,6 +3204,11 @@ inline void gcode_G28() {
+       // Sled assembly for Cartesian bots
+       #if ENABLED(Z_PROBE_SLED)
+         dock_sled(true); // dock the sled
++      #elif Z_RAISE_AFTER_PROBING > 0
++        // Raise Z axis for non-delta and non servo based probes
++        #if !defined(HAS_SERVO_ENDSTOPS) && DISABLED(Z_PROBE_ALLEN_KEY) && DISABLED(Z_PROBE_SLED)
++          raise_z_after_probing();
++        #endif
+       #endif
+ 
+     #endif // !DELTA
+@@ -5620,12 +5627,8 @@ inline void gcode_T(uint8_t tmp_extruder) {
+           }
+ 
+           // apply Y & Z extruder offset (x offset is already used in determining home pos)
+-          current_position[Y_AXIS] = current_position[Y_AXIS] -
+-                                     extruder_offset[Y_AXIS][active_extruder] +
+-                                     extruder_offset[Y_AXIS][tmp_extruder];
+-          current_position[Z_AXIS] = current_position[Z_AXIS] -
+-                                     extruder_offset[Z_AXIS][active_extruder] +
+-                                     extruder_offset[Z_AXIS][tmp_extruder];
++          current_position[Y_AXIS] -= extruder_offset[Y_AXIS][active_extruder] - extruder_offset[Y_AXIS][tmp_extruder];
++          current_position[Z_AXIS] -= extruder_offset[Z_AXIS][active_extruder] - extruder_offset[Z_AXIS][tmp_extruder];
+           active_extruder = tmp_extruder;
+ 
+           // This function resets the max/min values - the current position may be overwritten below.
+@@ -5652,9 +5655,24 @@ inline void gcode_T(uint8_t tmp_extruder) {
+             delayed_move_time = 0;
+           }
+         #else // !DUAL_X_CARRIAGE
+-          // Offset extruder (only by XY)
+-          for (int i = X_AXIS; i <= Y_AXIS; i++)
+-            current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++            // Offset extruder, make sure to apply the bed level rotation matrix
++            vector_3 tmp_offset_vec = vector_3(extruder_offset[X_AXIS][tmp_extruder],
++                                               extruder_offset[Y_AXIS][tmp_extruder],
++                                               extruder_offset[Z_AXIS][tmp_extruder]),
++                     act_offset_vec = vector_3(extruder_offset[X_AXIS][active_extruder],
++                                               extruder_offset[Y_AXIS][active_extruder],
++                                               extruder_offset[Z_AXIS][active_extruder]),
++                     offset_vec = tmp_offset_vec - act_offset_vec;
++            offset_vec.apply_rotation(plan_bed_level_matrix.transpose(plan_bed_level_matrix));
++            current_position[X_AXIS] += offset_vec.x;
++            current_position[Y_AXIS] += offset_vec.y;
++            current_position[Z_AXIS] += offset_vec.z;
++          #else // !AUTO_BED_LEVELING_FEATURE
++            // Offset extruder (only by XY)
++            for (int i=X_AXIS; i<=Y_AXIS; i++)
++              current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #endif // !AUTO_BED_LEVELING_FEATURE
+           // Set the new active extruder and position
+           active_extruder = tmp_extruder;
+         #endif // !DUAL_X_CARRIAGE
+

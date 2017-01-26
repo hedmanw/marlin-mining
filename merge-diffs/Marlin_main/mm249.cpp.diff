@@ -1,0 +1,91 @@
+commit 525d8256d454fd527b4340bcd939f426c5401397 (from 46881c846c2a13a0e9c2882d171182299921bd90)
+Merge: 0439483 46881c8
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 12 18:23:08 2016 -0700
+
+    Merge pull request #3481 from thinkyhead/rc_extruder_offset_array
+    
+    Fix: gcode_T using non-existent Z offset
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 486e0e7..944151e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -485,6 +485,16 @@ void serial_echopair_P(const char* s_P, unsigned long v) { serialprintPGM(s_P);
+ 
+ void gcode_M114();
+ 
++#if ENABLED(DELTA) || ENABLED(SCARA)
++  inline void sync_plan_position_delta() {
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS("sync_plan_position_delta", current_position);
++    #endif
++    calculate_delta(current_position);
++    plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
++  }
++#endif
++
+ #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
+   float extrude_min_temp = EXTRUDE_MINTEMP;
+ #endif
+@@ -705,6 +715,11 @@ void servo_init() {
+  */
+ void setup() {
+ 
++  #if ENABLED(DELTA) || ENABLED(SCARA)
++    // Vital to init kinematic equivalent for X0 Y0 Z0
++    sync_plan_position_delta();
++  #endif
++
+   #ifdef DISABLE_JTAG
+     // Disable JTAG on AT90USB chips to free up pins for IO
+     MCUCR = 0x80;
+@@ -1306,15 +1321,6 @@ inline void sync_plan_position() {
+   #endif
+   plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
+-#if ENABLED(DELTA) || ENABLED(SCARA)
+-  inline void sync_plan_position_delta() {
+-    #if ENABLED(DEBUG_LEVELING_FEATURE)
+-      if (DEBUGGING(LEVELING)) DEBUG_POS("sync_plan_position_delta", current_position);
+-    #endif
+-    calculate_delta(current_position);
+-    plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
+-  }
+-#endif
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
+@@ -6188,10 +6194,31 @@ inline void gcode_T(uint8_t tmp_extruder) {
+                                                extruder_offset[Y_AXIS][active_extruder],
+                                                0),
+                      offset_vec = tmp_offset_vec - act_offset_vec;
++
++            #if ENABLED(DEBUG_LEVELING_FEATURE)
++              if (DEBUGGING(LEVELING)) {
++                SERIAL_ECHOLNPGM(">>> gcode_T");
++                tmp_offset_vec.debug("tmp_offset_vec");
++                act_offset_vec.debug("act_offset_vec");
++                offset_vec.debug("offset_vec (BEFORE)");
++                DEBUG_POS("BEFORE rotation", current_position);
++              }
++            #endif
++
+             offset_vec.apply_rotation(plan_bed_level_matrix.transpose(plan_bed_level_matrix));
++
+             current_position[X_AXIS] += offset_vec.x;
+             current_position[Y_AXIS] += offset_vec.y;
+             current_position[Z_AXIS] += offset_vec.z;
++
++            #if ENABLED(DEBUG_LEVELING_FEATURE)
++              if (DEBUGGING(LEVELING)) {
++                offset_vec.debug("offset_vec (AFTER)");
++                DEBUG_POS("AFTER rotation", current_position);
++                SERIAL_ECHOLNPGM("<<< gcode_T");
++              }
++            #endif
++
+           #else // !AUTO_BED_LEVELING_FEATURE
+             // Offset extruder (only by XY)
+             for (int i=X_AXIS; i<=Y_AXIS; i++)
+

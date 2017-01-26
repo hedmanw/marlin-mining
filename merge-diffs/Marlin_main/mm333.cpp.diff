@@ -1,0 +1,334 @@
+commit 34b8b9f0f539fc6910cf0aceb3db791efe073c80 (from 83ffc9eb4f3a768bbaab6ad6979de919c03979bd)
+Merge: 3a3d358 83ffc9e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 6 00:17:03 2016 -0800
+
+    Merge pull request #2995 from thinkyhead/rcbugfix_corexy_corexz
+    
+    Add CORE support to st_get_position_mm (and elsewhere)
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0b50589..3e5616c 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -74,7 +74,7 @@
+  *  - http://objects.reprap.org/wiki/Mendel_User_Manual:_RepRapGCodes
+  *
+  * Help us document these G-codes online:
+- *  - http://marlinfirmware.org/index.php/G-Code
++ *  - https://github.com/MarlinFirmware/Marlin/wiki/G-Code-in-Marlin
+  *  - http://reprap.org/wiki/G-code
+  *
+  * -----------------
+@@ -245,6 +245,7 @@ static float feedrate = 1500.0, saved_feedrate;
+ float current_position[NUM_AXIS] = { 0.0 };
+ static float destination[NUM_AXIS] = { 0.0 };
+ bool axis_known_position[3] = { false };
++bool axis_homed[3] = { false };
+ 
+ static long gcode_N, gcode_LastN, Stopped_gcode_LastN = 0;
+ 
+@@ -630,6 +631,13 @@ void servo_init() {
+  *    • status LEDs
+  */
+ void setup() {
++
++  #ifdef DISABLE_JTAG
++    // Disable JTAG on AT90USB chips to free up pins for IO
++    MCUCR = 0x80;
++    MCUCR = 0x80;
++  #endif
++
+   setup_killpin();
+   setup_filrunoutpin();
+   setup_powerhold();
+@@ -973,6 +981,7 @@ void get_command() {
+ bool code_has_value() {
+   int i = 1;
+   char c = seen_pointer[i];
++  while (c == ' ') c = seen_pointer[++i];
+   if (c == '-' || c == '+') c = seen_pointer[++i];
+   if (c == '.') c = seen_pointer[++i];
+   return (c >= '0' && c <= '9');
+@@ -1279,6 +1288,8 @@ static void setup_for_endstop_move() {
+ 
+   static void run_z_probe() {
+ 
++    refresh_cmd_timeout(); // to prevent stepper_inactive_time from running out and EXTRUDER_RUNOUT_PREVENT from extruding
++
+     #if ENABLED(DELTA)
+ 
+       float start_z = current_position[Z_AXIS];
+@@ -1750,7 +1761,9 @@ static void setup_for_endstop_move() {
+ 
+     void raise_z_for_servo() {
+       float zpos = current_position[Z_AXIS], z_dest = Z_RAISE_BEFORE_PROBING;
+-      z_dest += axis_known_position[Z_AXIS] ? zprobe_zoffset : zpos;
++      // The zprobe_zoffset is negative any switch below the nozzle, so
++      // multiply by Z_HOME_DIR (-1) to move enough away from bed for the probe
++      z_dest += axis_known_position[Z_AXIS] ? zprobe_zoffset * Z_HOME_DIR : zpos;
+       if (zpos < z_dest) do_blocking_move_to_z(z_dest); // also updates current_position
+     }
+ 
+@@ -1980,6 +1993,7 @@ static void homeaxis(AxisEnum axis) {
+     feedrate = 0.0;
+     endstops_hit_on_purpose(); // clear endstop hit flags
+     axis_known_position[axis] = true;
++    axis_homed[axis] = true;
+ 
+     #if ENABLED(Z_PROBE_SLED)
+       // bring Z probe back
+@@ -3197,6 +3211,11 @@ inline void gcode_G28() {
+       // Sled assembly for Cartesian bots
+       #if ENABLED(Z_PROBE_SLED)
+         dock_sled(true); // dock the sled
++      #elif Z_RAISE_AFTER_PROBING > 0
++        // Raise Z axis for non-delta and non servo based probes
++        #if !defined(HAS_SERVO_ENDSTOPS) && DISABLED(Z_PROBE_ALLEN_KEY) && DISABLED(Z_PROBE_SLED)
++          raise_z_after_probing();
++        #endif
+       #endif
+ 
+     #endif // !DELTA
+@@ -3972,6 +3991,7 @@ inline void gcode_M109() {
+     }
+ 
+     idle();
++    refresh_cmd_timeout(); // to prevent stepper_inactive_time from running out
+ 
+     #ifdef TEMP_RESIDENCY_TIME
+       // start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+@@ -3986,7 +4006,6 @@ inline void gcode_M109() {
+   }
+ 
+   LCD_MESSAGEPGM(MSG_HEATING_COMPLETE);
+-  refresh_cmd_timeout();
+   print_job_start_ms = previous_cmd_ms;
+ }
+ 
+@@ -4021,9 +4040,9 @@ inline void gcode_M109() {
+         #endif
+       }
+       idle();
++      refresh_cmd_timeout(); // to prevent stepper_inactive_time from running out
+     }
+     LCD_MESSAGEPGM(MSG_BED_DONE);
+-    refresh_cmd_timeout();
+   }
+ 
+ #endif // HAS_TEMP_BED
+@@ -4770,19 +4789,18 @@ inline void gcode_M226() {
+       if (servo_index >= 0 && servo_index < NUM_SERVOS)
+         servo[servo_index].move(servo_position);
+       else {
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHO("Servo ");
+-        SERIAL_ECHO(servo_index);
+-        SERIAL_ECHOLN(" out of range");
++        SERIAL_ERROR_START;
++        SERIAL_ERROR("Servo ");
++        SERIAL_ERROR(servo_index);
++        SERIAL_ERRORLN(" out of range");
+       }
+     }
+     else if (servo_index >= 0) {
+-      SERIAL_PROTOCOL(MSG_OK);
+-      SERIAL_PROTOCOL(" Servo ");
+-      SERIAL_PROTOCOL(servo_index);
+-      SERIAL_PROTOCOL(": ");
+-      SERIAL_PROTOCOL(servo[servo_index].read());
+-      SERIAL_EOL;
++      SERIAL_ECHO_START;
++      SERIAL_ECHO(" Servo ");
++      SERIAL_ECHO(servo_index);
++      SERIAL_ECHO(": ");
++      SERIAL_ECHOLN(servo[servo_index].read());
+     }
+   }
+ 
+@@ -4833,27 +4851,27 @@ inline void gcode_M226() {
+       #endif
+ 
+       updatePID();
+-      SERIAL_PROTOCOL(MSG_OK);
++      SERIAL_ECHO_START;
+       #if ENABLED(PID_PARAMS_PER_EXTRUDER)
+-        SERIAL_PROTOCOL(" e:"); // specify extruder in serial output
+-        SERIAL_PROTOCOL(e);
++        SERIAL_ECHO(" e:"); // specify extruder in serial output
++        SERIAL_ECHO(e);
+       #endif // PID_PARAMS_PER_EXTRUDER
+-      SERIAL_PROTOCOL(" p:");
+-      SERIAL_PROTOCOL(PID_PARAM(Kp, e));
+-      SERIAL_PROTOCOL(" i:");
+-      SERIAL_PROTOCOL(unscalePID_i(PID_PARAM(Ki, e)));
+-      SERIAL_PROTOCOL(" d:");
+-      SERIAL_PROTOCOL(unscalePID_d(PID_PARAM(Kd, e)));
++      SERIAL_ECHO(" p:");
++      SERIAL_ECHO(PID_PARAM(Kp, e));
++      SERIAL_ECHO(" i:");
++      SERIAL_ECHO(unscalePID_i(PID_PARAM(Ki, e)));
++      SERIAL_ECHO(" d:");
++      SERIAL_ECHO(unscalePID_d(PID_PARAM(Kd, e)));
+       #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-        SERIAL_PROTOCOL(" c:");
++        SERIAL_ECHO(" c:");
+         //Kc does not have scaling applied above, or in resetting defaults
+-        SERIAL_PROTOCOL(PID_PARAM(Kc, e));
++        SERIAL_ECHO(PID_PARAM(Kc, e));
+       #endif
+       SERIAL_EOL;
+     }
+     else {
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLN(MSG_INVALID_EXTRUDER);
++      SERIAL_ERROR_START;
++      SERIAL_ERRORLN(MSG_INVALID_EXTRUDER);
+     }
+   }
+ 
+@@ -4867,14 +4885,13 @@ inline void gcode_M226() {
+     if (code_seen('D')) bedKd = scalePID_d(code_value());
+ 
+     updatePID();
+-    SERIAL_PROTOCOL(MSG_OK);
+-    SERIAL_PROTOCOL(" p:");
+-    SERIAL_PROTOCOL(bedKp);
+-    SERIAL_PROTOCOL(" i:");
+-    SERIAL_PROTOCOL(unscalePID_i(bedKi));
+-    SERIAL_PROTOCOL(" d:");
+-    SERIAL_PROTOCOL(unscalePID_d(bedKd));
+-    SERIAL_EOL;
++    SERIAL_ECHO_START;
++    SERIAL_ECHO(" p:");
++    SERIAL_ECHO(bedKp);
++    SERIAL_ECHO(" i:");
++    SERIAL_ECHO(unscalePID_i(bedKi));
++    SERIAL_ECHO(" d:");
++    SERIAL_ECHOLN(unscalePID_d(bedKd));
+   }
+ 
+ #endif // PIDTEMPBED
+@@ -5306,7 +5323,7 @@ inline void gcode_M503() {
+       float value = code_value();
+       if (Z_PROBE_OFFSET_RANGE_MIN <= value && value <= Z_PROBE_OFFSET_RANGE_MAX) {
+         zprobe_zoffset = value;
+-        SERIAL_ECHOPGM(MSG_OK);
++        SERIAL_ECHO(zprobe_zoffset);
+       }
+       else {
+         SERIAL_ECHOPGM(MSG_Z_MIN);
+@@ -5638,12 +5655,8 @@ inline void gcode_T(uint8_t tmp_extruder) {
+           }
+ 
+           // apply Y & Z extruder offset (x offset is already used in determining home pos)
+-          current_position[Y_AXIS] = current_position[Y_AXIS] -
+-                                     extruder_offset[Y_AXIS][active_extruder] +
+-                                     extruder_offset[Y_AXIS][tmp_extruder];
+-          current_position[Z_AXIS] = current_position[Z_AXIS] -
+-                                     extruder_offset[Z_AXIS][active_extruder] +
+-                                     extruder_offset[Z_AXIS][tmp_extruder];
++          current_position[Y_AXIS] -= extruder_offset[Y_AXIS][active_extruder] - extruder_offset[Y_AXIS][tmp_extruder];
++          current_position[Z_AXIS] -= extruder_offset[Z_AXIS][active_extruder] - extruder_offset[Z_AXIS][tmp_extruder];
+           active_extruder = tmp_extruder;
+ 
+           // This function resets the max/min values - the current position may be overwritten below.
+@@ -5670,9 +5683,24 @@ inline void gcode_T(uint8_t tmp_extruder) {
+             delayed_move_time = 0;
+           }
+         #else // !DUAL_X_CARRIAGE
+-          // Offset extruder (only by XY)
+-          for (int i = X_AXIS; i <= Y_AXIS; i++)
+-            current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++            // Offset extruder, make sure to apply the bed level rotation matrix
++            vector_3 tmp_offset_vec = vector_3(extruder_offset[X_AXIS][tmp_extruder],
++                                               extruder_offset[Y_AXIS][tmp_extruder],
++                                               extruder_offset[Z_AXIS][tmp_extruder]),
++                     act_offset_vec = vector_3(extruder_offset[X_AXIS][active_extruder],
++                                               extruder_offset[Y_AXIS][active_extruder],
++                                               extruder_offset[Z_AXIS][active_extruder]),
++                     offset_vec = tmp_offset_vec - act_offset_vec;
++            offset_vec.apply_rotation(plan_bed_level_matrix.transpose(plan_bed_level_matrix));
++            current_position[X_AXIS] += offset_vec.x;
++            current_position[Y_AXIS] += offset_vec.y;
++            current_position[Z_AXIS] += offset_vec.z;
++          #else // !AUTO_BED_LEVELING_FEATURE
++            // Offset extruder (only by XY)
++            for (int i=X_AXIS; i<=Y_AXIS; i++)
++              current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #endif // !AUTO_BED_LEVELING_FEATURE
+           // Set the new active extruder and position
+           active_extruder = tmp_extruder;
+         #endif // !DUAL_X_CARRIAGE
+@@ -5712,7 +5740,7 @@ void process_next_command() {
+ 
+   // Sanitize the current command:
+   //  - Skip leading spaces
+-  //  - Bypass N[0-9][0-9]*[ ]*
++  //  - Bypass N[-0-9][0-9]*[ ]*
+   //  - Overwrite * with nul to mark the end
+   while (*current_command == ' ') ++current_command;
+   if (*current_command == 'N' && ((current_command[1] >= '0' && current_command[1] <= '9') || current_command[1] == '-')) {
+@@ -5726,8 +5754,12 @@ void process_next_command() {
+   // Get the command code, which must be G, M, or T
+   char command_code = *current_command;
+ 
++  // Skip the letter-code and spaces to get the numeric part
++  current_command_args = current_command + 1;
++  while (*current_command_args == ' ') ++current_command_args;
++
+   // The code must have a numeric value
+-  bool code_is_good = (current_command[1] >= '0' && current_command[1] <= '9');
++  bool code_is_good = (*current_command_args >= '0' && *current_command_args <= '9');
+ 
+   int codenum; // define ahead of goto
+ 
+@@ -5736,9 +5768,7 @@ void process_next_command() {
+ 
+   // Args pointer optimizes code_seen, especially those taking XYZEF
+   // This wastes a little cpu on commands that expect no arguments.
+-  current_command_args = current_command;
+-  while (*current_command_args && *current_command_args != ' ') ++current_command_args;
+-  while (*current_command_args == ' ') ++current_command_args;
++  while (*current_command_args == ' ' || (*current_command_args >= '0' && *current_command_args <= '9')) ++current_command_args;
+ 
+   // Interpret the code int
+   seen_pointer = current_command;
+@@ -6284,7 +6314,13 @@ void ok_to_send() {
+   #endif
+   SERIAL_PROTOCOLPGM(MSG_OK);
+   #if ENABLED(ADVANCED_OK)
+-    SERIAL_PROTOCOLPGM(" N"); SERIAL_PROTOCOL(gcode_LastN);
++    char* p = command_queue[cmd_queue_index_r];
++    if (*p == 'N') {
++      SERIAL_PROTOCOL(' ');
++      SERIAL_ECHO(*p++);
++      while ((*p >= '0' && *p <= '9') || *p == '-')
++        SERIAL_ECHO(*p++);
++    }
+     SERIAL_PROTOCOLPGM(" P"); SERIAL_PROTOCOL(int(BLOCK_BUFFER_SIZE - movesplanned() - 1));
+     SERIAL_PROTOCOLPGM(" B"); SERIAL_PROTOCOL(BUFSIZE - commands_in_queue);
+   #endif
+@@ -6968,16 +7004,16 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+   if (stepper_inactive_time && ms > previous_cmd_ms + stepper_inactive_time
+       && !ignore_stepper_queue && !blocks_queued()) {
+-    #if DISABLE_X == true
++    #if DISABLE_INACTIVE_X == true
+       disable_x();
+     #endif
+-    #if DISABLE_Y == true
++    #if DISABLE_INACTIVE_Y == true
+       disable_y();
+     #endif
+-    #if DISABLE_Z == true
++    #if DISABLE_INACTIVE_Z == true
+       disable_z();
+     #endif
+-    #if DISABLE_E == true
++    #if DISABLE_INACTIVE_E == true
+       disable_e0();
+       disable_e1();
+       disable_e2();
+

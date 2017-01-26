@@ -1,0 +1,311 @@
+commit d1f447100035d02266d0d91fbd8babf0faf79270 (from 5ea139fd79b5fc16de77ae2b167a2ec62aecaeb5)
+Merge: 35af5ef 5ea139f
+Author: AnHardt <github@kitelab.de>
+Date:   Tue Jun 2 18:31:21 2015 +0200
+
+    Merge pull request #2146 from Wackerbarth/Versioning
+    
+    Versioning
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 04d244b..97c52b2 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -251,7 +251,7 @@ float homing_feedrate[] = HOMING_FEEDRATE;
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+ int feedrate_multiplier = 100; //100->1 200->2
+ int saved_feedrate_multiplier;
+-int extruder_multiply[EXTRUDERS] = ARRAY_BY_EXTRUDERS(100, 100, 100, 100);
++int extruder_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS(100, 100, 100, 100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA);
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS(1.0, 1.0, 1.0, 1.0);
+@@ -641,6 +641,9 @@ void setup() {
+   // loads data from EEPROM if available else uses defaults (and resets step acceleration rate)
+   Config_RetrieveSettings();
+ 
++  lcd_init();
++  _delay_ms(1000);  // wait 1sec to display the splash screen
++
+   tp_init();    // Initialize temperature loop
+   plan_init();  // Initialize planner;
+   watchdog_init();
+@@ -648,9 +651,6 @@ void setup() {
+   setup_photpin();
+   servo_init();
+ 
+-  lcd_init();
+-  _delay_ms(1000);  // wait 1sec to display the splash screen
+-
+   #if HAS_CONTROLLERFAN
+     SET_OUTPUT(CONTROLLERFAN_PIN); //Set pin used for driver cooling fan
+   #endif
+@@ -726,11 +726,8 @@ void loop() {
+     commands_in_queue--;
+     cmd_queue_index_r = (cmd_queue_index_r + 1) % BUFSIZE;
+   }
+-  // Check heater every n milliseconds
+-  manage_heater();
+-  manage_inactivity();
+   checkHitEndstops();
+-  lcd_update();
++  idle();
+ }
+ 
+ void gcode_line_error(const char *err, bool doFlush=true) {
+@@ -1998,11 +1995,7 @@ inline void gcode_G4() {
+ 
+   if (!lcd_hasstatus()) LCD_MESSAGEPGM(MSG_DWELL);
+ 
+-  while (millis() < codenum) {
+-    manage_heater();
+-    manage_inactivity();
+-    lcd_update();
+-  }
++  while (millis() < codenum) idle();
+ }
+ 
+ #ifdef FWRETRACT
+@@ -2682,9 +2675,7 @@ inline void gcode_G28() {
+ 
+           probePointCounter++;
+ 
+-          manage_heater();
+-          manage_inactivity();
+-          lcd_update();
++          idle();
+ 
+         } //xProbe
+       } //yProbe
+@@ -2885,21 +2876,13 @@ inline void gcode_G92() {
+     st_synchronize();
+     refresh_cmd_timeout();
+     if (codenum > 0) {
+-      codenum += previous_cmd_ms;  // keep track of when we started waiting
+-      while(millis() < codenum && !lcd_clicked()) {
+-        manage_heater();
+-        manage_inactivity();
+-        lcd_update();
+-      }
++      codenum += previous_cmd_ms;  // wait until this time for a click
++      while (millis() < codenum && !lcd_clicked()) idle();
+       lcd_ignore_click(false);
+     }
+     else {
+       if (!lcd_detected()) return;
+-      while (!lcd_clicked()) {
+-        manage_heater();
+-        manage_inactivity();
+-        lcd_update();
+-      }
++      while (!lcd_clicked()) idle();
+     }
+     if (IS_SD_PRINTING)
+       LCD_MESSAGEPGM(MSG_RESUMING);
+@@ -3065,10 +3048,7 @@ inline void gcode_M31() {
+      *   /Miscellaneous/Armchair/Armchair.gcode
+      */
+     inline void gcode_M33() {
+-      char *args = strchr_pointer + 4;
+-      while (*args == ' ') ++args;
+-      clear_asterisk(args);
+-      card.printLongPath(args);
++      card.printLongPath(current_command_args);
+     }
+ 
+   #endif
+@@ -3388,7 +3368,7 @@ inline void gcode_M105() {
+ 
+   #if HAS_TEMP_0 || HAS_TEMP_BED || defined(HEATER_0_USES_MAX6675)
+     SERIAL_PROTOCOLPGM(MSG_OK);
+-    #if HAS_TEMP_0
++    #if HAS_TEMP_0 || defined(HEATER_0_USES_MAX6675)
+       SERIAL_PROTOCOLPGM(" T:");
+       SERIAL_PROTOCOL_F(degHotend(target_extruder), 1);
+       SERIAL_PROTOCOLPGM(" /");
+@@ -3525,9 +3505,9 @@ inline void gcode_M109() {
+         #endif
+         temp_ms = millis();
+       }
+-      manage_heater();
+-      manage_inactivity();
+-      lcd_update();
++
++      idle();
++
+       #ifdef TEMP_RESIDENCY_TIME
+         // start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+         // or when current temp falls outside the hysteresis after target temp was reached
+@@ -3575,9 +3555,7 @@ inline void gcode_M109() {
+         SERIAL_PROTOCOL_F(degBed(), 1);
+         SERIAL_EOL;
+       }
+-      manage_heater();
+-      manage_inactivity();
+-      lcd_update();
++      idle();
+     }
+     LCD_MESSAGEPGM(MSG_BED_DONE);
+     refresh_cmd_timeout();
+@@ -3938,20 +3916,14 @@ inline void gcode_M121() { enable_endstops(false); }
+ #endif // BLINKM
+ 
+ /**
+- * M200: Set filament diameter and set E axis units to cubic millimeters (use S0 to set back to millimeters).
+- *       T<extruder>
+- *       D<millimeters>
++ * M200: Set filament diameter and set E axis units to cubic millimeters
++ *
++ *    T<extruder> - Optional extruder number. Current extruder if omitted.
++ *    D<mm> - Diameter of the filament. Use "D0" to set units back to millimeters.
+  */
+ inline void gcode_M200() {
+-  int tmp_extruder = active_extruder;
+-  if (code_seen('T')) {
+-    tmp_extruder = code_value_short();
+-    if (tmp_extruder >= EXTRUDERS) {
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHO(MSG_M200_INVALID_EXTRUDER);
+-      return;
+-    }
+-  }
++
++  if (setTargetedHotend(200)) return;
+ 
+   if (code_seen('D')) {
+     float diameter = code_value();
+@@ -3960,7 +3932,7 @@ inline void gcode_M200() {
+     // for all extruders
+     volumetric_enabled = (diameter != 0.0);
+     if (volumetric_enabled) {
+-      filament_size[tmp_extruder] = diameter;
++      filament_size[target_extruder] = diameter;
+       // make sure all extruders have some sane value for the filament size
+       for (int i=0; i<EXTRUDERS; i++)
+         if (! filament_size[i]) filament_size[i] = DEFAULT_NOMINAL_FILAMENT_DIA;
+@@ -4215,10 +4187,10 @@ inline void gcode_M221() {
+     int sval = code_value();
+     if (code_seen('T')) {
+       if (setTargetedHotend(221)) return;
+-      extruder_multiply[target_extruder] = sval;
++      extruder_multiplier[target_extruder] = sval;
+     }
+     else {
+-      extruder_multiply[active_extruder] = sval;
++      extruder_multiplier[active_extruder] = sval;
+     }
+   }
+ }
+@@ -4262,11 +4234,7 @@ inline void gcode_M226() {
+             break;
+         }
+ 
+-        while(digitalRead(pin_number) != target) {
+-          manage_heater();
+-          manage_inactivity();
+-          lcd_update();
+-        }
++        while (digitalRead(pin_number) != target) idle();
+ 
+       } // pin_number > -1
+     } // pin_state -1 0 1
+@@ -4669,7 +4637,7 @@ inline void gcode_M400() { st_synchronize(); }
+     //SERIAL_PROTOCOLPGM("Filament dia (measured mm):");
+     //SERIAL_PROTOCOL(filament_width_meas);
+     //SERIAL_PROTOCOLPGM("Extrusion ratio(%):");
+-    //SERIAL_PROTOCOL(extruder_multiply[active_extruder]);
++    //SERIAL_PROTOCOL(extruder_multiplier[active_extruder]);
+   }
+ 
+   /**
+@@ -5202,7 +5170,7 @@ void process_next_command() {
+   //  - Overwrite * with nul to mark the end
+   while (*current_command == ' ') ++current_command;
+   if (*current_command == 'N' && current_command[1] >= '0' && current_command[1] <= '9') {
+-    while (*current_command != ' ') ++current_command;
++    while (*current_command != ' ' && *current_command != 'G' && *current_command != 'M' && *current_command != 'T') ++current_command;
+     while (*current_command == ' ') ++current_command;
+   }
+   char *starpos = strchr(current_command, '*');  // * should always be the last parameter
+@@ -5300,8 +5268,6 @@ void process_next_command() {
+       case 92: // G92
+         gcode_G92();
+         break;
+-
+-      default: code_is_good = false;
+     }
+     break;
+ 
+@@ -5732,14 +5698,14 @@ void process_next_command() {
+       case 999: // M999: Restart after being Stopped
+         gcode_M999();
+         break;
+-
+-      default: code_is_good = false;
+     }
+     break;
+ 
+     case 'T':
+       gcode_T(codenum);
+     break;
++
++    default: code_is_good = false;
+   }
+ 
+ ExitUnknownCommand:
+@@ -6254,6 +6220,15 @@ void disable_all_steppers() {
+ }
+ 
+ /**
++ * Standard idle routine keeps the machine alive
++ */
++void idle() {
++  manage_heater();
++  manage_inactivity();
++  lcd_update();
++}
++
++/**
+  * Manage several activities:
+  *  - Check for Filament Runout
+  *  - Keep the command buffer full
+@@ -6522,29 +6497,20 @@ void Stop() {
+   }
+ }
+ 
+-bool setTargetedHotend(int code){
++/**
++ * Set target_extruder from the T parameter or the active_extruder
++ *
++ * Returns TRUE if the target is invalid
++ */
++bool setTargetedHotend(int code) {
+   target_extruder = active_extruder;
+   if (code_seen('T')) {
+     target_extruder = code_value_short();
+     if (target_extruder >= EXTRUDERS) {
+       SERIAL_ECHO_START;
+-      switch(code){
+-        case 104:
+-          SERIAL_ECHO(MSG_M104_INVALID_EXTRUDER);
+-          break;
+-        case 105:
+-          SERIAL_ECHO(MSG_M105_INVALID_EXTRUDER);
+-          break;
+-        case 109:
+-          SERIAL_ECHO(MSG_M109_INVALID_EXTRUDER);
+-          break;
+-        case 218:
+-          SERIAL_ECHO(MSG_M218_INVALID_EXTRUDER);
+-          break;
+-        case 221:
+-          SERIAL_ECHO(MSG_M221_INVALID_EXTRUDER);
+-          break;
+-      }
++      SERIAL_CHAR('M');
++      SERIAL_ECHO(code);
++      SERIAL_ECHOPGM(" " MSG_INVALID_EXTRUDER " ");
+       SERIAL_ECHOLN(target_extruder);
+       return true;
+     }
+

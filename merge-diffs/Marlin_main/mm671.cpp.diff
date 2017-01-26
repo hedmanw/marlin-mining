@@ -1,0 +1,107 @@
+commit 2fb2a0a1196577201e5365a82e8103d014e5b2e8 (from 8a08cca0f2c16d6863bacefa41966cee17ee5b26)
+Merge: ab96537 8a08cca
+Author: bkubicek <bkubicek@x201.(none)>
+Date:   Tue Oct 22 10:08:21 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e431ad6..698caa8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -95,7 +95,10 @@
+ // M29  - Stop SD write
+ // M30  - Delete file from SD (M30 filename.g)
+ // M31  - Output time since last M109 or SD card start to serial
+-// M32  - Select file and start SD print (Can be used when printing from SD card)
++// M32  - Select file and start SD print (Can be used _while_ printing from SD card files): 
++//        syntax "M32 /path/filename#", or "M32 S<startpos bytes> !filename#"
++//        Call gcode file : "M32 P !filename#" and return to caller file after finishing (simiarl to #include).
++//        The '#' is necessary when calling from within sd files, as it stops buffer prereading
+ // M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+ // M80  - Turn on Power Supply
+ // M81  - Turn off Power Supply
+@@ -626,11 +629,20 @@ void get_command()
+   if(!card.sdprinting || serial_count!=0){
+     return;
+   }
+-  while( !card.eof()  && buflen < BUFSIZE) {
++  
++  //'#' stops reading from sd to the buffer prematurely, so procedural macro calls are possible
++  // if it occures, stop_buffering is triggered and the buffer is ran dry. 
++  // this character _can_ occure in serial com, due to checksums. however, no checksums are used in sd printing
++  
++  static bool stop_buffering=false;
++  if(buflen==0) stop_buffering=false;
++  
++  while( !card.eof()  && buflen < BUFSIZE && !stop_buffering) { 
+     int16_t n=card.get();
+-    serial_char = (char)n;
++    serial_char = (char)n; 
+     if(serial_char == '\n' ||
+        serial_char == '\r' ||
++       serial_char == '#' ||
+        (serial_char == ':' && comment_mode == false) ||
+        serial_count >= (MAX_CMD_SIZE - 1)||n==-1)
+     {
+@@ -650,6 +662,9 @@ void get_command()
+         card.checkautostart(true);
+ 
+       }
++      if(serial_char=='#')
++        stop_buffering=true;
++      
+       if(!serial_count)
+       {
+         comment_mode = false; //for new command
+@@ -1473,19 +1488,41 @@ void process_commands()
+         card.removeFile(strchr_pointer + 4);
+       }
+       break;
+-    case 32: //M32 - Select file and start SD print
++    case 32: //M32 - Select file and start SD print 
++    {
+       if(card.sdprinting) {
+         st_synchronize();
+-        card.closefile();
+-        card.sdprinting = false;
++
+       }
+-      starpos = (strchr(strchr_pointer + 4,'*'));
++      starpos = (strchr(strchr_pointer + 4,'*')); 
++      
++      char* namestartpos = (strchr(strchr_pointer + 4,'!'));   //find ! to indicate filename string start.
++      if(namestartpos==NULL)
++      {
++        namestartpos=strchr_pointer + 4; //default name position, 4 letters after the M
++      }
++      else
++        namestartpos++; //to skip the '!'
++        
+       if(starpos!=NULL)
+         *(starpos-1)='\0';
+-      card.openFile(strchr_pointer + 4,true);
+-      card.startFileprint();
+-      starttime=millis();
+-      break;
++            
++      bool call_procedure=(code_seen('P'));
++      
++      if(strchr_pointer>namestartpos) 
++        call_procedure=false;  //false alert, 'P' found within filename
++      
++      if( card.cardOK ) 
++      {
++        card.openFile(namestartpos,true,!call_procedure);
++        if(code_seen('S'))
++          if(strchr_pointer<namestartpos) //only if "S" is occuring _before_ the filename
++            card.setIndex(code_value_long());
++        card.startFileprint();
++        if(!call_procedure)
++          starttime=millis(); //procedure calls count as normal print time.
++      }
++    } break;
+     case 928: //M928 - Start SD write
+       starpos = (strchr(strchr_pointer + 5,'*'));
+       if(starpos != NULL){
+

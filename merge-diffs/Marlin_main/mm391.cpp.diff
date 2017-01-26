@@ -1,0 +1,104 @@
+commit bd20bd544426d18b3ab6cdad709be8e31e9adf39 (from f48599f172bfbf08dcd17a051a7426f0a60cbb91)
+Merge: b5200e1 f48599f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 03:29:21 2015 -0700
+
+    Merge pull request #2063 from chris-bo/autobed_sled
+    
+    improve sled handling
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e6609e2..8dc884e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1096,6 +1096,14 @@ inline void sync_plan_position() {
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
++static void setup_for_endstop_move() {
++  saved_feedrate = feedrate;
++  saved_feedrate_multiplier = feedrate_multiplier;
++  feedrate_multiplier = 100;
++  refresh_cmd_timeout();
++  enable_endstops(true);
++}
++
+ #ifdef ENABLE_AUTO_BED_LEVELING
+ 
+   #ifdef DELTA
+@@ -1256,14 +1264,6 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     feedrate = oldFeedRate;
+   }
+ 
+-  static void setup_for_endstop_move() {
+-    saved_feedrate = feedrate;
+-    saved_feedrate_multiplier = feedrate_multiplier;
+-    feedrate_multiplier = 100;
+-    refresh_cmd_timeout();
+-    enable_endstops(true);
+-  }
+-
+   static void clean_up_after_endstop_move() {
+     #ifdef ENDSTOPS_ONLY_FOR_HOMING
+       enable_endstops(false);
+@@ -1867,6 +1867,9 @@ inline void gcode_G4() {
+  */
+ inline void gcode_G28() {
+ 
++  // Wait for planner moves to finish!
++  st_synchronize();
++
+   // For auto bed leveling, clear the level matrix
+   #ifdef ENABLE_AUTO_BED_LEVELING
+     plan_bed_level_matrix.set_to_identity();
+@@ -1881,12 +1884,7 @@ inline void gcode_G28() {
+     mbl.active = 0;
+   #endif
+ 
+-  saved_feedrate = feedrate;
+-  saved_feedrate_multiplier = feedrate_multiplier;
+-  feedrate_multiplier = 100;
+-  refresh_cmd_timeout();
+-
+-  enable_endstops(true);
++  setup_for_endstop_move();
+ 
+   set_destination_to_current();
+ 
+@@ -3172,8 +3170,6 @@ inline void gcode_M42() {
+ 
+     clean_up_after_endstop_move();
+ 
+-    // enable_endstops(true);
+-
+     if (verbose_level > 0) {
+       SERIAL_PROTOCOLPGM("Mean: ");
+       SERIAL_PROTOCOL_F(mean, 6);
+@@ -5761,25 +5757,22 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+ 
+ #ifdef PREVENT_DANGEROUS_EXTRUDE
+ 
+-  inline float prevent_dangerous_extrude(float &curr_e, float &dest_e) {
++  inline void prevent_dangerous_extrude(float &curr_e, float &dest_e) {
+     float de = dest_e - curr_e;
+     if (de) {
+       if (degHotend(active_extruder) < extrude_min_temp) {
+         curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+         SERIAL_ECHO_START;
+         SERIAL_ECHOLNPGM(MSG_ERR_COLD_EXTRUDE_STOP);
+-        return 0;
+       }
+       #ifdef PREVENT_LENGTHY_EXTRUDE
+         if (labs(de) > EXTRUDE_MAXLENGTH) {
+           curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+           SERIAL_ECHO_START;
+           SERIAL_ECHOLNPGM(MSG_ERR_LONG_EXTRUDE_STOP);
+-          return 0;
+         }
+       #endif
+     }
+-    return de;
+   }
+ 
+ #endif // PREVENT_DANGEROUS_EXTRUDE
+

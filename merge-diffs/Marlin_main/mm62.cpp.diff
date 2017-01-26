@@ -1,0 +1,90 @@
+commit e0e10e0e45ddd621d02497db4eaf4e6891132ef9 (from 3913e04ac7f88ba95b3111467db95e5c5b87460b)
+Merge: 31f03c8 3913e04
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Sep 21 01:21:49 2016 -0500
+
+    Merge pull request #4859 from thinkyhead/rc_kinematic_and_scara
+    
+    Kinematic and SCARA patches
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 252194e..19038da 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1890,6 +1890,12 @@ static void clean_up_after_endstop_or_probe_move() {
+   #define DEPLOY_PROBE() set_probe_deployed(true)
+   #define STOW_PROBE() set_probe_deployed(false)
+ 
++  #if ENABLED(BLTOUCH)
++    FORCE_INLINE void set_bltouch_deployed(const bool &deploy) {
++      servo[Z_ENDSTOP_SERVO_NR].move(deploy ? BLTOUCH_DEPLOY : BLTOUCH_STOW);
++    }
++  #endif
++
+   // returns false for ok and true for failure
+   static bool set_probe_deployed(bool deploy) {
+ 
+@@ -1905,9 +1911,9 @@ static void clean_up_after_endstop_or_probe_move() {
+     // Make room for probe
+     do_probe_raise(_Z_PROBE_DEPLOY_HEIGHT);
+ 
+-    // Check BLTOUCH probe status for an error
++    // When deploying make sure BLTOUCH is not already triggered
+     #if ENABLED(BLTOUCH)
+-      if (servo[Z_ENDSTOP_SERVO_NR].read() == BLTouchState_Error) { stop(); return true; }
++      if (deploy && TEST_BLTOUCH()) { stop(); return true; }
+     #endif
+ 
+     #if ENABLED(Z_PROBE_SLED)
+@@ -1935,7 +1941,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+           dock_sled(!deploy);
+ 
+-        #elif HAS_Z_SERVO_ENDSTOP
++        #elif HAS_Z_SERVO_ENDSTOP && DISABLED(BLTOUCH)
+ 
+           servo[Z_ENDSTOP_SERVO_NR].move(z_servo_angle[deploy ? 0 : 1]);
+ 
+@@ -1972,9 +1978,19 @@ static void clean_up_after_endstop_or_probe_move() {
+       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> do_probe_move", current_position);
+     #endif
+ 
++    // Deploy BLTouch at the start of any probe
++    #if ENABLED(BLTOUCH)
++      set_bltouch_deployed(true);
++    #endif
++
+     // Move down until probe triggered
+     do_blocking_move_to_z(LOGICAL_Z_POSITION(z), MMM_TO_MMS(fr_mm_m));
+ 
++    // Retract BLTouch immediately after a probe
++    #if ENABLED(BLTOUCH)
++      set_bltouch_deployed(false);
++    #endif
++
+     // Clear endstop flags
+     endstops.hit_on_purpose();
+ 
+@@ -2206,11 +2222,21 @@ static void clean_up_after_endstop_or_probe_move() {
+  */
+ 
+ static void do_homing_move(AxisEnum axis, float where, float fr_mm_s = 0.0) {
++
++  #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
++    if (axis == Z_AXIS) set_bltouch_deployed(true);
++  #endif
++
+   current_position[axis] = 0;
+   sync_plan_position();
+   current_position[axis] = where;
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis], active_extruder);
+   stepper.synchronize();
++
++  #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
++    if (axis == Z_AXIS) set_bltouch_deployed(false);
++  #endif
++
+   endstops.hit_on_purpose();
+ }
+ 
+
