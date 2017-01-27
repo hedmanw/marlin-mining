@@ -1,0 +1,464 @@
++    inline void gcode_M910() { dac_commit_eeprom(); }
++
++  #endif
++
++#endif // HAS_DIGIPOTSS || DAC_STEPPER_CURRENT
+ 
+ #if HAS_MICROSTEPS
+ 
+@@ -5595,12 +5864,8 @@ inline void gcode_T(uint8_t tmp_extruder) {
+           }
+ 
+           // apply Y & Z extruder offset (x offset is already used in determining home pos)
+-          current_position[Y_AXIS] = current_position[Y_AXIS] -
+-                                     extruder_offset[Y_AXIS][active_extruder] +
+-                                     extruder_offset[Y_AXIS][tmp_extruder];
+-          current_position[Z_AXIS] = current_position[Z_AXIS] -
+-                                     extruder_offset[Z_AXIS][active_extruder] +
+-                                     extruder_offset[Z_AXIS][tmp_extruder];
++          current_position[Y_AXIS] -= extruder_offset[Y_AXIS][active_extruder] - extruder_offset[Y_AXIS][tmp_extruder];
++          current_position[Z_AXIS] -= extruder_offset[Z_AXIS][active_extruder] - extruder_offset[Z_AXIS][tmp_extruder];
+           active_extruder = tmp_extruder;
+ 
+           // This function resets the max/min values - the current position may be overwritten below.
+@@ -5627,9 +5892,24 @@ inline void gcode_T(uint8_t tmp_extruder) {
+             delayed_move_time = 0;
+           }
+         #else // !DUAL_X_CARRIAGE
+-          // Offset extruder (only by XY)
+-          for (int i = X_AXIS; i <= Y_AXIS; i++)
+-            current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++            // Offset extruder, make sure to apply the bed level rotation matrix
++            vector_3 tmp_offset_vec = vector_3(extruder_offset[X_AXIS][tmp_extruder],
++                                               extruder_offset[Y_AXIS][tmp_extruder],
++                                               extruder_offset[Z_AXIS][tmp_extruder]),
++                     act_offset_vec = vector_3(extruder_offset[X_AXIS][active_extruder],
++                                               extruder_offset[Y_AXIS][active_extruder],
++                                               extruder_offset[Z_AXIS][active_extruder]),
++                     offset_vec = tmp_offset_vec - act_offset_vec;
++            offset_vec.apply_rotation(plan_bed_level_matrix.transpose(plan_bed_level_matrix));
++            current_position[X_AXIS] += offset_vec.x;
++            current_position[Y_AXIS] += offset_vec.y;
++            current_position[Z_AXIS] += offset_vec.z;
++          #else // !AUTO_BED_LEVELING_FEATURE
++            // Offset extruder (only by XY)
++            for (int i=X_AXIS; i<=Y_AXIS; i++)
++              current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          #endif // !AUTO_BED_LEVELING_FEATURE
+           // Set the new active extruder and position
+           active_extruder = tmp_extruder;
+         #endif // !DUAL_X_CARRIAGE
+@@ -5669,7 +5949,7 @@ void process_next_command() {
+ 
+   // Sanitize the current command:
+   //  - Skip leading spaces
+-  //  - Bypass N[0-9][0-9]*[ ]*
++  //  - Bypass N[-0-9][0-9]*[ ]*
+   //  - Overwrite * with nul to mark the end
+   while (*current_command == ' ') ++current_command;
+   if (*current_command == 'N' && ((current_command[1] >= '0' && current_command[1] <= '9') || current_command[1] == '-')) {
+@@ -5683,8 +5963,12 @@ void process_next_command() {
+   // Get the command code, which must be G, M, or T
+   char command_code = *current_command;
+ 
++  // Skip the letter-code and spaces to get the numeric part
++  current_command_args = current_command + 1;
++  while (*current_command_args == ' ') ++current_command_args;
++
+   // The code must have a numeric value
+-  bool code_is_good = (current_command[1] >= '0' && current_command[1] <= '9');
++  bool code_is_good = (*current_command_args >= '0' && *current_command_args <= '9');
+ 
+   int codenum; // define ahead of goto
+ 
+@@ -5693,14 +5977,14 @@ void process_next_command() {
+ 
+   // Args pointer optimizes code_seen, especially those taking XYZEF
+   // This wastes a little cpu on commands that expect no arguments.
+-  current_command_args = current_command;
+-  while (*current_command_args && *current_command_args != ' ') ++current_command_args;
+-  while (*current_command_args == ' ') ++current_command_args;
++  while (*current_command_args == ' ' || (*current_command_args >= '0' && *current_command_args <= '9')) ++current_command_args;
+ 
+   // Interpret the code int
+   seen_pointer = current_command;
+   codenum = code_value_short();
+ 
++  KEEPALIVE_STATE(IN_HANDLER);
++
+   // Handle a known G, M, or T
+   switch (command_code) {
+     case 'G': switch (codenum) {
+@@ -5848,6 +6132,10 @@ void process_next_command() {
+         gcode_M104();
+         break;
+ 
++      case 110: // M110: Set Current Line Number
++        gcode_M110();
++        break;
++
+       case 111: // M111: Set debug level
+         gcode_M111();
+         break;
+@@ -5862,6 +6150,7 @@ void process_next_command() {
+ 
+       case 105: // M105: Read current temperature
+         gcode_M105();
++        KEEPALIVE_STATE(NOT_BUSY);
+         return; // "ok" already printed
+ 
+       case 109: // M109: Wait for temperature
+@@ -5874,14 +6163,14 @@ void process_next_command() {
+           break;
+       #endif // HAS_TEMP_BED
+ 
+-      #if HAS_FAN
++      #if FAN_COUNT > 0
+         case 106: // M106: Fan On
+           gcode_M106();
+           break;
+         case 107: // M107: Fan Off
+           gcode_M107();
+           break;
+-      #endif // HAS_FAN
++      #endif // FAN_COUNT > 0
+ 
+       #if ENABLED(BARICUDA)
+         // PWM for HEATER_1_PIN
+@@ -6187,11 +6476,25 @@ void process_next_command() {
+         gcode_M907();
+         break;
+ 
+-      #if HAS_DIGIPOTSS
++      #if HAS_DIGIPOTSS || ENABLED(DAC_STEPPER_CURRENT)
++
+         case 908: // M908 Control digital trimpot directly.
+           gcode_M908();
+           break;
+-      #endif // HAS_DIGIPOTSS
++
++        #if ENABLED(DAC_STEPPER_CURRENT) // As with Printrbot RevF
++
++          case 909: // M909 Print digipot/DAC current value
++            gcode_M909();
++            break;
++
++          case 910: // M910 Commit digipot/DAC value to external EEPROM
++            gcode_M910();
++            break;
++
++        #endif
++
++      #endif // HAS_DIGIPOTSS || DAC_STEPPER_CURRENT
+ 
+       #if HAS_MICROSTEPS
+ 
+@@ -6218,6 +6521,8 @@ void process_next_command() {
+     default: code_is_good = false;
+   }
+ 
++  KEEPALIVE_STATE(NOT_BUSY);
++
+ ExitUnknownCommand:
+ 
+   // Still unknown command? Throw an error
+@@ -6236,12 +6541,16 @@ void FlushSerialRequestResend() {
+ 
+ void ok_to_send() {
+   refresh_cmd_timeout();
+-  #if ENABLED(SDSUPPORT)
+-    if (fromsd[cmd_queue_index_r]) return;
+-  #endif
++  if (!send_ok[cmd_queue_index_r]) return;
+   SERIAL_PROTOCOLPGM(MSG_OK);
+   #if ENABLED(ADVANCED_OK)
+-    SERIAL_PROTOCOLPGM(" N"); SERIAL_PROTOCOL(gcode_LastN);
++    char* p = command_queue[cmd_queue_index_r];
++    if (*p == 'N') {
++      SERIAL_PROTOCOL(' ');
++      SERIAL_ECHO(*p++);
++      while ((*p >= '0' && *p <= '9') || *p == '-')
++        SERIAL_ECHO(*p++);
++    }
+     SERIAL_PROTOCOLPGM(" P"); SERIAL_PROTOCOL(int(BLOCK_BUFFER_SIZE - movesplanned() - 1));
+     SERIAL_PROTOCOLPGM(" B"); SERIAL_PROTOCOL(BUFSIZE - commands_in_queue);
+   #endif
+@@ -6285,9 +6594,9 @@ void clamp_to_software_endstops(float target[3]) {
+     delta_tower2_y = -COS_60 * (radius + DELTA_RADIUS_TRIM_TOWER_2);
+     delta_tower3_x = 0.0;                                             // back middle tower
+     delta_tower3_y = (radius + DELTA_RADIUS_TRIM_TOWER_3);
+-    delta_diagonal_rod_2_tower_1 = sq(delta_diagonal_rod + delta_diagonal_rod_trim_tower_1);
+-    delta_diagonal_rod_2_tower_2 = sq(delta_diagonal_rod + delta_diagonal_rod_trim_tower_2);
+-    delta_diagonal_rod_2_tower_3 = sq(delta_diagonal_rod + delta_diagonal_rod_trim_tower_3);
++    delta_diagonal_rod_2_tower_1 = sq(diagonal_rod + delta_diagonal_rod_trim_tower_1);
++    delta_diagonal_rod_2_tower_2 = sq(diagonal_rod + delta_diagonal_rod_trim_tower_2);
++    delta_diagonal_rod_2_tower_3 = sq(diagonal_rod + delta_diagonal_rod_trim_tower_3);
+   }
+ 
+   void calculate_delta(float cartesian[3]) {
+@@ -6382,34 +6691,38 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+     set_current_to_destination();
+     return;
+   }
+-  float nx, ny, ne, normalized_dist;
+-  if (ix > pix && (x_splits) & BIT(ix)) {
++  float nx, ny, nz, ne, normalized_dist;
++  if (ix > pix && TEST(x_splits, ix)) {
+     nx = mbl.get_x(ix);
+     normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
++    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    x_splits ^= BIT(ix);
++    CBI(x_splits, ix);
+   }
+-  else if (ix < pix && (x_splits) & BIT(pix)) {
++  else if (ix < pix && TEST(x_splits, pix)) {
+     nx = mbl.get_x(pix);
+     normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
++    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    x_splits ^= BIT(pix);
++    CBI(x_splits, pix);
+   }
+-  else if (iy > piy && (y_splits) & BIT(iy)) {
++  else if (iy > piy && TEST(y_splits, iy)) {
+     ny = mbl.get_y(iy);
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
++    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    y_splits ^= BIT(iy);
++    CBI(y_splits, iy);
+   }
+-  else if (iy < piy && (y_splits) & BIT(piy)) {
++  else if (iy < piy && TEST(y_splits, piy)) {
+     ny = mbl.get_y(piy);
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
++    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    y_splits ^= BIT(piy);
++    CBI(y_splits, piy);
+   }
+   else {
+     // Already split on a border
+@@ -6420,10 +6733,12 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+   // Do the split and look for more borders
+   destination[X_AXIS] = nx;
+   destination[Y_AXIS] = ny;
++  destination[Z_AXIS] = nz;
+   destination[E_AXIS] = ne;
+-  mesh_plan_buffer_line(nx, ny, z, ne, feed_rate, extruder, x_splits, y_splits);
++  mesh_plan_buffer_line(nx, ny, nz, ne, feed_rate, extruder, x_splits, y_splits);
+   destination[X_AXIS] = x;
+   destination[Y_AXIS] = y;
++  destination[Z_AXIS] = z;
+   destination[E_AXIS] = e;
+   mesh_plan_buffer_line(x, y, z, e, feed_rate, extruder, x_splits, y_splits);
+ }
+@@ -6625,7 +6940,7 @@ void plan_arc(
+ 
+   float mm_of_travel = hypot(angular_travel * radius, fabs(linear_travel));
+   if (mm_of_travel < 0.001)  return;
+-  uint16_t segments = floor(mm_of_travel / MM_PER_ARC_SEGMENT);
++  uint16_t segments = floor(mm_of_travel / (MM_PER_ARC_SEGMENT));
+   if (segments == 0) segments = 1;
+ 
+   float theta_per_segment = angular_travel / segments;
+@@ -6734,11 +7049,11 @@ void plan_arc(
+ #if HAS_CONTROLLERFAN
+ 
+   void controllerFan() {
+-    static millis_t lastMotor = 0;      // Last time a motor was turned on
+-    static millis_t lastMotorCheck = 0; // Last time the state was checked
++    static millis_t lastMotorOn = 0; // Last time a motor was turned on
++    static millis_t nextMotorCheck = 0; // Last time the state was checked
+     millis_t ms = millis();
+-    if (ms >= lastMotorCheck + 2500) { // Not a time critical function, so we only check every 2500ms
+-      lastMotorCheck = ms;
++    if (ms >= nextMotorCheck) {
++      nextMotorCheck = ms + 2500; // Not a time critical function, so only check every 2.5s
+       if (X_ENABLE_READ == X_ENABLE_ON || Y_ENABLE_READ == Y_ENABLE_ON || Z_ENABLE_READ == Z_ENABLE_ON || soft_pwm_bed > 0
+           || E0_ENABLE_READ == E_ENABLE_ON // If any of the drivers are enabled...
+           #if EXTRUDERS > 1
+@@ -6754,9 +7069,12 @@ void plan_arc(
+             #endif
+           #endif
+       ) {
+-        lastMotor = ms; //... set time to NOW so the fan will turn on
++        lastMotorOn = ms; //... set time to NOW so the fan will turn on
+       }
+-      uint8_t speed = (lastMotor == 0 || ms >= lastMotor + (CONTROLLERFAN_SECS * 1000UL)) ? 0 : CONTROLLERFAN_SPEED;
++
++      // Fan off if no steppers have been enabled for CONTROLLERFAN_SECS seconds
++      uint8_t speed = (lastMotorOn == 0 || ms >= lastMotorOn + (CONTROLLERFAN_SECS) * 1000UL) ? 0 : CONTROLLERFAN_SPEED;
++
+       // allows digital or PWM fan output to be used (see M42 handling)
+       digitalWrite(CONTROLLERFAN_PIN, speed);
+       analogWrite(CONTROLLERFAN_PIN, speed);
+@@ -6892,9 +7210,18 @@ void disable_all_steppers() {
+ /**
+  * Standard idle routine keeps the machine alive
+  */
+-void idle() {
++void idle(
++  #if ENABLED(FILAMENTCHANGEENABLE)
++    bool no_stepper_sleep/*=false*/
++  #endif
++) {
+   manage_heater();
+-  manage_inactivity();
++  manage_inactivity(
++    #if ENABLED(FILAMENTCHANGEENABLE)
++      no_stepper_sleep
++    #endif
++  );
++  host_keepalive();
+   lcd_update();
+ }
+ 
+@@ -6917,7 +7244,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+       filrunout();
+   #endif
+ 
+-  if (commands_in_queue < BUFSIZE - 1) get_command();
++  if (commands_in_queue < BUFSIZE) get_command();
+ 
+   millis_t ms = millis();
+ 
+@@ -6925,16 +7252,16 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+   if (stepper_inactive_time && ms > previous_cmd_ms + stepper_inactive_time
+       && !ignore_stepper_queue && !blocks_queued()) {
+-    #if DISABLE_X == true
++    #if ENABLED(DISABLE_INACTIVE_X)
+       disable_x();
+     #endif
+-    #if DISABLE_Y == true
++    #if ENABLED(DISABLE_INACTIVE_Y)
+       disable_y();
+     #endif
+-    #if DISABLE_Z == true
++    #if ENABLED(DISABLE_INACTIVE_Z)
+       disable_z();
+     #endif
+-    #if DISABLE_E == true
++    #if ENABLED(DISABLE_INACTIVE_E)
+       disable_e0();
+       disable_e1();
+       disable_e2();
+@@ -6974,7 +7301,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+     const int HOME_DEBOUNCE_DELAY = 2500;
+     if (!READ(HOME_PIN)) {
+       if (!homeDebounceCount) {
+-        enqueuecommands_P(PSTR("G28"));
++        enqueue_and_echo_commands_P(PSTR("G28"));
+         LCD_MESSAGEPGM(MSG_AUTO_HOME);
+       }
+       if (homeDebounceCount < HOME_DEBOUNCE_DELAY)
+@@ -6989,7 +7316,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+   #endif
+ 
+   #if ENABLED(EXTRUDER_RUNOUT_PREVENT)
+-    if (ms > previous_cmd_ms + EXTRUDER_RUNOUT_SECONDS * 1000)
++    if (ms > previous_cmd_ms + (EXTRUDER_RUNOUT_SECONDS) * 1000)
+       if (degHotend(active_extruder) > EXTRUDER_RUNOUT_MINTEMP) {
+         bool oldstatus;
+         switch (active_extruder) {
+@@ -7018,8 +7345,8 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+         }
+         float oldepos = current_position[E_AXIS], oldedes = destination[E_AXIS];
+         plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS],
+-                         destination[E_AXIS] + EXTRUDER_RUNOUT_EXTRUDE * EXTRUDER_RUNOUT_ESTEPS / axis_steps_per_unit[E_AXIS],
+-                         EXTRUDER_RUNOUT_SPEED / 60. * EXTRUDER_RUNOUT_ESTEPS / axis_steps_per_unit[E_AXIS], active_extruder);
++                         destination[E_AXIS] + (EXTRUDER_RUNOUT_EXTRUDE) * (EXTRUDER_RUNOUT_ESTEPS) / axis_steps_per_unit[E_AXIS],
++                         (EXTRUDER_RUNOUT_SPEED) / 60. * (EXTRUDER_RUNOUT_ESTEPS) / axis_steps_per_unit[E_AXIS], active_extruder);
+       current_position[E_AXIS] = oldepos;
+       destination[E_AXIS] = oldedes;
+       plan_set_e_position(oldepos);
+@@ -7088,7 +7415,11 @@ void kill(const char* lcd_msg) {
+   for (int i = 5; i--; lcd_update()) delay(200); // Wait a short time
+   cli();   // disable interrupts
+   suicide();
+-  while (1) { /* Intentionally left empty */ } // Wait for reset
++  while (1) {
++    #if ENABLED(USE_WATCHDOG)
++      watchdog_reset();
++    #endif
++  } // Wait for reset
+ }
+ 
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+@@ -7096,7 +7427,7 @@ void kill(const char* lcd_msg) {
+   void filrunout() {
+     if (!filrunoutEnqueued) {
+       filrunoutEnqueued = true;
+-      enqueuecommands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
++      enqueue_and_echo_commands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
+       st_synchronize();
+     }
+   }
+@@ -7189,7 +7520,7 @@ bool setTargetedHotend(int code) {
+       SERIAL_CHAR('M');
+       SERIAL_ECHO(code);
+       SERIAL_ECHOPGM(" " MSG_INVALID_EXTRUDER " ");
+-      SERIAL_ECHOLN(target_extruder);
++      SERIAL_ECHOLN((int)target_extruder);
+       return true;
+     }
+   }
+@@ -7206,3 +7537,50 @@ void calculate_volumetric_multipliers() {
+   for (int i = 0; i < EXTRUDERS; i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
++
++/**
++ * Start the print job timer
++ *
++ * The print job is only started if all extruders have their target temp at zero
++ * otherwise the print job timew would be reset everytime a M109 is received.
++ *
++ * @param t start timer timestamp
++ *
++ * @return true if the timer was started at function call
++ */
++bool print_job_start(millis_t t /* = 0 */) {
++  for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_start_ms = (t) ? t : millis();
++  print_job_stop_ms = 0;
++  return true;
++}
++
++/**
++ * Output the print job timer in seconds
++ *
++ * @return the number of seconds
++ */
++millis_t print_job_timer() {
++  if (!print_job_start_ms) return 0;
++  return (((print_job_stop_ms > print_job_start_ms)
++    ? print_job_stop_ms : millis()) - print_job_start_ms) / 1000;
++}
++
++/**
++ * Check if the running print job has finished and stop the timer
++ *
++ * When the target temperature for all extruders is zero then we assume that the
++ * print job has finished printing. There are some special conditions under which
++ * this assumption may not be valid: If during a print job for some reason the
++ * user decides to bring a nozzle temp down and only then heat the other afterwards.
++ *
++ * @param force stops the timer ignoring all pre-checks
++ *
++ * @return boolean true if the print job has finished printing
++ */
++bool print_job_stop(bool force /* = false */) {
++  if (!print_job_start_ms) return false;
++  if (!force) for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_stop_ms = millis();
++  return true;
++}
+

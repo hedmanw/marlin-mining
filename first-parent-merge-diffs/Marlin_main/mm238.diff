@@ -1,0 +1,199 @@
+commit dd4d860ad73a47f45af594e09d418bbf7f4477d2
+Merge: e293ea5 a6e39c1
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Thu Mar 24 05:33:32 2016 -0700
+
+    Merge branch 'Release-1.1.0-RC4' into RC
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1de6a9f..27f16b9 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -68,13 +68,17 @@
+   #include <SPI.h>
+ #endif
+ 
++#if ENABLED(DAC_STEPPER_CURRENT)
++  #include "stepper_dac.h"
++#endif
++
+ /**
+  * Look here for descriptions of G-codes:
+  *  - http://linuxcnc.org/handbook/gcode/g-code.html
+  *  - http://objects.reprap.org/wiki/Mendel_User_Manual:_RepRapGCodes
+  *
+  * Help us document these G-codes online:
+- *  - http://marlinfirmware.org/index.php/G-Code
++ *  - https://github.com/MarlinFirmware/Marlin/wiki/G-Code-in-Marlin
+  *  - http://reprap.org/wiki/G-code
+  *
+  * -----------------
+@@ -203,6 +207,8 @@
+  * M605 - Set dual x-carriage movement mode: S<mode> [ X<duplication x-offset> R<duplication temp offset> ]
+  * M907 - Set digital trimpot motor current using axis codes.
+  * M908 - Control digital trimpot directly.
++ * M909 - DAC_STEPPER_CURRENT: Print digipot/DAC current value
++ * M910 - DAC_STEPPER_CURRENT: Commit digipot/DAC value to external EEPROM via I2C
+  * M350 - Set microstepping mode.
+  * M351 - Toggle MS1 MS2 pins directly.
+  *
+@@ -245,6 +251,7 @@ static float feedrate = 1500.0, saved_feedrate;
+ float current_position[NUM_AXIS] = { 0.0 };
+ static float destination[NUM_AXIS] = { 0.0 };
+ bool axis_known_position[3] = { false };
++bool axis_homed[3] = { false };
+ 
+ static long gcode_N, gcode_LastN, Stopped_gcode_LastN = 0;
+ 
+@@ -266,8 +273,11 @@ float home_offset[3] = { 0 };
+ float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+ float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ 
++#if FAN_COUNT > 0
++  int fanSpeeds[FAN_COUNT] = { 0 };
++#endif
++
+ uint8_t active_extruder = 0;
+-int fanSpeed = 0;
+ bool cancel_heatup = false;
+ 
+ const char errormagic[] PROGMEM = "Error:";
+@@ -275,21 +285,17 @@ const char echomagic[] PROGMEM = "echo:";
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ 
+ static bool relative_mode = false;  //Determines Absolute or Relative Coordinates
+-static char serial_char;
+ static int serial_count = 0;
+-static boolean comment_mode = false;
+ static char* seen_pointer; ///< A pointer to find chars in the command string (X, Y, Z, E, etc.)
+ const char* queued_commands_P = NULL; /* pointer to the current line in the active sequence of commands, or NULL when none */
+ const int sensitive_pins[] = SENSITIVE_PINS; ///< Sensitive pin list for M42
+ // Inactivity shutdown
+ millis_t previous_cmd_ms = 0;
+ static millis_t max_inactive_time = 0;
+-static millis_t stepper_inactive_time = DEFAULT_STEPPER_DEACTIVE_TIME * 1000L;
++static millis_t stepper_inactive_time = (DEFAULT_STEPPER_DEACTIVE_TIME) * 1000L;
+ millis_t print_job_start_ms = 0; ///< Print job start time
+ millis_t print_job_stop_ms = 0;  ///< Print job stop time
+ static uint8_t target_extruder;
+-bool no_wait_for_cooling = true;
+-bool target_direction;
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+   int xy_travel_speed = XY_TRAVEL_SPEED;
+@@ -410,9 +416,7 @@ bool target_direction;
+   static bool filrunoutEnqueued = false;
+ #endif
+ 
+-#if ENABLED(SDSUPPORT)
+-  static bool fromsd[BUFSIZE];
+-#endif
++static bool send_ok[BUFSIZE];
+ 
+ #if HAS_SERVOS
+   Servo servo[NUM_SERVOS];
+@@ -427,6 +431,26 @@ bool target_direction;
+   int lpq_len = 20;
+ #endif
+ 
++#if ENABLED(HOST_KEEPALIVE_FEATURE)
++
++  // States for managing Marlin and host communication
++  // Marlin sends messages if blocked or busy
++  enum MarlinBusyState {
++    NOT_BUSY,           // Not in a handler
++    IN_HANDLER,         // Processing a GCode
++    IN_PROCESS,         // Known to be blocking command input (as in G29)
++    PAUSED_FOR_USER,    // Blocking pending any input
++    PAUSED_FOR_INPUT    // Blocking pending text input (concept)
++  };
++
++  static MarlinBusyState busy_state = NOT_BUSY;
++  static millis_t next_busy_signal_ms = -1;
++  #define KEEPALIVE_STATE(n) do{ busy_state = n; }while(0)
++#else
++  #define host_keepalive() ;
++  #define KEEPALIVE_STATE(n) ;
++#endif // HOST_KEEPALIVE_FEATURE
++
+ //===========================================================================
+ //================================ Functions ================================
+ //===========================================================================
+@@ -443,10 +467,16 @@ void serial_echopair_P(const char* s_P, float v)         { serialprintPGM(s_P);
+ void serial_echopair_P(const char* s_P, double v)        { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, unsigned long v) { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ 
++void gcode_M114();
++
+ #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
+   float extrude_min_temp = EXTRUDE_MINTEMP;
+ #endif
+ 
++#if ENABLED(HAS_Z_MIN_PROBE)
++  extern volatile bool z_probe_is_active;
++#endif
++
+ #if ENABLED(SDSUPPORT)
+   #include "SdFatUtil.h"
+   int freeMemory() { return SdFatUtil::FreeRam(); }
+@@ -468,29 +498,25 @@ extern "C" {
+ #endif //!SDSUPPORT
+ 
+ /**
+- * Inject the next command from the command queue, when possible
+- * Return false only if no command was pending
++ * Inject the next "immediate" command, when possible.
++ * Return true if any immediate commands remain to inject.
+  */
+ static bool drain_queued_commands_P() {
+-  if (!queued_commands_P) return false;
+-
+-  // Get the next 30 chars from the sequence of gcodes to run
+-  char cmd[30];
+-  strncpy_P(cmd, queued_commands_P, sizeof(cmd) - 1);
+-  cmd[sizeof(cmd) - 1] = '\0';
+-
+-  // Look for the end of line, or the end of sequence
+-  size_t i = 0;
+-  char c;
+-  while ((c = cmd[i]) && c != '\n') i++; // find the end of this gcode command
+-  cmd[i] = '\0';
+-  if (enqueuecommand(cmd)) {      // buffer was not full (else we will retry later)
+-    if (c)
+-      queued_commands_P += i + 1; // move to next command
+-    else
+-      queued_commands_P = NULL;   // will have no more commands in the sequence
++  if (queued_commands_P != NULL) {
++    size_t i = 0;
++    char c, cmd[30];
++    strncpy_P(cmd, queued_commands_P, sizeof(cmd) - 1);
++    cmd[sizeof(cmd) - 1] = '\0';
++    while ((c = cmd[i]) && c != '\n') i++; // find the end of this gcode command
++    cmd[i] = '\0';
++    if (enqueue_and_echo_command(cmd)) {   // success?
++      if (c)                               // newline char?
++        queued_commands_P += i + 1;        // advance to the next command
++      else
++        queued_commands_P = NULL;          // nul char? no more commands
++    }
+   }
+-  return true;
++  return (queued_commands_P != NULL);      // return whether any more remain
+ }
+ 
+ /**
+@@ -498,32 +524,49 @@ static bool drain_queued_commands_P() {
+  * Aborts the current queue, if any.
+  * Note: drain_queued_commands_P() must be called repeatedly to drain the commands afterwards
+  */
+-void enqueuecommands_P(const char* pgcode) {
++void enqueue_and_echo_commands_P(const char* pgcode) {
+   queued_commands_P = pgcode;
+   drain_queued_commands_P(); // first command executed asap (when possible)
+ }
+ 
+ /**
+- * Copy a command directly into the main command buffer, from RAM.
+- *
+- * This is done in a non-safe way and needs a rework someday.
+- * Returns false if it doesn't add any command
