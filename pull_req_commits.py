@@ -10,7 +10,7 @@ import re
 FILE_NAME = 'pull-requests.csv'
 
 repo_url = "https://api.github.com/repos/MarlinFirmware/Marlin/pulls"
-token = 'XXX'
+token = "XXX"
 
 
 def get_pull_requests(begin, end, clean=False):
@@ -63,11 +63,13 @@ def append_pull_req_json_to_csv(pull_request, json):
     with open(FILE_NAME, 'a') as csv_file:
         csv_writer = csv.writer(csv_file)
         for commit in json:
+            author = commit.get("author") and commit.get("author").get("login")
+            committer = commit.get("committer") and commit.get("committer").get("login")
             csv_writer.writerow([
                 pull_request,
                 commit["sha"],
-                commit["author"].get("login"),
-                commit["committer"].get("login"),
+                author,
+                committer,
                 "Merge" in commit["commit"]["message"],
                 commit["url"],
                 len(commit["parents"])
@@ -80,4 +82,4 @@ if __name__ == '__main__':
     begin = int(args[1])
     end = int(args[2])
     if end < begin:
-        get_pull_requests(begin, end, options)
+        get_pull_requests(begin, end, options.clean)
