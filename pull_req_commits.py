@@ -1,4 +1,8 @@
+#!/usr/bin/env python
+
 import requests
+import sys
+from optparse import OptionParser
 
 import csv
 import re
@@ -8,15 +12,18 @@ FILE_NAME = 'pull-requests.csv'
 repo_url = "https://api.github.com/repos/MarlinFirmware/Marlin/pulls"
 token = 'XXX'
 
-def get_pull_requests():
-    write_pull_req_csv_heading()
 
-    for number in range(5757, 0, -1):
+def get_pull_requests(begin, end, clean=False):
+    if clean:
+        write_pull_req_csv_heading()
+
+    for number in range(begin, end, -1):
         get_commits_for_pr(number)
 
 
 def get_commits_for_pr(pull_request):
-    response = get("{}/{}/commits".format(repo_url, pull_request))
+    url = "{}/{}/commits".format(repo_url, pull_request)
+    response = get(url)
     if response.status_code != 200:
         print("PR#{} : {} --- {}".format(pull_request, response.status_code, response.text))
     else:
@@ -59,12 +66,18 @@ def append_pull_req_json_to_csv(pull_request, json):
             csv_writer.writerow([
                 pull_request,
                 commit["sha"],
-                commit["author"]["login"],
-                commit["committer"]["login"],
+                commit["author"].get("login"),
+                commit["committer"].get("login"),
                 "Merge" in commit["commit"]["message"],
                 commit["url"],
                 len(commit["parents"])
             ])
 
 if __name__ == '__main__':
-    get_pull_requests()
+    parser = OptionParser()
+    parser.add_option("-c", action="store_true", dest="clean", default=False)
+    (options, args) = parser.parse_args(sys.argv)
+    begin = int(args[1])
+    end = int(args[2])
+    if end < begin:
+        get_pull_requests(begin, end, options)
