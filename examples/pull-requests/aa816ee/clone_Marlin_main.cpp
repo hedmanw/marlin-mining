@@ -113,6 +113,7 @@
 // M207 - set retract length S[positive mm] F[feedrate mm/sec] Z[additional zlift/hop]
 // M208 - set recover=unretract length S[positive mm surplus to the M207 S*] F[feedrate mm/sec]
 // M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
+// M218 - set hotend offset (in mm): T<extruder_number> X<offset_on_X> Y<offset_on_Y>
 // M220 S<factor in percent>- set speed factor override percentage
 // M221 S<factor in percent>- set extrude factor override percentage
 // M240 - Trigger a camera to take a photograph
@@ -155,6 +156,14 @@ float current_position[NUM_AXIS] = { 0.0, 0.0, 0.0, 0.0 };
 float add_homeing[3]={0,0,0};
 float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
 float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+// Extruder offset, only in XY plane
+#if EXTRUDERS > 1
+float extruder_offset[2][EXTRUDERS] = { 
+#if defined(EXTRUDER_OFFSET_X) && defined(EXTRUDER_OFFSET_Y)
+  EXTRUDER_OFFSET_X, EXTRUDER_OFFSET_Y 
+#endif
+}; 
+#endif
 uint8_t active_extruder = 0;
 int fanSpeed=0;
 
@@ -367,6 +376,14 @@ void setup()
   setup_photpin();
   
   lcd_init();
+  
+  #ifdef CONTROLLERFAN_PIN
+    SET_OUTPUT(CONTROLLERFAN_PIN); //Set pin used for driver cooling fan
+  #endif
+  
+  #ifdef EXTRUDERFAN_PIN
+    SET_OUTPUT(EXTRUDERFAN_PIN); //Set pin used for extruder cooling fan
+  #endif
 }
 
 
@@ -1353,7 +1370,6 @@ void process_commands()
         retract_recover_feedrate = code_value() ;
       }
     }break;
-    
     case 209: // M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
     {
       if(code_seen('S')) 
@@ -1371,6 +1387,32 @@ void process_commands()
         }
       }
       
+    }break;
+    #endif // FWRETRACT
+    #if EXTRUDERS > 1
+    case 218: // M218 - set hotend offset (in mm), T<extruder_number> X<offset_on_X> Y<offset_on_Y>
+    {
+      if(setTargetedHotend(218)){
+        break;
+      }
+      if(code_seen('X')) 
+      {
+        extruder_offset[X_AXIS][tmp_extruder] = code_value();
+      }
+      if(code_seen('Y'))
+      {
+        extruder_offset[Y_AXIS][tmp_extruder] = code_value();
+      }
+      SERIAL_ECHO_START;
+      SERIAL_ECHOPGM(MSG_HOTEND_OFFSET);
+      for(tmp_extruder = 0; tmp_extruder < EXTRUDERS; tmp_extruder++) 
+      {
+         SERIAL_ECHO(" ");
+         SERIAL_ECHO(extruder_offset[X_AXIS][tmp_extruder]);
+         SERIAL_ECHO(",");
+         SERIAL_ECHO(extruder_offset[Y_AXIS][tmp_extruder]);
+      }
+      SERIAL_ECHOLN("");
     }break;
     #endif
     case 220: // M220 S<factor in percent>- set speed factor override percentage
@@ -1696,7 +1738,34 @@ void process_commands()
       SERIAL_ECHOLN(MSG_INVALID_EXTRUDER);
     }
     else {
-      active_extruder = tmp_extruder;
+      boolean make_move = false;
+      if(code_seen('F')) {
+        make_move = true;
+        next_feedrate = code_value();
+        if(next_feedrate > 0.0) {
+          feedrate = next_feedrate;
+        }
+      }
+      #if EXTRUDERS > 1
+      if(tmp_extruder != active_extruder) {
+        // Save current position to return to after applying extruder offset
+        memcpy(destination, current_position, sizeof(destination));
+        // Offset extruder (only by XY)
+        int i;
+        for(i = 0; i < 2; i++) {
+           current_position[i] = current_position[i] - 
+                                 extruder_offset[i][active_extruder] +
+                                 extruder_offset[i][tmp_extruder];
+        }
+        // Set the new active extruder and position
+        active_extruder = tmp_extruder;
+        plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+        // Move to the old position if 'F' was in the parameters
+        if(make_move && Stopped == false) {
+           prepare_move();
+        }
+      }
+      #endif
       SERIAL_ECHO_START;
       SERIAL_ECHO(MSG_ACTIVE_EXTRUDER);
       SERIAL_PROTOCOLLN((int)active_extruder);
@@ -1892,6 +1961,27 @@ void controllerFan()
 }
 #endif
 
+#ifdef EXTRUDERFAN_PIN
+unsigned long lastExtruderCheck = 0;
+
+void extruderFan()
+{
+  if ((millis() - lastExtruderCheck) >= 2500) //Not a time critical function, so we only check every 2500ms
+  {
+    lastExtruderCheck = millis();
+           
+    if (degHotend(active_extruder) < EXTRUDERFAN_DEC)
+    {
+      WRITE(EXTRUDERFAN_PIN, LOW); //... turn the fan off
+    }
+    else
+    {
+      WRITE(EXTRUDERFAN_PIN, HIGH); //... turn the fan on
+    }
+  }
+}
+#endif
+
 void manage_inactivity() 
 { 
   if( (millis() - previous_millis_cmd) >  max_inactive_time ) 
@@ -2058,6 +2148,9 @@ bool setTargetedHotend(int code){
           break;
         case 109:
           SERIAL_ECHO(MSG_M109_INVALID_EXTRUDER);
+          break;
+        case 218:
+          SERIAL_ECHO(MSG_M218_INVALID_EXTRUDER);
           break;
       }
       SERIAL_ECHOLN(tmp_extruder);

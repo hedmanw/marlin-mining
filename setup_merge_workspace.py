@@ -142,12 +142,14 @@ def writeline(file, line):
 if __name__ == '__main__':
     marlin = Repo("MarlinFirmware", "Marlin")
     sp = SubjectParser("first-parent-merge-diffs/pr_Marlin_main")
-    pull_request_merges = sp.get_commits()
+    #pull_request_merges = sp.get_commits()
 
     git = Git(marlin)
     git.clone()
 
-    for i, pull_request in enumerate(pull_request_merges):
-        print "{}/{} - {}".format(i, len(pull_request_merges), pull_request.file_name)
-        workspace = Workspace(pull_request, git)
-        workspace.populate()
+    Workspace(sp.read_file("mm291.diff"), git).populate()
+
+    # for i, pull_request in enumerate(pull_request_merges):
+    #     print "{}/{} - {}".format(i, len(pull_request_merges), pull_request.file_name)
+    #     workspace = Workspace(pull_request, git)
+    #     workspace.populate()
