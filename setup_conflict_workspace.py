@@ -3,15 +3,10 @@
 from subprocess import Popen, PIPE
 from shutil import copyfile
 
-import os, sys
+import os
 
+temp_dir = "/tmp/"
 
-class Merge:
-    def __init__(self, base_commit, integration_commit, result, conflicts):
-        self.base_commit = base_commit
-        self.integration_commit = integration_commit
-        self.result = result
-        self.conflicts = conflicts
 
 class Repo:
     def __init__(self, owner, repo_name):
@@ -26,149 +21,95 @@ class Repo:
 
 
 class Commit:
-    def __init__(self, repo, hash):
-        self.repo = repo
-        self.hash = hash
+    def __init__(self, sha, first_parent_sha, second_parent_sha):
+        self.sha = sha
+        self.first_parent_sha = first_parent_sha
+        self.second_parent_sha = second_parent_sha
 
     def __repr__(self):
-        return "{}#{}".format(self.repo, self.hash)
+        return "#{}".format(self.sha)
 
 
-class Conflict:
-    def __init__(self, filename, content, line_begin, line_end):
-        self.filename = filename
-        self.content = content
-        self.line_begin = line_begin
-        self.line_end = line_end
+class Git:
+    def __init__(self, repo):
+        self.repo = repo
 
-
-class Workspace:
-    def __init__(self, prefix):
-        self.prefix = prefix
-        self.workspace_dir = prefix + "/merge_workspace"
-        self.excerpts_dir = prefix + "/merge_excerpts"
-        self.content_dir = prefix + "/whole_files"
-
-    def main(self, base, integration, result):
-        print "Cloning {}...".format(base.repo)
-        self.clone(base.repo)
-
-        print "Checking out {}".format(base.hash)
-        self.checkout(base)
-
-        merging_notice = "Merging {} with {}".format(base, integration)
-        print merging_notice
-        merge_output = self.merge(integration)
-
-        print "Recorded merging status in README.md"
-        conflict_files = self.format_conflicts(merge_output)
-
-        makedir(self.excerpts_dir)
-        commit_url = "https://github.com/{}/{}/commit/".format(base.repo.owner, base.repo.repo_name)
-        with open(self.prefix + '/README.md', 'w') as f:
-            def write(line):
-                writeline(f, line)
-
-            def link_to_commit(commit):
-                return "{}{}".format(commit_url, commit)
-
-            write("# {}".format(self.prefix))
-            write("- Result commit: [{}]({})".format(result.hash, link_to_commit(result.hash)))
-            write("- First parent (base): [{}]({})".format(base.hash, link_to_commit(base.hash)))
-            write("- Second parent (remote): [{}]({})".format(integration.hash, link_to_commit(integration.hash)))
-
-        #conflict_files = conflicts_sample.splitlines()
-        print "Reading conflicts."
-        conflicts = self.get_merge_excerpts(conflict_files)
-        #conflicts = map(lambda x: Conflict(x, "", 0, 0), conflict_files)
-        merge_instance = Merge(base, integration, result, conflicts)
-        print "Storing excerpts of conflicts in merge_excerpts/"
-        self.store_merge_excerpts(conflicts)
-        print "Storing whole files in whole_files/"
-        self.store_commit_contents(merge_instance)
-
-
-    def clone(self, repository):
-        github_url = repository.clone_url()
-        process, _, _ = self.git_process(["clone", github_url, self.workspace_dir])
+    def get_commit_parent(self, commit):
+        process, stdout, stderr = self.git_process(["show", "--pretty=%P", commit])
+        split_output = stdout.splitlines()
+        return split_output[0]
 
     def checkout(self, commit):
-        process, stdout, stderr = self.git_process(["checkout", commit.hash], cwd=self.workspace_dir)
+        process, stdout, stderr = self.git_process(["checkout", commit])
 
-    def merge(self, commit):
-        github_url = commit.repo.clone_url()
-        merge_process, stdout, stderr = self.git_process(["pull", github_url, commit.hash], cwd=self.workspace_dir)
-        return stdout
+    def clone(self):
+        if not os.path.exists("{}{}".format(temp_dir, self.repo.repo_name)):
+            print "Cloning {} into {}{}".format(self.repo, temp_dir, self.repo.repo_name)
+            github_url = self.repo.clone_url()
+            process, _, _ = self.git_process(["clone", github_url], cwd=temp_dir)
+        else:
+            print "Found repository {} in {}, will not clone again.".format(self.repo.repo_name, temp_dir)
 
-    def abort_merge(self):
-        self.git_process(["merge", "--abort"], cwd=self.workspace_dir)
-
-    def get_merge_excerpts(self, file_names):
-        all_conflicts = []
-
-        for file_name in file_names:
-            file_conflicts = self.awk(file_name).split("<<<<<<<")[1:]
-            for file_conflict in file_conflicts:
-                all_conflicts.append(Conflict(file_name, file_conflict, 0, 0))
-
-        print "  Storing snapshots of the merge (merge) in {}/".format(self.content_dir)
-        self.copy_example_files(None, "merge", all_conflicts)
-        self.abort_merge()
-
-        return all_conflicts
-
-    def store_merge_excerpts(self, conflicts):
-        counter = 0
-        for conflict in conflicts:
-            source_file = conflict.filename
-            qualified_source_name = source_file[source_file.index('/') + 1:]
-            makedir(self.excerpts_dir)
-            with open("{}/{}_{}".format(self.excerpts_dir, qualified_source_name, counter), 'w') as f:
-                f.write("// EXCERPT FROM MERGE  {}\n\n".format(source_file))
-                f.write("<<<<<<<" + conflict.content + "\n")
-            counter += 1
-
-    def store_commit_contents(self, merge):
-        print "  Storing files in first parent (base) #{}".format(merge.base_commit.hash)
-        self.copy_example_files(merge.base_commit, "base", merge.conflicts)
-        print "  Storing files in second parent (remote) #{}".format(merge.integration_commit.hash)
-        self.copy_example_files(merge.integration_commit, "remote", merge.conflicts)
-        print "  Storing files in outcome (result) #{}".format(merge.result.hash)
-        self.copy_example_files(merge.result, "result", merge.conflicts)
-
-    def copy_example_files(self, commit, prefix, conflicts):
-        makedir(self.content_dir)
-        if commit:
-            self.checkout(commit)
-        for conflict in conflicts:
-            source_file = conflict.filename
-            qualified_source_name = source_file[source_file.index('/') + 1:]
-            dir_source_file = self.workspace_dir + "/" + source_file
-            dir_target_file = self.content_dir + "/" + prefix + "_" + qualified_source_name
-            #print "Copying {} to {}.".format(dir_source_file, dir_target_file)
-            copyfile(dir_source_file, dir_target_file)
-
-    def awk(self, file_path):
-        awk_process = Popen(["awk", "/<<<<<<< HEAD/,/>>>>>>>/", file_path], cwd=self.workspace_dir, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = awk_process.communicate()
-        awk_process.wait()
-        return stdout
-
-    @staticmethod
-    def git_process(args, cwd=None):
+    def git_process(self, args, cwd=None):
+        if not cwd:
+            cwd = os.path.join(temp_dir, self.repo.repo_name)
         args.insert(0, "git")
         process = Popen(args, cwd=cwd, stdout=PIPE, stderr=PIPE)
         stdout, stderr = process.communicate()
         process.wait()
         return process, stdout, stderr
 
-    @staticmethod
-    def format_conflicts(merge_text):
-        merge_lines = merge_text.splitlines()
-        only_conflict_lines = lambda x: x.startswith("CONFLICT (content):")
-        relevant_files = lambda x: not ("README.md" in x or ".gitignore" in x)
-        only_filenames = lambda x: x[len("CONFLICT (content): Merge conflict in "):]
-        return map(only_filenames, filter(relevant_files, filter(only_conflict_lines, merge_lines)))
+
+class SubjectParser:
+    def __init__(self, file_name):
+        self.file_name = file_name
+
+    def get_commits(self):
+        with open(self.file_name, 'r') as commits_file:
+            return map(lambda _: _.strip(), commits_file.readlines())
+
+
+class Workspace:
+    def __init__(self, conflict_merge, git):
+        self.conflict_merge = conflict_merge
+        self.workspace_dir = conflict_merge[:7]
+        self.git = git
+
+    def populate(self):
+        (valid, commit_ref) = self.get_parents()
+        if valid:
+            self.create()
+            self.checkout_and_copy(commit_ref.sha, "result")
+            self.checkout_and_copy(commit_ref.first_parent_sha, "base")
+            self.checkout_and_copy(commit_ref.second_parent_sha, "remote")
+            self.log_commit(commit_ref)
+        else:
+            print "-- Commit {} was invalid.".format(self.conflict_merge)
+
+    def log_commit(self, commit_ref):
+        def link_to_commit(commit):
+            return "https://github.com/{}/{}/commit/{}".format(git.repo.owner, git.repo.repo_name, commit)
+
+        print "Writing log for {}".format(self.workspace_dir)
+        with open(os.path.join(self.workspace_dir, "README.md"), 'w') as x:
+            def write(line):
+                writeline(x, line)
+            write("# {}".format(self.workspace_dir))
+            write("- Result commit: [{}]({})".format(commit_ref.sha, link_to_commit(commit_ref.sha)))
+            write("- First parent (base): [{}]({})".format(commit_ref.first_parent_sha, link_to_commit(commit_ref.first_parent_sha)))
+            write("- Second parent (remote): [{}]({})".format(commit_ref.second_parent_sha, link_to_commit(commit_ref.second_parent_sha)))
+
+    def checkout_and_copy(self, sha, prefix):
+        self.git.checkout(sha)
+        file_name = "Marlin_main.cpp"
+        copyfile(os.path.join(temp_dir, self.git.repo.repo_name, "Marlin", file_name), os.path.join(self.workspace_dir, "{}_{}".format(prefix, file_name)))
+
+    def create(self):
+        makedir(self.workspace_dir)
+
+    def get_parents(self):
+        parent_shas = self.git.get_commit_parent(self.conflict_merge).strip().split(" ")
+        return len(parent_shas) == 2, Commit(self.conflict_merge, parent_shas[0], parent_shas[1])
 
 
 def makedir(dir_name):
@@ -181,16 +122,15 @@ def writeline(file, line):
 
 
 if __name__ == '__main__':
-    merge_commit = sys.argv[1]
-    first_parent = sys.argv[2]
-    second_parent = sys.argv[3]
+    marlin = Repo("fmalpartida", "Marlin")
+    # Text file with one commit sha per line.
+    sp = SubjectParser("FILENAME")
+    conflict_merges = sp.get_commits()
 
-    base_repo = Repo("MarlinFirmware", "Marlin")
-    base = Commit(base_repo, first_parent)
-    result = Commit(base_repo, merge_commit)
-    integration_repo = Repo("MarlinFirmware", "Marlin")
-    integration = Commit(integration_repo, second_parent)
+    git = Git(marlin)
+    git.clone()
 
-    workspace = Workspace(result.hash[:7])
-    workspace.main(base, integration, result)
-
+    for i, conflict_merge in enumerate(conflict_merges):
+        print "{}/{} - {}".format(i+1, len(conflict_merges), conflict_merge)
+        workspace = Workspace(conflict_merge, git)
+        workspace.populate()
