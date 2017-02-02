@@ -116,7 +116,6 @@ class Workspace:
             writeline(x, "- First parent (mainline): [{}]({})".format(commit_ref.first_parent_sha, link_to_commit(commit_ref.first_parent_sha)))
             writeline(x, "- Second parent (clone): [{}]({})".format(commit_ref.second_parent_sha, link_to_commit(commit_ref.second_parent_sha)))
 
-
     def checkout_and_copy(self, sha, prefix):
         self.git.checkout(sha)
         file_name = "Marlin_main.cpp"
@@ -142,14 +141,14 @@ def writeline(file, line):
 if __name__ == '__main__':
     marlin = Repo("MarlinFirmware", "Marlin")
     sp = SubjectParser("first-parent-merge-diffs/pr_Marlin_main")
-    #pull_request_merges = sp.get_commits()
+    pull_request_merges = sp.get_commits()
 
     git = Git(marlin)
     git.clone()
 
-    Workspace(sp.read_file("mm291.diff"), git).populate()
+    # Workspace(sp.read_file("mm291.diff"), git).populate()
 
-    # for i, pull_request in enumerate(pull_request_merges):
-    #     print "{}/{} - {}".format(i, len(pull_request_merges), pull_request.file_name)
-    #     workspace = Workspace(pull_request, git)
-    #     workspace.populate()
+    for i, pull_request in enumerate(pull_request_merges):
+        print "{}/{} - {}".format(i+1, len(pull_request_merges), pull_request.file_name)
+        workspace = Workspace(pull_request, git)
+        workspace.populate()

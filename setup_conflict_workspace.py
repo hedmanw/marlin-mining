@@ -60,21 +60,22 @@ class Workspace:
         print merging_notice
         merge_output = self.merge(integration)
 
-        print "Recorded merging status in README.txt"
+        print "Recorded merging status in README.md"
         conflict_files = self.format_conflicts(merge_output)
 
         makedir(self.excerpts_dir)
         commit_url = "https://github.com/{}/{}/commit/".format(base.repo.owner, base.repo.repo_name)
-        with open(self.prefix + '/README.txt', 'w') as f:
+        with open(self.prefix + '/README.md', 'w') as f:
             def write(line):
                 writeline(f, line)
-            write(merging_notice)
-            write("First parent:  {}{}".format(commit_url, base.hash))
-            write("Second parent: {}{}".format(commit_url, integration.hash))
-            write("Outcome:       {}{}".format(commit_url, result.hash))
-            write("-------")
-            write("Conflicts:")
-            write("\n".join(conflict_files))
+
+            def link_to_commit(commit):
+                return "{}{}".format(commit_url, commit)
+
+            write("# {}".format(self.prefix))
+            write("- Result commit: [{}]({})".format(result.hash, link_to_commit(result.hash)))
+            write("- First parent (base): [{}]({})".format(base.hash, link_to_commit(base.hash)))
+            write("- Second parent (remote): [{}]({})".format(integration.hash, link_to_commit(integration.hash)))
 
         #conflict_files = conflicts_sample.splitlines()
         print "Reading conflicts."
@@ -85,6 +86,7 @@ class Workspace:
         self.store_merge_excerpts(conflicts)
         print "Storing whole files in whole_files/"
         self.store_commit_contents(merge_instance)
+
 
     def clone(self, repository):
         github_url = repository.clone_url()
