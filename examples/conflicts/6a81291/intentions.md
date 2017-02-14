@@ -55,12 +55,13 @@ REMOTE>
 
 ## Intentions resolution
 ```cpp
+// Change PC to REPRAPWORLD_KEYPAD || RA_CONTROL_PANEL
 #if (defined(FORK) || defined(RA_CONTROL_PANEL)) && (!defined(FORK) || defined(REPRAPWORLD_KEYPAD))
-#ifdef FORK
+#ifdef FORK // Change PC to REPRAPWORLD_KEYPAD
 #define NEWPANEL
 #endif /* defined(FORK) */
 #define ULTIPANEL
-#ifndef FORK
+#ifndef FORK // Change PC to RA_CONTROL_PANEL
 #define NEWPANEL
 #define LCD_I2C_TYPE_PCA8574
 #define LCD_I2C_ADDRESS 0x27

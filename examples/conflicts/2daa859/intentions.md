@@ -47,11 +47,12 @@ REMOTE>
 
 ## Intentions resolution
 ```cpp
+// Keep&remove if-statement in mainline/clone views respectively
 #if (defined(FORK) || (PS_ON_PIN > -1)) && (!defined(FORK) || defined(PS_ON_PIN) && PS_ON_PIN > -1)
 #ifndef FORK
-  case 80: // M80 - Turn on Power Supply
++  case 80: // M80 - Turn on Power Supply
 #else
-  case 80: // M80 - ATX Power On
+-  case 80: // M80 - ATX Power On
 #endif /* !defined(FORK) */
     SET_OUTPUT(PS_ON_PIN); //GND
     WRITE(PS_ON_PIN, PS_ON_AWAKE);
@@ -59,6 +60,6 @@ REMOTE>
 #endif /* (defined(FORK) || (PS_ON_PIN > -1)) && (!defined(FORK) || defined(PS_ON_PIN) && PS_ON_PIN > -1) */
 ```
 
-* 1 x Keep block
-* 1 x Remove block
-* 1 x Change PC
+* 2 x Keep block
+* 2 x Remove block
+Note also that the intentions should implicitly trigger their counterparts. With this, two intentions are explicitly declared in the mainline/clone view, and the mirror intent is implicitly applied in the other view.
