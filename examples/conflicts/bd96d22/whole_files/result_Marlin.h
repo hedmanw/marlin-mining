@@ -27,11 +27,11 @@
 #endif
 
 #if (ARDUINO >= 100)
-# include "Arduino.h"
+#include "Arduino.h"
 #else
-# include "WProgram.h"
+#include "WProgram.h"
   //Arduino < 1.0.0 does not define this, so we need to do it ourselfs
-# define analogInputToDigitalPin(p) ((p) + A0)
+#define analogInputToDigitalPin(p) ((p) + A0)
 #endif
 
 #include "MarlinSerial.h"

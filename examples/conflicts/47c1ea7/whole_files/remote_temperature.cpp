@@ -125,13 +125,13 @@ static volatile bool temp_meas_ready = false;
 #if EXTRUDERS > 4
   # error Unsupported number of extruders
 #elif EXTRUDERS > 3
-  # define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2, v3, v4 }
+  #define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2, v3, v4 }
 #elif EXTRUDERS > 2
-  # define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2, v3 }
+  #define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2, v3 }
 #elif EXTRUDERS > 1
-  # define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2 }
+  #define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2 }
 #else
-  # define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1 }
+  #define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1 }
 #endif
 
 #ifdef PIDTEMP
@@ -1951,7 +1951,7 @@ ISR(TIMER0_COMPB_vect)
 
   /* No bed MINTEMP error? */
 #if defined(BED_MAXTEMP) && (TEMP_SENSOR_BED != 0)
-# if HEATER_BED_RAW_LO_TEMP > HEATER_BED_RAW_HI_TEMP
+#if HEATER_BED_RAW_LO_TEMP > HEATER_BED_RAW_HI_TEMP
     if(current_temperature_bed_raw <= bed_maxttemp_raw) {
 #else
     if(current_temperature_bed_raw >= bed_maxttemp_raw) {

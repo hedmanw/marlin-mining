@@ -465,22 +465,22 @@ static void lcd_implementation_status_screen()
     lcd.print('/');
     lcd.print(itostr3left(tTarget));
 
-# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
     //If we have an 2nd extruder or heated bed, show that in the top right corner
     lcd.setCursor(8, 0);
-#  if EXTRUDERS > 1
+#if EXTRUDERS > 1
     tHotend = int(degHotend(1) + 0.5);
     tTarget = int(degTargetHotend(1) + 0.5);
     lcd.print(LCD_STR_THERMOMETER[0]);
-#  else//Heated bed
+#else//Heated bed
     tHotend=int(degBed() + 0.5);
     tTarget=int(degTargetBed() + 0.5);
     lcd.print(LCD_STR_BEDTEMP[0]);
-#  endif
+#endif
     lcd.print(itostr3(tHotend));
     lcd.print('/');
     lcd.print(itostr3left(tTarget));
-# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
 
 #else//LCD_WIDTH > 19
     lcd.setCursor(0, 0);
@@ -492,31 +492,31 @@ static void lcd_implementation_status_screen()
     if (tTarget < 10)
         lcd.print(' ');
 
-# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
     //If we have an 2nd extruder or heated bed, show that in the top right corner
     lcd.setCursor(10, 0);
-#  if EXTRUDERS > 1
+#if EXTRUDERS > 1
     tHotend = int(degHotend(1) + 0.5);
     tTarget = int(degTargetHotend(1) + 0.5);
     lcd.print(LCD_STR_THERMOMETER[0]);
-#  else//Heated bed
+#else//Heated bed
     tHotend=int(degBed() + 0.5);
     tTarget=int(degTargetBed() + 0.5);
     lcd.print(LCD_STR_BEDTEMP[0]);
-#  endif
+#endif
     lcd.print(itostr3(tHotend));
     lcd.print('/');
     lcd.print(itostr3left(tTarget));
     lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
     if (tTarget < 10)
         lcd.print(' ');
-# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
 #endif//LCD_WIDTH > 19
 
 #if LCD_HEIGHT > 2
 //Lines 2 for 4 line LCD
-# if LCD_WIDTH < 20
-#  ifdef SDSUPPORT
+#if LCD_WIDTH < 20
+#ifdef SDSUPPORT
     lcd.setCursor(0, 2);
     lcd_printPGM(PSTR("SD"));
     if (IS_SD_PRINTING)
@@ -524,9 +524,9 @@ static void lcd_implementation_status_screen()
     else
         lcd_printPGM(PSTR("---"));
     lcd.print('%');
-#  endif//SDSUPPORT
-# else//LCD_WIDTH > 19
-#  if EXTRUDERS > 1 && TEMP_SENSOR_BED != 0
+#endif//SDSUPPORT
+#else//LCD_WIDTH > 19
+#if EXTRUDERS > 1 && TEMP_SENSOR_BED != 0
     //If we both have a 2nd extruder and a heated bed, show the heated bed temp on the 2nd line on the left, as the first line is filled with extruder temps
     tHotend=int(degBed() + 0.5);
     tTarget=int(degTargetBed() + 0.5);
@@ -539,14 +539,14 @@ static void lcd_implementation_status_screen()
     lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
     if (tTarget < 10)
         lcd.print(' ');
-#  else
+#else
     lcd.setCursor(0,1);
     lcd.print('X');
     lcd.print(ftostr3(current_position[X_AXIS]));
     lcd_printPGM(PSTR(" Y"));
     lcd.print(ftostr3(current_position[Y_AXIS]));
-#  endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
-# endif//LCD_WIDTH > 19
+#endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#endif//LCD_WIDTH > 19
     lcd.setCursor(LCD_WIDTH - 8, 1);
     lcd.print('Z');
     lcd.print(ftostr32sp(current_position[Z_AXIS] + 0.00001));
@@ -557,8 +557,8 @@ static void lcd_implementation_status_screen()
     lcd.print(LCD_STR_FEEDRATE[0]);
     lcd.print(itostr3(feedmultiply));
     lcd.print('%');
-# if LCD_WIDTH > 19
-#  ifdef SDSUPPORT
+#if LCD_WIDTH > 19
+#ifdef SDSUPPORT
     lcd.setCursor(7, 2);
     lcd_printPGM(PSTR("SD"));
     if (IS_SD_PRINTING)
@@ -566,8 +566,8 @@ static void lcd_implementation_status_screen()
     else
         lcd_printPGM(PSTR("---"));
     lcd.print('%');
-#  endif//SDSUPPORT
-# endif//LCD_WIDTH > 19
+#endif//SDSUPPORT
+#endif//LCD_WIDTH > 19
     lcd.setCursor(LCD_WIDTH - 6, 2);
     lcd.print(LCD_STR_CLOCK[0]);
     if(starttime != 0)
