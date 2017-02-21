@@ -123,7 +123,7 @@ static volatile bool temp_meas_ready = false;
 #endif  
 
 #if EXTRUDERS > 4
-  # error Unsupported number of extruders
+  #error Unsupported number of extruders
 #elif EXTRUDERS > 3
   #define ARRAY_BY_EXTRUDERS(v1, v2, v3, v4) { v1, v2, v3, v4 }
 #elif EXTRUDERS > 2
