@@ -1,4 +1,4 @@
-commit 182e0d99c9d3c173ddf3c975832ebdb3af573c85 (from 92575cecca064e18441dc40f3568b4f3706d203c)
+commit 182e0d99c9d3c173ddf3c975832ebdb3af573c85
 Merge: 92575ce 7f3252e
 Author: Wurstnase <tonnhofer@gmail.com>
 Date:   Fri May 8 21:27:18 2015 +0200
@@ -272,53 +272,6 @@ index a1acfb6..ff9c122 100644
  ## User Instructions
     Define your hardware and the wanted language in 'Configuration.h'.
     To find out what charset your hardware is, define language 'test' and compile. In the menu you will see two lines from the upper half of the charset.
-diff --git a/Marlin/BlinkM.cpp b/Marlin/BlinkM.cpp
-deleted file mode 100644
-index b340f96..0000000
---- a/Marlin/BlinkM.cpp
-+++ /dev/null
-@@ -1,22 +0,0 @@
--/*
--  BlinkM.cpp - Library for controlling a BlinkM over i2c
--  Created by Tim Koster, August 21 2013.
--*/
--#include "Marlin.h"
--#ifdef BLINKM
--
--#include "BlinkM.h"
--
--void SendColors(byte red, byte grn, byte blu) {
--  Wire.begin(); 
--  Wire.beginTransmission(0x09);
--  Wire.write('o');                    //to disable ongoing script, only needs to be used once
--  Wire.write('n');
--  Wire.write(red);
--  Wire.write(grn);
--  Wire.write(blu);
--  Wire.endTransmission();
--}
--
--#endif //BLINKM
--
-diff --git a/Marlin/BlinkM.h b/Marlin/BlinkM.h
-deleted file mode 100644
-index 5b802b7..0000000
---- a/Marlin/BlinkM.h
-+++ /dev/null
-@@ -1,13 +0,0 @@
--/*
--  BlinkM.h
--  Library header file for BlinkM library
-- */
--#if ARDUINO >= 100
--  #include "Arduino.h"
--#else
--  #include "WProgram.h"
--#endif
--
--#include "Wire.h"
--
--void SendColors(byte red, byte grn, byte blu);
 diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
 index f48646a..6f2333d 100644
 --- a/Marlin/Configuration.h
@@ -483,850 +436,6 @@ index f48646a..6f2333d 100644
  
  //defines used in the code
  #define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially
-diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
-deleted file mode 100644
-index 0154691..0000000
---- a/Marlin/ConfigurationStore.cpp
-+++ /dev/null
-@@ -1,810 +0,0 @@
--/**
-- * ConfigurationStore.cpp
-- *
-- * Configuration and EEPROM storage
-- *
-- * IMPORTANT:  Whenever there are changes made to the variables stored in EEPROM
-- * in the functions below, also increment the version number. This makes sure that
-- * the default values are used whenever there is a change to the data, to prevent
-- * wrong data being written to the variables.
-- *
-- * ALSO: Variables in the Store and Retrieve sections must be in the same order.
-- *       If a feature is disabled, some data must still be written that, when read,
-- *       either sets a Sane Default, or results in No Change to the existing value.
-- *
-- */
--
--#define EEPROM_VERSION "V19"
--
--/**
-- * V19 EEPROM Layout:
-- *
-- *  ver
-- *  axis_steps_per_unit (x4)
-- *  max_feedrate (x4)
-- *  max_acceleration_units_per_sq_second (x4)
-- *  acceleration
-- *  retract_acceleration
-- *  travel_acceleration
-- *  minimumfeedrate
-- *  mintravelfeedrate
-- *  minsegmenttime
-- *  max_xy_jerk
-- *  max_z_jerk
-- *  max_e_jerk
-- *  home_offset (x3)
-- *
-- * Mesh bed leveling:
-- *  active
-- *  mesh_num_x
-- *  mesh_num_y
-- *  z_values[][]
-- *  zprobe_zoffset
-- *
-- * DELTA:
-- *  endstop_adj (x3)
-- *  delta_radius
-- *  delta_diagonal_rod
-- *  delta_segments_per_second
-- *
-- * ULTIPANEL:
-- *  plaPreheatHotendTemp
-- *  plaPreheatHPBTemp
-- *  plaPreheatFanSpeed
-- *  absPreheatHotendTemp
-- *  absPreheatHPBTemp
-- *  absPreheatFanSpeed
-- *
-- * PIDTEMP:
-- *  Kp[0], Ki[0], Kd[0], Kc[0]
-- *  Kp[1], Ki[1], Kd[1], Kc[1]
-- *  Kp[2], Ki[2], Kd[2], Kc[2]
-- *  Kp[3], Ki[3], Kd[3], Kc[3]
-- *
-- * PIDTEMPBED:
-- *  bedKp, bedKi, bedKd
-- *
-- * DOGLCD:
-- *  lcd_contrast
-- *
-- * SCARA:
-- *  axis_scaling (x3)
-- *
-- * FWRETRACT:
-- *  autoretract_enabled
-- *  retract_length
-- *  retract_length_swap
-- *  retract_feedrate
-- *  retract_zlift
-- *  retract_recover_length
-- *  retract_recover_length_swap
-- *  retract_recover_feedrate
-- *
-- *  volumetric_enabled
-- *
-- *  filament_size (x4)
-- *
-- * Z_DUAL_ENDSTOPS
-- *  z_endstop_adj
-- *
-- */
--#include "Marlin.h"
--#include "language.h"
--#include "planner.h"
--#include "temperature.h"
--#include "ultralcd.h"
--#include "ConfigurationStore.h"
--
--#ifdef MESH_BED_LEVELING
--   #include "mesh_bed_leveling.h"
--#endif  // MESH_BED_LEVELING
--
--void _EEPROM_writeData(int &pos, uint8_t* value, uint8_t size) {
--  uint8_t c;
--  while(size--) {
--    eeprom_write_byte((unsigned char*)pos, *value);
--    c = eeprom_read_byte((unsigned char*)pos);
--    if (c != *value) {
--      SERIAL_ECHO_START;
--      SERIAL_ECHOLNPGM(MSG_ERR_EEPROM_WRITE);
--    }
--    pos++;
--    value++;
--  };
--}
--void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size) {
--  do {
--    *value = eeprom_read_byte((unsigned char*)pos);
--    pos++;
--    value++;
--  } while (--size);
--}
--#define EEPROM_WRITE_VAR(pos, value) _EEPROM_writeData(pos, (uint8_t*)&value, sizeof(value))
--#define EEPROM_READ_VAR(pos, value) _EEPROM_readData(pos, (uint8_t*)&value, sizeof(value))
--
--//======================================================================================
--
--#define DUMMY_PID_VALUE 3000.0f
--
--#define EEPROM_OFFSET 100
--
--#ifdef EEPROM_SETTINGS
--
--void Config_StoreSettings()  {
--  float dummy = 0.0f;
--  char ver[4] = "000";
--  int i = EEPROM_OFFSET;
--  EEPROM_WRITE_VAR(i, ver); // invalidate data first
--  EEPROM_WRITE_VAR(i, axis_steps_per_unit);
--  EEPROM_WRITE_VAR(i, max_feedrate);
--  EEPROM_WRITE_VAR(i, max_acceleration_units_per_sq_second);
--  EEPROM_WRITE_VAR(i, acceleration);
--  EEPROM_WRITE_VAR(i, retract_acceleration);
--  EEPROM_WRITE_VAR(i, travel_acceleration);
--  EEPROM_WRITE_VAR(i, minimumfeedrate);
--  EEPROM_WRITE_VAR(i, mintravelfeedrate);
--  EEPROM_WRITE_VAR(i, minsegmenttime);
--  EEPROM_WRITE_VAR(i, max_xy_jerk);
--  EEPROM_WRITE_VAR(i, max_z_jerk);
--  EEPROM_WRITE_VAR(i, max_e_jerk);
--  EEPROM_WRITE_VAR(i, home_offset);
--
--  uint8_t mesh_num_x = 3;
--  uint8_t mesh_num_y = 3;
--  #ifdef MESH_BED_LEVELING
--    // Compile time test that sizeof(mbl.z_values) is as expected
--    typedef char c_assert[(sizeof(mbl.z_values) == MESH_NUM_X_POINTS*MESH_NUM_Y_POINTS*sizeof(dummy)) ? 1 : -1];
--    mesh_num_x = MESH_NUM_X_POINTS;
--    mesh_num_y = MESH_NUM_Y_POINTS;
--    EEPROM_WRITE_VAR(i, mbl.active);
--    EEPROM_WRITE_VAR(i, mesh_num_x);
--    EEPROM_WRITE_VAR(i, mesh_num_y);
--    EEPROM_WRITE_VAR(i, mbl.z_values);
--  #else
--    uint8_t dummy_uint8 = 0;
--    EEPROM_WRITE_VAR(i, dummy_uint8);
--    EEPROM_WRITE_VAR(i, mesh_num_x);
--    EEPROM_WRITE_VAR(i, mesh_num_y);
--    dummy = 0.0f;
--    for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
--      EEPROM_WRITE_VAR(i, dummy);
--    }
--  #endif // MESH_BED_LEVELING
--
--  #ifndef ENABLE_AUTO_BED_LEVELING
--    float zprobe_zoffset = 0;
--  #endif
--  EEPROM_WRITE_VAR(i, zprobe_zoffset);
--
--  #ifdef DELTA
--    EEPROM_WRITE_VAR(i, endstop_adj);               // 3 floats
--    EEPROM_WRITE_VAR(i, delta_radius);              // 1 float
--    EEPROM_WRITE_VAR(i, delta_diagonal_rod);        // 1 float
--    EEPROM_WRITE_VAR(i, delta_segments_per_second); // 1 float
--  #elif defined(Z_DUAL_ENDSTOPS)
--    EEPROM_WRITE_VAR(i, z_endstop_adj);            // 1 floats
--    dummy = 0.0f;
--    for (int q=5; q--;) EEPROM_WRITE_VAR(i, dummy);
--  #else
--    dummy = 0.0f;
--    for (int q=6; q--;) EEPROM_WRITE_VAR(i, dummy);
--  #endif
--
--  #ifndef ULTIPANEL
--    int plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP, plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP, plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED,
--        absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP, absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP, absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
--  #endif // !ULTIPANEL
--
--  EEPROM_WRITE_VAR(i, plaPreheatHotendTemp);
--  EEPROM_WRITE_VAR(i, plaPreheatHPBTemp);
--  EEPROM_WRITE_VAR(i, plaPreheatFanSpeed);
--  EEPROM_WRITE_VAR(i, absPreheatHotendTemp);
--  EEPROM_WRITE_VAR(i, absPreheatHPBTemp);
--  EEPROM_WRITE_VAR(i, absPreheatFanSpeed);
--
--  for (int e = 0; e < 4; e++) {
--
--    #ifdef PIDTEMP
--      if (e < EXTRUDERS) {
--        EEPROM_WRITE_VAR(i, PID_PARAM(Kp, e));
--        EEPROM_WRITE_VAR(i, PID_PARAM(Ki, e));
--        EEPROM_WRITE_VAR(i, PID_PARAM(Kd, e));
--        #ifdef PID_ADD_EXTRUSION_RATE
--          EEPROM_WRITE_VAR(i, PID_PARAM(Kc, e));
--        #else
--          dummy = 1.0f; // 1.0 = default kc
--          EEPROM_WRITE_VAR(i, dummy);
--        #endif
--      }
--      else
--    #endif // !PIDTEMP
--      {
--        dummy = DUMMY_PID_VALUE; // When read, will not change the existing value
--        EEPROM_WRITE_VAR(i, dummy);
--        dummy = 0.0f;
--        for (int q = 3; q--;) EEPROM_WRITE_VAR(i, dummy);
--      }
--
--  } // Extruders Loop
--
--  #ifndef PIDTEMPBED
--    float bedKp = DUMMY_PID_VALUE, bedKi = DUMMY_PID_VALUE, bedKd = DUMMY_PID_VALUE;
--  #endif
--
--  EEPROM_WRITE_VAR(i, bedKp);
--  EEPROM_WRITE_VAR(i, bedKi);
--  EEPROM_WRITE_VAR(i, bedKd);
--
--  #ifndef DOGLCD
--    int lcd_contrast = 32;
--  #endif
--  EEPROM_WRITE_VAR(i, lcd_contrast);
--
--  #ifdef SCARA
--    EEPROM_WRITE_VAR(i, axis_scaling); // 3 floats
--  #else
--    dummy = 1.0f;
--    EEPROM_WRITE_VAR(i, dummy);
--  #endif
--
--  #ifdef FWRETRACT
--    EEPROM_WRITE_VAR(i, autoretract_enabled);
--    EEPROM_WRITE_VAR(i, retract_length);
--    #if EXTRUDERS > 1
--      EEPROM_WRITE_VAR(i, retract_length_swap);
--    #else
--      dummy = 0.0f;
--      EEPROM_WRITE_VAR(i, dummy);
--    #endif
--    EEPROM_WRITE_VAR(i, retract_feedrate);
--    EEPROM_WRITE_VAR(i, retract_zlift);
--    EEPROM_WRITE_VAR(i, retract_recover_length);
--    #if EXTRUDERS > 1
--      EEPROM_WRITE_VAR(i, retract_recover_length_swap);
--    #else
--      dummy = 0.0f;
--      EEPROM_WRITE_VAR(i, dummy);
--    #endif
--    EEPROM_WRITE_VAR(i, retract_recover_feedrate);
--  #endif // FWRETRACT
--
--  EEPROM_WRITE_VAR(i, volumetric_enabled);
--
--  // Save filament sizes
--  for (int q = 0; q < 4; q++) {
--    if (q < EXTRUDERS) dummy = filament_size[q];
--    EEPROM_WRITE_VAR(i, dummy);
--  }
--
--  char ver2[4] = EEPROM_VERSION;
--  int j = EEPROM_OFFSET;
--  EEPROM_WRITE_VAR(j, ver2); // validate data
--
--  // Report storage size
--  SERIAL_ECHO_START;
--  SERIAL_ECHOPAIR("Settings Stored (", (unsigned long)i);
--  SERIAL_ECHOLNPGM(" bytes)");
--}
--
--void Config_RetrieveSettings() {
--
--  int i = EEPROM_OFFSET;
--  char stored_ver[4];
--  char ver[4] = EEPROM_VERSION;
--  EEPROM_READ_VAR(i, stored_ver); //read stored version
--  //  SERIAL_ECHOLN("Version: [" << ver << "] Stored version: [" << stored_ver << "]");
--
--  if (strncmp(ver, stored_ver, 3) != 0) {
--    Config_ResetDefault();
--  }
--  else {
--    float dummy = 0;
--
--    // version number match
--    EEPROM_READ_VAR(i, axis_steps_per_unit);
--    EEPROM_READ_VAR(i, max_feedrate);
--    EEPROM_READ_VAR(i, max_acceleration_units_per_sq_second);
--
--    // steps per sq second need to be updated to agree with the units per sq second (as they are what is used in the planner)
--    reset_acceleration_rates();
--
--    EEPROM_READ_VAR(i, acceleration);
--    EEPROM_READ_VAR(i, retract_acceleration);
--    EEPROM_READ_VAR(i, travel_acceleration);
--    EEPROM_READ_VAR(i, minimumfeedrate);
--    EEPROM_READ_VAR(i, mintravelfeedrate);
--    EEPROM_READ_VAR(i, minsegmenttime);
--    EEPROM_READ_VAR(i, max_xy_jerk);
--    EEPROM_READ_VAR(i, max_z_jerk);
--    EEPROM_READ_VAR(i, max_e_jerk);
--    EEPROM_READ_VAR(i, home_offset);
--
--    uint8_t mesh_num_x = 0;
--    uint8_t mesh_num_y = 0;
--    #ifdef MESH_BED_LEVELING
--      EEPROM_READ_VAR(i, mbl.active);
--      EEPROM_READ_VAR(i, mesh_num_x);
--      EEPROM_READ_VAR(i, mesh_num_y);
--      if (mesh_num_x != MESH_NUM_X_POINTS ||
--          mesh_num_y != MESH_NUM_Y_POINTS) {
--        mbl.reset();
--        for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
--          EEPROM_READ_VAR(i, dummy);
--        }
--      } else {
--        EEPROM_READ_VAR(i, mbl.z_values);
--      }
--    #else
--      uint8_t dummy_uint8 = 0;
--      EEPROM_READ_VAR(i, dummy_uint8);
--      EEPROM_READ_VAR(i, mesh_num_x);
--      EEPROM_READ_VAR(i, mesh_num_y);
--      for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
--        EEPROM_READ_VAR(i, dummy);
--      }
--    #endif  // MESH_BED_LEVELING
--
--    #ifndef ENABLE_AUTO_BED_LEVELING
--      float zprobe_zoffset = 0;
--    #endif
--    EEPROM_READ_VAR(i, zprobe_zoffset);
--
--    #ifdef DELTA
--      EEPROM_READ_VAR(i, endstop_adj);                // 3 floats
--      EEPROM_READ_VAR(i, delta_radius);               // 1 float
--      EEPROM_READ_VAR(i, delta_diagonal_rod);         // 1 float
--      EEPROM_READ_VAR(i, delta_segments_per_second);  // 1 float
--    #elif defined(Z_DUAL_ENDSTOPS)
--      EEPROM_READ_VAR(i, z_endstop_adj);
--      dummy = 0.0f;
--      for (int q=5; q--;) EEPROM_READ_VAR(i, dummy);
--    #else
--      dummy = 0.0f;
--      for (int q=6; q--;) EEPROM_READ_VAR(i, dummy);
--    #endif
--
--    #ifndef ULTIPANEL
--      int plaPreheatHotendTemp, plaPreheatHPBTemp, plaPreheatFanSpeed,
--          absPreheatHotendTemp, absPreheatHPBTemp, absPreheatFanSpeed;
--    #endif
--
--    EEPROM_READ_VAR(i, plaPreheatHotendTemp);
--    EEPROM_READ_VAR(i, plaPreheatHPBTemp);
--    EEPROM_READ_VAR(i, plaPreheatFanSpeed);
--    EEPROM_READ_VAR(i, absPreheatHotendTemp);
--    EEPROM_READ_VAR(i, absPreheatHPBTemp);
--    EEPROM_READ_VAR(i, absPreheatFanSpeed);
--
--    #ifdef PIDTEMP
--      for (int e = 0; e < 4; e++) { // 4 = max extruders currently supported by Marlin
--        EEPROM_READ_VAR(i, dummy); // Kp
--        if (e < EXTRUDERS && dummy != DUMMY_PID_VALUE) {
--          // do not need to scale PID values as the values in EEPROM are already scaled
--          PID_PARAM(Kp, e) = dummy;
--          EEPROM_READ_VAR(i, PID_PARAM(Ki, e));
--          EEPROM_READ_VAR(i, PID_PARAM(Kd, e));
--          #ifdef PID_ADD_EXTRUSION_RATE
--            EEPROM_READ_VAR(i, PID_PARAM(Kc, e));
--          #else
--            EEPROM_READ_VAR(i, dummy);
--          #endif
--        }
--        else {
--          for (int q=3; q--;) EEPROM_READ_VAR(i, dummy); // Ki, Kd, Kc
--        }
--      }
--    #else // !PIDTEMP
--      // 4 x 4 = 16 slots for PID parameters
--      for (int q=16; q--;) EEPROM_READ_VAR(i, dummy);  // 4x Kp, Ki, Kd, Kc
--    #endif // !PIDTEMP
--
--    #ifndef PIDTEMPBED
--      float bedKp, bedKi, bedKd;
--    #endif
--
--    EEPROM_READ_VAR(i, dummy); // bedKp
--    if (dummy != DUMMY_PID_VALUE) {
--      bedKp = dummy;
--      EEPROM_READ_VAR(i, bedKi);
--      EEPROM_READ_VAR(i, bedKd);
--    }
--    else {
--      for (int q=2; q--;) EEPROM_READ_VAR(i, dummy); // bedKi, bedKd
--    }
--
--    #ifndef DOGLCD
--      int lcd_contrast;
--    #endif
--    EEPROM_READ_VAR(i, lcd_contrast);
--
--    #ifdef SCARA
--      EEPROM_READ_VAR(i, axis_scaling);  // 3 floats
--    #else
--      EEPROM_READ_VAR(i, dummy);
--    #endif
--
--    #ifdef FWRETRACT
--      EEPROM_READ_VAR(i, autoretract_enabled);
--      EEPROM_READ_VAR(i, retract_length);
--      #if EXTRUDERS > 1
--        EEPROM_READ_VAR(i, retract_length_swap);
--      #else
--        EEPROM_READ_VAR(i, dummy);
--      #endif
--      EEPROM_READ_VAR(i, retract_feedrate);
--      EEPROM_READ_VAR(i, retract_zlift);
--      EEPROM_READ_VAR(i, retract_recover_length);
--      #if EXTRUDERS > 1
--        EEPROM_READ_VAR(i, retract_recover_length_swap);
--      #else
--        EEPROM_READ_VAR(i, dummy);
--      #endif
--      EEPROM_READ_VAR(i, retract_recover_feedrate);
--    #endif // FWRETRACT
--
--    EEPROM_READ_VAR(i, volumetric_enabled);
--
--    for (int q = 0; q < 4; q++) {
--      EEPROM_READ_VAR(i, dummy);
--      if (q < EXTRUDERS) filament_size[q] = dummy;
--    }
--
--    calculate_volumetric_multipliers();
--    // Call updatePID (similar to when we have processed M301)
--    updatePID();
--
--    // Report settings retrieved and length
--    SERIAL_ECHO_START;
--    SERIAL_ECHO(ver);
--    SERIAL_ECHOPAIR(" stored settings retrieved (", (unsigned long)i);
--    SERIAL_ECHOLNPGM(" bytes)");
--  }
--
--  #ifdef EEPROM_CHITCHAT
--    Config_PrintSettings();
--  #endif
--}
--
--#endif // EEPROM_SETTINGS
--
--void Config_ResetDefault() {
--  float tmp1[] = DEFAULT_AXIS_STEPS_PER_UNIT;
--  float tmp2[] = DEFAULT_MAX_FEEDRATE;
--  long tmp3[] = DEFAULT_MAX_ACCELERATION;
--  for (uint16_t i = 0; i < NUM_AXIS; i++) {
--    axis_steps_per_unit[i] = tmp1[i];
--    max_feedrate[i] = tmp2[i];
--    max_acceleration_units_per_sq_second[i] = tmp3[i];
--    #ifdef SCARA
--      if (i < sizeof(axis_scaling) / sizeof(*axis_scaling))
--        axis_scaling[i] = 1;
--    #endif
--  }
--
--  // steps per sq second need to be updated to agree with the units per sq second
--  reset_acceleration_rates();
--
--  acceleration = DEFAULT_ACCELERATION;
--  retract_acceleration = DEFAULT_RETRACT_ACCELERATION;
--  travel_acceleration = DEFAULT_TRAVEL_ACCELERATION;
--  minimumfeedrate = DEFAULT_MINIMUMFEEDRATE;
--  minsegmenttime = DEFAULT_MINSEGMENTTIME;
--  mintravelfeedrate = DEFAULT_MINTRAVELFEEDRATE;
--  max_xy_jerk = DEFAULT_XYJERK;
--  max_z_jerk = DEFAULT_ZJERK;
--  max_e_jerk = DEFAULT_EJERK;
--  home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
--
--  #ifdef MESH_BED_LEVELING
--    mbl.active = 0;
--  #endif
--
--  #ifdef ENABLE_AUTO_BED_LEVELING
--    zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
--  #endif
--
--  #ifdef DELTA
--    endstop_adj[X_AXIS] = endstop_adj[Y_AXIS] = endstop_adj[Z_AXIS] = 0;
--    delta_radius =  DELTA_RADIUS;
--    delta_diagonal_rod =  DELTA_DIAGONAL_ROD;
--    delta_segments_per_second =  DELTA_SEGMENTS_PER_SECOND;
--    recalc_delta_settings(delta_radius, delta_diagonal_rod);
--  #elif defined(Z_DUAL_ENDSTOPS)
--    z_endstop_adj = 0;
--  #endif
--
--  #ifdef ULTIPANEL
--    plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP;
--    plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP;
--    plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED;
--    absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP;
--    absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
--    absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
--  #endif
--
--  #ifdef DOGLCD
--    lcd_contrast = DEFAULT_LCD_CONTRAST;
--  #endif
--
--  #ifdef PIDTEMP
--    #ifdef PID_PARAMS_PER_EXTRUDER
--      for (int e = 0; e < EXTRUDERS; e++)
--    #else
--      int e = 0; // only need to write once
--    #endif
--    {
--      PID_PARAM(Kp, e) = DEFAULT_Kp;
--      PID_PARAM(Ki, e) = scalePID_i(DEFAULT_Ki);
--      PID_PARAM(Kd, e) = scalePID_d(DEFAULT_Kd);
--      #ifdef PID_ADD_EXTRUSION_RATE
--        PID_PARAM(Kc, e) = DEFAULT_Kc;
--      #endif
--    }
--    // call updatePID (similar to when we have processed M301)
--    updatePID();
--  #endif // PIDTEMP
--
--  #ifdef PIDTEMPBED
--    bedKp = DEFAULT_bedKp;
--    bedKi = scalePID_i(DEFAULT_bedKi);
--    bedKd = scalePID_d(DEFAULT_bedKd);
--  #endif
--
--  #ifdef FWRETRACT
--    autoretract_enabled = false;
--    retract_length = RETRACT_LENGTH;
--    #if EXTRUDERS > 1
--      retract_length_swap = RETRACT_LENGTH_SWAP;
--    #endif
--    retract_feedrate = RETRACT_FEEDRATE;
--    retract_zlift = RETRACT_ZLIFT;
--    retract_recover_length = RETRACT_RECOVER_LENGTH;
--    #if EXTRUDERS > 1
--      retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
--    #endif
--    retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
--  #endif
--
--  volumetric_enabled = false;
--  filament_size[0] = DEFAULT_NOMINAL_FILAMENT_DIA;
--  #if EXTRUDERS > 1
--    filament_size[1] = DEFAULT_NOMINAL_FILAMENT_DIA;
--    #if EXTRUDERS > 2
--      filament_size[2] = DEFAULT_NOMINAL_FILAMENT_DIA;
--      #if EXTRUDERS > 3
--        filament_size[3] = DEFAULT_NOMINAL_FILAMENT_DIA;
--      #endif
--    #endif
--  #endif
--  calculate_volumetric_multipliers();
--
--  SERIAL_ECHO_START;
--  SERIAL_ECHOLNPGM("Hardcoded Default Settings Loaded");
--}
--
--#ifndef DISABLE_M503
--
--void Config_PrintSettings(bool forReplay) {
--  // Always have this function, even with EEPROM_SETTINGS disabled, the current values will be shown
--
--  SERIAL_ECHO_START;
--
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Steps per unit:");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M92 X", axis_steps_per_unit[X_AXIS]);
--  SERIAL_ECHOPAIR(" Y", axis_steps_per_unit[Y_AXIS]);
--  SERIAL_ECHOPAIR(" Z", axis_steps_per_unit[Z_AXIS]);
--  SERIAL_ECHOPAIR(" E", axis_steps_per_unit[E_AXIS]);
--  SERIAL_EOL;
--
--  SERIAL_ECHO_START;
--
--  #ifdef SCARA
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Scaling factors:");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M365 X", axis_scaling[X_AXIS]);
--    SERIAL_ECHOPAIR(" Y", axis_scaling[Y_AXIS]);
--    SERIAL_ECHOPAIR(" Z", axis_scaling[Z_AXIS]);
--    SERIAL_EOL;
--    SERIAL_ECHO_START;
--  #endif // SCARA
--
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M203 X", max_feedrate[X_AXIS]);
--  SERIAL_ECHOPAIR(" Y", max_feedrate[Y_AXIS]);
--  SERIAL_ECHOPAIR(" Z", max_feedrate[Z_AXIS]);
--  SERIAL_ECHOPAIR(" E", max_feedrate[E_AXIS]);
--  SERIAL_EOL;
--
--  SERIAL_ECHO_START;
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M201 X", max_acceleration_units_per_sq_second[X_AXIS] );
--  SERIAL_ECHOPAIR(" Y", max_acceleration_units_per_sq_second[Y_AXIS] );
--  SERIAL_ECHOPAIR(" Z", max_acceleration_units_per_sq_second[Z_AXIS] );
--  SERIAL_ECHOPAIR(" E", max_acceleration_units_per_sq_second[E_AXIS]);
--  SERIAL_EOL;
--  SERIAL_ECHO_START;
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Accelerations: P=printing, R=retract and T=travel");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M204 P", acceleration );
--  SERIAL_ECHOPAIR(" R", retract_acceleration);
--  SERIAL_ECHOPAIR(" T", travel_acceleration);
--  SERIAL_EOL;
--
--  SERIAL_ECHO_START;
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum XY jerk (mm/s),  Z=maximum Z jerk (mm/s),  E=maximum E jerk (mm/s)");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M205 S", minimumfeedrate );
--  SERIAL_ECHOPAIR(" T", mintravelfeedrate );
--  SERIAL_ECHOPAIR(" B", minsegmenttime );
--  SERIAL_ECHOPAIR(" X", max_xy_jerk );
--  SERIAL_ECHOPAIR(" Z", max_z_jerk);
--  SERIAL_ECHOPAIR(" E", max_e_jerk);
--  SERIAL_EOL;
--
--  SERIAL_ECHO_START;
--  if (!forReplay) {
--    SERIAL_ECHOLNPGM("Home offset (mm):");
--    SERIAL_ECHO_START;
--  }
--  SERIAL_ECHOPAIR("  M206 X", home_offset[X_AXIS] );
--  SERIAL_ECHOPAIR(" Y", home_offset[Y_AXIS] );
--  SERIAL_ECHOPAIR(" Z", home_offset[Z_AXIS] );
--  SERIAL_EOL;
--
--  #ifdef DELTA
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Endstop adjustment (mm):");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M666 X", endstop_adj[X_AXIS] );
--    SERIAL_ECHOPAIR(" Y", endstop_adj[Y_AXIS] );
--    SERIAL_ECHOPAIR(" Z", endstop_adj[Z_AXIS] );
--    SERIAL_EOL;
--    SERIAL_ECHO_START;
--    SERIAL_ECHOLNPGM("Delta settings: L=delta_diagonal_rod, R=delta_radius, S=delta_segments_per_second");
--    SERIAL_ECHO_START;
--    SERIAL_ECHOPAIR("  M665 L", delta_diagonal_rod );
--    SERIAL_ECHOPAIR(" R", delta_radius );
--    SERIAL_ECHOPAIR(" S", delta_segments_per_second );
--    SERIAL_EOL;
--  #elif defined(Z_DUAL_ENDSTOPS)
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Z2 Endstop adjustment (mm):");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M666 Z", z_endstop_adj );
--    SERIAL_EOL;  
--  #endif // DELTA
--
--  #if defined(PIDTEMP) || defined(PIDTEMPBED)
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("PID settings:");
--      SERIAL_ECHO_START;
--    }
--    #if defined(PIDTEMP) && defined(PIDTEMPBED)
--      SERIAL_EOL;
--    #endif
--    #ifdef PIDTEMP
--      SERIAL_ECHOPAIR("  M301 P", PID_PARAM(Kp, 0)); // for compatibility with hosts, only echos values for E0
--      SERIAL_ECHOPAIR(" I", unscalePID_i(PID_PARAM(Ki, 0)));
--      SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, 0)));
--      SERIAL_EOL;
--    #endif
--    #ifdef PIDTEMPBED
--      SERIAL_ECHOPAIR("  M304 P", bedKp); // for compatibility with hosts, only echos values for E0
--      SERIAL_ECHOPAIR(" I", unscalePID_i(bedKi));
--      SERIAL_ECHOPAIR(" D", unscalePID_d(bedKd));
--      SERIAL_EOL;
--    #endif
--  #endif
--
--  #ifdef FWRETRACT
--
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Retract: S=Length (mm) F:Speed (mm/m) Z: ZLift (mm)");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M207 S", retract_length);
--    SERIAL_ECHOPAIR(" F", retract_feedrate*60);
--    SERIAL_ECHOPAIR(" Z", retract_zlift);
--    SERIAL_EOL;
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Recover: S=Extra length (mm) F:Speed (mm/m)");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M208 S", retract_recover_length);
--    SERIAL_ECHOPAIR(" F", retract_recover_feedrate*60);
--    SERIAL_EOL;
--    SERIAL_ECHO_START;
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Auto-Retract: S=0 to disable, 1 to interpret extrude-only moves as retracts or recoveries");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M209 S", (unsigned long)(autoretract_enabled ? 1 : 0));
--    SERIAL_EOL;
--
--    #if EXTRUDERS > 1
--      if (!forReplay) {
--        SERIAL_ECHO_START;
--        SERIAL_ECHOLNPGM("Multi-extruder settings:");
--        SERIAL_ECHO_START;
--        SERIAL_ECHOPAIR("   Swap retract length (mm):    ", retract_length_swap);
--        SERIAL_EOL;
--        SERIAL_ECHO_START;
--        SERIAL_ECHOPAIR("   Swap rec. addl. length (mm): ", retract_recover_length_swap);
--        SERIAL_EOL;
--      }
--    #endif // EXTRUDERS > 1
--
--  #endif // FWRETRACT
--
--  SERIAL_ECHO_START;
--  if (volumetric_enabled) {
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Filament settings:");
--      SERIAL_ECHO_START;
--    }
--    SERIAL_ECHOPAIR("  M200 D", filament_size[0]);
--    SERIAL_EOL;
--
--    #if EXTRUDERS > 1
--      SERIAL_ECHO_START;
--      SERIAL_ECHOPAIR("  M200 T1 D", filament_size[1]);
--      SERIAL_EOL;
--      #if EXTRUDERS > 2
--        SERIAL_ECHO_START;
--        SERIAL_ECHOPAIR("  M200 T2 D", filament_size[2]);
--        SERIAL_EOL;
--        #if EXTRUDERS > 3
--          SERIAL_ECHO_START;
--          SERIAL_ECHOPAIR("  M200 T3 D", filament_size[3]);
--          SERIAL_EOL;
--        #endif
--      #endif
--    #endif
--
--  } else {
--    if (!forReplay) {
--      SERIAL_ECHOLNPGM("Filament settings: Disabled");
--    }
--  }
--
--  #ifdef ENABLE_AUTO_BED_LEVELING
--    SERIAL_ECHO_START;
--    #ifdef CUSTOM_M_CODES
--      if (!forReplay) {
--        SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
--        SERIAL_ECHO_START;
--      }
--      SERIAL_ECHOPAIR("  M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
--      SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
--    #else
--      if (!forReplay) {
--        SERIAL_ECHOPAIR("Z-Probe Offset (mm):", -zprobe_zoffset);
--      }
--    #endif
--    SERIAL_EOL;
--  #endif
--}
--
--#endif // !DISABLE_M503
-diff --git a/Marlin/ConfigurationStore.h b/Marlin/ConfigurationStore.h
-deleted file mode 100644
-index 3dc4a92..0000000
---- a/Marlin/ConfigurationStore.h
-+++ /dev/null
-@@ -1,22 +0,0 @@
--#ifndef CONFIGURATIONSTORE_H
--#define CONFIGURATIONSTORE_H
--
--#include "Configuration.h"
--
--void Config_ResetDefault();
--
--#ifndef DISABLE_M503
--  void Config_PrintSettings(bool forReplay=false);
--#else
--  FORCE_INLINE void Config_PrintSettings(bool forReplay=false) {}
--#endif
--
--#ifdef EEPROM_SETTINGS
--  void Config_StoreSettings();
--  void Config_RetrieveSettings();
--#else
--  FORCE_INLINE void Config_StoreSettings() {}
--  FORCE_INLINE void Config_RetrieveSettings() { Config_ResetDefault(); Config_PrintSettings(); }
--#endif
--
--#endif //CONFIGURATIONSTORE_H
 diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
 index f2b5c7d..ee39028 100644
 --- a/Marlin/Configuration_adv.h
@@ -1358,249 +467,6 @@ index f2b5c7d..ee39028 100644
  //===========================================================================
  
  // @section hidden
-diff --git a/Marlin/DOGMbitmaps.h b/Marlin/DOGMbitmaps.h
-deleted file mode 100644
-index 8c83567..0000000
---- a/Marlin/DOGMbitmaps.h
-+++ /dev/null
-@@ -1,237 +0,0 @@
--// BitMap for splashscreen
--// Generated with: http://www.digole.com/tools/PicturetoC_Hex_converter.php
--// Please note that using the high-res version takes 402Bytes of PROGMEM. 
--//#define START_BMPHIGH
--
--#ifdef START_BMPHIGH
--  #define START_BMPWIDTH      112
--  #define START_BMPHEIGHT      38
--  #define START_BMPBYTEWIDTH   14
--  #define START_BMPBYTES      532 // START_BMPWIDTH * START_BMPHEIGHT / 8
--  
--  const unsigned char start_bmp[START_BMPBYTES] PROGMEM = {
--     0x01,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
--    ,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
--    ,0x1e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x07,0xff,0xff
--    ,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x03,0xff,0xff
--    ,0x70,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xff,0xff
--    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0xff
--    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7f,0xff
--    ,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x3f,0xff
--    ,0xc0,0x0f,0xc0,0xfc,0x00,0x00,0x00,0x00,0x00,0x78,0x18,0x00,0x1f,0xff
--    ,0xc0,0x3f,0xe1,0xff,0x00,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x0f,0xff
--    ,0xc0,0x7f,0xf3,0xff,0x80,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x07,0xff
--    ,0xc0,0xff,0xff,0xff,0xc0,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x03,0xff
--    ,0xc1,0xf8,0x7f,0x87,0xe0,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x01,0xff
--    ,0xc1,0xf0,0x3f,0x03,0xe0,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x00,0xff
--    ,0xc1,0xe0,0x1e,0x01,0xe0,0x1f,0x00,0x03,0xe0,0x78,0x3c,0x03,0xf0,0x7f
--    ,0xc1,0xe0,0x1e,0x01,0xe0,0x7f,0xc0,0x0f,0xf8,0x78,0x3c,0x07,0xfc,0x3f
--    ,0xc1,0xe0,0x1e,0x01,0xe1,0xff,0xe0,0x1f,0xfc,0x78,0x3c,0x0f,0xfe,0x1f
--    ,0xc1,0xe0,0x1e,0x01,0xe3,0xff,0xf0,0x3f,0xfe,0x78,0x3c,0x1f,0xfe,0x0f
--    ,0xc1,0xe0,0x1e,0x01,0xe3,0xf3,0xf8,0x3f,0x3e,0x78,0x3c,0x3f,0x3f,0x07
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0xe0,0xfc,0x7c,0x1f,0x78,0x3c,0x3e,0x1f,0x07
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0xc0,0x7c,0x7c,0x0f,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x7c,0x78,0x0f,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe7,0xc0,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe3,0xe0,0x3c,0x78,0x00,0x7c,0x3c,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe3,0xff,0x3f,0xf8,0x00,0x7f,0xbc,0x3c,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe1,0xff,0x3f,0xf8,0x00,0x3f,0xbf,0xfc,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe0,0xff,0x3f,0xf8,0x00,0x1f,0xbf,0xfc,0x0f,0x03
--    ,0xc1,0xe0,0x1e,0x01,0xe0,0x7f,0x3f,0xf8,0x00,0x0f,0xbf,0xfc,0x0f,0x03
--    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x07
--    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x06
--    ,0x70,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0e
--    ,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1c
--    ,0x1e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x78
--    ,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xf0
--    ,0x01,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x80 };
--#else
--  #define START_BMPWIDTH 	    56 
--  #define START_BMPHEIGHT 	  19
--  #define START_BMPBYTEWIDTH  7
--  #define START_BMPBYTES      133 // START_BMPWIDTH * START_BMPHEIGHT / 8
--
--  const unsigned char start_bmp[START_BMPBYTES] PROGMEM = {
--     0x1f,0xff,0xff,0xff,0xff,0xff,0xff
--    ,0x60,0x00,0x00,0x00,0x00,0x01,0xff
--    ,0x40,0x00,0x00,0x00,0x00,0x00,0xff
--    ,0x80,0x00,0x00,0x00,0x00,0x00,0x7f
--    ,0x83,0xcf,0x00,0x00,0x0c,0x30,0x3f
--    ,0x87,0xff,0x80,0x00,0x0c,0x30,0x1f
--    ,0x86,0x79,0x80,0x00,0x0c,0x00,0x0f
--    ,0x8c,0x30,0xc7,0x83,0x8c,0x30,0xe7
--    ,0x8c,0x30,0xcf,0xc7,0xcc,0x31,0xf3
--    ,0x8c,0x30,0xdc,0xec,0xec,0x33,0xb9
--    ,0x8c,0x30,0xd8,0x6c,0x6c,0x33,0x19
--    ,0x8c,0x30,0xd0,0x6c,0x0c,0x33,0x19
--    ,0x8c,0x30,0xd8,0x6c,0x0c,0x33,0x19
--    ,0x8c,0x30,0xdc,0x6c,0x0e,0x3b,0x19
--    ,0x8c,0x30,0xcf,0x7c,0x07,0x9f,0x19
--    ,0x8c,0x30,0xc7,0x7c,0x03,0x8f,0x19
--    ,0x40,0x00,0x00,0x00,0x00,0x00,0x02
--    ,0x60,0x00,0x00,0x00,0x00,0x00,0x06
--    ,0x1f,0xff,0xff,0xff,0xff,0xff,0xf8 };
--#endif
--
--// Here comes a compile-time operation to match the extruder symbols 
--// on the info screen to the set number of extruders in configuration.h
--// 
--// When only one extruder is selected, the "1" on the symbol will not 
--// be displayed.
--
--#if EXTRUDERS == 1
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
--	0x3F,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
--	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
--	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
--	0x3F,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--#elif EXTRUDERS == 2
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
--	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
--	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
--	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
--	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
--	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
--	0x3F,0x00,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x0F,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
--	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
--	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
--	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
--	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
--	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
--	0x3F,0x00,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x0F,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--#else
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
--	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x3F,0xC0,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x79,0xE0,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x76,0xE0,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
--	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x7E,0xE0,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
--	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x39,0xC0,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
--	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x3E,0xC0,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
--	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x76,0xE0,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
--	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x79,0xE0,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
--	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x7F,0xE0,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
--	0x3F,0x00,0x00,0x1F,0x80,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x0F,0x00,0x00,0x0F,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x06,0x00,0x00,0x06,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--
--	#define STATUS_SCREENWIDTH 		115	//Width in pixels
--	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
--	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
--	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
--	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
--	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x3F,0xC0,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x79,0xE0,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x76,0xE0,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
--	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x7E,0xE0,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
--	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x39,0xC0,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
--	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x3E,0xC0,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
--	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x76,0xE0,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
--	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x79,0xE0,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
--	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x7F,0xE0,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
--	0x3F,0x00,0x00,0x1F,0x80,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
--	0x1E,0x00,0x00,0x0F,0x00,0x00,0x0F,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
--	0x0C,0x00,0x00,0x06,0x00,0x00,0x06,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
--	};
--#endif // Extruders 
--
--
 diff --git a/Marlin/Makefile b/Marlin/Makefile
 index 56e5dda..e23c2a1 100644
 --- a/Marlin/Makefile
@@ -2732,532 +1598,72 @@ index 857976b..3bba458 100644
    #endif
  
    /**
-diff --git a/Marlin/Servo.cpp b/Marlin/Servo.cpp
-deleted file mode 100644
-index 27a7d3c..0000000
---- a/Marlin/Servo.cpp
-+++ /dev/null
-@@ -1,304 +0,0 @@
--/*
-- Servo.cpp - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
-- Copyright (c) 2009 Michael Margolis.  All right reserved.
--
-- This library is free software; you can redistribute it and/or
-- modify it under the terms of the GNU Lesser General Public
-- License as published by the Free Software Foundation; either
-- version 2.1 of the License, or (at your option) any later version.
--
-- This library is distributed in the hope that it will be useful,
-- but WITHOUT ANY WARRANTY; without even the implied warranty of
-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-- Lesser General Public License for more details.
--
-- You should have received a copy of the GNU Lesser General Public
-- License along with this library; if not, write to the Free Software
-- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-- */
--
--/*
--
-- A servo is activated by creating an instance of the Servo class passing the desired pin to the attach() method.
-- The servos are pulsed in the background using the value most recently written using the write() method
--
-- Note that analogWrite of PWM on pins associated with the timer are disabled when the first servo is attached.
-- Timers are seized as needed in groups of 12 servos - 24 servos use two timers, 48 servos will use four.
--
-- The methods are:
--
-- Servo - Class for manipulating servo motors connected to Arduino pins.
--
-- attach(pin )  - Attaches a servo motor to an i/o pin.
-- attach(pin, min, max  ) - Attaches to a pin setting min and max values in microseconds
-- default min is 544, max is 2400
--
-- write()     - Sets the servo angle in degrees.  (invalid angle that is valid as pulse in microseconds is treated as microseconds)
-- writeMicroseconds() - Sets the servo pulse width in microseconds
-- read()      - Gets the last written servo pulse width as an angle between 0 and 180.
-- readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
-- attached()  - Returns true if there is a servo attached.
-- detach()    - Stops an attached servos from pulsing its i/o pin.
--
--*/
--#include "Configuration.h" 
--
--#ifdef NUM_SERVOS
--
--#include <avr/interrupt.h>
--#include <Arduino.h>
--
--#include "Servo.h"
--
--#define usToTicks(_us)    (( clockCyclesPerMicrosecond()* _us) / 8)     // converts microseconds to tick (assumes prescale of 8)  // 12 Aug 2009
--#define ticksToUs(_ticks) (( (unsigned)_ticks * 8)/ clockCyclesPerMicrosecond() ) // converts from ticks back to microseconds
--
--#define TRIM_DURATION       2                               // compensation ticks to trim adjust for digitalWrite delays // 12 August 2009
--
--//#define NBR_TIMERS        (MAX_SERVOS / SERVOS_PER_TIMER)
--
--static servo_t servos[MAX_SERVOS];                          // static array of servo structures
--static volatile int8_t Channel[_Nbr_16timers ];             // counter for the servo being pulsed for each timer (or -1 if refresh interval)
--
--uint8_t ServoCount = 0;                                     // the total number of attached servos
--
--
--// convenience macros
--#define SERVO_INDEX_TO_TIMER(_servo_nbr) ((timer16_Sequence_t)(_servo_nbr / SERVOS_PER_TIMER)) // returns the timer controlling this servo
--#define SERVO_INDEX_TO_CHANNEL(_servo_nbr) (_servo_nbr % SERVOS_PER_TIMER)       // returns the index of the servo on this timer
--#define SERVO_INDEX(_timer,_channel)  ((_timer*SERVOS_PER_TIMER) + _channel)     // macro to access servo index by timer and channel
--#define SERVO(_timer,_channel)  (servos[SERVO_INDEX(_timer,_channel)])            // macro to access servo class by timer and channel
--
--#define SERVO_MIN() (MIN_PULSE_WIDTH - this->min * 4)  // minimum value in uS for this servo
--#define SERVO_MAX() (MAX_PULSE_WIDTH - this->max * 4)  // maximum value in uS for this servo
--
--/************ static functions common to all instances ***********************/
--
--static inline void handle_interrupts(timer16_Sequence_t timer, volatile uint16_t *TCNTn, volatile uint16_t* OCRnA) {
--  if (Channel[timer] < 0)
--    *TCNTn = 0; // channel set to -1 indicated that refresh interval completed so reset the timer
--  else {
--    if (SERVO_INDEX(timer,Channel[timer]) < ServoCount && SERVO(timer,Channel[timer]).Pin.isActive)
--      digitalWrite( SERVO(timer,Channel[timer]).Pin.nbr,LOW); // pulse this channel low if activated
--  }
--
--  Channel[timer]++;    // increment to the next channel
--  if (SERVO_INDEX(timer,Channel[timer]) < ServoCount && Channel[timer] < SERVOS_PER_TIMER) {
--    *OCRnA = *TCNTn + SERVO(timer,Channel[timer]).ticks;
--    if (SERVO(timer,Channel[timer]).Pin.isActive)     // check if activated
--      digitalWrite( SERVO(timer,Channel[timer]).Pin.nbr,HIGH); // its an active channel so pulse it high
--  }
--  else {
--    // finished all channels so wait for the refresh period to expire before starting over
--    if ( ((unsigned)*TCNTn) + 4 < usToTicks(REFRESH_INTERVAL) )  // allow a few ticks to ensure the next OCR1A not missed
--      *OCRnA = (unsigned int)usToTicks(REFRESH_INTERVAL);
--    else
--      *OCRnA = *TCNTn + 4;  // at least REFRESH_INTERVAL has elapsed
--    Channel[timer] = -1; // this will get incremented at the end of the refresh period to start again at the first channel
--  }
--}
--
--#ifndef WIRING // Wiring pre-defines signal handlers so don't define any if compiling for the Wiring platform
--
--  // Interrupt handlers for Arduino
--  #if defined(_useTimer1)
--    SIGNAL (TIMER1_COMPA_vect) { handle_interrupts(_timer1, &TCNT1, &OCR1A); }
--  #endif
--
--  #if defined(_useTimer3)
--    SIGNAL (TIMER3_COMPA_vect) { handle_interrupts(_timer3, &TCNT3, &OCR3A); }
--  #endif
--
--  #if defined(_useTimer4)
--    SIGNAL (TIMER4_COMPA_vect) { handle_interrupts(_timer4, &TCNT4, &OCR4A); }
--  #endif
--
--  #if defined(_useTimer5)
--    SIGNAL (TIMER5_COMPA_vect) { handle_interrupts(_timer5, &TCNT5, &OCR5A); }
--  #endif
--
--#else //!WIRING
--
--  // Interrupt handlers for Wiring
--  #if defined(_useTimer1)
--    void Timer1Service() { handle_interrupts(_timer1, &TCNT1, &OCR1A); }
--  #endif
--  #if defined(_useTimer3)
--    void Timer3Service() { handle_interrupts(_timer3, &TCNT3, &OCR3A); }
--  #endif
--
--#endif //!WIRING
--
--
--static void initISR(timer16_Sequence_t timer) {
--  #if defined(_useTimer1)
--    if (timer == _timer1) {
--      TCCR1A = 0;             // normal counting mode
--      TCCR1B = _BV(CS11);     // set prescaler of 8
--      TCNT1 = 0;              // clear the timer count
--      #if defined(__AVR_ATmega8__)|| defined(__AVR_ATmega128__)
--        TIFR |= _BV(OCF1A);      // clear any pending interrupts;
--        TIMSK |= _BV(OCIE1A);    // enable the output compare interrupt
--      #else
--        // here if not ATmega8 or ATmega128
--        TIFR1 |= _BV(OCF1A);     // clear any pending interrupts;
--        TIMSK1 |= _BV(OCIE1A);   // enable the output compare interrupt
--      #endif
--      #if defined(WIRING)
--        timerAttach(TIMER1OUTCOMPAREA_INT, Timer1Service);
--      #endif
--    }
--  #endif
--
--  #if defined(_useTimer3)
--    if (timer == _timer3) {
--      TCCR3A = 0;             // normal counting mode
--      TCCR3B = _BV(CS31);     // set prescaler of 8
--      TCNT3 = 0;              // clear the timer count
--      #if defined(__AVR_ATmega128__)
--        TIFR |= _BV(OCF3A);     // clear any pending interrupts;
--      	ETIMSK |= _BV(OCIE3A);  // enable the output compare interrupt
--      #else
--        TIFR3 = _BV(OCF3A);     // clear any pending interrupts;
--        TIMSK3 =  _BV(OCIE3A) ; // enable the output compare interrupt
--      #endif
--      #if defined(WIRING)
--        timerAttach(TIMER3OUTCOMPAREA_INT, Timer3Service);  // for Wiring platform only
--      #endif
--    }
--  #endif
--
--  #if defined(_useTimer4)
--    if (timer == _timer4) {
--      TCCR4A = 0;             // normal counting mode
--      TCCR4B = _BV(CS41);     // set prescaler of 8
--      TCNT4 = 0;              // clear the timer count
--      TIFR4 = _BV(OCF4A);     // clear any pending interrupts;
--      TIMSK4 =  _BV(OCIE4A) ; // enable the output compare interrupt
--    }
--  #endif
--
--  #if defined(_useTimer5)
--    if (timer == _timer5) {
--      TCCR5A = 0;             // normal counting mode
--      TCCR5B = _BV(CS51);     // set prescaler of 8
--      TCNT5 = 0;              // clear the timer count
--      TIFR5 = _BV(OCF5A);     // clear any pending interrupts;
--      TIMSK5 =  _BV(OCIE5A) ; // enable the output compare interrupt
--    }
--  #endif
--}
--
--static void finISR(timer16_Sequence_t timer) {
--  // Disable use of the given timer
--  #if defined(WIRING)
--    if (timer == _timer1) {
--      #if defined(__AVR_ATmega1281__) || defined(__AVR_ATmega2561__)
--        TIMSK1
--      #else
--        TIMSK
--      #endif
--          &= ~_BV(OCIE1A);    // disable timer 1 output compare interrupt
--      timerDetach(TIMER1OUTCOMPAREA_INT);
--    }
--    else if (timer == _timer3) {
--      #if defined(__AVR_ATmega1281__) || defined(__AVR_ATmega2561__)
--        TIMSK3
--      #else
--        ETIMSK
--      #endif
--          &= ~_BV(OCIE3A);    // disable the timer3 output compare A interrupt
--      timerDetach(TIMER3OUTCOMPAREA_INT);
--    }
--  #else //!WIRING
--    // For arduino - in future: call here to a currently undefined function to reset the timer
--  #endif
--}
--
--static boolean isTimerActive(timer16_Sequence_t timer) {
--  // returns true if any servo is active on this timer
--  for(uint8_t channel=0; channel < SERVOS_PER_TIMER; channel++) {
--    if (SERVO(timer,channel).Pin.isActive)
--      return true;
--  }
--  return false;
--}
--
--
--/****************** end of static functions ******************************/
--
--Servo::Servo() {
--  if ( ServoCount < MAX_SERVOS) {
--    this->servoIndex = ServoCount++;                    // assign a servo index to this instance
--    servos[this->servoIndex].ticks = usToTicks(DEFAULT_PULSE_WIDTH);   // store default values  - 12 Aug 2009
--  }
--  else
--    this->servoIndex = INVALID_SERVO;  // too many servos
--}
--
--uint8_t Servo::attach(int pin) {
--  return this->attach(pin, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
--}
--
--uint8_t Servo::attach(int pin, int min, int max) {
--  if (this->servoIndex < MAX_SERVOS ) {
--  #if defined(ENABLE_AUTO_BED_LEVELING) && (PROBE_SERVO_DEACTIVATION_DELAY > 0)
--    if (pin > 0) this->pin = pin; else pin = this->pin;
--  #endif
--    pinMode(pin, OUTPUT);                                   // set servo pin to output
--    servos[this->servoIndex].Pin.nbr = pin;
--    // todo min/max check: abs(min - MIN_PULSE_WIDTH) /4 < 128
--    this->min = (MIN_PULSE_WIDTH - min) / 4; //resolution of min/max is 4 uS
--    this->max = (MAX_PULSE_WIDTH - max) / 4;
--    // initialize the timer if it has not already been initialized
--    timer16_Sequence_t timer = SERVO_INDEX_TO_TIMER(servoIndex);
--    if (!isTimerActive(timer)) initISR(timer);
--    servos[this->servoIndex].Pin.isActive = true;  // this must be set after the check for isTimerActive
--  }
--  return this->servoIndex;
--}
--
--void Servo::detach() {
--  servos[this->servoIndex].Pin.isActive = false;
--  timer16_Sequence_t timer = SERVO_INDEX_TO_TIMER(servoIndex);
--  if (!isTimerActive(timer)) finISR(timer);
--}
--
--void Servo::write(int value) {
--  if (value < MIN_PULSE_WIDTH) { // treat values less than 544 as angles in degrees (valid values in microseconds are handled as microseconds)
--    if (value < 0) value = 0;
--    if (value > 180) value = 180;
--    value = map(value, 0, 180, SERVO_MIN(),  SERVO_MAX());
--  }
--  this->writeMicroseconds(value);
--}
--
--void Servo::writeMicroseconds(int value) {
--  // calculate and store the values for the given channel
--  byte channel = this->servoIndex;
--  if (channel < MAX_SERVOS) {  // ensure channel is valid
--    if (value < SERVO_MIN())   // ensure pulse width is valid
--      value = SERVO_MIN();
--    else if (value > SERVO_MAX())
--      value = SERVO_MAX();
--
--  	value = value - TRIM_DURATION;
--    value = usToTicks(value);  // convert to ticks after compensating for interrupt overhead - 12 Aug 2009
--
--    uint8_t oldSREG = SREG;
--    cli();
--    servos[channel].ticks = value;
--    SREG = oldSREG;
--  }
--}
--
--// return the value as degrees
--int Servo::read() { return map( this->readMicroseconds()+1, SERVO_MIN(), SERVO_MAX(), 0, 180); }
--
--int Servo::readMicroseconds() {
--  return (this->servoIndex == INVALID_SERVO) ? 0 : ticksToUs(servos[this->servoIndex].ticks) + TRIM_DURATION;
--}
--
--bool Servo::attached() { return servos[this->servoIndex].Pin.isActive; }
--
--#endif
-diff --git a/Marlin/Servo.h b/Marlin/Servo.h
-deleted file mode 100644
-index 682a3b3..0000000
---- a/Marlin/Servo.h
-+++ /dev/null
-@@ -1,135 +0,0 @@
--/*
--  Servo.h - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
--  Copyright (c) 2009 Michael Margolis.  All right reserved.
--
--  This library is free software; you can redistribute it and/or
--  modify it under the terms of the GNU Lesser General Public
--  License as published by the Free Software Foundation; either
--  version 2.1 of the License, or (at your option) any later version.
--
--  This library is distributed in the hope that it will be useful,
--  but WITHOUT ANY WARRANTY; without even the implied warranty of
--  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
--  Lesser General Public License for more details.
--
--  You should have received a copy of the GNU Lesser General Public
--  License along with this library; if not, write to the Free Software
--  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
--*/
--
--/*
--
--  A servo is activated by creating an instance of the Servo class passing the desired pin to the attach() method.
--  The servos are pulsed in the background using the value most recently written using the write() method
--
--  Note that analogWrite of PWM on pins associated with the timer are disabled when the first servo is attached.
--  Timers are seized as needed in groups of 12 servos - 24 servos use two timers, 48 servos will use four.
--  The sequence used to seize timers is defined in timers.h
--
--  The methods are:
--
--   Servo - Class for manipulating servo motors connected to Arduino pins.
--
--   attach(pin )  - Attaches a servo motor to an i/o pin.
--   attach(pin, min, max  ) - Attaches to a pin setting min and max values in microseconds
--   default min is 544, max is 2400
--
--   write()     - Sets the servo angle in degrees.  (invalid angle that is valid as pulse in microseconds is treated as microseconds)
--   writeMicroseconds() - Sets the servo pulse width in microseconds
--   read()      - Gets the last written servo pulse width as an angle between 0 and 180.
--   readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
--   attached()  - Returns true if there is a servo attached.
--   detach()    - Stops an attached servos from pulsing its i/o pin.
-- */
--
--#ifndef Servo_h
--#define Servo_h
--
--#include <inttypes.h>
--
--/*
-- * Defines for 16 bit timers used with  Servo library
-- *
-- * If _useTimerX is defined then TimerX is a 16 bit timer on the current board
-- * timer16_Sequence_t enumerates the sequence that the timers should be allocated
-- * _Nbr_16timers indicates how many 16 bit timers are available.
-- *
-- */
--
--// Say which 16 bit timers can be used and in what order
--#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
--  #define _useTimer5
--  //#define _useTimer1
--  #define _useTimer3
--  #define _useTimer4
--  //typedef enum { _timer5, _timer1, _timer3, _timer4, _Nbr_16timers } timer16_Sequence_t ;
--  typedef enum { _timer5, _timer3, _timer4, _Nbr_16timers } timer16_Sequence_t ;
--
--#elif defined(__AVR_ATmega32U4__)
--  //#define _useTimer1
--  #define _useTimer3
--  //typedef enum { _timer1, _Nbr_16timers } timer16_Sequence_t ;
--  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
--
--#elif defined(__AVR_AT90USB646__) || defined(__AVR_AT90USB1286__)
--  #define _useTimer3
--  //#define _useTimer1
--  //typedef enum { _timer3, _timer1, _Nbr_16timers } timer16_Sequence_t ;
--  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
--
--#elif defined(__AVR_ATmega128__) ||defined(__AVR_ATmega1281__) || defined(__AVR_ATmega1284P__) ||defined(__AVR_ATmega2561__)
--  #define _useTimer3
--  //#define _useTimer1
--  //typedef enum { _timer3, _timer1, _Nbr_16timers } timer16_Sequence_t ;
--  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
--
--#else  // everything else
--  //#define _useTimer1
--  //typedef enum { _timer1, _Nbr_16timers } timer16_Sequence_t ;
--  typedef enum { _Nbr_16timers } timer16_Sequence_t ;
--
--#endif
--
--#define Servo_VERSION           2     // software version of this library
--
--#define MIN_PULSE_WIDTH       544     // the shortest pulse sent to a servo
--#define MAX_PULSE_WIDTH      2400     // the longest pulse sent to a servo
--#define DEFAULT_PULSE_WIDTH  1500     // default pulse width when servo is attached
--#define REFRESH_INTERVAL    20000     // minimum time to refresh servos in microseconds
--
--#define SERVOS_PER_TIMER       12     // the maximum number of servos controlled by one timer
--#define MAX_SERVOS   (_Nbr_16timers  * SERVOS_PER_TIMER)
--
--#define INVALID_SERVO         255     // flag indicating an invalid servo index
--
--typedef struct {
--  uint8_t nbr        :6 ;             // a pin number from 0 to 63
--  uint8_t isActive   :1 ;             // true if this channel is enabled, pin not pulsed if false
--} ServoPin_t;
--
--typedef struct {
--  ServoPin_t Pin;
--  unsigned int ticks;
--} servo_t;
--
--class Servo {
--  public:
--    Servo();
--    uint8_t attach(int pin);           // attach the given pin to the next free channel, sets pinMode, returns channel number or 0 if failure
--    uint8_t attach(int pin, int min, int max); // as above but also sets min and max values for writes.
--    void detach();
--    void write(int value);             // if value is < 200 it is treated as an angle, otherwise as pulse width in microseconds
--    void writeMicroseconds(int value); // Write pulse width in microseconds
--    int read();                        // returns current pulse width as an angle between 0 and 180 degrees
--    int readMicroseconds();            // returns current pulse width in microseconds for this servo (was read_us() in first release)
--    bool attached();                   // return true if this servo is attached, otherwise false
--    #if defined(ENABLE_AUTO_BED_LEVELING) && PROBE_SERVO_DEACTIVATION_DELAY > 0
--      int pin;                           // store the hardware pin of the servo
--    #endif
--  private:
--    uint8_t servoIndex;               // index into the channel data for this servo
--    int8_t min;                       // minimum is this value times 4 added to MIN_PULSE_WIDTH
--    int8_t max;                       // maximum is this value times 4 added to MAX_PULSE_WIDTH
--};
--
--#endif
-diff --git a/Marlin/blinkm.cpp b/Marlin/blinkm.cpp
-new file mode 100644
-index 0000000..1ec5b65
---- /dev/null
+diff --git a/Marlin/BlinkM.cpp b/Marlin/blinkm.cpp
+similarity index 83%
+rename from Marlin/BlinkM.cpp
+rename to Marlin/blinkm.cpp
+index b340f96..1ec5b65 100644
+--- a/Marlin/BlinkM.cpp
 +++ b/Marlin/blinkm.cpp
-@@ -0,0 +1,22 @@
-+/*
+@@ -1,11 +1,11 @@
+ /*
+-  BlinkM.cpp - Library for controlling a BlinkM over i2c
 +  blinkm.cpp - Library for controlling a BlinkM over i2c
-+  Created by Tim Koster, August 21 2013.
-+*/
-+#include "Marlin.h"
-+#ifdef BLINKM
-+
+   Created by Tim Koster, August 21 2013.
+ */
+ #include "Marlin.h"
+ #ifdef BLINKM
+ 
+-#include "BlinkM.h"
 +#include "blinkm.h"
-+
-+void SendColors(byte red, byte grn, byte blu) {
-+  Wire.begin(); 
-+  Wire.beginTransmission(0x09);
-+  Wire.write('o');                    //to disable ongoing script, only needs to be used once
-+  Wire.write('n');
-+  Wire.write(red);
-+  Wire.write(grn);
-+  Wire.write(blu);
-+  Wire.endTransmission();
-+}
-+
-+#endif //BLINKM
-+
-diff --git a/Marlin/blinkm.h b/Marlin/blinkm.h
-new file mode 100644
-index 0000000..08169e5
---- /dev/null
+ 
+ void SendColors(byte red, byte grn, byte blu) {
+   Wire.begin(); 
+diff --git a/Marlin/BlinkM.h b/Marlin/blinkm.h
+similarity index 94%
+rename from Marlin/BlinkM.h
+rename to Marlin/blinkm.h
+index 5b802b7..08169e5 100644
+--- a/Marlin/BlinkM.h
 +++ b/Marlin/blinkm.h
-@@ -0,0 +1,13 @@
-+/*
+@@ -1,5 +1,5 @@
+ /*
+-  BlinkM.h
 +  blinkm.h
-+  Library header file for BlinkM library
-+ */
-+#if ARDUINO >= 100
-+  #include "Arduino.h"
-+#else
-+  #include "WProgram.h"
-+#endif
-+
-+#include "Wire.h"
-+
-+void SendColors(byte red, byte grn, byte blu);
-diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
-new file mode 100644
-index 0000000..b950b88
---- /dev/null
+   Library header file for BlinkM library
+  */
+ #if ARDUINO >= 100
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/configuration_store.cpp
+similarity index 73%
+rename from Marlin/ConfigurationStore.cpp
+rename to Marlin/configuration_store.cpp
+index 0154691..b950b88 100644
+--- a/Marlin/ConfigurationStore.cpp
 +++ b/Marlin/configuration_store.cpp
-@@ -0,0 +1,881 @@
-+/**
+@@ -1,5 +1,5 @@
+ /**
+- * ConfigurationStore.cpp
 + * configuration_store.cpp
-+ *
-+ * Configuration and EEPROM storage
-+ *
-+ * IMPORTANT:  Whenever there are changes made to the variables stored in EEPROM
-+ * in the functions below, also increment the version number. This makes sure that
-+ * the default values are used whenever there is a change to the data, to prevent
-+ * wrong data being written to the variables.
-+ *
-+ * ALSO: Variables in the Store and Retrieve sections must be in the same order.
-+ *       If a feature is disabled, some data must still be written that, when read,
-+ *       either sets a Sane Default, or results in No Change to the existing value.
-+ *
-+ */
-+
-+#define EEPROM_VERSION "V19"
-+
-+/**
-+ * V19 EEPROM Layout:
-+ *
-+ *  ver
+  *
+  * Configuration and EEPROM storage
+  *
+@@ -20,72 +20,72 @@
+  * V19 EEPROM Layout:
+  *
+  *  ver
+- *  axis_steps_per_unit (x4)
+- *  max_feedrate (x4)
+- *  max_acceleration_units_per_sq_second (x4)
+- *  acceleration
+- *  retract_acceleration
+- *  travel_acceleration
+- *  minimumfeedrate
+- *  mintravelfeedrate
+- *  minsegmenttime
+- *  max_xy_jerk
+- *  max_z_jerk
+- *  max_e_jerk
+- *  home_offset (x3)
 + *  M92 XYZE  axis_steps_per_unit (x4)
 + *  M203 XYZE max_feedrate (x4)
 + *  M201 XYZE max_acceleration_units_per_sq_second (x4)
@@ -3271,44 +1677,74 @@ index 0000000..b950b88
 + *  M205 Z    max_z_jerk
 + *  M205 E    max_e_jerk
 + *  M206 XYZ  home_offset (x3)
-+ *
-+ * Mesh bed leveling:
+  *
+  * Mesh bed leveling:
+- *  active
+- *  mesh_num_x
+- *  mesh_num_y
+- *  z_values[][]
+- *  zprobe_zoffset
 + *  M420 S    active
 + *            mesh_num_x (set in firmware)
 + *            mesh_num_y (set in firmware)
 + *  M421 XYZ  z_values[][]
 + *  M851      zprobe_zoffset
-+ *
-+ * DELTA:
+  *
+  * DELTA:
+- *  endstop_adj (x3)
+- *  delta_radius
+- *  delta_diagonal_rod
+- *  delta_segments_per_second
 + *  M666 XYZ  endstop_adj (x3)
 + *  M665 R    delta_radius
 + *  M665 L    delta_diagonal_rod
 + *  M665 S    delta_segments_per_second
-+ *
-+ * ULTIPANEL:
+  *
+  * ULTIPANEL:
+- *  plaPreheatHotendTemp
+- *  plaPreheatHPBTemp
+- *  plaPreheatFanSpeed
+- *  absPreheatHotendTemp
+- *  absPreheatHPBTemp
+- *  absPreheatFanSpeed
 + *  M145 S0 H plaPreheatHotendTemp
 + *  M145 S0 B plaPreheatHPBTemp
 + *  M145 S0 F plaPreheatFanSpeed
 + *  M145 S1 H absPreheatHotendTemp
 + *  M145 S1 B absPreheatHPBTemp
 + *  M145 S1 F absPreheatFanSpeed
-+ *
-+ * PIDTEMP:
+  *
+  * PIDTEMP:
+- *  Kp[0], Ki[0], Kd[0], Kc[0]
+- *  Kp[1], Ki[1], Kd[1], Kc[1]
+- *  Kp[2], Ki[2], Kd[2], Kc[2]
+- *  Kp[3], Ki[3], Kd[3], Kc[3]
 + *  M301 E0 PIDC  Kp[0], Ki[0], Kd[0], Kc[0]
 + *  M301 E1 PIDC  Kp[1], Ki[1], Kd[1], Kc[1]
 + *  M301 E2 PIDC  Kp[2], Ki[2], Kd[2], Kc[2]
 + *  M301 E3 PIDC  Kp[3], Ki[3], Kd[3], Kc[3]
-+ *
-+ * PIDTEMPBED:
+  *
+  * PIDTEMPBED:
+- *  bedKp, bedKi, bedKd
 + *  M304 PID  bedKp, bedKi, bedKd
-+ *
-+ * DOGLCD:
+  *
+  * DOGLCD:
+- *  lcd_contrast
 + *  M250 C    lcd_contrast
-+ *
-+ * SCARA:
+  *
+  * SCARA:
+- *  axis_scaling (x3)
 + *  M365 XYZ  axis_scaling (x3)
-+ *
-+ * FWRETRACT:
+  *
+  * FWRETRACT:
+- *  autoretract_enabled
+- *  retract_length
+- *  retract_length_swap
+- *  retract_feedrate
+- *  retract_zlift
+- *  retract_recover_length
+- *  retract_recover_length_swap
+- *  retract_recover_feedrate
 + *  M209 S    autoretract_enabled
 + *  M207 S    retract_length
 + *  M207 W    retract_length_swap
@@ -3317,598 +1753,265 @@ index 0000000..b950b88
 + *  M208 S    retract_recover_length
 + *  M208 W    retract_recover_length_swap
 + *  M208 F    retract_recover_feedrate
-+ *
+  *
+- *  volumetric_enabled
 + *  M200 D    volumetric_enabled (D>0 makes this enabled)
-+ *
+  *
+- *  filament_size (x4)
 + *  M200 T D  filament_size (x4) (T0..3)
-+ *
+  *
+- * Z_DUAL_ENDSTOPS
+- *  z_endstop_adj
 + * Z_DUAL_ENDSTOPS:
 + *  M666 Z    z_endstop_adj
-+ *
-+ */
-+#include "Marlin.h"
-+#include "language.h"
-+#include "planner.h"
-+#include "temperature.h"
-+#include "ultralcd.h"
+  *
+  */
+ #include "Marlin.h"
+@@ -93,11 +93,11 @@
+ #include "planner.h"
+ #include "temperature.h"
+ #include "ultralcd.h"
+-#include "ConfigurationStore.h"
 +#include "configuration_store.h"
-+
-+#ifdef MESH_BED_LEVELING
+ 
+ #ifdef MESH_BED_LEVELING
+-   #include "mesh_bed_leveling.h"
+-#endif  // MESH_BED_LEVELING
 +  #include "mesh_bed_leveling.h"
 +#endif
-+
-+void _EEPROM_writeData(int &pos, uint8_t* value, uint8_t size) {
-+  uint8_t c;
-+  while(size--) {
-+    eeprom_write_byte((unsigned char*)pos, *value);
-+    c = eeprom_read_byte((unsigned char*)pos);
-+    if (c != *value) {
-+      SERIAL_ECHO_START;
-+      SERIAL_ECHOLNPGM(MSG_ERR_EEPROM_WRITE);
-+    }
-+    pos++;
-+    value++;
-+  };
-+}
-+void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size) {
-+  do {
-+    *value = eeprom_read_byte((unsigned char*)pos);
-+    pos++;
-+    value++;
-+  } while (--size);
-+}
-+#define EEPROM_WRITE_VAR(pos, value) _EEPROM_writeData(pos, (uint8_t*)&value, sizeof(value))
-+#define EEPROM_READ_VAR(pos, value) _EEPROM_readData(pos, (uint8_t*)&value, sizeof(value))
-+
+ 
+ void _EEPROM_writeData(int &pos, uint8_t* value, uint8_t size) {
+   uint8_t c;
+@@ -122,7 +122,9 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size) {
+ #define EEPROM_WRITE_VAR(pos, value) _EEPROM_writeData(pos, (uint8_t*)&value, sizeof(value))
+ #define EEPROM_READ_VAR(pos, value) _EEPROM_readData(pos, (uint8_t*)&value, sizeof(value))
+ 
+-//======================================================================================
 +/**
 + * Store Configuration Settings - M500
 + */
-+
-+#define DUMMY_PID_VALUE 3000.0f
-+
-+#define EEPROM_OFFSET 100
-+
-+#ifdef EEPROM_SETTINGS
-+
-+void Config_StoreSettings()  {
-+  float dummy = 0.0f;
-+  char ver[4] = "000";
-+  int i = EEPROM_OFFSET;
-+  EEPROM_WRITE_VAR(i, ver); // invalidate data first
-+  EEPROM_WRITE_VAR(i, axis_steps_per_unit);
-+  EEPROM_WRITE_VAR(i, max_feedrate);
-+  EEPROM_WRITE_VAR(i, max_acceleration_units_per_sq_second);
-+  EEPROM_WRITE_VAR(i, acceleration);
-+  EEPROM_WRITE_VAR(i, retract_acceleration);
-+  EEPROM_WRITE_VAR(i, travel_acceleration);
-+  EEPROM_WRITE_VAR(i, minimumfeedrate);
-+  EEPROM_WRITE_VAR(i, mintravelfeedrate);
-+  EEPROM_WRITE_VAR(i, minsegmenttime);
-+  EEPROM_WRITE_VAR(i, max_xy_jerk);
-+  EEPROM_WRITE_VAR(i, max_z_jerk);
-+  EEPROM_WRITE_VAR(i, max_e_jerk);
-+  EEPROM_WRITE_VAR(i, home_offset);
-+
-+  uint8_t mesh_num_x = 3;
-+  uint8_t mesh_num_y = 3;
-+  #ifdef MESH_BED_LEVELING
-+    // Compile time test that sizeof(mbl.z_values) is as expected
-+    typedef char c_assert[(sizeof(mbl.z_values) == MESH_NUM_X_POINTS*MESH_NUM_Y_POINTS*sizeof(dummy)) ? 1 : -1];
-+    mesh_num_x = MESH_NUM_X_POINTS;
-+    mesh_num_y = MESH_NUM_Y_POINTS;
-+    EEPROM_WRITE_VAR(i, mbl.active);
-+    EEPROM_WRITE_VAR(i, mesh_num_x);
-+    EEPROM_WRITE_VAR(i, mesh_num_y);
-+    EEPROM_WRITE_VAR(i, mbl.z_values);
-+  #else
-+    uint8_t dummy_uint8 = 0;
-+    EEPROM_WRITE_VAR(i, dummy_uint8);
-+    EEPROM_WRITE_VAR(i, mesh_num_x);
-+    EEPROM_WRITE_VAR(i, mesh_num_y);
-+    dummy = 0.0f;
+ 
+ #define DUMMY_PID_VALUE 3000.0f
+ 
+@@ -166,9 +168,7 @@ void Config_StoreSettings()  {
+     EEPROM_WRITE_VAR(i, mesh_num_x);
+     EEPROM_WRITE_VAR(i, mesh_num_y);
+     dummy = 0.0f;
+-    for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
+-      EEPROM_WRITE_VAR(i, dummy);
+-    }
 +    for (int q=0; q<mesh_num_x*mesh_num_y; q++) EEPROM_WRITE_VAR(i, dummy);
-+  #endif // MESH_BED_LEVELING
-+
-+  #ifndef ENABLE_AUTO_BED_LEVELING
-+    float zprobe_zoffset = 0;
-+  #endif
-+  EEPROM_WRITE_VAR(i, zprobe_zoffset);
-+
-+  #ifdef DELTA
-+    EEPROM_WRITE_VAR(i, endstop_adj);               // 3 floats
-+    EEPROM_WRITE_VAR(i, delta_radius);              // 1 float
-+    EEPROM_WRITE_VAR(i, delta_diagonal_rod);        // 1 float
-+    EEPROM_WRITE_VAR(i, delta_segments_per_second); // 1 float
-+  #elif defined(Z_DUAL_ENDSTOPS)
-+    EEPROM_WRITE_VAR(i, z_endstop_adj);            // 1 floats
-+    dummy = 0.0f;
-+    for (int q=5; q--;) EEPROM_WRITE_VAR(i, dummy);
-+  #else
-+    dummy = 0.0f;
-+    for (int q=6; q--;) EEPROM_WRITE_VAR(i, dummy);
-+  #endif
-+
-+  #ifndef ULTIPANEL
-+    int plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP, plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP, plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED,
-+        absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP, absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP, absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
-+  #endif // !ULTIPANEL
-+
-+  EEPROM_WRITE_VAR(i, plaPreheatHotendTemp);
-+  EEPROM_WRITE_VAR(i, plaPreheatHPBTemp);
-+  EEPROM_WRITE_VAR(i, plaPreheatFanSpeed);
-+  EEPROM_WRITE_VAR(i, absPreheatHotendTemp);
-+  EEPROM_WRITE_VAR(i, absPreheatHPBTemp);
-+  EEPROM_WRITE_VAR(i, absPreheatFanSpeed);
-+
-+  for (int e = 0; e < 4; e++) {
-+
-+    #ifdef PIDTEMP
-+      if (e < EXTRUDERS) {
-+        EEPROM_WRITE_VAR(i, PID_PARAM(Kp, e));
-+        EEPROM_WRITE_VAR(i, PID_PARAM(Ki, e));
-+        EEPROM_WRITE_VAR(i, PID_PARAM(Kd, e));
-+        #ifdef PID_ADD_EXTRUSION_RATE
-+          EEPROM_WRITE_VAR(i, PID_PARAM(Kc, e));
-+        #else
-+          dummy = 1.0f; // 1.0 = default kc
-+          EEPROM_WRITE_VAR(i, dummy);
-+        #endif
-+      }
-+      else
-+    #endif // !PIDTEMP
-+      {
-+        dummy = DUMMY_PID_VALUE; // When read, will not change the existing value
-+        EEPROM_WRITE_VAR(i, dummy);
-+        dummy = 0.0f;
-+        for (int q = 3; q--;) EEPROM_WRITE_VAR(i, dummy);
-+      }
-+
-+  } // Extruders Loop
-+
-+  #ifndef PIDTEMPBED
-+    float bedKp = DUMMY_PID_VALUE, bedKi = DUMMY_PID_VALUE, bedKd = DUMMY_PID_VALUE;
-+  #endif
-+
-+  EEPROM_WRITE_VAR(i, bedKp);
-+  EEPROM_WRITE_VAR(i, bedKi);
-+  EEPROM_WRITE_VAR(i, bedKd);
-+
+   #endif // MESH_BED_LEVELING
+ 
+   #ifndef ENABLE_AUTO_BED_LEVELING
+@@ -235,7 +235,7 @@ void Config_StoreSettings()  {
+   EEPROM_WRITE_VAR(i, bedKi);
+   EEPROM_WRITE_VAR(i, bedKd);
+ 
+-  #ifndef DOGLCD
 +  #ifndef HAS_LCD_CONTRAST
-+    int lcd_contrast = 32;
-+  #endif
-+  EEPROM_WRITE_VAR(i, lcd_contrast);
-+
-+  #ifdef SCARA
-+    EEPROM_WRITE_VAR(i, axis_scaling); // 3 floats
-+  #else
-+    dummy = 1.0f;
-+    EEPROM_WRITE_VAR(i, dummy);
-+  #endif
-+
-+  #ifdef FWRETRACT
-+    EEPROM_WRITE_VAR(i, autoretract_enabled);
-+    EEPROM_WRITE_VAR(i, retract_length);
-+    #if EXTRUDERS > 1
-+      EEPROM_WRITE_VAR(i, retract_length_swap);
-+    #else
-+      dummy = 0.0f;
-+      EEPROM_WRITE_VAR(i, dummy);
-+    #endif
-+    EEPROM_WRITE_VAR(i, retract_feedrate);
-+    EEPROM_WRITE_VAR(i, retract_zlift);
-+    EEPROM_WRITE_VAR(i, retract_recover_length);
-+    #if EXTRUDERS > 1
-+      EEPROM_WRITE_VAR(i, retract_recover_length_swap);
-+    #else
-+      dummy = 0.0f;
-+      EEPROM_WRITE_VAR(i, dummy);
-+    #endif
-+    EEPROM_WRITE_VAR(i, retract_recover_feedrate);
-+  #endif // FWRETRACT
-+
-+  EEPROM_WRITE_VAR(i, volumetric_enabled);
-+
-+  // Save filament sizes
-+  for (int q = 0; q < 4; q++) {
-+    if (q < EXTRUDERS) dummy = filament_size[q];
-+    EEPROM_WRITE_VAR(i, dummy);
-+  }
-+
-+  char ver2[4] = EEPROM_VERSION;
-+  int j = EEPROM_OFFSET;
-+  EEPROM_WRITE_VAR(j, ver2); // validate data
-+
-+  // Report storage size
-+  SERIAL_ECHO_START;
-+  SERIAL_ECHOPAIR("Settings Stored (", (unsigned long)i);
-+  SERIAL_ECHOLNPGM(" bytes)");
-+}
-+
+     int lcd_contrast = 32;
+   #endif
+   EEPROM_WRITE_VAR(i, lcd_contrast);
+@@ -286,6 +286,10 @@ void Config_StoreSettings()  {
+   SERIAL_ECHOLNPGM(" bytes)");
+ }
+ 
 +/**
 + * Retrieve Configuration Settings - M501
 + */
 +
-+void Config_RetrieveSettings() {
-+
-+  int i = EEPROM_OFFSET;
-+  char stored_ver[4];
-+  char ver[4] = EEPROM_VERSION;
-+  EEPROM_READ_VAR(i, stored_ver); //read stored version
-+  //  SERIAL_ECHOLN("Version: [" << ver << "] Stored version: [" << stored_ver << "]");
-+
-+  if (strncmp(ver, stored_ver, 3) != 0) {
-+    Config_ResetDefault();
-+  }
-+  else {
-+    float dummy = 0;
-+
-+    // version number match
-+    EEPROM_READ_VAR(i, axis_steps_per_unit);
-+    EEPROM_READ_VAR(i, max_feedrate);
-+    EEPROM_READ_VAR(i, max_acceleration_units_per_sq_second);
-+
-+    // steps per sq second need to be updated to agree with the units per sq second (as they are what is used in the planner)
-+    reset_acceleration_rates();
-+
-+    EEPROM_READ_VAR(i, acceleration);
-+    EEPROM_READ_VAR(i, retract_acceleration);
-+    EEPROM_READ_VAR(i, travel_acceleration);
-+    EEPROM_READ_VAR(i, minimumfeedrate);
-+    EEPROM_READ_VAR(i, mintravelfeedrate);
-+    EEPROM_READ_VAR(i, minsegmenttime);
-+    EEPROM_READ_VAR(i, max_xy_jerk);
-+    EEPROM_READ_VAR(i, max_z_jerk);
-+    EEPROM_READ_VAR(i, max_e_jerk);
-+    EEPROM_READ_VAR(i, home_offset);
-+
+ void Config_RetrieveSettings() {
+ 
+   int i = EEPROM_OFFSET;
+@@ -319,30 +323,21 @@ void Config_RetrieveSettings() {
+     EEPROM_READ_VAR(i, max_e_jerk);
+     EEPROM_READ_VAR(i, home_offset);
+ 
+-    uint8_t mesh_num_x = 0;
+-    uint8_t mesh_num_y = 0;
 +    uint8_t dummy_uint8 = 0, mesh_num_x = 0, mesh_num_y = 0;
 +    EEPROM_READ_VAR(i, dummy_uint8);
 +    EEPROM_READ_VAR(i, mesh_num_x);
 +    EEPROM_READ_VAR(i, mesh_num_y);
-+    #ifdef MESH_BED_LEVELING
+     #ifdef MESH_BED_LEVELING
+-      EEPROM_READ_VAR(i, mbl.active);
+-      EEPROM_READ_VAR(i, mesh_num_x);
+-      EEPROM_READ_VAR(i, mesh_num_y);
+-      if (mesh_num_x != MESH_NUM_X_POINTS ||
+-          mesh_num_y != MESH_NUM_Y_POINTS) {
+-        mbl.reset();
+-        for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
+-          EEPROM_READ_VAR(i, dummy);
+-        }
+-      } else {
 +      mbl.active = dummy_uint8;
 +      if (mesh_num_x == MESH_NUM_X_POINTS && mesh_num_y == MESH_NUM_Y_POINTS) {
-+        EEPROM_READ_VAR(i, mbl.z_values);
+         EEPROM_READ_VAR(i, mbl.z_values);
 +      } else {
 +        mbl.reset();
 +        for (int q = 0; q < mesh_num_x * mesh_num_y; q++) EEPROM_READ_VAR(i, dummy);
-+      }
-+    #else
+       }
+     #else
+-      uint8_t dummy_uint8 = 0;
+-      EEPROM_READ_VAR(i, dummy_uint8);
+-      EEPROM_READ_VAR(i, mesh_num_x);
+-      EEPROM_READ_VAR(i, mesh_num_y);
+-      for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
+-        EEPROM_READ_VAR(i, dummy);
+-      }
+-    #endif  // MESH_BED_LEVELING
 +      for (int q = 0; q < mesh_num_x * mesh_num_y; q++) EEPROM_READ_VAR(i, dummy);
 +    #endif // MESH_BED_LEVELING
-+
-+    #ifndef ENABLE_AUTO_BED_LEVELING
-+      float zprobe_zoffset = 0;
-+    #endif
-+    EEPROM_READ_VAR(i, zprobe_zoffset);
-+
-+    #ifdef DELTA
-+      EEPROM_READ_VAR(i, endstop_adj);                // 3 floats
-+      EEPROM_READ_VAR(i, delta_radius);               // 1 float
-+      EEPROM_READ_VAR(i, delta_diagonal_rod);         // 1 float
-+      EEPROM_READ_VAR(i, delta_segments_per_second);  // 1 float
-+    #elif defined(Z_DUAL_ENDSTOPS)
-+      EEPROM_READ_VAR(i, z_endstop_adj);
-+      dummy = 0.0f;
-+      for (int q=5; q--;) EEPROM_READ_VAR(i, dummy);
-+    #else
-+      dummy = 0.0f;
-+      for (int q=6; q--;) EEPROM_READ_VAR(i, dummy);
-+    #endif
-+
-+    #ifndef ULTIPANEL
-+      int plaPreheatHotendTemp, plaPreheatHPBTemp, plaPreheatFanSpeed,
-+          absPreheatHotendTemp, absPreheatHPBTemp, absPreheatFanSpeed;
-+    #endif
-+
-+    EEPROM_READ_VAR(i, plaPreheatHotendTemp);
-+    EEPROM_READ_VAR(i, plaPreheatHPBTemp);
-+    EEPROM_READ_VAR(i, plaPreheatFanSpeed);
-+    EEPROM_READ_VAR(i, absPreheatHotendTemp);
-+    EEPROM_READ_VAR(i, absPreheatHPBTemp);
-+    EEPROM_READ_VAR(i, absPreheatFanSpeed);
-+
-+    #ifdef PIDTEMP
-+      for (int e = 0; e < 4; e++) { // 4 = max extruders currently supported by Marlin
-+        EEPROM_READ_VAR(i, dummy); // Kp
-+        if (e < EXTRUDERS && dummy != DUMMY_PID_VALUE) {
-+          // do not need to scale PID values as the values in EEPROM are already scaled
-+          PID_PARAM(Kp, e) = dummy;
-+          EEPROM_READ_VAR(i, PID_PARAM(Ki, e));
-+          EEPROM_READ_VAR(i, PID_PARAM(Kd, e));
-+          #ifdef PID_ADD_EXTRUSION_RATE
-+            EEPROM_READ_VAR(i, PID_PARAM(Kc, e));
-+          #else
-+            EEPROM_READ_VAR(i, dummy);
-+          #endif
-+        }
-+        else {
-+          for (int q=3; q--;) EEPROM_READ_VAR(i, dummy); // Ki, Kd, Kc
-+        }
-+      }
-+    #else // !PIDTEMP
-+      // 4 x 4 = 16 slots for PID parameters
-+      for (int q=16; q--;) EEPROM_READ_VAR(i, dummy);  // 4x Kp, Ki, Kd, Kc
-+    #endif // !PIDTEMP
-+
-+    #ifndef PIDTEMPBED
-+      float bedKp, bedKi, bedKd;
-+    #endif
-+
-+    EEPROM_READ_VAR(i, dummy); // bedKp
-+    if (dummy != DUMMY_PID_VALUE) {
-+      bedKp = dummy;
-+      EEPROM_READ_VAR(i, bedKi);
-+      EEPROM_READ_VAR(i, bedKd);
-+    }
-+    else {
-+      for (int q=2; q--;) EEPROM_READ_VAR(i, dummy); // bedKi, bedKd
-+    }
-+
+ 
+     #ifndef ENABLE_AUTO_BED_LEVELING
+       float zprobe_zoffset = 0;
+@@ -412,7 +407,7 @@ void Config_RetrieveSettings() {
+       for (int q=2; q--;) EEPROM_READ_VAR(i, dummy); // bedKi, bedKd
+     }
+ 
+-    #ifndef DOGLCD
 +    #ifndef HAS_LCD_CONTRAST
-+      int lcd_contrast;
-+    #endif
-+    EEPROM_READ_VAR(i, lcd_contrast);
-+
-+    #ifdef SCARA
-+      EEPROM_READ_VAR(i, axis_scaling);  // 3 floats
-+    #else
-+      EEPROM_READ_VAR(i, dummy);
-+    #endif
-+
-+    #ifdef FWRETRACT
-+      EEPROM_READ_VAR(i, autoretract_enabled);
-+      EEPROM_READ_VAR(i, retract_length);
-+      #if EXTRUDERS > 1
-+        EEPROM_READ_VAR(i, retract_length_swap);
-+      #else
-+        EEPROM_READ_VAR(i, dummy);
-+      #endif
-+      EEPROM_READ_VAR(i, retract_feedrate);
-+      EEPROM_READ_VAR(i, retract_zlift);
-+      EEPROM_READ_VAR(i, retract_recover_length);
-+      #if EXTRUDERS > 1
-+        EEPROM_READ_VAR(i, retract_recover_length_swap);
-+      #else
-+        EEPROM_READ_VAR(i, dummy);
-+      #endif
-+      EEPROM_READ_VAR(i, retract_recover_feedrate);
-+    #endif // FWRETRACT
-+
-+    EEPROM_READ_VAR(i, volumetric_enabled);
-+
-+    for (int q = 0; q < 4; q++) {
-+      EEPROM_READ_VAR(i, dummy);
-+      if (q < EXTRUDERS) filament_size[q] = dummy;
-+    }
-+
-+    calculate_volumetric_multipliers();
-+    // Call updatePID (similar to when we have processed M301)
-+    updatePID();
-+
-+    // Report settings retrieved and length
-+    SERIAL_ECHO_START;
-+    SERIAL_ECHO(ver);
-+    SERIAL_ECHOPAIR(" stored settings retrieved (", (unsigned long)i);
-+    SERIAL_ECHOLNPGM(" bytes)");
-+  }
-+
-+  #ifdef EEPROM_CHITCHAT
-+    Config_PrintSettings();
-+  #endif
-+}
-+
-+#endif // EEPROM_SETTINGS
-+
+       int lcd_contrast;
+     #endif
+     EEPROM_READ_VAR(i, lcd_contrast);
+@@ -467,6 +462,10 @@ void Config_RetrieveSettings() {
+ 
+ #endif // EEPROM_SETTINGS
+ 
 +/**
 + * Reset Configuration Settings - M502
 + */
 +
-+void Config_ResetDefault() {
-+  float tmp1[] = DEFAULT_AXIS_STEPS_PER_UNIT;
-+  float tmp2[] = DEFAULT_MAX_FEEDRATE;
-+  long tmp3[] = DEFAULT_MAX_ACCELERATION;
-+  for (uint16_t i = 0; i < NUM_AXIS; i++) {
-+    axis_steps_per_unit[i] = tmp1[i];
-+    max_feedrate[i] = tmp2[i];
-+    max_acceleration_units_per_sq_second[i] = tmp3[i];
-+    #ifdef SCARA
-+      if (i < sizeof(axis_scaling) / sizeof(*axis_scaling))
-+        axis_scaling[i] = 1;
-+    #endif
-+  }
-+
-+  // steps per sq second need to be updated to agree with the units per sq second
-+  reset_acceleration_rates();
-+
-+  acceleration = DEFAULT_ACCELERATION;
-+  retract_acceleration = DEFAULT_RETRACT_ACCELERATION;
-+  travel_acceleration = DEFAULT_TRAVEL_ACCELERATION;
-+  minimumfeedrate = DEFAULT_MINIMUMFEEDRATE;
-+  minsegmenttime = DEFAULT_MINSEGMENTTIME;
-+  mintravelfeedrate = DEFAULT_MINTRAVELFEEDRATE;
-+  max_xy_jerk = DEFAULT_XYJERK;
-+  max_z_jerk = DEFAULT_ZJERK;
-+  max_e_jerk = DEFAULT_EJERK;
-+  home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
-+
-+  #ifdef MESH_BED_LEVELING
-+    mbl.active = 0;
-+  #endif
-+
-+  #ifdef ENABLE_AUTO_BED_LEVELING
-+    zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
-+  #endif
-+
-+  #ifdef DELTA
-+    endstop_adj[X_AXIS] = endstop_adj[Y_AXIS] = endstop_adj[Z_AXIS] = 0;
-+    delta_radius =  DELTA_RADIUS;
-+    delta_diagonal_rod =  DELTA_DIAGONAL_ROD;
-+    delta_segments_per_second =  DELTA_SEGMENTS_PER_SECOND;
-+    recalc_delta_settings(delta_radius, delta_diagonal_rod);
-+  #elif defined(Z_DUAL_ENDSTOPS)
-+    z_endstop_adj = 0;
-+  #endif
-+
-+  #ifdef ULTIPANEL
-+    plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP;
-+    plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP;
-+    plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED;
-+    absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP;
-+    absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
-+    absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
-+  #endif
-+
+ void Config_ResetDefault() {
+   float tmp1[] = DEFAULT_AXIS_STEPS_PER_UNIT;
+   float tmp2[] = DEFAULT_MAX_FEEDRATE;
+@@ -522,7 +521,7 @@ void Config_ResetDefault() {
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+   #endif
+ 
+-  #ifdef DOGLCD
 +  #ifdef HAS_LCD_CONTRAST
-+    lcd_contrast = DEFAULT_LCD_CONTRAST;
-+  #endif
-+
-+  #ifdef PIDTEMP
-+    #ifdef PID_PARAMS_PER_EXTRUDER
-+      for (int e = 0; e < EXTRUDERS; e++)
-+    #else
-+      int e = 0; // only need to write once
-+    #endif
-+    {
-+      PID_PARAM(Kp, e) = DEFAULT_Kp;
-+      PID_PARAM(Ki, e) = scalePID_i(DEFAULT_Ki);
-+      PID_PARAM(Kd, e) = scalePID_d(DEFAULT_Kd);
-+      #ifdef PID_ADD_EXTRUSION_RATE
-+        PID_PARAM(Kc, e) = DEFAULT_Kc;
-+      #endif
-+    }
-+    // call updatePID (similar to when we have processed M301)
-+    updatePID();
-+  #endif // PIDTEMP
-+
-+  #ifdef PIDTEMPBED
-+    bedKp = DEFAULT_bedKp;
-+    bedKi = scalePID_i(DEFAULT_bedKi);
-+    bedKd = scalePID_d(DEFAULT_bedKd);
-+  #endif
-+
-+  #ifdef FWRETRACT
-+    autoretract_enabled = false;
-+    retract_length = RETRACT_LENGTH;
-+    #if EXTRUDERS > 1
-+      retract_length_swap = RETRACT_LENGTH_SWAP;
-+    #endif
-+    retract_feedrate = RETRACT_FEEDRATE;
-+    retract_zlift = RETRACT_ZLIFT;
-+    retract_recover_length = RETRACT_RECOVER_LENGTH;
-+    #if EXTRUDERS > 1
-+      retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
-+    #endif
-+    retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
-+  #endif
-+
-+  volumetric_enabled = false;
-+  filament_size[0] = DEFAULT_NOMINAL_FILAMENT_DIA;
-+  #if EXTRUDERS > 1
-+    filament_size[1] = DEFAULT_NOMINAL_FILAMENT_DIA;
-+    #if EXTRUDERS > 2
-+      filament_size[2] = DEFAULT_NOMINAL_FILAMENT_DIA;
-+      #if EXTRUDERS > 3
-+        filament_size[3] = DEFAULT_NOMINAL_FILAMENT_DIA;
-+      #endif
-+    #endif
-+  #endif
-+  calculate_volumetric_multipliers();
-+
-+  SERIAL_ECHO_START;
-+  SERIAL_ECHOLNPGM("Hardcoded Default Settings Loaded");
-+}
-+
-+#ifndef DISABLE_M503
-+
+     lcd_contrast = DEFAULT_LCD_CONTRAST;
+   #endif
+ 
+@@ -584,14 +583,20 @@ void Config_ResetDefault() {
+ 
+ #ifndef DISABLE_M503
+ 
 +/**
 + * Print Configuration Settings - M503
 + */
 +
 +#define CONFIG_ECHO_START do{ if (!forReplay) SERIAL_ECHO_START; }while(0)
 +
-+void Config_PrintSettings(bool forReplay) {
-+  // Always have this function, even with EEPROM_SETTINGS disabled, the current values will be shown
-+
+ void Config_PrintSettings(bool forReplay) {
+   // Always have this function, even with EEPROM_SETTINGS disabled, the current values will be shown
+ 
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Steps per unit:");
+ 
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Steps per unit:");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
-+  SERIAL_ECHOPAIR("  M92 X", axis_steps_per_unit[X_AXIS]);
-+  SERIAL_ECHOPAIR(" Y", axis_steps_per_unit[Y_AXIS]);
-+  SERIAL_ECHOPAIR(" Z", axis_steps_per_unit[Z_AXIS]);
-+  SERIAL_ECHOPAIR(" E", axis_steps_per_unit[E_AXIS]);
-+  SERIAL_EOL;
-+
+   }
+   SERIAL_ECHOPAIR("  M92 X", axis_steps_per_unit[X_AXIS]);
+   SERIAL_ECHOPAIR(" Y", axis_steps_per_unit[Y_AXIS]);
+@@ -599,23 +604,23 @@ void Config_PrintSettings(bool forReplay) {
+   SERIAL_ECHOPAIR(" E", axis_steps_per_unit[E_AXIS]);
+   SERIAL_EOL;
+ 
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+
-+  #ifdef SCARA
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Scaling factors:");
+ 
+   #ifdef SCARA
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Scaling factors:");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
-+    SERIAL_ECHOPAIR("  M365 X", axis_scaling[X_AXIS]);
-+    SERIAL_ECHOPAIR(" Y", axis_scaling[Y_AXIS]);
-+    SERIAL_ECHOPAIR(" Z", axis_scaling[Z_AXIS]);
-+    SERIAL_EOL;
+     }
+     SERIAL_ECHOPAIR("  M365 X", axis_scaling[X_AXIS]);
+     SERIAL_ECHOPAIR(" Y", axis_scaling[Y_AXIS]);
+     SERIAL_ECHOPAIR(" Z", axis_scaling[Z_AXIS]);
+     SERIAL_EOL;
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  #endif // SCARA
-+
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
+   #endif // SCARA
+ 
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
-+  SERIAL_ECHOPAIR("  M203 X", max_feedrate[X_AXIS]);
-+  SERIAL_ECHOPAIR(" Y", max_feedrate[Y_AXIS]);
-+  SERIAL_ECHOPAIR(" Z", max_feedrate[Z_AXIS]);
-+  SERIAL_ECHOPAIR(" E", max_feedrate[E_AXIS]);
-+  SERIAL_EOL;
-+
+   }
+   SERIAL_ECHOPAIR("  M203 X", max_feedrate[X_AXIS]);
+   SERIAL_ECHOPAIR(" Y", max_feedrate[Y_AXIS]);
+@@ -623,160 +628,224 @@ void Config_PrintSettings(bool forReplay) {
+   SERIAL_ECHOPAIR(" E", max_feedrate[E_AXIS]);
+   SERIAL_EOL;
+ 
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
+   }
+-  SERIAL_ECHOPAIR("  M201 X", max_acceleration_units_per_sq_second[X_AXIS] );
+-  SERIAL_ECHOPAIR(" Y", max_acceleration_units_per_sq_second[Y_AXIS] );
+-  SERIAL_ECHOPAIR(" Z", max_acceleration_units_per_sq_second[Z_AXIS] );
 +  SERIAL_ECHOPAIR("  M201 X", max_acceleration_units_per_sq_second[X_AXIS]);
 +  SERIAL_ECHOPAIR(" Y", max_acceleration_units_per_sq_second[Y_AXIS]);
 +  SERIAL_ECHOPAIR(" Z", max_acceleration_units_per_sq_second[Z_AXIS]);
-+  SERIAL_ECHOPAIR(" E", max_acceleration_units_per_sq_second[E_AXIS]);
-+  SERIAL_EOL;
+   SERIAL_ECHOPAIR(" E", max_acceleration_units_per_sq_second[E_AXIS]);
+   SERIAL_EOL;
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Accelerations: P=printing, R=retract and T=travel");
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Accelerations: P=printing, R=retract and T=travel");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
+   }
+-  SERIAL_ECHOPAIR("  M204 P", acceleration );
 +  SERIAL_ECHOPAIR("  M204 P", acceleration);
-+  SERIAL_ECHOPAIR(" R", retract_acceleration);
-+  SERIAL_ECHOPAIR(" T", travel_acceleration);
-+  SERIAL_EOL;
-+
+   SERIAL_ECHOPAIR(" R", retract_acceleration);
+   SERIAL_ECHOPAIR(" T", travel_acceleration);
+   SERIAL_EOL;
+ 
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum XY jerk (mm/s),  Z=maximum Z jerk (mm/s),  E=maximum E jerk (mm/s)");
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum XY jerk (mm/s),  Z=maximum Z jerk (mm/s),  E=maximum E jerk (mm/s)");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
+   }
+-  SERIAL_ECHOPAIR("  M205 S", minimumfeedrate );
+-  SERIAL_ECHOPAIR(" T", mintravelfeedrate );
+-  SERIAL_ECHOPAIR(" B", minsegmenttime );
+-  SERIAL_ECHOPAIR(" X", max_xy_jerk );
 +  SERIAL_ECHOPAIR("  M205 S", minimumfeedrate);
 +  SERIAL_ECHOPAIR(" T", mintravelfeedrate);
 +  SERIAL_ECHOPAIR(" B", minsegmenttime);
 +  SERIAL_ECHOPAIR(" X", max_xy_jerk);
-+  SERIAL_ECHOPAIR(" Z", max_z_jerk);
-+  SERIAL_ECHOPAIR(" E", max_e_jerk);
-+  SERIAL_EOL;
-+
+   SERIAL_ECHOPAIR(" Z", max_z_jerk);
+   SERIAL_ECHOPAIR(" E", max_e_jerk);
+   SERIAL_EOL;
+ 
+-  SERIAL_ECHO_START;
 +  CONFIG_ECHO_START;
-+  if (!forReplay) {
-+    SERIAL_ECHOLNPGM("Home offset (mm):");
+   if (!forReplay) {
+     SERIAL_ECHOLNPGM("Home offset (mm):");
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+  }
+   }
+-  SERIAL_ECHOPAIR("  M206 X", home_offset[X_AXIS] );
+-  SERIAL_ECHOPAIR(" Y", home_offset[Y_AXIS] );
+-  SERIAL_ECHOPAIR(" Z", home_offset[Z_AXIS] );
 +  SERIAL_ECHOPAIR("  M206 X", home_offset[X_AXIS]);
 +  SERIAL_ECHOPAIR(" Y", home_offset[Y_AXIS]);
 +  SERIAL_ECHOPAIR(" Z", home_offset[Z_AXIS]);
-+  SERIAL_EOL;
-+
+   SERIAL_EOL;
+ 
 +  #ifdef MESH_BED_LEVELING
 +    if (!forReplay) {
 +      SERIAL_ECHOLNPGM("Mesh bed leveling:");
@@ -3929,33 +2032,46 @@ index 0000000..b950b88
 +    }
 +  #endif
 +
-+  #ifdef DELTA
+   #ifdef DELTA
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Endstop adjustment (mm):");
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Endstop adjustment (mm):");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
+     }
+-    SERIAL_ECHOPAIR("  M666 X", endstop_adj[X_AXIS] );
+-    SERIAL_ECHOPAIR(" Y", endstop_adj[Y_AXIS] );
+-    SERIAL_ECHOPAIR(" Z", endstop_adj[Z_AXIS] );
 +    SERIAL_ECHOPAIR("  M666 X", endstop_adj[X_AXIS]);
 +    SERIAL_ECHOPAIR(" Y", endstop_adj[Y_AXIS]);
 +    SERIAL_ECHOPAIR(" Z", endstop_adj[Z_AXIS]);
-+    SERIAL_EOL;
+     SERIAL_EOL;
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    SERIAL_ECHOLNPGM("Delta settings: L=delta_diagonal_rod, R=delta_radius, S=delta_segments_per_second");
+     SERIAL_ECHOLNPGM("Delta settings: L=delta_diagonal_rod, R=delta_radius, S=delta_segments_per_second");
+-    SERIAL_ECHO_START;
+-    SERIAL_ECHOPAIR("  M665 L", delta_diagonal_rod );
+-    SERIAL_ECHOPAIR(" R", delta_radius );
+-    SERIAL_ECHOPAIR(" S", delta_segments_per_second );
 +    CONFIG_ECHO_START;
 +    SERIAL_ECHOPAIR("  M665 L", delta_diagonal_rod);
 +    SERIAL_ECHOPAIR(" R", delta_radius);
 +    SERIAL_ECHOPAIR(" S", delta_segments_per_second);
-+    SERIAL_EOL;
-+  #elif defined(Z_DUAL_ENDSTOPS)
+     SERIAL_EOL;
+   #elif defined(Z_DUAL_ENDSTOPS)
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Z2 Endstop adjustment (mm):");
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Z2 Endstop adjustment (mm):");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
+     }
+-    SERIAL_ECHOPAIR("  M666 Z", z_endstop_adj );
 +    SERIAL_ECHOPAIR("  M666 Z", z_endstop_adj);
-+    SERIAL_EOL;  
-+  #endif // DELTA
-+
+     SERIAL_EOL;  
+   #endif // DELTA
+ 
 +  #ifdef ULTIPANEL
 +    CONFIG_ECHO_START;
 +    if (!forReplay) {
@@ -3973,13 +2089,23 @@ index 0000000..b950b88
 +    SERIAL_EOL;
 +  #endif // ULTIPANEL
 +
-+  #if defined(PIDTEMP) || defined(PIDTEMPBED)
+   #if defined(PIDTEMP) || defined(PIDTEMPBED)
+-    SERIAL_ECHO_START;
 +
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("PID settings:");
-+    }
-+    #ifdef PIDTEMP
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("PID settings:");
+-      SERIAL_ECHO_START;
+     }
+-    #if defined(PIDTEMP) && defined(PIDTEMPBED)
+-      SERIAL_EOL;
+-    #endif
+     #ifdef PIDTEMP
+-      SERIAL_ECHOPAIR("  M301 P", PID_PARAM(Kp, 0)); // for compatibility with hosts, only echos values for E0
+-      SERIAL_ECHOPAIR(" I", unscalePID_i(PID_PARAM(Ki, 0)));
+-      SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, 0)));
+-      SERIAL_EOL;
+-    #endif
 +      #if EXTRUDERS > 1
 +        if (forReplay) {
 +          for (uint8_t i = 0; i < EXTRUDERS; i++) {
@@ -4009,13 +2135,14 @@ index 0000000..b950b88
 +      }
 +    #endif // PIDTEMP
 +
-+    #ifdef PIDTEMPBED
+     #ifdef PIDTEMPBED
+-      SERIAL_ECHOPAIR("  M304 P", bedKp); // for compatibility with hosts, only echos values for E0
 +      CONFIG_ECHO_START;
 +      SERIAL_ECHOPAIR("  M304 P", bedKp);
-+      SERIAL_ECHOPAIR(" I", unscalePID_i(bedKi));
-+      SERIAL_ECHOPAIR(" D", unscalePID_d(bedKd));
-+      SERIAL_EOL;
-+    #endif
+       SERIAL_ECHOPAIR(" I", unscalePID_i(bedKi));
+       SERIAL_ECHOPAIR(" D", unscalePID_d(bedKd));
+       SERIAL_EOL;
+     #endif
 +
 +  #endif // PIDTEMP || PIDTEMPBED
 +
@@ -4027,123 +2154,136 @@ index 0000000..b950b88
 +    }
 +    SERIAL_ECHOPAIR("  M250 C", (unsigned long)lcd_contrast);
 +    SERIAL_EOL;
-+  #endif
-+
-+  #ifdef FWRETRACT
-+
+   #endif
+ 
+   #ifdef FWRETRACT
+ 
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Retract: S=Length (mm) F:Speed (mm/m) Z: ZLift (mm)");
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Retract: S=Length (mm) F:Speed (mm/m) Z: ZLift (mm)");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
-+    SERIAL_ECHOPAIR("  M207 S", retract_length);
+     }
+     SERIAL_ECHOPAIR("  M207 S", retract_length);
 +    #if EXTRUDERS > 1
 +      SERIAL_ECHOPAIR(" W", retract_length_swap);
 +    #endif
-+    SERIAL_ECHOPAIR(" F", retract_feedrate*60);
-+    SERIAL_ECHOPAIR(" Z", retract_zlift);
-+    SERIAL_EOL;
+     SERIAL_ECHOPAIR(" F", retract_feedrate*60);
+     SERIAL_ECHOPAIR(" Z", retract_zlift);
+     SERIAL_EOL;
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Recover: S=Extra length (mm) F:Speed (mm/m)");
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Recover: S=Extra length (mm) F:Speed (mm/m)");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
-+    SERIAL_ECHOPAIR("  M208 S", retract_recover_length);
+     }
+     SERIAL_ECHOPAIR("  M208 S", retract_recover_length);
 +    #if EXTRUDERS > 1
 +      SERIAL_ECHOPAIR(" W", retract_recover_length_swap);
 +    #endif
-+    SERIAL_ECHOPAIR(" F", retract_recover_feedrate*60);
-+    SERIAL_EOL;
+     SERIAL_ECHOPAIR(" F", retract_recover_feedrate*60);
+     SERIAL_EOL;
+-    SERIAL_ECHO_START;
 +    CONFIG_ECHO_START;
-+    if (!forReplay) {
-+      SERIAL_ECHOLNPGM("Auto-Retract: S=0 to disable, 1 to interpret extrude-only moves as retracts or recoveries");
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("Auto-Retract: S=0 to disable, 1 to interpret extrude-only moves as retracts or recoveries");
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+    }
-+    SERIAL_ECHOPAIR("  M209 S", (unsigned long)(autoretract_enabled ? 1 : 0));
-+    SERIAL_EOL;
-+
-+  #endif // FWRETRACT
-+
-+  if (volumetric_enabled) {
-+    if (!forReplay) {
+     }
+     SERIAL_ECHOPAIR("  M209 S", (unsigned long)(autoretract_enabled ? 1 : 0));
+     SERIAL_EOL;
+ 
+-    #if EXTRUDERS > 1
+-      if (!forReplay) {
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHOLNPGM("Multi-extruder settings:");
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHOPAIR("   Swap retract length (mm):    ", retract_length_swap);
+-        SERIAL_EOL;
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHOPAIR("   Swap rec. addl. length (mm): ", retract_recover_length_swap);
+-        SERIAL_EOL;
+-      }
+-    #endif // EXTRUDERS > 1
+-
+   #endif // FWRETRACT
+ 
+-  SERIAL_ECHO_START;
+   if (volumetric_enabled) {
+     if (!forReplay) {
 +      CONFIG_ECHO_START;
-+      SERIAL_ECHOLNPGM("Filament settings:");
-+    }
+       SERIAL_ECHOLNPGM("Filament settings:");
+-      SERIAL_ECHO_START;
+     }
 +
 +    CONFIG_ECHO_START;
-+    SERIAL_ECHOPAIR("  M200 D", filament_size[0]);
-+    SERIAL_EOL;
-+
-+    #if EXTRUDERS > 1
+     SERIAL_ECHOPAIR("  M200 D", filament_size[0]);
+     SERIAL_EOL;
+ 
+     #if EXTRUDERS > 1
+-      SERIAL_ECHO_START;
 +      CONFIG_ECHO_START;
-+      SERIAL_ECHOPAIR("  M200 T1 D", filament_size[1]);
-+      SERIAL_EOL;
-+      #if EXTRUDERS > 2
+       SERIAL_ECHOPAIR("  M200 T1 D", filament_size[1]);
+       SERIAL_EOL;
+       #if EXTRUDERS > 2
+-        SERIAL_ECHO_START;
 +        CONFIG_ECHO_START;
-+        SERIAL_ECHOPAIR("  M200 T2 D", filament_size[2]);
-+        SERIAL_EOL;
-+        #if EXTRUDERS > 3
+         SERIAL_ECHOPAIR("  M200 T2 D", filament_size[2]);
+         SERIAL_EOL;
+         #if EXTRUDERS > 3
+-          SERIAL_ECHO_START;
 +          CONFIG_ECHO_START;
-+          SERIAL_ECHOPAIR("  M200 T3 D", filament_size[3]);
-+          SERIAL_EOL;
-+        #endif
-+      #endif
-+    #endif
-+
-+  } else {
-+    if (!forReplay) {
+           SERIAL_ECHOPAIR("  M200 T3 D", filament_size[3]);
+           SERIAL_EOL;
+         #endif
+@@ -785,21 +854,23 @@ void Config_PrintSettings(bool forReplay) {
+ 
+   } else {
+     if (!forReplay) {
 +      CONFIG_ECHO_START;
-+      SERIAL_ECHOLNPGM("Filament settings: Disabled");
-+    }
-+  }
-+
-+  #ifdef ENABLE_AUTO_BED_LEVELING
-+    #ifdef CUSTOM_M_CODES
-+      if (!forReplay) {
+       SERIAL_ECHOLNPGM("Filament settings: Disabled");
+     }
+   }
+ 
+   #ifdef ENABLE_AUTO_BED_LEVELING
+-    SERIAL_ECHO_START;
+     #ifdef CUSTOM_M_CODES
+       if (!forReplay) {
 +        CONFIG_ECHO_START;
-+        SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
-+      }
+         SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
+-        SERIAL_ECHO_START;
+       }
 +      CONFIG_ECHO_START;
-+      SERIAL_ECHOPAIR("  M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
-+      SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
-+    #else
-+      if (!forReplay) {
+       SERIAL_ECHOPAIR("  M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
+       SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
+     #else
+       if (!forReplay) {
 +        CONFIG_ECHO_START;
-+        SERIAL_ECHOPAIR("Z-Probe Offset (mm):", -zprobe_zoffset);
-+      }
-+    #endif
-+    SERIAL_EOL;
-+  #endif
-+}
-+
-+#endif // !DISABLE_M503
-diff --git a/Marlin/configuration_store.h b/Marlin/configuration_store.h
-new file mode 100644
-index 0000000..6f1a8fc
---- /dev/null
+         SERIAL_ECHOPAIR("Z-Probe Offset (mm):", -zprobe_zoffset);
+       }
+     #endif
+diff --git a/Marlin/ConfigurationStore.h b/Marlin/configuration_store.h
+similarity index 83%
+rename from Marlin/ConfigurationStore.h
+rename to Marlin/configuration_store.h
+index 3dc4a92..6f1a8fc 100644
+--- a/Marlin/ConfigurationStore.h
 +++ b/Marlin/configuration_store.h
-@@ -0,0 +1,22 @@
+@@ -1,5 +1,5 @@
+-#ifndef CONFIGURATIONSTORE_H
+-#define CONFIGURATIONSTORE_H
 +#ifndef CONFIGURATION_STORE_H
 +#define CONFIGURATION_STORE_H
-+
-+#include "Configuration.h"
-+
-+void Config_ResetDefault();
-+
-+#ifndef DISABLE_M503
-+  void Config_PrintSettings(bool forReplay=false);
-+#else
-+  FORCE_INLINE void Config_PrintSettings(bool forReplay=false) {}
-+#endif
-+
-+#ifdef EEPROM_SETTINGS
-+  void Config_StoreSettings();
-+  void Config_RetrieveSettings();
-+#else
-+  FORCE_INLINE void Config_StoreSettings() {}
-+  FORCE_INLINE void Config_RetrieveSettings() { Config_ResetDefault(); Config_PrintSettings(); }
-+#endif
-+
+ 
+ #include "Configuration.h"
+ 
+@@ -19,4 +19,4 @@ void Config_ResetDefault();
+   FORCE_INLINE void Config_RetrieveSettings() { Config_ResetDefault(); Config_PrintSettings(); }
+ #endif
+ 
+-#endif //CONFIGURATIONSTORE_H
 +#endif //CONFIGURATION_STORE_H
 diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
 index 2b2175c..35820a4 100644
@@ -4392,249 +2532,10 @@ index eb0ef8c..40d8dbe 100644
  #define MSG_PID_DEBUG                       " PID_DEBUG "
  #define MSG_PID_DEBUG_INPUT                 ": Input "
  #define MSG_PID_DEBUG_OUTPUT                " Output "
-diff --git a/Marlin/dogm_bitmaps.h b/Marlin/dogm_bitmaps.h
-new file mode 100644
-index 0000000..8c83567
---- /dev/null
-+++ b/Marlin/dogm_bitmaps.h
-@@ -0,0 +1,237 @@
-+// BitMap for splashscreen
-+// Generated with: http://www.digole.com/tools/PicturetoC_Hex_converter.php
-+// Please note that using the high-res version takes 402Bytes of PROGMEM. 
-+//#define START_BMPHIGH
-+
-+#ifdef START_BMPHIGH
-+  #define START_BMPWIDTH      112
-+  #define START_BMPHEIGHT      38
-+  #define START_BMPBYTEWIDTH   14
-+  #define START_BMPBYTES      532 // START_BMPWIDTH * START_BMPHEIGHT / 8
-+  
-+  const unsigned char start_bmp[START_BMPBYTES] PROGMEM = {
-+     0x01,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
-+    ,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
-+    ,0x1e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x07,0xff,0xff
-+    ,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x03,0xff,0xff
-+    ,0x70,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xff,0xff
-+    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xff,0xff
-+    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7f,0xff
-+    ,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x3f,0xff
-+    ,0xc0,0x0f,0xc0,0xfc,0x00,0x00,0x00,0x00,0x00,0x78,0x18,0x00,0x1f,0xff
-+    ,0xc0,0x3f,0xe1,0xff,0x00,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x0f,0xff
-+    ,0xc0,0x7f,0xf3,0xff,0x80,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x07,0xff
-+    ,0xc0,0xff,0xff,0xff,0xc0,0x00,0x00,0x00,0x00,0x78,0x3c,0x00,0x03,0xff
-+    ,0xc1,0xf8,0x7f,0x87,0xe0,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x01,0xff
-+    ,0xc1,0xf0,0x3f,0x03,0xe0,0x00,0x00,0x00,0x00,0x78,0x00,0x00,0x00,0xff
-+    ,0xc1,0xe0,0x1e,0x01,0xe0,0x1f,0x00,0x03,0xe0,0x78,0x3c,0x03,0xf0,0x7f
-+    ,0xc1,0xe0,0x1e,0x01,0xe0,0x7f,0xc0,0x0f,0xf8,0x78,0x3c,0x07,0xfc,0x3f
-+    ,0xc1,0xe0,0x1e,0x01,0xe1,0xff,0xe0,0x1f,0xfc,0x78,0x3c,0x0f,0xfe,0x1f
-+    ,0xc1,0xe0,0x1e,0x01,0xe3,0xff,0xf0,0x3f,0xfe,0x78,0x3c,0x1f,0xfe,0x0f
-+    ,0xc1,0xe0,0x1e,0x01,0xe3,0xf3,0xf8,0x3f,0x3e,0x78,0x3c,0x3f,0x3f,0x07
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0xe0,0xfc,0x7c,0x1f,0x78,0x3c,0x3e,0x1f,0x07
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0xc0,0x7c,0x7c,0x0f,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x7c,0x78,0x0f,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0x80,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe7,0xc0,0x3c,0x78,0x00,0x78,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe3,0xe0,0x3c,0x78,0x00,0x7c,0x3c,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe3,0xff,0x3f,0xf8,0x00,0x7f,0xbc,0x3c,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe1,0xff,0x3f,0xf8,0x00,0x3f,0xbf,0xfc,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe0,0xff,0x3f,0xf8,0x00,0x1f,0xbf,0xfc,0x0f,0x03
-+    ,0xc1,0xe0,0x1e,0x01,0xe0,0x7f,0x3f,0xf8,0x00,0x0f,0xbf,0xfc,0x0f,0x03
-+    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x07
-+    ,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x06
-+    ,0x70,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x0e
-+    ,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1c
-+    ,0x1e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x78
-+    ,0x0f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xf0
-+    ,0x01,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x80 };
-+#else
-+  #define START_BMPWIDTH 	    56 
-+  #define START_BMPHEIGHT 	  19
-+  #define START_BMPBYTEWIDTH  7
-+  #define START_BMPBYTES      133 // START_BMPWIDTH * START_BMPHEIGHT / 8
-+
-+  const unsigned char start_bmp[START_BMPBYTES] PROGMEM = {
-+     0x1f,0xff,0xff,0xff,0xff,0xff,0xff
-+    ,0x60,0x00,0x00,0x00,0x00,0x01,0xff
-+    ,0x40,0x00,0x00,0x00,0x00,0x00,0xff
-+    ,0x80,0x00,0x00,0x00,0x00,0x00,0x7f
-+    ,0x83,0xcf,0x00,0x00,0x0c,0x30,0x3f
-+    ,0x87,0xff,0x80,0x00,0x0c,0x30,0x1f
-+    ,0x86,0x79,0x80,0x00,0x0c,0x00,0x0f
-+    ,0x8c,0x30,0xc7,0x83,0x8c,0x30,0xe7
-+    ,0x8c,0x30,0xcf,0xc7,0xcc,0x31,0xf3
-+    ,0x8c,0x30,0xdc,0xec,0xec,0x33,0xb9
-+    ,0x8c,0x30,0xd8,0x6c,0x6c,0x33,0x19
-+    ,0x8c,0x30,0xd0,0x6c,0x0c,0x33,0x19
-+    ,0x8c,0x30,0xd8,0x6c,0x0c,0x33,0x19
-+    ,0x8c,0x30,0xdc,0x6c,0x0e,0x3b,0x19
-+    ,0x8c,0x30,0xcf,0x7c,0x07,0x9f,0x19
-+    ,0x8c,0x30,0xc7,0x7c,0x03,0x8f,0x19
-+    ,0x40,0x00,0x00,0x00,0x00,0x00,0x02
-+    ,0x60,0x00,0x00,0x00,0x00,0x00,0x06
-+    ,0x1f,0xff,0xff,0xff,0xff,0xff,0xf8 };
-+#endif
-+
-+// Here comes a compile-time operation to match the extruder symbols 
-+// on the info screen to the set number of extruders in configuration.h
-+// 
-+// When only one extruder is selected, the "1" on the symbol will not 
-+// be displayed.
-+
-+#if EXTRUDERS == 1
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
-+	0x3F,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
-+	0x7F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
-+	0xFF,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
-+	0x3F,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+#elif EXTRUDERS == 2
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
-+	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
-+	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
-+	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
-+	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
-+	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
-+	0x3F,0x00,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x0F,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
-+	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x00,0x00,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
-+	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
-+	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x00,0x00,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
-+	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x00,0x00,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
-+	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x00,0x00,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
-+	0x3F,0x00,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x0F,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+#else
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen0_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x63,0x0C,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x47,0x0E,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4F,0x0F,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5F,0x0F,0xA0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x5E,0x07,0xA0,
-+	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x3F,0xC0,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x79,0xE0,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x76,0xE0,0x00,0x20,0x82,0x00,0x40,0xF0,0x20,
-+	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x7E,0xE0,0x00,0x41,0x04,0x00,0x40,0x60,0x20,
-+	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x39,0xC0,0x00,0x82,0x08,0x00,0x5E,0x07,0xA0,
-+	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x3E,0xC0,0x01,0x04,0x10,0x00,0x5F,0x0F,0xA0,
-+	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x76,0xE0,0x01,0x04,0x10,0x00,0x4F,0x0F,0x20,
-+	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x79,0xE0,0x00,0x82,0x08,0x00,0x47,0x0E,0x20,
-+	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x7F,0xE0,0x00,0x41,0x04,0x00,0x63,0x0C,0x60,
-+	0x3F,0x00,0x00,0x1F,0x80,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x0F,0x00,0x00,0x0F,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x06,0x00,0x00,0x06,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+
-+	#define STATUS_SCREENWIDTH 		115	//Width in pixels
-+	#define STATUS_SCREENHEIGHT 	19	//Height in pixels
-+	#define STATUS_SCREENBYTEWIDTH 	15	//Width in bytes
-+	const unsigned char status_screen1_bmp[] PROGMEM = { //AVR-GCC, WinAVR
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFF,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x61,0xF8,0x60,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x41,0xF8,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0xF0,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x40,0x60,0x20,
-+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x58,0x01,0xA0,
-+	0x7F,0x80,0x00,0x3F,0xC0,0x00,0x3F,0xC0,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0xFB,0xC0,0x00,0x79,0xE0,0x00,0x79,0xE0,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xF3,0xC0,0x00,0x76,0xE0,0x00,0x76,0xE0,0x00,0x20,0x82,0x00,0x5E,0xF7,0xA0,
-+	0xEB,0xC0,0x00,0x7E,0xE0,0x00,0x7E,0xE0,0x00,0x41,0x04,0x00,0x5C,0x63,0xA0,
-+	0x7B,0x80,0x00,0x3D,0xC0,0x00,0x39,0xC0,0x00,0x82,0x08,0x00,0x58,0x01,0xA0,
-+	0x7B,0x80,0x00,0x3B,0xC0,0x00,0x3E,0xC0,0x01,0x04,0x10,0x00,0x40,0x60,0x20,
-+	0xFB,0xC0,0x00,0x77,0xE0,0x00,0x76,0xE0,0x01,0x04,0x10,0x00,0x40,0xF0,0x20,
-+	0xFB,0xC0,0x00,0x70,0xE0,0x00,0x79,0xE0,0x00,0x82,0x08,0x00,0x41,0xF8,0x20,
-+	0xFF,0xC0,0x00,0x7F,0xE0,0x00,0x7F,0xE0,0x00,0x41,0x04,0x00,0x61,0xF8,0x60,
-+	0x3F,0x00,0x00,0x1F,0x80,0x00,0x1F,0x80,0x00,0x00,0x00,0x00,0x70,0x00,0xE0,
-+	0x1E,0x00,0x00,0x0F,0x00,0x00,0x0F,0x00,0x01,0xFF,0xFF,0x80,0x7F,0xFF,0xE0,
-+	0x0C,0x00,0x00,0x06,0x00,0x00,0x06,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00
-+	};
-+#endif // Extruders 
-+
-+
+diff --git a/Marlin/DOGMbitmaps.h b/Marlin/dogm_bitmaps.h
+similarity index 100%
+rename from Marlin/DOGMbitmaps.h
+rename to Marlin/dogm_bitmaps.h
 diff --git a/Marlin/dogm_font_data_ISO10646_CN.h b/Marlin/dogm_font_data_ISO10646_CN.h
 new file mode 100644
 index 0000000..f74e8a6
@@ -8931,457 +6832,54 @@ index d96aa8c..c54ed44 100644
  extern float max_z_jerk;
  extern float max_e_jerk;
  extern float mintravelfeedrate;
-diff --git a/Marlin/servo.cpp b/Marlin/servo.cpp
-new file mode 100644
-index 0000000..81d73ae
---- /dev/null
+diff --git a/Marlin/Servo.cpp b/Marlin/servo.cpp
+similarity index 99%
+rename from Marlin/Servo.cpp
+rename to Marlin/servo.cpp
+index 27a7d3c..81d73ae 100644
+--- a/Marlin/Servo.cpp
 +++ b/Marlin/servo.cpp
-@@ -0,0 +1,304 @@
-+/*
+@@ -1,5 +1,5 @@
+ /*
+- Servo.cpp - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
 + servo.cpp - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
-+ Copyright (c) 2009 Michael Margolis.  All right reserved.
-+
-+ This library is free software; you can redistribute it and/or
-+ modify it under the terms of the GNU Lesser General Public
-+ License as published by the Free Software Foundation; either
-+ version 2.1 of the License, or (at your option) any later version.
-+
-+ This library is distributed in the hope that it will be useful,
-+ but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ Lesser General Public License for more details.
-+
-+ You should have received a copy of the GNU Lesser General Public
-+ License along with this library; if not, write to the Free Software
-+ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-+ */
-+
-+/*
-+
-+ A servo is activated by creating an instance of the Servo class passing the desired pin to the attach() method.
-+ The servos are pulsed in the background using the value most recently written using the write() method
-+
-+ Note that analogWrite of PWM on pins associated with the timer are disabled when the first servo is attached.
-+ Timers are seized as needed in groups of 12 servos - 24 servos use two timers, 48 servos will use four.
-+
-+ The methods are:
-+
-+ Servo - Class for manipulating servo motors connected to Arduino pins.
-+
-+ attach(pin )  - Attaches a servo motor to an i/o pin.
-+ attach(pin, min, max  ) - Attaches to a pin setting min and max values in microseconds
-+ default min is 544, max is 2400
-+
-+ write()     - Sets the servo angle in degrees.  (invalid angle that is valid as pulse in microseconds is treated as microseconds)
-+ writeMicroseconds() - Sets the servo pulse width in microseconds
-+ read()      - Gets the last written servo pulse width as an angle between 0 and 180.
-+ readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
-+ attached()  - Returns true if there is a servo attached.
-+ detach()    - Stops an attached servos from pulsing its i/o pin.
-+
-+*/
-+#include "Configuration.h" 
-+
-+#ifdef NUM_SERVOS
-+
-+#include <avr/interrupt.h>
-+#include <Arduino.h>
-+
+  Copyright (c) 2009 Michael Margolis.  All right reserved.
+ 
+  This library is free software; you can redistribute it and/or
+@@ -48,7 +48,7 @@
+ #include <avr/interrupt.h>
+ #include <Arduino.h>
+ 
+-#include "Servo.h"
 +#include "servo.h"
-+
-+#define usToTicks(_us)    (( clockCyclesPerMicrosecond()* _us) / 8)     // converts microseconds to tick (assumes prescale of 8)  // 12 Aug 2009
-+#define ticksToUs(_ticks) (( (unsigned)_ticks * 8)/ clockCyclesPerMicrosecond() ) // converts from ticks back to microseconds
-+
-+#define TRIM_DURATION       2                               // compensation ticks to trim adjust for digitalWrite delays // 12 August 2009
-+
-+//#define NBR_TIMERS        (MAX_SERVOS / SERVOS_PER_TIMER)
-+
-+static servo_t servos[MAX_SERVOS];                          // static array of servo structures
-+static volatile int8_t Channel[_Nbr_16timers ];             // counter for the servo being pulsed for each timer (or -1 if refresh interval)
-+
-+uint8_t ServoCount = 0;                                     // the total number of attached servos
-+
-+
-+// convenience macros
-+#define SERVO_INDEX_TO_TIMER(_servo_nbr) ((timer16_Sequence_t)(_servo_nbr / SERVOS_PER_TIMER)) // returns the timer controlling this servo
-+#define SERVO_INDEX_TO_CHANNEL(_servo_nbr) (_servo_nbr % SERVOS_PER_TIMER)       // returns the index of the servo on this timer
-+#define SERVO_INDEX(_timer,_channel)  ((_timer*SERVOS_PER_TIMER) + _channel)     // macro to access servo index by timer and channel
-+#define SERVO(_timer,_channel)  (servos[SERVO_INDEX(_timer,_channel)])            // macro to access servo class by timer and channel
-+
-+#define SERVO_MIN() (MIN_PULSE_WIDTH - this->min * 4)  // minimum value in uS for this servo
-+#define SERVO_MAX() (MAX_PULSE_WIDTH - this->max * 4)  // maximum value in uS for this servo
-+
-+/************ static functions common to all instances ***********************/
-+
-+static inline void handle_interrupts(timer16_Sequence_t timer, volatile uint16_t *TCNTn, volatile uint16_t* OCRnA) {
-+  if (Channel[timer] < 0)
-+    *TCNTn = 0; // channel set to -1 indicated that refresh interval completed so reset the timer
-+  else {
-+    if (SERVO_INDEX(timer,Channel[timer]) < ServoCount && SERVO(timer,Channel[timer]).Pin.isActive)
-+      digitalWrite( SERVO(timer,Channel[timer]).Pin.nbr,LOW); // pulse this channel low if activated
-+  }
-+
-+  Channel[timer]++;    // increment to the next channel
-+  if (SERVO_INDEX(timer,Channel[timer]) < ServoCount && Channel[timer] < SERVOS_PER_TIMER) {
-+    *OCRnA = *TCNTn + SERVO(timer,Channel[timer]).ticks;
-+    if (SERVO(timer,Channel[timer]).Pin.isActive)     // check if activated
-+      digitalWrite( SERVO(timer,Channel[timer]).Pin.nbr,HIGH); // its an active channel so pulse it high
-+  }
-+  else {
-+    // finished all channels so wait for the refresh period to expire before starting over
-+    if ( ((unsigned)*TCNTn) + 4 < usToTicks(REFRESH_INTERVAL) )  // allow a few ticks to ensure the next OCR1A not missed
-+      *OCRnA = (unsigned int)usToTicks(REFRESH_INTERVAL);
-+    else
-+      *OCRnA = *TCNTn + 4;  // at least REFRESH_INTERVAL has elapsed
-+    Channel[timer] = -1; // this will get incremented at the end of the refresh period to start again at the first channel
-+  }
-+}
-+
-+#ifndef WIRING // Wiring pre-defines signal handlers so don't define any if compiling for the Wiring platform
-+
-+  // Interrupt handlers for Arduino
-+  #if defined(_useTimer1)
-+    SIGNAL (TIMER1_COMPA_vect) { handle_interrupts(_timer1, &TCNT1, &OCR1A); }
-+  #endif
-+
-+  #if defined(_useTimer3)
-+    SIGNAL (TIMER3_COMPA_vect) { handle_interrupts(_timer3, &TCNT3, &OCR3A); }
-+  #endif
-+
-+  #if defined(_useTimer4)
-+    SIGNAL (TIMER4_COMPA_vect) { handle_interrupts(_timer4, &TCNT4, &OCR4A); }
-+  #endif
-+
-+  #if defined(_useTimer5)
-+    SIGNAL (TIMER5_COMPA_vect) { handle_interrupts(_timer5, &TCNT5, &OCR5A); }
-+  #endif
-+
-+#else //!WIRING
-+
-+  // Interrupt handlers for Wiring
-+  #if defined(_useTimer1)
-+    void Timer1Service() { handle_interrupts(_timer1, &TCNT1, &OCR1A); }
-+  #endif
-+  #if defined(_useTimer3)
-+    void Timer3Service() { handle_interrupts(_timer3, &TCNT3, &OCR3A); }
-+  #endif
-+
-+#endif //!WIRING
-+
-+
-+static void initISR(timer16_Sequence_t timer) {
-+  #if defined(_useTimer1)
-+    if (timer == _timer1) {
-+      TCCR1A = 0;             // normal counting mode
-+      TCCR1B = _BV(CS11);     // set prescaler of 8
-+      TCNT1 = 0;              // clear the timer count
-+      #if defined(__AVR_ATmega8__)|| defined(__AVR_ATmega128__)
-+        TIFR |= _BV(OCF1A);      // clear any pending interrupts;
-+        TIMSK |= _BV(OCIE1A);    // enable the output compare interrupt
-+      #else
-+        // here if not ATmega8 or ATmega128
-+        TIFR1 |= _BV(OCF1A);     // clear any pending interrupts;
-+        TIMSK1 |= _BV(OCIE1A);   // enable the output compare interrupt
-+      #endif
-+      #if defined(WIRING)
-+        timerAttach(TIMER1OUTCOMPAREA_INT, Timer1Service);
-+      #endif
-+    }
-+  #endif
-+
-+  #if defined(_useTimer3)
-+    if (timer == _timer3) {
-+      TCCR3A = 0;             // normal counting mode
-+      TCCR3B = _BV(CS31);     // set prescaler of 8
-+      TCNT3 = 0;              // clear the timer count
-+      #if defined(__AVR_ATmega128__)
-+        TIFR |= _BV(OCF3A);     // clear any pending interrupts;
-+      	ETIMSK |= _BV(OCIE3A);  // enable the output compare interrupt
-+      #else
-+        TIFR3 = _BV(OCF3A);     // clear any pending interrupts;
-+        TIMSK3 =  _BV(OCIE3A) ; // enable the output compare interrupt
-+      #endif
-+      #if defined(WIRING)
-+        timerAttach(TIMER3OUTCOMPAREA_INT, Timer3Service);  // for Wiring platform only
-+      #endif
-+    }
-+  #endif
-+
-+  #if defined(_useTimer4)
-+    if (timer == _timer4) {
-+      TCCR4A = 0;             // normal counting mode
-+      TCCR4B = _BV(CS41);     // set prescaler of 8
-+      TCNT4 = 0;              // clear the timer count
-+      TIFR4 = _BV(OCF4A);     // clear any pending interrupts;
-+      TIMSK4 =  _BV(OCIE4A) ; // enable the output compare interrupt
-+    }
-+  #endif
-+
-+  #if defined(_useTimer5)
-+    if (timer == _timer5) {
-+      TCCR5A = 0;             // normal counting mode
-+      TCCR5B = _BV(CS51);     // set prescaler of 8
-+      TCNT5 = 0;              // clear the timer count
-+      TIFR5 = _BV(OCF5A);     // clear any pending interrupts;
-+      TIMSK5 =  _BV(OCIE5A) ; // enable the output compare interrupt
-+    }
-+  #endif
-+}
-+
-+static void finISR(timer16_Sequence_t timer) {
-+  // Disable use of the given timer
-+  #if defined(WIRING)
-+    if (timer == _timer1) {
-+      #if defined(__AVR_ATmega1281__) || defined(__AVR_ATmega2561__)
-+        TIMSK1
-+      #else
-+        TIMSK
-+      #endif
-+          &= ~_BV(OCIE1A);    // disable timer 1 output compare interrupt
-+      timerDetach(TIMER1OUTCOMPAREA_INT);
-+    }
-+    else if (timer == _timer3) {
-+      #if defined(__AVR_ATmega1281__) || defined(__AVR_ATmega2561__)
-+        TIMSK3
-+      #else
-+        ETIMSK
-+      #endif
-+          &= ~_BV(OCIE3A);    // disable the timer3 output compare A interrupt
-+      timerDetach(TIMER3OUTCOMPAREA_INT);
-+    }
-+  #else //!WIRING
-+    // For arduino - in future: call here to a currently undefined function to reset the timer
-+  #endif
-+}
-+
-+static boolean isTimerActive(timer16_Sequence_t timer) {
-+  // returns true if any servo is active on this timer
-+  for(uint8_t channel=0; channel < SERVOS_PER_TIMER; channel++) {
-+    if (SERVO(timer,channel).Pin.isActive)
-+      return true;
-+  }
-+  return false;
-+}
-+
-+
-+/****************** end of static functions ******************************/
-+
-+Servo::Servo() {
-+  if ( ServoCount < MAX_SERVOS) {
-+    this->servoIndex = ServoCount++;                    // assign a servo index to this instance
-+    servos[this->servoIndex].ticks = usToTicks(DEFAULT_PULSE_WIDTH);   // store default values  - 12 Aug 2009
-+  }
-+  else
-+    this->servoIndex = INVALID_SERVO;  // too many servos
-+}
-+
-+uint8_t Servo::attach(int pin) {
-+  return this->attach(pin, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
-+}
-+
-+uint8_t Servo::attach(int pin, int min, int max) {
-+  if (this->servoIndex < MAX_SERVOS ) {
-+  #if defined(ENABLE_AUTO_BED_LEVELING) && (PROBE_SERVO_DEACTIVATION_DELAY > 0)
-+    if (pin > 0) this->pin = pin; else pin = this->pin;
-+  #endif
-+    pinMode(pin, OUTPUT);                                   // set servo pin to output
-+    servos[this->servoIndex].Pin.nbr = pin;
-+    // todo min/max check: abs(min - MIN_PULSE_WIDTH) /4 < 128
-+    this->min = (MIN_PULSE_WIDTH - min) / 4; //resolution of min/max is 4 uS
-+    this->max = (MAX_PULSE_WIDTH - max) / 4;
-+    // initialize the timer if it has not already been initialized
-+    timer16_Sequence_t timer = SERVO_INDEX_TO_TIMER(servoIndex);
-+    if (!isTimerActive(timer)) initISR(timer);
-+    servos[this->servoIndex].Pin.isActive = true;  // this must be set after the check for isTimerActive
-+  }
-+  return this->servoIndex;
-+}
-+
-+void Servo::detach() {
-+  servos[this->servoIndex].Pin.isActive = false;
-+  timer16_Sequence_t timer = SERVO_INDEX_TO_TIMER(servoIndex);
-+  if (!isTimerActive(timer)) finISR(timer);
-+}
-+
-+void Servo::write(int value) {
-+  if (value < MIN_PULSE_WIDTH) { // treat values less than 544 as angles in degrees (valid values in microseconds are handled as microseconds)
-+    if (value < 0) value = 0;
-+    if (value > 180) value = 180;
-+    value = map(value, 0, 180, SERVO_MIN(),  SERVO_MAX());
-+  }
-+  this->writeMicroseconds(value);
-+}
-+
-+void Servo::writeMicroseconds(int value) {
-+  // calculate and store the values for the given channel
-+  byte channel = this->servoIndex;
-+  if (channel < MAX_SERVOS) {  // ensure channel is valid
-+    if (value < SERVO_MIN())   // ensure pulse width is valid
-+      value = SERVO_MIN();
-+    else if (value > SERVO_MAX())
-+      value = SERVO_MAX();
-+
-+  	value = value - TRIM_DURATION;
-+    value = usToTicks(value);  // convert to ticks after compensating for interrupt overhead - 12 Aug 2009
-+
-+    uint8_t oldSREG = SREG;
-+    cli();
-+    servos[channel].ticks = value;
-+    SREG = oldSREG;
-+  }
-+}
-+
-+// return the value as degrees
-+int Servo::read() { return map( this->readMicroseconds()+1, SERVO_MIN(), SERVO_MAX(), 0, 180); }
-+
-+int Servo::readMicroseconds() {
-+  return (this->servoIndex == INVALID_SERVO) ? 0 : ticksToUs(servos[this->servoIndex].ticks) + TRIM_DURATION;
-+}
-+
-+bool Servo::attached() { return servos[this->servoIndex].Pin.isActive; }
-+
-+#endif
-diff --git a/Marlin/servo.h b/Marlin/servo.h
-new file mode 100644
-index 0000000..4647561
---- /dev/null
+ 
+ #define usToTicks(_us)    (( clockCyclesPerMicrosecond()* _us) / 8)     // converts microseconds to tick (assumes prescale of 8)  // 12 Aug 2009
+ #define ticksToUs(_ticks) (( (unsigned)_ticks * 8)/ clockCyclesPerMicrosecond() ) // converts from ticks back to microseconds
+diff --git a/Marlin/Servo.h b/Marlin/servo.h
+similarity index 98%
+rename from Marlin/Servo.h
+rename to Marlin/servo.h
+index 682a3b3..4647561 100644
+--- a/Marlin/Servo.h
 +++ b/Marlin/servo.h
-@@ -0,0 +1,135 @@
-+/*
+@@ -1,5 +1,5 @@
+ /*
+-  Servo.h - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
 +  servo.h - Interrupt driven Servo library for Arduino using 16 bit timers- Version 2
-+  Copyright (c) 2009 Michael Margolis.  All right reserved.
-+
-+  This library is free software; you can redistribute it and/or
-+  modify it under the terms of the GNU Lesser General Public
-+  License as published by the Free Software Foundation; either
-+  version 2.1 of the License, or (at your option) any later version.
-+
-+  This library is distributed in the hope that it will be useful,
-+  but WITHOUT ANY WARRANTY; without even the implied warranty of
-+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+  Lesser General Public License for more details.
-+
-+  You should have received a copy of the GNU Lesser General Public
-+  License along with this library; if not, write to the Free Software
-+  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-+*/
-+
-+/*
-+
-+  A servo is activated by creating an instance of the Servo class passing the desired pin to the attach() method.
-+  The servos are pulsed in the background using the value most recently written using the write() method
-+
-+  Note that analogWrite of PWM on pins associated with the timer are disabled when the first servo is attached.
-+  Timers are seized as needed in groups of 12 servos - 24 servos use two timers, 48 servos will use four.
-+  The sequence used to seize timers is defined in timers.h
-+
-+  The methods are:
-+
-+   Servo - Class for manipulating servo motors connected to Arduino pins.
-+
-+   attach(pin )  - Attaches a servo motor to an i/o pin.
-+   attach(pin, min, max  ) - Attaches to a pin setting min and max values in microseconds
-+   default min is 544, max is 2400
-+
-+   write()     - Sets the servo angle in degrees.  (invalid angle that is valid as pulse in microseconds is treated as microseconds)
-+   writeMicroseconds() - Sets the servo pulse width in microseconds
-+   read()      - Gets the last written servo pulse width as an angle between 0 and 180.
-+   readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
-+   attached()  - Returns true if there is a servo attached.
-+   detach()    - Stops an attached servos from pulsing its i/o pin.
-+ */
-+
+   Copyright (c) 2009 Michael Margolis.  All right reserved.
+ 
+   This library is free software; you can redistribute it and/or
+@@ -42,8 +42,8 @@
+    detach()    - Stops an attached servos from pulsing its i/o pin.
+  */
+ 
+-#ifndef Servo_h
+-#define Servo_h
 +#ifndef servo_h
 +#define servo_h
-+
-+#include <inttypes.h>
-+
-+/*
-+ * Defines for 16 bit timers used with  Servo library
-+ *
-+ * If _useTimerX is defined then TimerX is a 16 bit timer on the current board
-+ * timer16_Sequence_t enumerates the sequence that the timers should be allocated
-+ * _Nbr_16timers indicates how many 16 bit timers are available.
-+ *
-+ */
-+
-+// Say which 16 bit timers can be used and in what order
-+#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
-+  #define _useTimer5
-+  //#define _useTimer1
-+  #define _useTimer3
-+  #define _useTimer4
-+  //typedef enum { _timer5, _timer1, _timer3, _timer4, _Nbr_16timers } timer16_Sequence_t ;
-+  typedef enum { _timer5, _timer3, _timer4, _Nbr_16timers } timer16_Sequence_t ;
-+
-+#elif defined(__AVR_ATmega32U4__)
-+  //#define _useTimer1
-+  #define _useTimer3
-+  //typedef enum { _timer1, _Nbr_16timers } timer16_Sequence_t ;
-+  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
-+
-+#elif defined(__AVR_AT90USB646__) || defined(__AVR_AT90USB1286__)
-+  #define _useTimer3
-+  //#define _useTimer1
-+  //typedef enum { _timer3, _timer1, _Nbr_16timers } timer16_Sequence_t ;
-+  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
-+
-+#elif defined(__AVR_ATmega128__) ||defined(__AVR_ATmega1281__) || defined(__AVR_ATmega1284P__) ||defined(__AVR_ATmega2561__)
-+  #define _useTimer3
-+  //#define _useTimer1
-+  //typedef enum { _timer3, _timer1, _Nbr_16timers } timer16_Sequence_t ;
-+  typedef enum { _timer3, _Nbr_16timers } timer16_Sequence_t ;
-+
-+#else  // everything else
-+  //#define _useTimer1
-+  //typedef enum { _timer1, _Nbr_16timers } timer16_Sequence_t ;
-+  typedef enum { _Nbr_16timers } timer16_Sequence_t ;
-+
-+#endif
-+
-+#define Servo_VERSION           2     // software version of this library
-+
-+#define MIN_PULSE_WIDTH       544     // the shortest pulse sent to a servo
-+#define MAX_PULSE_WIDTH      2400     // the longest pulse sent to a servo
-+#define DEFAULT_PULSE_WIDTH  1500     // default pulse width when servo is attached
-+#define REFRESH_INTERVAL    20000     // minimum time to refresh servos in microseconds
-+
-+#define SERVOS_PER_TIMER       12     // the maximum number of servos controlled by one timer
-+#define MAX_SERVOS   (_Nbr_16timers  * SERVOS_PER_TIMER)
-+
-+#define INVALID_SERVO         255     // flag indicating an invalid servo index
-+
-+typedef struct {
-+  uint8_t nbr        :6 ;             // a pin number from 0 to 63
-+  uint8_t isActive   :1 ;             // true if this channel is enabled, pin not pulsed if false
-+} ServoPin_t;
-+
-+typedef struct {
-+  ServoPin_t Pin;
-+  unsigned int ticks;
-+} servo_t;
-+
-+class Servo {
-+  public:
-+    Servo();
-+    uint8_t attach(int pin);           // attach the given pin to the next free channel, sets pinMode, returns channel number or 0 if failure
-+    uint8_t attach(int pin, int min, int max); // as above but also sets min and max values for writes.
-+    void detach();
-+    void write(int value);             // if value is < 200 it is treated as an angle, otherwise as pulse width in microseconds
-+    void writeMicroseconds(int value); // Write pulse width in microseconds
-+    int read();                        // returns current pulse width as an angle between 0 and 180 degrees
-+    int readMicroseconds();            // returns current pulse width in microseconds for this servo (was read_us() in first release)
-+    bool attached();                   // return true if this servo is attached, otherwise false
-+    #if defined(ENABLE_AUTO_BED_LEVELING) && PROBE_SERVO_DEACTIVATION_DELAY > 0
-+      int pin;                           // store the hardware pin of the servo
-+    #endif
-+  private:
-+    uint8_t servoIndex;               // index into the channel data for this servo
-+    int8_t min;                       // minimum is this value times 4 added to MIN_PULSE_WIDTH
-+    int8_t max;                       // maximum is this value times 4 added to MAX_PULSE_WIDTH
-+};
-+
-+#endif
+ 
+ #include <inttypes.h>
+ 
 diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
 index f11cc04..ca17b3f 100644
 --- a/Marlin/stepper.cpp
@@ -10852,82 +8350,3 @@ index eeb9091..9b40193 100644
  
  ## Credits
  
-
-commit 182e0d99c9d3c173ddf3c975832ebdb3af573c85 (from 7f3252eea99983adbda5d6fe5c6044248979df75)
-Merge: 92575ce 7f3252e
-Author: Wurstnase <tonnhofer@gmail.com>
-Date:   Fri May 8 21:27:18 2015 +0200
-
-    Merge remote-tracking branch 'Marlin8bit/Development' into serial_wait
-
-diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
-index b79035a..ee39028 100644
---- a/Marlin/Configuration_adv.h
-+++ b/Marlin/Configuration_adv.h
-@@ -376,6 +376,14 @@ const unsigned int dropsegments=5; //everything with less than this number of st
- #define MAX_CMD_SIZE 96
- #define BUFSIZE 4
- 
-+// Bad Serial-connections can miss a received command by sending an 'ok'
-+// Therefore some clients go after 30 seconds in a timeout. Some other clients start sending commands while receiving a 'wait'.
-+// This wait is only send when the buffer is empty. The timeout-length is in milliseconds. 1000 is a good value.
-+// #define NO_TIMEOUTS 1000
-+
-+// Some clients will have this feature soon. This should make the NO_TIMEOUTS unnecessary.
-+// #define ADVANCED_OK
-+
- // @section fwretract
- 
- // Firmware based and LCD controlled retract
-diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
-index 8b719bd..2319fe8 100644
---- a/Marlin/Marlin_main.cpp
-+++ b/Marlin/Marlin_main.cpp
-@@ -733,8 +733,20 @@ void get_command() {
- 
-   if (drain_queued_commands_P()) return; // priority is given to non-serial commands
-   
-+  #ifdef NO_TIMEOUTS
-+    static millis_t last_command_time = 0;
-+    millis_t ms = millis();
-+  
-+    if (!MYSERIAL.available() && commands_in_queue == 0 && ms - last_command_time > NO_TIMEOUTS) {
-+      SERIAL_ECHOLNPGM(MSG_WAIT);
-+      last_command_time = ms;
-+    }
-+  #endif
-+  
-   while (MYSERIAL.available() > 0 && commands_in_queue < BUFSIZE) {
--
-+    #ifdef NO_TIMEOUTS
-+      last_command_time = ms;
-+    #endif
-     serial_char = MYSERIAL.read();
- 
-     if (serial_char == '\n' || serial_char == '\r' ||
-@@ -5518,7 +5530,11 @@ void ClearToSend() {
-   #ifdef SDSUPPORT
-     if (fromsd[cmd_queue_index_r]) return;
-   #endif
--  SERIAL_PROTOCOLLNPGM(MSG_OK);
-+  SERIAL_PROTOCOLPGM(MSG_OK);
-+  #ifdef ADVANCED_OK
-+    SERIAL_PROTOCOLPGM(" N"); SERIAL_PROTOCOL(gcode_LastN);
-+    SERIAL_PROTOCOLPGM(" S"); SERIAL_PROTOCOLLN(commands_in_queue);
-+  #endif
- }
- 
- void get_coordinates() {
-diff --git a/Marlin/language.h b/Marlin/language.h
-index 40d8dbe..789b98c 100644
---- a/Marlin/language.h
-+++ b/Marlin/language.h
-@@ -122,6 +122,7 @@
- #define MSG_FREE_MEMORY                     " Free Memory: "
- #define MSG_PLANNER_BUFFER_BYTES            "  PlannerBufferBytes: "
- #define MSG_OK                              "ok"
-+#define MSG_WAIT                            "wait"
- #define MSG_FILE_SAVED                      "Done saving file."
- #define MSG_ERR_LINE_NO                     "Line Number is not Last Line Number+1, Last Line: "
- #define MSG_ERR_CHECKSUM_MISMATCH           "checksum mismatch, Last Line: "
-
