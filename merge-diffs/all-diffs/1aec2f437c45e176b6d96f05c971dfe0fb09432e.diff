@@ -1,0 +1,1354 @@
+commit 1aec2f437c45e176b6d96f05c971dfe0fb09432e (from 7d472367e2a5edd1628339181e3689b358761316)
+Merge: 7d47236 df02b99
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Mar 27 16:37:47 2015 -0700
+
+    Merge pull request #1700 from thinkyhead/fixup_leveling
+    
+    Fixup leveling and other issues
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index c02392b..760c3f2 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -532,9 +532,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -20
++    #define Z_PROBE_OFFSET_RANGE_MAX 20
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index fc485e2..3872b50 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -11,7 +11,7 @@
+  *  max_acceleration_units_per_sq_second (x4)
+  *  acceleration
+  *  retract_acceleration
+- *  travel_aceeleration
++ *  travel_acceleration
+  *  minimumfeedrate
+  *  mintravelfeedrate
+  *  minsegmenttime
+@@ -25,6 +25,7 @@
+  *  mesh_num_x
+  *  mesh_num_y
+  *  z_values[][]
++ *  zprobe_zoffset
+  *
+  * DELTA:
+  *  endstop_adj (x3)
+@@ -39,7 +40,6 @@
+  *  absPreheatHotendTemp
+  *  absPreheatHPBTemp
+  *  absPreheatFanSpeed
+- *  zprobe_zoffset
+  *
+  * PIDTEMP:
+  *  Kp[0], Ki[0], Kd[0], Kc[0]
+@@ -118,7 +118,7 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size) {
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+ 
+-#define EEPROM_VERSION "V17"
++#define EEPROM_VERSION "V18"
+ 
+ #ifdef EEPROM_SETTINGS
+ 
+@@ -143,7 +143,7 @@ void Config_StoreSettings()  {
+ 
+   uint8_t mesh_num_x = 3;
+   uint8_t mesh_num_y = 3;
+-  #if defined(MESH_BED_LEVELING)
++  #ifdef MESH_BED_LEVELING
+     // Compile time test that sizeof(mbl.z_values) is as expected
+     typedef char c_assert[(sizeof(mbl.z_values) == MESH_NUM_X_POINTS*MESH_NUM_Y_POINTS*sizeof(dummy)) ? 1 : -1];
+     mesh_num_x = MESH_NUM_X_POINTS;
+@@ -161,7 +161,12 @@ void Config_StoreSettings()  {
+     for (int q=0; q<mesh_num_x*mesh_num_y; q++) {
+       EEPROM_WRITE_VAR(i, dummy);
+     }
+-  #endif  // MESH_BED_LEVELING
++  #endif // MESH_BED_LEVELING
++
++  #ifndef ENABLE_AUTO_BED_LEVELING
++    float zprobe_zoffset = 0;
++  #endif
++  EEPROM_WRITE_VAR(i, zprobe_zoffset);
+ 
+   #ifdef DELTA
+     EEPROM_WRITE_VAR(i, endstop_adj);               // 3 floats
+@@ -188,7 +193,7 @@ void Config_StoreSettings()  {
+   EEPROM_WRITE_VAR(i, absPreheatHotendTemp);
+   EEPROM_WRITE_VAR(i, absPreheatHPBTemp);
+   EEPROM_WRITE_VAR(i, absPreheatFanSpeed);
+-  EEPROM_WRITE_VAR(i, zprobe_zoffset);
++
+ 
+   for (int e = 0; e < 4; e++) {
+ 
+@@ -328,6 +333,11 @@ void Config_RetrieveSettings() {
+       }
+     #endif  // MESH_BED_LEVELING
+ 
++    #ifndef ENABLE_AUTO_BED_LEVELING
++      float zprobe_zoffset = 0;
++    #endif
++    EEPROM_READ_VAR(i, zprobe_zoffset);
++
+     #ifdef DELTA
+       EEPROM_READ_VAR(i, endstop_adj);                // 3 floats
+       EEPROM_READ_VAR(i, delta_radius);               // 1 float
+@@ -353,7 +363,6 @@ void Config_RetrieveSettings() {
+     EEPROM_READ_VAR(i, absPreheatHotendTemp);
+     EEPROM_READ_VAR(i, absPreheatHPBTemp);
+     EEPROM_READ_VAR(i, absPreheatFanSpeed);
+-    EEPROM_READ_VAR(i, zprobe_zoffset);
+ 
+     #ifdef PIDTEMP
+       for (int e = 0; e < 4; e++) { // 4 = max extruders currently supported by Marlin
+@@ -461,9 +470,13 @@ void Config_ResetDefault() {
+   max_e_jerk = DEFAULT_EJERK;
+   home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
+ 
+-  #if defined(MESH_BED_LEVELING)
++  #ifdef MESH_BED_LEVELING
+     mbl.active = 0;
+-  #endif  // MESH_BED_LEVELING
++  #endif
++
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
++  #endif
+ 
+   #ifdef DELTA
+     endstop_adj[X_AXIS] = endstop_adj[Y_AXIS] = endstop_adj[Z_AXIS] = 0;
+@@ -484,10 +497,6 @@ void Config_ResetDefault() {
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+   #endif
+ 
+-  #ifdef ENABLE_AUTO_BED_LEVELING
+-    zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
+-  #endif
+-
+   #ifdef DOGLCD
+     lcd_contrast = DEFAULT_LCD_CONTRAST;
+   #endif
+@@ -738,15 +747,20 @@ void Config_PrintSettings(bool forReplay) {
+     }
+   }
+ 
+-  #ifdef CUSTOM_M_CODES
++  #ifdef ENABLE_AUTO_BED_LEVELING
+     SERIAL_ECHO_START;
+-    if (!forReplay) {
+-      SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
+-      SERIAL_ECHO_START;
+-    }
+-    SERIAL_ECHO("   M");
+-    SERIAL_ECHO(CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
+-    SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
++    #ifdef CUSTOM_M_CODES
++      if (!forReplay) {
++        SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
++        SERIAL_ECHO_START;
++      }
++      SERIAL_ECHOPAIR("   M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
++      SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
++    #else
++      if (!forReplay) {
++        SERIAL_ECHOPAIR("Z-Probe Offset (mm):", -zprobe_zoffset);
++      }
++    #endif
+     SERIAL_EOL;
+   #endif
+ }
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index bbd7ac3..46720d9 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -251,7 +251,9 @@ extern float z_endstop_adj;
+ extern float min_pos[3];
+ extern float max_pos[3];
+ extern bool axis_known_position[3];
+-extern float zprobe_zoffset;
++#ifdef ENABLE_AUTO_BED_LEVELING
++  extern float zprobe_zoffset;
++#endif
+ extern int fanSpeed;
+ #ifdef BARICUDA
+   extern int ValvePressure;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 084dea1..cd04bd3 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -203,7 +203,8 @@
+ 
+ float homing_feedrate[] = HOMING_FEEDRATE;
+ #ifdef ENABLE_AUTO_BED_LEVELING
+-int xy_travel_speed = XY_TRAVEL_SPEED;
++  int xy_travel_speed = XY_TRAVEL_SPEED;
++  float zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
+ #endif
+ int homing_bump_divisor[] = HOMING_BUMP_DIVISOR;
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+@@ -255,7 +256,6 @@ float home_offset[3] = { 0, 0, 0 };
+ float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+ float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ bool axis_known_position[3] = { false, false, false };
+-float zprobe_zoffset;
+ 
+ // Extruder offset
+ #if EXTRUDERS > 1
+@@ -1097,9 +1097,6 @@ static void set_bed_level_equation_lsq(double *plane_equation_coefficients)
+     current_position[Y_AXIS] = corrected_position.y;
+     current_position[Z_AXIS] = corrected_position.z;
+ 
+-    // put the bed at 0 so we don't go below it.
+-    current_position[Z_AXIS] = zprobe_zoffset; // in the lsq we reach here after raising the extruder due to the loop structure
+-
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
+ #endif
+@@ -1113,11 +1110,13 @@ static void set_bed_level_equation_3pts(float z_at_pt_1, float z_at_pt_2, float
+     vector_3 pt1 = vector_3(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, z_at_pt_1);
+     vector_3 pt2 = vector_3(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, z_at_pt_2);
+     vector_3 pt3 = vector_3(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, z_at_pt_3);
++    vector_3 planeNormal = vector_3::cross(pt1 - pt2, pt3 - pt2).get_normal();
+ 
+-    vector_3 from_2_to_1 = (pt1 - pt2).get_normal();
+-    vector_3 from_2_to_3 = (pt3 - pt2).get_normal();
+-    vector_3 planeNormal = vector_3::cross(from_2_to_1, from_2_to_3).get_normal();
+-    planeNormal = vector_3(planeNormal.x, planeNormal.y, abs(planeNormal.z));
++    if (planeNormal.z < 0) {
++      planeNormal.x = -planeNormal.x;
++      planeNormal.y = -planeNormal.y;
++      planeNormal.z = -planeNormal.z;
++    }
+ 
+     plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+ 
+@@ -1126,11 +1125,7 @@ static void set_bed_level_equation_3pts(float z_at_pt_1, float z_at_pt_2, float
+     current_position[Y_AXIS] = corrected_position.y;
+     current_position[Z_AXIS] = corrected_position.z;
+ 
+-    // put the bed at 0 so we don't go below it.
+-    current_position[Z_AXIS] = zprobe_zoffset;
+-
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-
+ }
+ 
+ #endif // AUTO_BED_LEVELING_GRID
+@@ -2017,8 +2012,19 @@ inline void gcode_G28() {
+   endstops_hit_on_purpose();
+ }
+ 
+-#if defined(MESH_BED_LEVELING)
++#ifdef MESH_BED_LEVELING
+ 
++  /**
++   * G29: Mesh-based Z-Probe, probes a grid and produces a
++   *      mesh to compensate for variable bed height
++   *
++   * Parameters With MESH_BED_LEVELING:
++   *
++   *  S0 Produce a mesh report
++   *  S1 Start probing mesh points
++   *  S2 Probe the next mesh point
++   *
++   */
+   inline void gcode_G29() {
+     static int probe_point = -1;
+     int state = 0;
+@@ -2060,7 +2066,7 @@ inline void gcode_G28() {
+     } else if (state == 2) { // Goto next point
+ 
+       if (probe_point < 0) {
+-        SERIAL_PROTOCOLPGM("Mesh probing not started.\n");
++        SERIAL_PROTOCOLPGM("Start mesh probing with \"G29 S1\" first.\n");
+         return;
+       }
+       int ix, iy;
+@@ -2070,16 +2076,14 @@ inline void gcode_G28() {
+       } else {
+         ix = (probe_point-1) % MESH_NUM_X_POINTS;
+         iy = (probe_point-1) / MESH_NUM_X_POINTS;
+-        if (iy&1) { // Zig zag
+-          ix = (MESH_NUM_X_POINTS - 1) - ix;
+-        }
++        if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // zig-zag
+         mbl.set_z(ix, iy, current_position[Z_AXIS]);
+         current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+         plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[X_AXIS]/60, active_extruder);
+         st_synchronize();
+       }
+-      if (probe_point == MESH_NUM_X_POINTS*MESH_NUM_Y_POINTS) {
+-        SERIAL_PROTOCOLPGM("Mesh done.\n");
++      if (probe_point == MESH_NUM_X_POINTS * MESH_NUM_Y_POINTS) {
++        SERIAL_PROTOCOLPGM("Mesh probing done.\n");
+         probe_point = -1;
+         mbl.active = 1;
+         enquecommands_P(PSTR("G28"));
+@@ -2087,9 +2091,7 @@ inline void gcode_G28() {
+       }
+       ix = probe_point % MESH_NUM_X_POINTS;
+       iy = probe_point / MESH_NUM_X_POINTS;
+-      if (iy&1) { // Zig zag
+-        ix = (MESH_NUM_X_POINTS - 1) - ix;
+-      }
++      if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // zig-zag
+       current_position[X_AXIS] = mbl.get_x(ix);
+       current_position[Y_AXIS] = mbl.get_y(iy);
+       plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[X_AXIS]/60, active_extruder);
+@@ -2098,9 +2100,7 @@ inline void gcode_G28() {
+     }
+   }
+ 
+-#endif
+-
+-#ifdef ENABLE_AUTO_BED_LEVELING
++#elif defined(ENABLE_AUTO_BED_LEVELING)
+ 
+   /**
+    * G29: Detailed Z-Probe, probes the bed at 3 or more points.
+@@ -2116,8 +2116,9 @@ inline void gcode_G28() {
+    *
+    *  S  Set the XY travel speed between probe points (in mm/min)
+    *
+-   *  D  Dry-Run mode. Just evaluate the bed Topology - It does not apply or clean the rotation Matrix
+-   *     Useful to check the topology after a first run of G29.
++   *  D  Dry-Run mode. Just evaluate the bed Topology - Don't apply
++   *     or clean the rotation Matrix. Useful to check the topology
++   *     after a first run of G29.
+    *
+    *  V  Set the verbose level (0-4). Example: "G29 V3"
+    *
+@@ -2165,9 +2166,9 @@ inline void gcode_G28() {
+ 
+     #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    #ifndef DELTA
+-      bool do_topography_map = verbose_level > 2 || code_seen('T') || code_seen('t');
+-    #endif
++      #ifndef DELTA
++        bool do_topography_map = verbose_level > 2 || code_seen('T') || code_seen('t');
++      #endif
+ 
+       if (verbose_level > 0)
+       {
+@@ -2224,7 +2225,7 @@ inline void gcode_G28() {
+ 
+     #ifdef Z_PROBE_SLED
+       dock_sled(false); // engage (un-dock) the probe
+-    #elif defined(Z_PROBE_ALLEN_KEY)
++    #elif defined(Z_PROBE_ALLEN_KEY) //|| defined(SERVO_LEVELING)
+       engage_z_probe();
+     #endif
+ 
+@@ -2234,19 +2235,18 @@ inline void gcode_G28() {
+     {
+       #ifdef DELTA
+         reset_bed_level();
+-      #else
+-
+-      // make sure the bed_level_rotation_matrix is identity or the planner will get it incorectly
+-      //vector_3 corrected_position = plan_get_position_mm();
+-      //corrected_position.debug("position before G29");
+-      plan_bed_level_matrix.set_to_identity();
+-      vector_3 uncorrected_position = plan_get_position();
+-//    uncorrected_position.debug("position during G29");
+-
+-      current_position[X_AXIS] = uncorrected_position.x;
+-      current_position[Y_AXIS] = uncorrected_position.y;
+-      current_position[Z_AXIS] = uncorrected_position.z;
+-      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++      #else //!DELTA
++
++        // make sure the bed_level_rotation_matrix is identity or the planner will get it incorectly
++        //vector_3 corrected_position = plan_get_position_mm();
++        //corrected_position.debug("position before G29");
++        plan_bed_level_matrix.set_to_identity();
++        vector_3 uncorrected_position = plan_get_position();
++        //uncorrected_position.debug("position during G29");
++        current_position[X_AXIS] = uncorrected_position.x;
++        current_position[Y_AXIS] = uncorrected_position.y;
++        current_position[Z_AXIS] = uncorrected_position.z;
++        plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ 
+       #endif
+     }
+@@ -2261,26 +2261,24 @@ inline void gcode_G28() {
+       const int xGridSpacing = (right_probe_bed_position - left_probe_bed_position) / (auto_bed_leveling_grid_points-1);
+       const int yGridSpacing = (back_probe_bed_position - front_probe_bed_position) / (auto_bed_leveling_grid_points-1);
+ 
+-    #ifndef DELTA
+-      // solve the plane equation ax + by + d = z
+-      // A is the matrix with rows [x y 1] for all the probed points
+-      // B is the vector of the Z positions
+-      // the normal vector to the plane is formed by the coefficients of the plane equation in the standard form, which is Vx*x+Vy*y+Vz*z+d = 0
+-      // so Vx = -a Vy = -b Vz = 1 (we want the vector facing towards positive Z
+-
+-      int abl2 = auto_bed_leveling_grid_points * auto_bed_leveling_grid_points;
+-
+-      double eqnAMatrix[abl2 * 3], // "A" matrix of the linear system of equations
+-             eqnBVector[abl2],     // "B" vector of Z points
+-             mean = 0.0;
+-
+-    #else
+-      delta_grid_spacing[0] = xGridSpacing;
+-      delta_grid_spacing[1] = yGridSpacing;
+-
+-      float z_offset = Z_PROBE_OFFSET_FROM_EXTRUDER;
+-      if (code_seen(axis_codes[Z_AXIS])) z_offset += code_value();
+-    #endif
++      #ifdef DELTA
++        delta_grid_spacing[0] = xGridSpacing;
++        delta_grid_spacing[1] = yGridSpacing;
++        float z_offset = Z_PROBE_OFFSET_FROM_EXTRUDER;
++        if (code_seen(axis_codes[Z_AXIS])) z_offset += code_value();
++      #else // !DELTA
++        // solve the plane equation ax + by + d = z
++        // A is the matrix with rows [x y 1] for all the probed points
++        // B is the vector of the Z positions
++        // the normal vector to the plane is formed by the coefficients of the plane equation in the standard form, which is Vx*x+Vy*y+Vz*z+d = 0
++        // so Vx = -a Vy = -b Vz = 1 (we want the vector facing towards positive Z
++
++        int abl2 = auto_bed_leveling_grid_points * auto_bed_leveling_grid_points;
++
++        double eqnAMatrix[abl2 * 3], // "A" matrix of the linear system of equations
++               eqnBVector[abl2],     // "B" vector of Z points
++               mean = 0.0;
++      #endif // !DELTA
+ 
+       int probePointCounter = 0;
+       bool zig = true;
+@@ -2313,12 +2311,12 @@ inline void gcode_G28() {
+           float measured_z,
+                 z_before = probePointCounter == 0 ? Z_RAISE_BEFORE_PROBING : current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS;
+ 
+-        #ifdef DELTA
+-          // Avoid probing the corners (outside the round or hexagon print surface) on a delta printer.
+-          float distance_from_center = sqrt(xProbe*xProbe + yProbe*yProbe);
+-          if (distance_from_center > DELTA_PROBABLE_RADIUS)
+-            continue;
+-        #endif //DELTA
++          #ifdef DELTA
++            // Avoid probing the corners (outside the round or hexagon print surface) on a delta printer.
++            float distance_from_center = sqrt(xProbe*xProbe + yProbe*yProbe);
++            if (distance_from_center > DELTA_PROBABLE_RADIUS)
++              continue;
++          #endif //DELTA
+ 
+           // Enhanced G29 - Do not retract servo between probes
+           ProbeAction act;
+@@ -2335,16 +2333,16 @@ inline void gcode_G28() {
+ 
+           measured_z = probe_pt(xProbe, yProbe, z_before, act, verbose_level);
+ 
+-        #ifndef DELTA
+-          mean += measured_z;
++          #ifndef DELTA
++            mean += measured_z;
+ 
+-          eqnBVector[probePointCounter] = measured_z;
+-          eqnAMatrix[probePointCounter + 0 * abl2] = xProbe;
+-          eqnAMatrix[probePointCounter + 1 * abl2] = yProbe;
+-          eqnAMatrix[probePointCounter + 2 * abl2] = 1;
+-        #else
+-          bed_level[xCount][yCount] = measured_z + z_offset;
+-        #endif
++            eqnBVector[probePointCounter] = measured_z;
++            eqnAMatrix[probePointCounter + 0 * abl2] = xProbe;
++            eqnAMatrix[probePointCounter + 1 * abl2] = yProbe;
++            eqnAMatrix[probePointCounter + 2 * abl2] = 1;
++          #else
++            bed_level[xCount][yCount] = measured_z + z_offset;
++          #endif
+ 
+           probePointCounter++;
+         } //xProbe
+@@ -2352,60 +2350,64 @@ inline void gcode_G28() {
+ 
+       clean_up_after_endstop_move();
+ 
+-    #ifndef DELTA
+-      // solve lsq problem
+-      double *plane_equation_coefficients = qr_solve(abl2, 3, eqnAMatrix, eqnBVector);
+-
+-      mean /= abl2;
+-
+-      if (verbose_level) {
+-        SERIAL_PROTOCOLPGM("Eqn coefficients: a: ");
+-        SERIAL_PROTOCOL_F(plane_equation_coefficients[0], 8);
+-        SERIAL_PROTOCOLPGM(" b: ");
+-        SERIAL_PROTOCOL_F(plane_equation_coefficients[1], 8);
+-        SERIAL_PROTOCOLPGM(" d: ");
+-        SERIAL_PROTOCOL_F(plane_equation_coefficients[2], 8);
+-        SERIAL_EOL;
+-        if (verbose_level > 2) {
+-          SERIAL_PROTOCOLPGM("Mean of sampled points: ");
+-          SERIAL_PROTOCOL_F(mean, 8);
++      #ifdef DELTA
++
++        if (!dryrun) extrapolate_unprobed_bed_level();
++        print_bed_level();
++
++      #else // !DELTA
++
++        // solve lsq problem
++        double *plane_equation_coefficients = qr_solve(abl2, 3, eqnAMatrix, eqnBVector);
++
++        mean /= abl2;
++
++        if (verbose_level) {
++          SERIAL_PROTOCOLPGM("Eqn coefficients: a: ");
++          SERIAL_PROTOCOL_F(plane_equation_coefficients[0], 8);
++          SERIAL_PROTOCOLPGM(" b: ");
++          SERIAL_PROTOCOL_F(plane_equation_coefficients[1], 8);
++          SERIAL_PROTOCOLPGM(" d: ");
++          SERIAL_PROTOCOL_F(plane_equation_coefficients[2], 8);
+           SERIAL_EOL;
++          if (verbose_level > 2) {
++            SERIAL_PROTOCOLPGM("Mean of sampled points: ");
++            SERIAL_PROTOCOL_F(mean, 8);
++            SERIAL_EOL;
++          }
+         }
+-      }
+ 
+-      // Show the Topography map if enabled
+-      if (do_topography_map) {
+-
+-        SERIAL_PROTOCOLPGM(" \nBed Height Topography: \n");
+-        SERIAL_PROTOCOLPGM("+-----------+\n");
+-        SERIAL_PROTOCOLPGM("|...Back....|\n");
+-        SERIAL_PROTOCOLPGM("|Left..Right|\n");
+-        SERIAL_PROTOCOLPGM("|...Front...|\n");
+-        SERIAL_PROTOCOLPGM("+-----------+\n");
+-
+-        for (int yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--) {
+-          for (int xx = 0; xx < auto_bed_leveling_grid_points; xx++) {
+-            int ind = yy * auto_bed_leveling_grid_points + xx;
+-            float diff = eqnBVector[ind] - mean;
+-            if (diff >= 0.0)
+-              SERIAL_PROTOCOLPGM(" +");   // Include + for column alignment
+-            else
+-              SERIAL_PROTOCOLPGM(" ");
+-            SERIAL_PROTOCOL_F(diff, 5);
+-          } // xx
++        // Show the Topography map if enabled
++        if (do_topography_map) {
++
++          SERIAL_PROTOCOLPGM(" \nBed Height Topography: \n");
++          SERIAL_PROTOCOLPGM("+-----------+\n");
++          SERIAL_PROTOCOLPGM("|...Back....|\n");
++          SERIAL_PROTOCOLPGM("|Left..Right|\n");
++          SERIAL_PROTOCOLPGM("|...Front...|\n");
++          SERIAL_PROTOCOLPGM("+-----------+\n");
++
++          for (int yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--) {
++            for (int xx = 0; xx < auto_bed_leveling_grid_points; xx++) {
++              int ind = yy * auto_bed_leveling_grid_points + xx;
++              float diff = eqnBVector[ind] - mean;
++              if (diff >= 0.0)
++                SERIAL_PROTOCOLPGM(" +");   // Include + for column alignment
++              else
++                SERIAL_PROTOCOLPGM(" ");
++              SERIAL_PROTOCOL_F(diff, 5);
++            } // xx
++            SERIAL_EOL;
++          } // yy
+           SERIAL_EOL;
+-        } // yy
+-        SERIAL_EOL;
+ 
+-      } //do_topography_map
++        } //do_topography_map
++
+ 
++        if (!dryrun) set_bed_level_equation_lsq(plane_equation_coefficients);
++        free(plane_equation_coefficients);
+ 
+-      if (!dryrun) set_bed_level_equation_lsq(plane_equation_coefficients);
+-      free(plane_equation_coefficients);
+-    #else //Delta
+-      if (!dryrun) extrapolate_unprobed_bed_level();
+-      print_bed_level();
+-    #endif //Delta
++      #endif //!DELTA
+ 
+     #else // !AUTO_BED_LEVELING_GRID
+ 
+@@ -2428,35 +2430,36 @@ inline void gcode_G28() {
+ 
+     #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #ifndef DELTA
+-    if (verbose_level > 0) plan_bed_level_matrix.debug(" \n\nBed Level Correction Matrix:");
++    #ifndef DELTA
++      if (verbose_level > 0)
++        plan_bed_level_matrix.debug(" \n\nBed Level Correction Matrix:");
+ 
+-    // Correct the Z height difference from z-probe position and hotend tip position.
+-    // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend.
+-    // When the bed is uneven, this height must be corrected.
+-    if (!dryrun)
+-    {
+-      real_z = float(st_get_position(Z_AXIS)) / axis_steps_per_unit[Z_AXIS];  //get the real Z (since the auto bed leveling is already correcting the plane)
+-      x_tmp = current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
+-      y_tmp = current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
+-      z_tmp = current_position[Z_AXIS];
++      // Correct the Z height difference from z-probe position and hotend tip position.
++      // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend.
++      // When the bed is uneven, this height must be corrected.
++      if (!dryrun)
++      {
++        real_z = float(st_get_position(Z_AXIS)) / axis_steps_per_unit[Z_AXIS];  //get the real Z (since the auto bed leveling is already correcting the plane)
++        x_tmp = current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
++        y_tmp = current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++        z_tmp = current_position[Z_AXIS];
+ 
+-      apply_rotation_xyz(plan_bed_level_matrix, x_tmp, y_tmp, z_tmp);         //Apply the correction sending the probe offset
+-      current_position[Z_AXIS] = z_tmp - real_z + current_position[Z_AXIS];   //The difference is added to current position and sent to planner.
+-      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-    }
+-  #endif
++        apply_rotation_xyz(plan_bed_level_matrix, x_tmp, y_tmp, z_tmp);         //Apply the correction sending the probe offset
++        current_position[Z_AXIS] = z_tmp - real_z + current_position[Z_AXIS];   //The difference is added to current position and sent to planner.
++        plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++      }
++    #endif // !DELTA
+ 
+-  #ifdef Z_PROBE_SLED
+-    dock_sled(true, -SLED_DOCKING_OFFSET); // dock the probe, correcting for over-travel
+-  #elif defined(Z_PROBE_ALLEN_KEY)
+-    retract_z_probe();
+-  #endif
+-    
+-  #ifdef Z_PROBE_END_SCRIPT
+-    enquecommands_P(PSTR(Z_PROBE_END_SCRIPT));
+-    st_synchronize();
+-  #endif
++    #ifdef Z_PROBE_SLED
++      dock_sled(true, -SLED_DOCKING_OFFSET); // dock the probe, correcting for over-travel
++    #elif defined(Z_PROBE_ALLEN_KEY) //|| defined(SERVO_LEVELING)
++      retract_z_probe();
++    #endif
++
++    #ifdef Z_PROBE_END_SCRIPT
++      enquecommands_P(PSTR(Z_PROBE_END_SCRIPT));
++      st_synchronize();
++    #endif
+   }
+ 
+   #ifndef Z_PROBE_SLED
+@@ -2919,7 +2922,7 @@ inline void gcode_M42() {
+       do_blocking_move_to( X_probe_location, Y_probe_location, Z_start_location); // Make sure we are at the probe location
+ 
+       if (n_legs) {
+-        double radius=0.0, theta=0.0, x_sweep, y_sweep;
++        double radius=0.0, theta=0.0;
+         int l;
+         int rotational_direction = (unsigned long) millis() & 0x0001;     // clockwise or counter clockwise
+         radius = (unsigned long)millis() % (long)(X_MAX_LENGTH / 4);      // limit how far out to go
+@@ -3545,7 +3548,6 @@ inline void gcode_M200() {
+     }
+   }
+ 
+-  float area = .0;
+   if (code_seen('D')) {
+     float diameter = code_value();
+     // setting any extruder filament size disables volumetric on the assumption that
+@@ -4283,7 +4285,7 @@ inline void gcode_M502() {
+  * M503: print settings currently in memory
+  */
+ inline void gcode_M503() {
+-  Config_PrintSettings(code_seen('S') && code_value == 0);
++  Config_PrintSettings(code_seen('S') && code_value() == 0);
+ }
+ 
+ #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+@@ -4580,9 +4582,14 @@ inline void gcode_T() {
+     SERIAL_ECHOLN(MSG_INVALID_EXTRUDER);
+   }
+   else {
+-    boolean make_move = false;
++    #if EXTRUDERS > 1
++      bool make_move = false;
++    #endif
++
+     if (code_seen('F')) {
+-      make_move = true;
++      #if EXTRUDERS > 1
++        make_move = true;
++      #endif
+       next_feedrate = code_value();
+       if (next_feedrate > 0.0) feedrate = next_feedrate;
+     }
+@@ -5179,20 +5186,22 @@ void ClearToSend()
+   SERIAL_PROTOCOLLNPGM(MSG_OK);
+ }
+ 
+-void get_coordinates()
+-{
+-  bool seen[4]={false,false,false,false};
+-  for(int8_t i=0; i < NUM_AXIS; i++) {
+-    if(code_seen(axis_codes[i]))
+-    {
+-      destination[i] = (float)code_value() + (axis_relative_modes[i] || relative_mode)*current_position[i];
+-      seen[i]=true;
++void get_coordinates() {
++  for (int i = 0; i < NUM_AXIS; i++) {
++    float dest;
++    if (code_seen(axis_codes[i])) {
++      dest = code_value();
++      if (axis_relative_modes[i] || relative_mode)
++        dest += current_position[i];
+     }
+-    else destination[i] = current_position[i]; //Are these else lines really needed?
++    else
++      dest = current_position[i];
++
++    destination[i] = dest;
+   }
+-  if(code_seen('F')) {
++  if (code_seen('F')) {
+     next_feedrate = code_value();
+-    if(next_feedrate > 0.0) feedrate = next_feedrate;
++    if (next_feedrate > 0.0) feedrate = next_feedrate;
+   }
+ }
+ 
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index d228bdf..d5183ab 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -104,13 +104,13 @@
+ 
+       // Make sure probing points are reachable
+       #if LEFT_PROBE_BED_POSITION < MIN_PROBE_X
+-        #error The given LEFT_PROBE_BED_POSITION can not be reached by the probe.
++        #error "The given LEFT_PROBE_BED_POSITION can't be reached by the probe."
+       #elif RIGHT_PROBE_BED_POSITION > MAX_PROBE_X
+-        #error The given RIGHT_PROBE_BED_POSITION can not be reached by the probe.
++        #error "The given RIGHT_PROBE_BED_POSITION can't be reached by the probe."
+       #elif FRONT_PROBE_BED_POSITION < MIN_PROBE_Y
+-        #error The given FRONT_PROBE_BED_POSITION can not be reached by the probe.
++        #error "The given FRONT_PROBE_BED_POSITION can't be reached by the probe."
+       #elif BACK_PROBE_BED_POSITION > MAX_PROBE_Y
+-        #error The given BACK_PROBE_BED_POSITION can not be reached by the probe.
++        #error "The given BACK_PROBE_BED_POSITION can't be reached by the probe."
+       #endif
+ 
+       #define PROBE_SIZE_X (X_PROBE_OFFSET_FROM_EXTRUDER * (AUTO_BED_LEVELING_GRID_POINTS-1))
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index bfc62f5..35eafff 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -569,9 +569,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ // @section extras
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 865a551..0ee8410 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -511,9 +511,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index e9e0adb..f5fc0ea 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -511,9 +511,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 5c426a5..78ff90e 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -539,9 +539,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 96a261c..22ba764 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -543,9 +543,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 30dc731..5b6f994 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -569,9 +569,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ //#define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 7a395d0..6fec28b 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -536,9 +536,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index fb78c26..cb42f42 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -552,9 +552,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 556a98b..e68ad14 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -554,9 +554,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 3e8c07f..f423ce7 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -534,9 +534,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 22e16e4..73a6ef9 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -541,9 +541,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Custom M code points
+ #define CUSTOM_M_CODES
+ #ifdef CUSTOM_M_CODES
+-  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-  #define Z_PROBE_OFFSET_RANGE_MIN -15
+-  #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #ifdef ENABLE_AUTO_BED_LEVELING
++    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++    #define Z_PROBE_OFFSET_RANGE_MIN -15
++    #define Z_PROBE_OFFSET_RANGE_MAX -5
++  #endif
+ #endif
+ 
+ 
+diff --git a/Marlin/mesh_bed_leveling.cpp b/Marlin/mesh_bed_leveling.cpp
+index b383fe5..a48a6e6 100644
+--- a/Marlin/mesh_bed_leveling.cpp
++++ b/Marlin/mesh_bed_leveling.cpp
+@@ -1,20 +1,16 @@
+ #include "mesh_bed_leveling.h"
+ 
+-#if defined(MESH_BED_LEVELING)
++#ifdef MESH_BED_LEVELING
+ 
+-mesh_bed_leveling mbl;
++  mesh_bed_leveling mbl;
+ 
+-mesh_bed_leveling::mesh_bed_leveling() {
+-    reset();
+-}
+-    
+-void mesh_bed_leveling::reset() {
+-    for (int y=0; y<MESH_NUM_Y_POINTS; y++) {
+-        for (int x=0; x<MESH_NUM_X_POINTS; x++) {
+-            z_values[y][x] = 0;
+-        }
+-    }
++  mesh_bed_leveling::mesh_bed_leveling() { reset(); }
++      
++  void mesh_bed_leveling::reset() {
+     active = 0;
+-}
++    for (int y = 0; y < MESH_NUM_Y_POINTS; y++)
++      for (int x = 0; x < MESH_NUM_X_POINTS; x++)
++        z_values[y][x] = 0;
++  }
+ 
+ #endif  // MESH_BED_LEVELING
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index d76321a..b6c4ed5 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -2,11 +2,11 @@
+ 
+ #if defined(MESH_BED_LEVELING)
+ 
+-#define MESH_X_DIST ((MESH_MAX_X - MESH_MIN_X)/(MESH_NUM_X_POINTS - 1))
+-#define MESH_Y_DIST ((MESH_MAX_Y - MESH_MIN_Y)/(MESH_NUM_Y_POINTS - 1))
++  #define MESH_X_DIST ((MESH_MAX_X - MESH_MIN_X)/(MESH_NUM_X_POINTS - 1))
++  #define MESH_Y_DIST ((MESH_MAX_Y - MESH_MIN_Y)/(MESH_NUM_Y_POINTS - 1))
+ 
+-class mesh_bed_leveling {
+-public:
++  class mesh_bed_leveling {
++  public:
+     uint8_t active;
+     float z_values[MESH_NUM_Y_POINTS][MESH_NUM_X_POINTS];
+     
+@@ -14,48 +14,44 @@ public:
+     
+     void reset();
+     
+-    float get_x(int i) { return MESH_MIN_X + MESH_X_DIST*i; }
+-    float get_y(int i) { return MESH_MIN_Y + MESH_Y_DIST*i; }
++    float get_x(int i) { return MESH_MIN_X + MESH_X_DIST * i; }
++    float get_y(int i) { return MESH_MIN_Y + MESH_Y_DIST * i; }
+     void set_z(int ix, int iy, float z) { z_values[iy][ix] = z; }
+     
+     int select_x_index(float x) {
+-        int i = 1;
+-        while (x > get_x(i) && i < MESH_NUM_X_POINTS-1) {
+-            i++;
+-        }
+-        return i-1;
++      int i = 1;
++      while (x > get_x(i) && i < MESH_NUM_X_POINTS-1) i++;
++      return i - 1;
+     }
+     
+     int select_y_index(float y) {
+-        int i = 1;
+-        while (y > get_y(i) && i < MESH_NUM_Y_POINTS-1) {
+-            i++;
+-        }
+-        return i-1;
++      int i = 1;
++      while (y > get_y(i) && i < MESH_NUM_Y_POINTS - 1) i++;
++      return i - 1;
+     }
+     
+     float calc_z0(float a0, float a1, float z1, float a2, float z2) {
+-        float delta_z = (z2 - z1)/(a2 - a1);
+-        float delta_a = a0 - a1;
+-        return z1 + delta_a * delta_z;
++      float delta_z = (z2 - z1)/(a2 - a1);
++      float delta_a = a0 - a1;
++      return z1 + delta_a * delta_z;
+     }
+     
+     float get_z(float x0, float y0) {
+-        int x_index = select_x_index(x0);
+-        int y_index = select_y_index(y0);
+-        float z1 = calc_z0(x0,
+-                           get_x(x_index), z_values[y_index][x_index],
+-                           get_x(x_index+1), z_values[y_index][x_index+1]);
+-        float z2 = calc_z0(x0,
+-                           get_x(x_index), z_values[y_index+1][x_index],
+-                           get_x(x_index+1), z_values[y_index+1][x_index+1]);
+-        float z0 = calc_z0(y0,
+-                           get_y(y_index), z1,
+-                           get_y(y_index+1), z2);
+-        return z0;
++      int x_index = select_x_index(x0);
++      int y_index = select_y_index(y0);
++      float z1 = calc_z0(x0,
++                         get_x(x_index), z_values[y_index][x_index],
++                         get_x(x_index+1), z_values[y_index][x_index+1]);
++      float z2 = calc_z0(x0,
++                         get_x(x_index), z_values[y_index+1][x_index],
++                         get_x(x_index+1), z_values[y_index+1][x_index+1]);
++      float z0 = calc_z0(y0,
++                         get_y(y_index), z1,
++                         get_y(y_index+1), z2);
++      return z0;
+     }
+-};
++  };
+ 
+-extern mesh_bed_leveling mbl;
++  extern mesh_bed_leveling mbl;
+ 
+ #endif  // MESH_BED_LEVELING
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 8be4b98..8d55d7b 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -1176,8 +1176,6 @@ void digipot_current(uint8_t driver, int current) {
+ }
+ 
+ void microstep_init() {
+-  const uint8_t microstep_modes[] = MICROSTEP_MODES;
+-
+   #if defined(E1_MS1_PIN) && E1_MS1_PIN >= 0
+     pinMode(E1_MS1_PIN,OUTPUT);
+     pinMode(E1_MS2_PIN,OUTPUT); 
+@@ -1192,7 +1190,9 @@ void microstep_init() {
+     pinMode(Z_MS2_PIN,OUTPUT);
+     pinMode(E0_MS1_PIN,OUTPUT);
+     pinMode(E0_MS2_PIN,OUTPUT);
+-    for (int i = 0; i <= 4; i++) microstep_mode(i, microstep_modes[i]);
++    const uint8_t microstep_modes[] = MICROSTEP_MODES;
++    for (int i = 0; i < sizeof(microstep_modes) / sizeof(microstep_modes[0]); i++)
++        microstep_mode(i, microstep_modes[i]);
+   #endif
+ }
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 8f43aab..7b7ecea 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1181,9 +1181,10 @@ static void set_current_temp_raw() {
+   #endif
+   #if HAS_TEMP_1
+     #ifdef TEMP_SENSOR_1_AS_REDUNDANT
+-      redundant_temperature_raw =
++      redundant_temperature_raw = raw_temp_value[1];
++    #else
++      current_temperature_raw[1] = raw_temp_value[1];
+     #endif
+-    current_temperature_raw[1] = raw_temp_value[1];
+     #if HAS_TEMP_2
+       current_temperature_raw[2] = raw_temp_value[2];
+       #if HAS_TEMP_3
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index b29fc2b..853179b 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -41,10 +41,10 @@ void manage_heater(); //it is critical that this is called periodically.
+ 
+ // low level conversion routines
+ // do not use these routines and variables outside of temperature.cpp
+-extern int target_temperature[EXTRUDERS];  
+-extern float current_temperature[EXTRUDERS];
++extern int target_temperature[4];  
++extern float current_temperature[4];
+ #ifdef SHOW_TEMP_ADC_VALUES
+-  extern int current_temperature_raw[EXTRUDERS];
++  extern int current_temperature_raw[4];
+   extern int current_temperature_bed_raw;
+ #endif
+ extern int target_temperature_bed;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index f6af156..6233271 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -911,7 +911,7 @@ static void lcd_control_motion_menu() {
+   START_MENU();
+   MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
+   #ifdef ENABLE_AUTO_BED_LEVELING
+-    MENU_ITEM_EDIT(float32, MSG_ZPROBE_ZOFFSET, &zprobe_zoffset, 0.0, 50);
++    MENU_ITEM_EDIT(float32, MSG_ZPROBE_ZOFFSET, &zprobe_zoffset, Z_PROBE_OFFSET_RANGE_MIN, Z_PROBE_OFFSET_RANGE_MAX);
+   #endif
+   MENU_ITEM_EDIT(float5, MSG_ACC, &acceleration, 10, 99000);
+   MENU_ITEM_EDIT(float3, MSG_VXY_JERK, &max_xy_jerk, 1, 990);
+diff --git a/Marlin/vector_3.cpp b/Marlin/vector_3.cpp
+index 2e42da5..243f083 100644
+--- a/Marlin/vector_3.cpp
++++ b/Marlin/vector_3.cpp
+@@ -26,57 +26,40 @@ vector_3::vector_3() : x(0), y(0), z(0) { }
+ 
+ vector_3::vector_3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) { }
+ 
+-vector_3 vector_3::cross(vector_3 left, vector_3 right)
+-{
++vector_3 vector_3::cross(vector_3 left, vector_3 right) {
+ 	return vector_3(left.y * right.z - left.z * right.y,
+ 		left.z * right.x - left.x * right.z,
+ 		left.x * right.y - left.y * right.x);
+ }
+ 
+-vector_3 vector_3::operator+(vector_3 v) 
+-{
+-	return vector_3((x + v.x), (y + v.y), (z + v.z));
+-}
+-
+-vector_3 vector_3::operator-(vector_3 v) 
+-{
+-	return vector_3((x - v.x), (y - v.y), (z - v.z));
+-}
++vector_3 vector_3::operator+(vector_3 v) { return vector_3((x + v.x), (y + v.y), (z + v.z)); }
++vector_3 vector_3::operator-(vector_3 v) { return vector_3((x - v.x), (y - v.y), (z - v.z)); }
+ 
+-vector_3 vector_3::get_normal() 
+-{
++vector_3 vector_3::get_normal() {
+ 	vector_3 normalized = vector_3(x, y, z);
+ 	normalized.normalize();
+ 	return normalized;
+ }
+ 
+-float vector_3::get_length() 
+-{
+-	float length = sqrt((x * x) + (y * y) + (z * z));
+-	return length;
+-}
+- 
+-void vector_3::normalize()
+-{
++float vector_3::get_length() { return sqrt((x * x) + (y * y) + (z * z)); }
++
++void vector_3::normalize() {
+ 	float length = get_length();
+ 	x /= length;
+ 	y /= length;
+ 	z /= length;
+ }
+ 
+-void vector_3::apply_rotation(matrix_3x3 matrix)
+-{
++void vector_3::apply_rotation(matrix_3x3 matrix) {
+ 	float resultX = x * matrix.matrix[3*0+0] + y * matrix.matrix[3*1+0] + z * matrix.matrix[3*2+0];
+ 	float resultY = x * matrix.matrix[3*0+1] + y * matrix.matrix[3*1+1] + z * matrix.matrix[3*2+1];
+ 	float resultZ = x * matrix.matrix[3*0+2] + y * matrix.matrix[3*1+2] + z * matrix.matrix[3*2+2];
+-
+ 	x = resultX;
+ 	y = resultY;
+ 	z = resultZ;
+ }
+ 
+-void vector_3::debug(char* title)
+-{
++void vector_3::debug(const char title[]) {
+ 	SERIAL_PROTOCOL(title);
+ 	SERIAL_PROTOCOLPGM(" x: ");
+ 	SERIAL_PROTOCOL_F(x, 6);
+@@ -87,8 +70,7 @@ void vector_3::debug(char* title)
+ 	SERIAL_EOL;
+ }
+ 
+-void apply_rotation_xyz(matrix_3x3 matrix, float &x, float& y, float& z)
+-{
++void apply_rotation_xyz(matrix_3x3 matrix, float &x, float& y, float& z) {
+ 	vector_3 vector = vector_3(x, y, z);
+ 	vector.apply_rotation(matrix);
+ 	x = vector.x;
+@@ -96,48 +78,41 @@ void apply_rotation_xyz(matrix_3x3 matrix, float &x, float& y, float& z)
+ 	z = vector.z;
+ }
+ 
+-matrix_3x3 matrix_3x3::create_from_rows(vector_3 row_0, vector_3 row_1, vector_3 row_2)
+-{
+-        //row_0.debug("row_0");
+-        //row_1.debug("row_1");
+-        //row_2.debug("row_2");
++matrix_3x3 matrix_3x3::create_from_rows(vector_3 row_0, vector_3 row_1, vector_3 row_2) {
++  //row_0.debug("row_0");
++  //row_1.debug("row_1");
++  //row_2.debug("row_2");
+ 	matrix_3x3 new_matrix;
+ 	new_matrix.matrix[0] = row_0.x; new_matrix.matrix[1] = row_0.y; new_matrix.matrix[2] = row_0.z; 
+ 	new_matrix.matrix[3] = row_1.x; new_matrix.matrix[4] = row_1.y; new_matrix.matrix[5] = row_1.z; 
+ 	new_matrix.matrix[6] = row_2.x; new_matrix.matrix[7] = row_2.y; new_matrix.matrix[8] = row_2.z; 
+-        //new_matrix.debug("new_matrix");
+-        
++  //new_matrix.debug("new_matrix");
+ 	return new_matrix;
+ }
+ 
+-void matrix_3x3::set_to_identity()
+-{
++void matrix_3x3::set_to_identity() {
+ 	matrix[0] = 1; matrix[1] = 0; matrix[2] = 0;
+ 	matrix[3] = 0; matrix[4] = 1; matrix[5] = 0;
+ 	matrix[6] = 0; matrix[7] = 0; matrix[8] = 1;
+ }
+ 
+-matrix_3x3 matrix_3x3::create_look_at(vector_3 target)
+-{
+-    vector_3 z_row = target.get_normal();
+-    vector_3 x_row = vector_3(1, 0, -target.x/target.z).get_normal();
+-    vector_3 y_row = vector_3::cross(z_row, x_row).get_normal();
++matrix_3x3 matrix_3x3::create_look_at(vector_3 target) {
++  vector_3 z_row = target.get_normal();
++  vector_3 x_row = vector_3(1, 0, -target.x/target.z).get_normal();
++  vector_3 y_row = vector_3::cross(z_row, x_row).get_normal();
+ 
+-   // x_row.debug("x_row");
+-   // y_row.debug("y_row");
+-   // z_row.debug("z_row");
++  // x_row.debug("x_row");
++  // y_row.debug("y_row");
++  // z_row.debug("z_row");
+ 
+- 
+-     // create the matrix already correctly transposed
+-    matrix_3x3 rot = matrix_3x3::create_from_rows(x_row, y_row, z_row);
++  // create the matrix already correctly transposed
++  matrix_3x3 rot = matrix_3x3::create_from_rows(x_row, y_row, z_row);
+ 
+- //   rot.debug("rot");
+-    return rot;
++  // rot.debug("rot");
++  return rot;
+ }
+ 
+-
+-matrix_3x3 matrix_3x3::transpose(matrix_3x3 original)
+-{
++matrix_3x3 matrix_3x3::transpose(matrix_3x3 original) {
+   matrix_3x3 new_matrix;
+   new_matrix.matrix[0] = original.matrix[0]; new_matrix.matrix[1] = original.matrix[3]; new_matrix.matrix[2] = original.matrix[6]; 
+   new_matrix.matrix[3] = original.matrix[1]; new_matrix.matrix[4] = original.matrix[4]; new_matrix.matrix[5] = original.matrix[7]; 
+@@ -145,11 +120,12 @@ matrix_3x3 matrix_3x3::transpose(matrix_3x3 original)
+   return new_matrix;
+ }
+ 
+-void matrix_3x3::debug(char* title) {
++void matrix_3x3::debug(const char title[]) {
+   SERIAL_PROTOCOLLN(title);
+   int count = 0;
+   for(int i=0; i<3; i++) {
+     for(int j=0; j<3; j++) {
++      if (matrix[count] >= 0.0) SERIAL_PROTOCOLPGM("+");
+       SERIAL_PROTOCOL_F(matrix[count], 6);
+       SERIAL_PROTOCOLPGM(" ");
+       count++;
+@@ -158,5 +134,5 @@ void matrix_3x3::debug(char* title) {
+   }
+ }
+ 
+-#endif // #ifdef ENABLE_AUTO_BED_LEVELING
++#endif // ENABLE_AUTO_BED_LEVELING
+ 
+diff --git a/Marlin/vector_3.h b/Marlin/vector_3.h
+index 0b9deca..0c5938b 100644
+--- a/Marlin/vector_3.h
++++ b/Marlin/vector_3.h
+@@ -37,7 +37,7 @@ struct vector_3
+ 	float get_length();
+ 	vector_3 get_normal();
+ 
+-	void debug(char* title);
++	void debug(const char title[]);
+ 	
+ 	void apply_rotation(matrix_3x3 matrix);
+ };
+@@ -52,7 +52,7 @@ struct matrix_3x3
+ 
+ 	void set_to_identity();
+ 
+-	void debug(char* title);
++	void debug(const char title[]);
+ };
+ 
+ 
+

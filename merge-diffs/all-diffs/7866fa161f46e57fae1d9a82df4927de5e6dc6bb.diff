@@ -1,0 +1,1696 @@
+commit 7866fa161f46e57fae1d9a82df4927de5e6dc6bb (from 8cfdd3e8a4bf9555e088a9142449c240fe27311c)
+Merge: 8cfdd3e ea9e49b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Feb 12 16:56:55 2015 -0800
+
+    Merge pull request #1476 from Natealus/Development
+    
+    Compiling errors with 4 Extruders defined and Viki 2 Implementation
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 9b422a8..fef1593 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -122,6 +122,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 -1
+ #define TEMP_SENSOR_1 -1
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 0
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -139,6 +140,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -147,6 +149,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -341,12 +344,13 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define DISABLE_E false // For all extruders
+ #define DISABLE_INACTIVE_EXTRUDER true //disable only inactive extruders and keep active extruder enabled
+ 
+-#define INVERT_X_DIR true    // for Mendel set to false, for Orca set to true
++#define INVERT_X_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+ #define INVERT_Z_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -586,6 +590,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -619,6 +629,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 64c43ca..3917b0a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -659,6 +659,15 @@ void setup()
+   digitalWrite(SERVO0_PIN, LOW); // turn it off
+ #endif // Z_PROBE_SLED
+   setup_homepin();
++  
++#ifdef STAT_LED_RED
++  pinMode(STAT_LED_RED, OUTPUT);
++  digitalWrite(STAT_LED_RED, LOW); // turn it off
++#endif
++#ifdef STAT_LED_BLUE
++  pinMode(STAT_LED_BLUE, OUTPUT);
++  digitalWrite(STAT_LED_BLUE, LOW); // turn it off
++#endif  
+ }
+ 
+ 
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 1ccff63..f512d32 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -92,6 +92,9 @@ U8GLIB_ST7920_128X64_RRD u8g(0);
+ #elif defined(MAKRPANEL)
+ // The MaKrPanel display, ST7565 controller as well
+ U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
++#elif defined(VIKI2) || defined(miniVIKI)
++// Mini Viki and Viki 2.0 LCD, ST7565 controller as well
++U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #else
+ // for regular DOGM128 display with HW-SPI
+ U8GLIB_DOGM128 u8g(DOGLCD_CS, DOGLCD_A0);  // HW-SPI Com: CS, A0
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 2823f2d..93a0f18 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -122,6 +122,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 1
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 0
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -139,6 +140,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -147,6 +149,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 260
+ #define HEATER_1_MAXTEMP 260
+ #define HEATER_2_MAXTEMP 260
++#define HEATER_3_MAXTEMP 260
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -351,8 +354,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+ #define INVERT_Z_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -587,6 +591,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ #define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -620,6 +630,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 06e944b..e17ee9e 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -124,6 +124,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 5
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 5
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -141,6 +142,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -149,6 +151,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -357,10 +360,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+ #define INVERT_X_DIR false    // for Mendel set to false, for Orca set to true
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+-#define INVERT_Z_DIR false     // for Mendel set to false, for Orca set to true
++#define INVERT_Z_DIR false    // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR true    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -597,6 +601,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -630,6 +640,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 8bc4eb7..43a94f7 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -142,6 +142,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 1
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 1
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -159,6 +160,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -167,6 +169,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -380,8 +383,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+ #define INVERT_Z_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstop	s when homing; 1=MAX, -1=MIN
+@@ -590,6 +594,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -623,6 +633,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 4332050..215ee49 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -78,6 +78,7 @@
+ #define EXTRUDER_0_AUTO_FAN_PIN   -1
+ #define EXTRUDER_1_AUTO_FAN_PIN   -1
+ #define EXTRUDER_2_AUTO_FAN_PIN   -1
++#define EXTRUDER_3_AUTO_FAN_PIN   -1
+ #define EXTRUDER_AUTO_FAN_TEMPERATURE 50
+ #define EXTRUDER_AUTO_FAN_SPEED   255  // == full speed
+ 
+@@ -478,6 +479,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define THERMISTORHEATER_2 TEMP_SENSOR_2
+   #define HEATER_2_USES_THERMISTOR
+ #endif
++#if TEMP_SENSOR_3 > 0
++  #define THERMISTORHEATER_3 TEMP_SENSOR_3
++  #define HEATER_3_USES_THERMISTOR
++#endif
+ #if TEMP_SENSOR_BED > 0
+   #define THERMISTORBED TEMP_SENSOR_BED
+   #define BED_USES_THERMISTOR
+@@ -491,6 +496,9 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #if TEMP_SENSOR_2 == -1
+   #define HEATER_2_USES_AD595
+ #endif
++#if TEMP_SENSOR_3 == -1
++  #define HEATER_3_USES_AD595
++#endif
+ #if TEMP_SENSOR_BED == -1
+   #define BED_USES_AD595
+ #endif
+@@ -509,6 +517,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #undef HEATER_2_MINTEMP
+   #undef HEATER_2_MAXTEMP
+ #endif
++#if TEMP_SENSOR_3 == 0
++  #undef HEATER_3_MINTEMP
++  #undef HEATER_3_MAXTEMP
++#endif
+ #if TEMP_SENSOR_BED == 0
+   #undef BED_MINTEMP
+   #undef BED_MAXTEMP
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 4a12bda..02aa94b 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -125,6 +125,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 1
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 0
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -142,6 +143,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -150,6 +152,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 260
+ #define HEATER_1_MAXTEMP 260
+ #define HEATER_2_MAXTEMP 260
++#define HEATER_3_MAXTEMP 260
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -351,12 +354,13 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define DISABLE_E false // For all extruders
+ #define DISABLE_INACTIVE_EXTRUDER true //disable only inactive extruders and keep active extruder enabled
+ 
+-#define INVERT_X_DIR true    // for Mendel set to false, for Orca set to true
++#define INVERT_X_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+ #define INVERT_Z_DIR true     // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -591,6 +595,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ #define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -624,6 +634,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/delta/Configuration.h b/Marlin/example_configurations/delta/Configuration.h
+index 3eb2680..ba5f659 100644
+--- a/Marlin/example_configurations/delta/Configuration.h
++++ b/Marlin/example_configurations/delta/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -147,6 +147,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 -1
+ #define TEMP_SENSOR_1 -1
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 0
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -164,6 +165,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -172,6 +174,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -368,8 +371,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define INVERT_Z_DIR false
+ 
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -495,6 +499,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -535,6 +545,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/delta/Configuration_adv.h b/Marlin/example_configurations/delta/Configuration_adv.h
+index b3fd532..79d2036 100644
+--- a/Marlin/example_configurations/delta/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/Configuration_adv.h
+@@ -78,6 +78,7 @@
+ #define EXTRUDER_0_AUTO_FAN_PIN   -1
+ #define EXTRUDER_1_AUTO_FAN_PIN   -1
+ #define EXTRUDER_2_AUTO_FAN_PIN   -1
++#define EXTRUDER_3_AUTO_FAN_PIN   -1
+ #define EXTRUDER_AUTO_FAN_TEMPERATURE 50
+ #define EXTRUDER_AUTO_FAN_SPEED   255  // == full speed
+ 
+@@ -472,6 +473,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define THERMISTORHEATER_2 TEMP_SENSOR_2
+   #define HEATER_2_USES_THERMISTOR
+ #endif
++#if TEMP_SENSOR_3 > 0
++  #define THERMISTORHEATER_3 TEMP_SENSOR_3
++  #define HEATER_3_USES_THERMISTOR
++#endif
+ #if TEMP_SENSOR_BED > 0
+   #define THERMISTORBED TEMP_SENSOR_BED
+   #define BED_USES_THERMISTOR
+@@ -485,6 +490,9 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #if TEMP_SENSOR_2 == -1
+   #define HEATER_2_USES_AD595
+ #endif
++#if TEMP_SENSOR_3 == -1
++  #define HEATER_3_USES_AD595
++#endif
+ #if TEMP_SENSOR_BED == -1
+   #define BED_USES_AD595
+ #endif
+@@ -503,6 +511,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #undef HEATER_2_MINTEMP
+   #undef HEATER_2_MAXTEMP
+ #endif
++#if TEMP_SENSOR_3 == 0
++  #undef HEATER_3_MINTEMP
++  #undef HEATER_3_MAXTEMP
++#endif
+ #if TEMP_SENSOR_BED == 0
+   #undef BED_MINTEMP
+   #undef BED_MAXTEMP
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 99feceb..e054918 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -127,6 +127,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 1
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 12
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -144,6 +145,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -152,6 +154,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ // If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
+@@ -352,9 +355,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define INVERT_X_DIR false    // for Mendel set to false, for Orca set to true
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+ #define INVERT_Z_DIR false    // for Mendel set to false, for Orca set to true
+-#define INVERT_E0_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E0_DIR true    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -565,6 +569,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -598,6 +608,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index e6a3c1c..6c181fb 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -78,6 +78,7 @@
+ #define EXTRUDER_0_AUTO_FAN_PIN   -1
+ #define EXTRUDER_1_AUTO_FAN_PIN   -1
+ #define EXTRUDER_2_AUTO_FAN_PIN   -1
++#define EXTRUDER_3_AUTO_FAN_PIN   -1
+ #define EXTRUDER_AUTO_FAN_TEMPERATURE 50
+ #define EXTRUDER_AUTO_FAN_SPEED   255  // == full speed
+ 
+@@ -469,6 +470,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define THERMISTORHEATER_2 TEMP_SENSOR_2
+   #define HEATER_2_USES_THERMISTOR
+ #endif
++#if TEMP_SENSOR_3 > 0
++  #define THERMISTORHEATER_3 TEMP_SENSOR_3
++  #define HEATER_3_USES_THERMISTOR
++#endif
+ #if TEMP_SENSOR_BED > 0
+   #define THERMISTORBED TEMP_SENSOR_BED
+   #define BED_USES_THERMISTOR
+@@ -482,6 +487,9 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #if TEMP_SENSOR_2 == -1
+   #define HEATER_2_USES_AD595
+ #endif
++#if TEMP_SENSOR_3 == -1
++  #define HEATER_3_USES_AD595
++#endif
+ #if TEMP_SENSOR_BED == -1
+   #define BED_USES_AD595
+ #endif
+@@ -500,6 +508,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #undef HEATER_2_MINTEMP
+   #undef HEATER_2_MAXTEMP
+ #endif
++#if TEMP_SENSOR_3 == 0
++  #undef HEATER_3_MINTEMP
++  #undef HEATER_3_MAXTEMP
++#endif
+ #if TEMP_SENSOR_BED == 0
+   #undef BED_MINTEMP
+   #undef BED_MAXTEMP
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 4ca415d..fccc267 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -1,4 +1,4 @@
+-#ifndef CONFIGURATION_H
++﻿#ifndef CONFIGURATION_H
+ #define CONFIGURATION_H
+ 
+ #include "boards.h"
+@@ -126,6 +126,7 @@ Here are some standard links for getting your machine calibrated:
+ #define TEMP_SENSOR_0 5
+ #define TEMP_SENSOR_1 0
+ #define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_3 0
+ #define TEMP_SENSOR_BED 5
+ 
+ // This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
+@@ -143,6 +144,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MINTEMP 5
+ #define HEATER_1_MINTEMP 5
+ #define HEATER_2_MINTEMP 5
++#define HEATER_3_MINTEMP 5
+ #define BED_MINTEMP 5
+ 
+ // When temperature exceeds max temp, your heater will be switched off.
+@@ -151,6 +153,7 @@ Here are some standard links for getting your machine calibrated:
+ #define HEATER_0_MAXTEMP 275
+ #define HEATER_1_MAXTEMP 275
+ #define HEATER_2_MAXTEMP 275
++#define HEATER_3_MAXTEMP 275
+ #define BED_MAXTEMP 150
+ 
+ #define CONFIG_STEPPERS_TOSHIBA	1
+@@ -353,11 +356,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define DISABLE_INACTIVE_EXTRUDER true //disable only inactive extruders and keep active extruder enabled
+ 
+ #define INVERT_X_DIR false    // for Mendel set to false, for Orca set to true
+-#define INVERT_Y_DIR true    // for Mendel set to true, for Orca set to false
+-#define INVERT_Z_DIR false     // for Mendel set to false, for Orca set to true
++#define INVERT_Y_DIR true     // for Mendel set to true, for Orca set to false
++#define INVERT_Z_DIR false    // for Mendel set to false, for Orca set to true
+ #define INVERT_E0_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+-#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ #define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E3_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+@@ -578,6 +582,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // http://reprap.org/wiki/MaKr3d_MaKrPanel
+ //#define MAKRPANEL
+ 
++// The Panucatt Devices Viki 2.0 and mini Viki with Graphic LCD
++// http://panucatt.com
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define VIKI2
++//#define miniVIKI
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -611,6 +621,22 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  #define DEFAULT_LCD_CONTRAST 17
+ #endif
+ 
++#if defined(miniVIKI) || defined(VIKI2)
++ #define ULTRA_LCD  //general LCD support, also 16x2
++ #define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++ #define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++ 
++  #ifdef miniVIKI
++   #define DEFAULT_LCD_CONTRAST 95
++  #else
++   #define DEFAULT_LCD_CONTRAST 40
++  #endif
++  
++ #define ENCODER_PULSES_PER_STEP 4
++ #define ENCODER_STEPS_PER_MENU_ITEM 1
++#endif
++
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index fc3c3f5..64fd9ec 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -78,6 +78,7 @@
+ #define EXTRUDER_0_AUTO_FAN_PIN   -1
+ #define EXTRUDER_1_AUTO_FAN_PIN   -1
+ #define EXTRUDER_2_AUTO_FAN_PIN   -1
++#define EXTRUDER_3_AUTO_FAN_PIN   -1
+ #define EXTRUDER_AUTO_FAN_TEMPERATURE 50
+ #define EXTRUDER_AUTO_FAN_SPEED   255  // == full speed
+ 
+@@ -472,6 +473,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define THERMISTORHEATER_2 TEMP_SENSOR_2
+   #define HEATER_2_USES_THERMISTOR
+ #endif
++#if TEMP_SENSOR_3 > 0
++  #define THERMISTORHEATER_3 TEMP_SENSOR_3
++  #define HEATER_3_USES_THERMISTOR
++#endif
+ #if TEMP_SENSOR_BED > 0
+   #define THERMISTORBED TEMP_SENSOR_BED
+   #define BED_USES_THERMISTOR
+@@ -485,6 +490,9 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #if TEMP_SENSOR_2 == -1
+   #define HEATER_2_USES_AD595
+ #endif
++#if TEMP_SENSOR_3 == -1
++  #define HEATER_3_USES_AD595
++#endif
+ #if TEMP_SENSOR_BED == -1
+   #define BED_USES_AD595
+ #endif
+@@ -503,6 +511,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #undef HEATER_2_MINTEMP
+   #undef HEATER_2_MAXTEMP
+ #endif
++#if TEMP_SENSOR_3 == 0
++  #undef HEATER_3_MINTEMP
++  #undef HEATER_3_MAXTEMP
++#endif
+ #if TEMP_SENSOR_BED == 0
+   #undef BED_MINTEMP
+   #undef BED_MAXTEMP
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 9889e1f..d5bd2d6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -136,11 +136,11 @@ static volatile bool temp_meas_ready = false;
+ 
+ #ifdef PIDTEMP
+ #ifdef PID_PARAMS_PER_EXTRUDER
+-  float Kp[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kp, DEFAULT_Kp, DEFAULT_Kp);
+-  float Ki[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Ki*PID_dT, DEFAULT_Ki*PID_dT, DEFAULT_Ki*PID_dT);
+-  float Kd[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kd / PID_dT, DEFAULT_Kd / PID_dT, DEFAULT_Kd / PID_dT);
++  float Kp[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kp, DEFAULT_Kp, DEFAULT_Kp, DEFAULT_Kp);
++  float Ki[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Ki*PID_dT, DEFAULT_Ki*PID_dT, DEFAULT_Ki*PID_dT, DEFAULT_Ki*PID_dT);
++  float Kd[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kd / PID_dT, DEFAULT_Kd / PID_dT, DEFAULT_Kd / PID_dT, DEFAULT_Kd / PID_dT);
+   #ifdef PID_ADD_EXTRUSION_RATE
+-    float Kc[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kc, DEFAULT_Kc, DEFAULT_Kc);
++    float Kc[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_Kc, DEFAULT_Kc, DEFAULT_Kc, DEFAULT_Kc);
+   #endif // PID_ADD_EXTRUSION_RATE
+ #else //PID_PARAMS_PER_EXTRUDER
+   float Kp = DEFAULT_Kp;
+@@ -460,13 +460,15 @@ void checkExtruderAutoFans()
+   #endif 
+   #if defined(EXTRUDER_2_AUTO_FAN_PIN) && EXTRUDER_2_AUTO_FAN_PIN > -1
+     if (EXTRUDER_2_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN 
++        && EXTRUDER_2_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN)
+         && EXTRUDER_2_AUTO_FAN_PIN != EXTRUDER_1_AUTO_FAN_PIN)
+       setExtruderAutoFanState(EXTRUDER_2_AUTO_FAN_PIN, (fanState & 4) != 0);
+   #endif
+   #if defined(EXTRUDER_3_AUTO_FAN_PIN) && EXTRUDER_3_AUTO_FAN_PIN > -1
+     if (EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN 
+-        && EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_1_AUTO_FAN_PIN)
+         && EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN)
++        && EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_1_AUTO_FAN_PIN)
++        && EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_2_AUTO_FAN_PIN)
+       setExtruderAutoFanState(EXTRUDER_3_AUTO_FAN_PIN, (fanState & 8) != 0);
+   #endif
+ }
+
+commit 7866fa161f46e57fae1d9a82df4927de5e6dc6bb (from ea9e49b20d9964bf5bbbc73c9bddfe2d27fc865b)
+Merge: 8cfdd3e ea9e49b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Feb 12 16:56:55 2015 -0800
+
+    Merge pull request #1476 from Natealus/Development
+    
+    Compiling errors with 4 Extruders defined and Viki 2 Implementation
+
+diff --git a/Documentation/BedLeveling.md b/Documentation/BedLeveling.md
+index 62566ac..35a38bb 100644
+--- a/Documentation/BedLeveling.md
++++ b/Documentation/BedLeveling.md
+@@ -60,9 +60,9 @@ My preferred method:
+ * g) You can raise the z probe with M402 command;
+ * h) Fill the defines bellow multiplying the values by "-1" (just change the signal)
+ 
+-
+-* \#define X_PROBE_OFFSET_FROM_EXTRUDER -24.3
+-* \#define Y_PROBE_OFFSET_FROM_EXTRUDER 31.4
++* X and Y-Offset must be Integers!
++* \#define X_PROBE_OFFSET_FROM_EXTRUDER -24
++* \#define Y_PROBE_OFFSET_FROM_EXTRUDER 31
+ * \#define Z_PROBE_OFFSET_FROM_EXTRUDER -5.1
+ 
+ Sled Option Notes
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index c05c3a0..fef1593 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -563,7 +563,12 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
+-//LCD and SD support
++//==============================LCD and SD support=============================
++
++// Define your display language below. Replace (en) with your language code and uncomment.
++// en, pl, fr, de, es, ru, it, pt, pt-br, fi, an, nl, ca, eu
++// See also language.h
++//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
+ 
+ // Character based displays can have different extended charsets.
+ #define DISPLAY_CHARSET_HD44780_JAPAN     // "ääööüüß23°"
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index a503e64..4d3579d 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -228,7 +228,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index fd9ebb5..25c77c4 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -201,8 +201,9 @@ void Stop();
+ 
+ bool IsStopped();
+ 
+-void enquecommand(const char *cmd); //put an ASCII command at the end of the current buffer.
+-void enquecommand_P(const char *cmd); //put an ASCII command at the end of the current buffer, read from flash
++bool enquecommand(const char *cmd); //put a single ASCII command at the end of the current buffer or return false when it is full
++void enquecommands_P(const char *cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
++
+ void prepare_arc_move(char isclockwise);
+ void clamp_to_software_endstops(float target[3]);
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ca6311d..3917b0a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -385,6 +385,8 @@ static int serial_count = 0;
+ static boolean comment_mode = false;
+ static char *strchr_pointer; ///< A pointer to find chars in the command string (X, Y, Z, E, etc.)
+ 
++const char* queued_commands_P= NULL; /* pointer to the current line in the active sequence of commands, or NULL when none */
++
+ const int sensitive_pins[] = SENSITIVE_PINS; ///< Sensitive pin list for M42
+ 
+ // Inactivity shutdown
+@@ -448,39 +450,64 @@ void serial_echopair_P(const char *s_P, unsigned long v)
+   }
+ #endif //!SDSUPPORT
+ 
+-//adds an command to the main command buffer
+-//thats really done in a non-safe way.
+-//needs overworking someday
+-void enquecommand(const char *cmd)
++//Injects the next command from the pending sequence of commands, when possible
++//Return false if and only if no command was pending
++static bool drain_queued_commands_P()
+ {
+-  if(buflen < BUFSIZE)
++  char cmd[30];
++  if(!queued_commands_P)
++    return false;
++  // Get the next 30 chars from the sequence of gcodes to run
++  strncpy_P(cmd, queued_commands_P, sizeof(cmd)-1);
++  cmd[sizeof(cmd)-1]= 0;
++  // Look for the end of line, or the end of sequence
++  size_t i= 0;
++  char c;
++  while( (c= cmd[i]) && c!='\n' )
++    ++i; // look for the end of this gcode command
++  cmd[i]= 0;
++  if(enquecommand(cmd)) // buffer was not full (else we will retry later)
+   {
+-    //this is dangerous if a mixing of serial and this happens
+-    strcpy(&(cmdbuffer[bufindw][0]),cmd);
+-    SERIAL_ECHO_START;
+-    SERIAL_ECHOPGM(MSG_Enqueing);
+-    SERIAL_ECHO(cmdbuffer[bufindw]);
+-    SERIAL_ECHOLNPGM("\"");
+-    bufindw= (bufindw + 1)%BUFSIZE;
+-    buflen += 1;
++    if(c)
++      queued_commands_P+= i+1; // move to next command
++    else
++      queued_commands_P= NULL; // will have no more commands in the sequence
+   }
++  return true;
+ }
+ 
+-void enquecommand_P(const char *cmd)
++//Record one or many commands to run from program memory.
++//Aborts the current queue, if any.
++//Note: drain_queued_commands_P() must be called repeatedly to drain the commands afterwards
++void enquecommands_P(const char* pgcode)
+ {
+-  if(buflen < BUFSIZE)
+-  {
+-    //this is dangerous if a mixing of serial and this happens
+-    strcpy_P(&(cmdbuffer[bufindw][0]),cmd);
+-    SERIAL_ECHO_START;
+-    SERIAL_ECHOPGM(MSG_Enqueing);
+-    SERIAL_ECHO(cmdbuffer[bufindw]);
+-    SERIAL_ECHOLNPGM("\"");
+-    bufindw= (bufindw + 1)%BUFSIZE;
+-    buflen += 1;
+-  }
++    queued_commands_P= pgcode;
++    drain_queued_commands_P(); // first command exectuted asap (when possible)
+ }
+ 
++//adds a single command to the main command buffer, from RAM
++//that is really done in a non-safe way.
++//needs overworking someday
++//Returns false if it failed to do so
++bool enquecommand(const char *cmd)
++{
++  if(*cmd==';')
++    return false;
++  if(buflen >= BUFSIZE)
++    return false;
++  //this is dangerous if a mixing of serial and this happens
++  strcpy(&(cmdbuffer[bufindw][0]),cmd);
++  SERIAL_ECHO_START;
++  SERIAL_ECHOPGM(MSG_Enqueing);
++  SERIAL_ECHO(cmdbuffer[bufindw]);
++  SERIAL_ECHOLNPGM("\"");
++  bufindw= (bufindw + 1)%BUFSIZE;
++  buflen += 1;
++  return true;
++}
++
++
++
+ void setup_killpin()
+ {
+   #if defined(KILL_PIN) && KILL_PIN > -1
+@@ -693,6 +720,9 @@ void loop()
+ 
+ void get_command()
+ {
++  if(drain_queued_commands_P()) // priority is given to non-serial commands
++    return;
++  
+   while( MYSERIAL.available() > 0  && buflen < BUFSIZE) {
+     serial_char = MYSERIAL.read();
+     if(serial_char == '\n' ||
+@@ -4468,7 +4498,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) //default argument s
+     {
+        if (homeDebounceCount == 0)
+        {
+-          enquecommand_P((PSTR("G28")));
++          enquecommands_P((PSTR("G28")));
+           homeDebounceCount++;
+           LCD_ALERTMESSAGEPGM(MSG_AUTO_HOME);
+        }
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 83671e0..498a654 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -532,7 +532,7 @@ void CardReader::checkautostart(bool force)
+ 
+       sprintf_P(cmd, PSTR("M23 %s"), autoname);
+       enquecommand(cmd);
+-      enquecommand_P(PSTR("M24"));
++      enquecommands_P(PSTR("M24"));
+       found=true;
+     }
+   }
+@@ -637,7 +637,7 @@ void CardReader::printingHasFinished()
+       if(SD_FINISHED_STEPPERRELEASE)
+       {
+           //finishAndDisableSteppers();
+-          enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++          enquecommands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+       }
+       autotempShutdown();
+     }
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 3333967..1412c99 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -228,7 +228,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index a7f5585..b3d9ed8 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -228,7 +228,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 40d4fc2..215ee49 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -229,7 +229,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 240
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 3333967..1412c99 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -228,7 +228,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/delta/Configuration_adv.h b/Marlin/example_configurations/delta/Configuration_adv.h
+index 7326498..79d2036 100644
+--- a/Marlin/example_configurations/delta/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/Configuration_adv.h
+@@ -227,7 +227,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index bcdb09e..6c181fb 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -226,7 +226,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 46c0a9b..64fd9ec 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -228,7 +228,7 @@
+ #define INVERT_Z_STEP_PIN false
+ #define INVERT_E_STEP_PIN false
+ 
+-//default stepper release if idle
++//default stepper release if idle. Set to 0 to deactivate.
+ #define DEFAULT_STEPPER_DEACTIVE_TIME 60
+ 
+ #define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 27a5793..e13fc31 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -223,5 +223,6 @@
+ */
+ 
+ #include LANGUAGE_INCLUDE
++#include "language_en.h"
+ 
+ #endif //__LANGUAGE_H
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 49a2233..086e5c1 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -8,124 +8,356 @@
+ #ifndef LANGUAGE_EN_H
+ #define LANGUAGE_EN_H
+ 
++#ifndef WELCOME_MSG
+ #define WELCOME_MSG                         MACHINE_NAME " ready."
++#endif
++#ifndef MSG_SD_INSERTED
+ #define MSG_SD_INSERTED                     "Card inserted"
++#endif
++#ifndef MSG_SD_REMOVED
+ #define MSG_SD_REMOVED                      "Card removed"
++#endif
++#ifndef MSG_MAIN
+ #define MSG_MAIN                            "Main"
++#endif
++#ifndef MSG_AUTOSTART
+ #define MSG_AUTOSTART                       "Autostart"
++#endif
++#ifndef MSG_DISABLE_STEPPERS
+ #define MSG_DISABLE_STEPPERS                "Disable steppers"
++#endif
++#ifndef MSG_AUTO_HOME
+ #define MSG_AUTO_HOME                       "Auto home"
++#endif
++#ifndef MSG_SET_HOME_OFFSETS
+ #define MSG_SET_HOME_OFFSETS                "Set home offsets"
++#endif
++#ifndef MSG_SET_ORIGIN
+ #define MSG_SET_ORIGIN                      "Set origin"
++#endif
++#ifndef MSG_PREHEAT_PLA
+ #define MSG_PREHEAT_PLA                     "Preheat PLA"
++#endif
++#ifndef MSG_PREHEAT_PLA_N
+ #define MSG_PREHEAT_PLA_N                   MSG_PREHEAT_PLA " "
++#endif
++#ifndef MSG_PREHEAT_PLA_ALL
+ #define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " All"
++#endif
++#ifndef MSG_PREHEAT_PLA_BEDONLY
+ #define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " Bed"
++#endif
++#ifndef MSG_PREHEAT_PLA_SETTINGS
+ #define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " conf"
++#endif
++#ifndef MSG_PREHEAT_ABS
+ #define MSG_PREHEAT_ABS                     "Preheat ABS"
++#endif
++#ifndef MSG_PREHEAT_ABS_N
+ #define MSG_PREHEAT_ABS_N                   MSG_PREHEAT_ABS " "
++#endif
++#ifndef MSG_PREHEAT_ABS_ALL
+ #define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " All"
++#endif
++#ifndef MSG_PREHEAT_ABS_BEDONLY
+ #define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " Bed"
++#endif
++#ifndef MSG_PREHEAT_ABS_SETTINGS
+ #define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " conf"
++#endif
++#ifndef MSG_COOLDOWN
+ #define MSG_COOLDOWN                        "Cooldown"
++#endif
++#ifndef MSG_SWITCH_PS_ON
+ #define MSG_SWITCH_PS_ON                    "Switch power on"
++#endif
++#ifndef MSG_SWITCH_PS_OFF
+ #define MSG_SWITCH_PS_OFF                   "Switch power off"
++#endif
++#ifndef MSG_EXTRUDE
+ #define MSG_EXTRUDE                         "Extrude"
++#endif
++#ifndef MSG_RETRACT
+ #define MSG_RETRACT                         "Retract"
++#endif
++#ifndef MSG_MOVE_AXIS
+ #define MSG_MOVE_AXIS                       "Move axis"
++#endif
++#ifndef MSG_MOVE_X
+ #define MSG_MOVE_X                          "Move X"
++#endif
++#ifndef MSG_MOVE_Y
+ #define MSG_MOVE_Y                          "Move Y"
++#endif
++#ifndef MSG_MOVE_Z
+ #define MSG_MOVE_Z                          "Move Z"
++#endif
++#ifndef MSG_MOVE_E
+ #define MSG_MOVE_E                          "Extruder"
++#endif
++#ifndef MSG_MOVE_01MM
+ #define MSG_MOVE_01MM                       "Move 0.1mm"
++#endif
++#ifndef MSG_MOVE_1MM
+ #define MSG_MOVE_1MM                        "Move 1mm"
++#endif
++#ifndef MSG_MOVE_10MM
+ #define MSG_MOVE_10MM                       "Move 10mm"
++#endif
++#ifndef MSG_SPEED
+ #define MSG_SPEED                           "Speed"
++#endif
++#ifndef MSG_NOZZLE
+ #define MSG_NOZZLE                          "Nozzle"
++#endif
++#ifndef MSG_BED
+ #define MSG_BED                             "Bed"
++#endif
++#ifndef MSG_FAN_SPEED
+ #define MSG_FAN_SPEED                       "Fan speed"
++#endif
++#ifndef MSG_FLOW
+ #define MSG_FLOW                            "Flow"
++#endif
++#ifndef MSG_CONTROL
+ #define MSG_CONTROL                         "Control"
++#endif
++#ifndef MSG_MIN
+ #define MSG_MIN                             " " STR_THERMOMETER " Min"
++#endif
++#ifndef MSG_MAX
+ #define MSG_MAX                             " " STR_THERMOMETER " Max"
++#endif
++#ifndef MSG_FACTOR
+ #define MSG_FACTOR                          " " STR_THERMOMETER " Fact"
++#endif
++#ifndef MSG_AUTOTEMP
+ #define MSG_AUTOTEMP                        "Autotemp"
++#endif
++#ifndef MSG_ON
+ #define MSG_ON                              "On "
++#endif
++#ifndef MSG_OFF
+ #define MSG_OFF                             "Off"
++#endif
++#ifndef MSG_PID_P
+ #define MSG_PID_P                           "PID-P"
++#endif
++#ifndef MSG_PID_I
+ #define MSG_PID_I                           "PID-I"
++#endif
++#ifndef MSG_PID_D
+ #define MSG_PID_D                           "PID-D"
++#endif
++#ifndef MSG_PID_C
+ #define MSG_PID_C                           "PID-C"
++#endif
++#ifndef MSG_ACC
+ #define MSG_ACC                             "Accel"
++#endif
++#ifndef MSG_VXY_JERK
+ #define MSG_VXY_JERK                        "Vxy-jerk"
++#endif
++#ifndef MSG_VZ_JERK
+ #define MSG_VZ_JERK                         "Vz-jerk"
++#endif
++#ifndef MSG_VE_JERK
+ #define MSG_VE_JERK                         "Ve-jerk"
++#endif
++#ifndef MSG_VMAX
+ #define MSG_VMAX                            "Vmax "
++#endif
++#ifndef MSG_X
+ #define MSG_X                               "x"
++#endif
++#ifndef MSG_Y
+ #define MSG_Y                               "y"
++#endif
++#ifndef MSG_Z
+ #define MSG_Z                               "z"
++#endif
++#ifndef MSG_E
+ #define MSG_E                               "e"
++#endif
++#ifndef MSG_VMIN
+ #define MSG_VMIN                            "Vmin"
++#endif
++#ifndef MSG_VTRAV_MIN
+ #define MSG_VTRAV_MIN                       "VTrav min"
++#endif
++#ifndef MSG_AMAX
+ #define MSG_AMAX                            "Amax "
++#endif
++#ifndef MSG_A_RETRACT
+ #define MSG_A_RETRACT                       "A-retract"
++#endif
++#ifndef MSG_XSTEPS
+ #define MSG_XSTEPS                          "Xsteps/mm"
++#endif
++#ifndef MSG_YSTEPS
+ #define MSG_YSTEPS                          "Ysteps/mm"
++#endif
++#ifndef MSG_ZSTEPS
+ #define MSG_ZSTEPS                          "Zsteps/mm"
++#endif
++#ifndef MSG_ESTEPS
+ #define MSG_ESTEPS                          "Esteps/mm"
++#endif
++#ifndef MSG_TEMPERATURE
+ #define MSG_TEMPERATURE                     "Temperature"
++#endif
++#ifndef MSG_MOTION
+ #define MSG_MOTION                          "Motion"
++#endif
++#ifndef MSG_VOLUMETRIC
+ #define MSG_VOLUMETRIC                      "Filament"
++#endif
++#ifndef MSG_VOLUMETRIC_ENABLED
+ #define MSG_VOLUMETRIC_ENABLED		          "E in mm" STR_h3
++#endif
++#ifndef MSG_FILAMENT_SIZE_EXTRUDER_0
+ #define MSG_FILAMENT_SIZE_EXTRUDER_0        "Fil. Dia. 1"
++#endif
++#ifndef MSG_FILAMENT_SIZE_EXTRUDER_1
+ #define MSG_FILAMENT_SIZE_EXTRUDER_1        "Fil. Dia. 2"
++#endif
++#ifndef MSG_FILAMENT_SIZE_EXTRUDER_2
+ #define MSG_FILAMENT_SIZE_EXTRUDER_2        "Fil. Dia. 3"
++#endif
++#ifndef MSG_FILAMENT_SIZE_EXTRUDER_3
+ #define MSG_FILAMENT_SIZE_EXTRUDER_3        "Fil. Dia. 4"
++#endif
++#ifndef MSG_CONTRAST
+ #define MSG_CONTRAST                        "LCD contrast"
++#endif
++#ifndef MSG_STORE_EPROM
+ #define MSG_STORE_EPROM                     "Store memory"
++#endif
++#ifndef MSG_LOAD_EPROM
+ #define MSG_LOAD_EPROM                      "Load memory"
++#endif
++#ifndef MSG_RESTORE_FAILSAFE
+ #define MSG_RESTORE_FAILSAFE                "Restore failsafe"
++#endif
++#ifndef MSG_REFRESH
+ #define MSG_REFRESH                         "Refresh"
++#endif
++#ifndef MSG_WATCH
+ #define MSG_WATCH                           "Info screen"
++#endif
++#ifndef MSG_PREPARE
+ #define MSG_PREPARE                         "Prepare"
++#endif
++#ifndef MSG_TUNE
+ #define MSG_TUNE                            "Tune"
++#endif
++#ifndef MSG_PAUSE_PRINT
+ #define MSG_PAUSE_PRINT                     "Pause print"
++#endif
++#ifndef MSG_RESUME_PRINT
+ #define MSG_RESUME_PRINT                    "Resume print"
++#endif
++#ifndef MSG_STOP_PRINT
+ #define MSG_STOP_PRINT                      "Stop print"
++#endif
++#ifndef MSG_CARD_MENU
+ #define MSG_CARD_MENU                       "Print from SD"
++#endif
++#ifndef MSG_NO_CARD
+ #define MSG_NO_CARD                         "No SD card"
++#endif
++#ifndef MSG_DWELL
+ #define MSG_DWELL                           "Sleep..."
++#endif
++#ifndef MSG_USERWAIT
+ #define MSG_USERWAIT                        "Wait for user..."
++#endif
++#ifndef MSG_RESUMING
+ #define MSG_RESUMING                        "Resuming print"
++#endif
++#ifndef MSG_PRINT_ABORTED
+ #define MSG_PRINT_ABORTED                   "Print aborted"
++#endif
++#ifndef MSG_NO_MOVE
+ #define MSG_NO_MOVE                         "No move."
++#endif
++#ifndef MSG_KILLED
+ #define MSG_KILLED                          "KILLED. "
++#endif
++#ifndef MSG_STOPPED
+ #define MSG_STOPPED                         "STOPPED. "
++#endif
++#ifndef MSG_CONTROL_RETRACT
+ #define MSG_CONTROL_RETRACT                 "Retract mm"
++#endif
++#ifndef MSG_CONTROL_RETRACT_SWAP
+ #define MSG_CONTROL_RETRACT_SWAP            "Swap Re.mm"
++#endif
++#ifndef MSG_CONTROL_RETRACTF
+ #define MSG_CONTROL_RETRACTF                "Retract  V"
++#endif
++#ifndef MSG_CONTROL_RETRACT_ZLIFT
+ #define MSG_CONTROL_RETRACT_ZLIFT           "Hop mm"
++#endif
++#ifndef MSG_CONTROL_RETRACT_RECOVER
+ #define MSG_CONTROL_RETRACT_RECOVER         "UnRet +mm"
++#endif
++#ifndef MSG_CONTROL_RETRACT_RECOVER_SWAP
+ #define MSG_CONTROL_RETRACT_RECOVER_SWAP    "S UnRet+mm"
++#endif
++#ifndef MSG_CONTROL_RETRACT_RECOVERF
+ #define MSG_CONTROL_RETRACT_RECOVERF        "UnRet  V"
++#endif
++#ifndef MSG_AUTORETRACT
+ #define MSG_AUTORETRACT                     "AutoRetr."
++#endif
++#ifndef MSG_FILAMENTCHANGE
+ #define MSG_FILAMENTCHANGE                  "Change filament"
++#endif
++#ifndef MSG_INIT_SDCARD
+ #define MSG_INIT_SDCARD                     "Init. SD card"
++#endif
++#ifndef MSG_CNG_SDCARD
+ #define MSG_CNG_SDCARD                      "Change SD card"
++#endif
++#ifndef MSG_ZPROBE_OUT
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
++#endif
++#ifndef MSG_POSITION_UNKNOWN
+ #define MSG_POSITION_UNKNOWN                "Home X/Y before Z"
++#endif
++#ifndef MSG_ZPROBE_ZOFFSET
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
++#endif
++#ifndef MSG_BABYSTEP_X
+ #define MSG_BABYSTEP_X                      "Babystep X"
++#endif
++#ifndef MSG_BABYSTEP_Y
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
++#endif
++#ifndef MSG_BABYSTEP_Z
+ #define MSG_BABYSTEP_Z                      "Babystep Z"
++#endif
++#ifndef MSG_ENDSTOP_ABORT
+ #define MSG_ENDSTOP_ABORT                   "Endstop abort"
++#endif
+ 
+ #ifdef DELTA_CALIBRATION_MENU
++    #ifndef MSG_DELTA_CALIBRATE
+     #define MSG_DELTA_CALIBRATE             "Delta Calibration"
++    #endif
++    #ifndef MSG_DELTA_CALIBRATE_X
+     #define MSG_DELTA_CALIBRATE_X           "Calibrate X"
++    #endif
++    #ifndef MSG_DELTA_CALIBRATE_Y
+     #define MSG_DELTA_CALIBRATE_Y           "Calibrate Y"
++    #endif
++    #ifndef MSG_DELTA_CALIBRATE_Z
+     #define MSG_DELTA_CALIBRATE_Z           "Calibrate Z"
++    #endif
++    #ifndef MSG_DELTA_CALIBRATE_CENTER
+     #define MSG_DELTA_CALIBRATE_CENTER      "Calibrate Center"
++    #endif
+ #endif // DELTA_CALIBRATION_MENU
+ 
+ #endif // LANGUAGE_EN_H
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index cd73808..3773ad3 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -324,7 +324,7 @@ static void lcd_sdcard_stop()
+     quickStop();
+     if(SD_FINISHED_STEPPERRELEASE)
+     {
+-        enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++        enquecommands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     }
+     autotempShutdown();
+ 
+@@ -347,6 +347,7 @@ static void lcd_main_menu()
+         MENU_ITEM(submenu, MSG_DELTA_CALIBRATE, lcd_delta_calibrate_menu);
+ #endif // DELTA_CALIBRATION_MENU
+     }
++/*JFR TEST*/            MENU_ITEM(gcode, "test multiline", PSTR("G4 S3\nM104 S50\nG4 S1\nM104 S200\nG4 S2\nM104 S0"));  // SD-card changed by user
+     MENU_ITEM(submenu, MSG_CONTROL, lcd_control_menu);
+ #ifdef SDSUPPORT
+     if (card.cardOK)
+@@ -394,8 +395,7 @@ void lcd_set_home_offsets()
+     plan_set_position(0.0, 0.0, 0.0, current_position[E_AXIS]);
+ 
+     // Audio feedback
+-    enquecommand_P(PSTR("M300 S659 P200"));
+-    enquecommand_P(PSTR("M300 S698 P200"));
++    enquecommands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
+     lcd_return_to_status();
+ }
+ 
+@@ -677,6 +677,13 @@ static void lcd_prepare_menu()
+     }
+ #endif
+     MENU_ITEM(submenu, MSG_MOVE_AXIS, lcd_move_menu);
++		
++    // JFR for RMud delta printer
++    MENU_ITEM(gcode, "Calibrate bed", PSTR("M702\nG28\nG1 X-77.94 Y-45 Z36 F8000\nG4 S3\nM701 P0\nG1 X77.94 Y-45 Z36\nG4 S3\nM701 P1\nG1 X0 Y90 Z36\nG4 S3\nM701 P2\nM700\nG1 X0 Y0 Z100 F8000"));
++    MENU_ITEM(gcode, "Check level", PSTR("G28\nG1 X0 Y0 Z1 F4000\nG1 X-77.94 Y-45 Z1\nG1 X77.94 Y-45\nG1 X0 Y90\nG1 X-77.94 Y-45\nG4 S2\nG1 X-77.94 Y-45 Z0.3 F2000\nG1 X-77.94 Y-45\nG1 X77.94 Y-45\nG1 X0 Y90\nG1 X-77.94 Y-45\nG1 X0 Y0 Z0"));
++    MENU_ITEM(gcode, "Retract filament", PSTR("M302\nM82\nG92 E0\nG1 F4000 E-800"));
++    MENU_ITEM(gcode, "Insert filament", PSTR("M302\nM82\nG92 E0\nG1 F4000 E60"));
++    MENU_ITEM(gcode, "Finalize filament", PSTR("G1 F4000 E790"));
+     END_MENU();
+ }
+ 
+@@ -1148,7 +1155,7 @@ menu_edit_type(unsigned long, long5, ftostr5, 0.01)
+     lcd_move_y();
+ 	}
+ 	static void reprapworld_keypad_move_home() {
+-		enquecommand_P((PSTR("G28"))); // move all axis home
++		enquecommands_P((PSTR("G28"))); // move all axis home
+ 	}
+ #endif
+ 
+@@ -1164,7 +1171,13 @@ static void lcd_quick_feedback()
+ /** Menu action functions **/
+ static void menu_action_back(menuFunc_t data) { lcd_goto_menu(data); }
+ static void menu_action_submenu(menuFunc_t data) { lcd_goto_menu(data); }
+-static void menu_action_gcode(const char* pgcode) { enquecommand_P(pgcode); }
++
++static void menu_action_gcode(const char* pgcode)
++{
++    enquecommands_P(pgcode);
++}
++
++
+ static void menu_action_function(menuFunc_t data) { (*data)(); }
+ static void menu_action_sdfile(const char* filename, char* longFilename)
+ {
+@@ -1174,7 +1187,7 @@ static void menu_action_sdfile(const char* filename, char* longFilename)
+     for(c = &cmd[4]; *c; c++)
+         *c = tolower(*c);
+     enquecommand(cmd);
+-    enquecommand_P(PSTR("M24"));
++    enquecommands_P(PSTR("M24"));
+     lcd_return_to_status();
+ }
+ static void menu_action_sddirectory(const char* filename, char* longFilename)
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index 386e312..15e9e9d 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -55,11 +55,11 @@ uint8_t u8g_dev_rrd_st7920_128x64_fn(u8g_t *u8g, u8g_dev_t *dev, uint8_t msg, vo
+         WRITE(ST7920_CLK_PIN,1);
+ 
+         ST7920_CS();
+-        u8g_Delay(90);                 //initial delay for boot up
++        u8g_Delay(120);                 //initial delay for boot up
+         ST7920_SET_CMD();
+         ST7920_WRITE_BYTE(0x08);       //display off, cursor+blink off
+         ST7920_WRITE_BYTE(0x01);       //clear CGRAM ram
+-        u8g_Delay(10);                 //delay for CGRAM clear
++        u8g_Delay(15);                 //delay for CGRAM clear
+         ST7920_WRITE_BYTE(0x3E);       //extended mode + GDRAM active
+         for(y=0;y<HEIGHT/2;y++)        //clear GDRAM
+         {
+

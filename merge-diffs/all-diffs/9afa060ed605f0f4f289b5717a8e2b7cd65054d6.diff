@@ -1,0 +1,113 @@
+commit 9afa060ed605f0f4f289b5717a8e2b7cd65054d6 (from 46c8862635f2d3d2bb31204f357e0779afe2c10d)
+Merge: 46c8862 88540d8
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Aug 8 21:11:40 2016 -0700
+
+    Merge pull request #4570 from thinkyhead/rc_proper_delta_calibration
+    
+    Make DELTA_CALIBRATION_MENU more universal
+
+diff --git a/.travis.yml b/.travis.yml
+index 8408ecf..728281e 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -349,6 +349,7 @@ script:
+   # Delta Config (generic)
+   - restore_configs
+   - use_example_configs delta/generic
++  - opt_enable REPRAP_DISCOUNT_SMART_CONTROLLER DELTA_CALIBRATION_MENU
+   - build_marlin
+   #
+   # Delta Config (generic) + ABL + ALLEN_KEY
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 97a21c4..391c84b 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1260,14 +1260,25 @@ void kill_screen(const char* lcd_msg) {
+ 
+   #if ENABLED(DELTA_CALIBRATION_MENU)
+ 
++    static void _goto_tower_pos(const float &a) {
++      char cmd[20];
++      sprintf_P(cmd, PSTR("G1 X%i Y%i"), int(-(DELTA_PRINTABLE_RADIUS) * sin(a)), int((DELTA_PRINTABLE_RADIUS) * cos(a)));
++      enqueue_and_echo_commands_P(PSTR("G1 F8000 Z4\nG1 F4000"));
++      enqueue_and_echo_command(cmd);
++    }
++
++    static void _goto_tower_x() { _goto_tower_pos(RADIANS(120)); }
++    static void _goto_tower_y() { _goto_tower_pos(RADIANS(240)); }
++    static void _goto_tower_z() { _goto_tower_pos(0); }
++
+     static void lcd_delta_calibrate_menu() {
+       START_MENU();
+       MENU_ITEM(back, MSG_MAIN);
+       MENU_ITEM(gcode, MSG_AUTO_HOME, PSTR("G28"));
+-      MENU_ITEM(gcode, MSG_DELTA_CALIBRATE_X, PSTR("G0 F8000 X-77.94 Y-45 Z0"));
+-      MENU_ITEM(gcode, MSG_DELTA_CALIBRATE_Y, PSTR("G0 F8000 X77.94 Y-45 Z0"));
+-      MENU_ITEM(gcode, MSG_DELTA_CALIBRATE_Z, PSTR("G0 F8000 X0 Y90 Z0"));
+-      MENU_ITEM(gcode, MSG_DELTA_CALIBRATE_CENTER, PSTR("G0 F8000 X0 Y0 Z0"));
++      MENU_ITEM(function, MSG_DELTA_CALIBRATE_X, _goto_tower_x);
++      MENU_ITEM(function, MSG_DELTA_CALIBRATE_Y, _goto_tower_y);
++      MENU_ITEM(function, MSG_DELTA_CALIBRATE_Z, _goto_tower_z);
++      MENU_ITEM(gcode, MSG_DELTA_CALIBRATE_CENTER, PSTR("G1 F8000 Z4\nG1 F4000 X0 Y0"));
+       END_MENU();
+     }
+ 
+@@ -2539,7 +2550,6 @@ void lcd_update() {
+ 
+     bool sd_status = IS_SD_INSERTED;
+     if (sd_status != lcd_sd_status && lcd_detected()) {
+-      lcd_sd_status = sd_status;
+ 
+       if (sd_status) {
+         card.initsd();
+@@ -2550,6 +2560,7 @@ void lcd_update() {
+         if (lcd_sd_status != 2) LCD_MESSAGEPGM(MSG_SD_REMOVED);
+       }
+ 
++      lcd_sd_status = sd_status;
+       lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
+       lcd_implementation_init( // to maybe revive the LCD if static electricity killed it.
+         #if ENABLED(LCD_PROGRESS_BAR)
+
+commit 9afa060ed605f0f4f289b5717a8e2b7cd65054d6 (from 88540d8ecfe0c0e624a9070835dfb2264f2b7b44)
+Merge: 46c8862 88540d8
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Aug 8 21:11:40 2016 -0700
+
+    Merge pull request #4570 from thinkyhead/rc_proper_delta_calibration
+    
+    Make DELTA_CALIBRATION_MENU more universal
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 1c0dc56..2945ee1 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -143,10 +143,11 @@
+   #endif
+ 
+   /**
+-   * DELTA should ignore Z_SAFE_HOMING
++   * DELTA should ignore Z_SAFE_HOMING and SLOWDOWN
+    */
+   #if ENABLED(DELTA)
+     #undef Z_SAFE_HOMING
++    #undef SLOWDOWN
+   #endif
+ 
+   /**
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 552ef8b..13a70bb 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1021,7 +1021,8 @@ void Temperature::init() {
+     #if DISABLED(SDSUPPORT)
+       OUT_WRITE(SCK_PIN, LOW);
+       OUT_WRITE(MOSI_PIN, HIGH);
+-      OUT_WRITE(MISO_PIN, HIGH);
++      SET_INPUT(MISO_PIN);
++      WRITE(MISO_PIN,1);
+     #else
+       OUT_WRITE(SS_PIN, HIGH);
+     #endif
+

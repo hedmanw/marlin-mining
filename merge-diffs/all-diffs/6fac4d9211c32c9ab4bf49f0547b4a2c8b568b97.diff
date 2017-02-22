@@ -1,0 +1,1752 @@
+commit 6fac4d9211c32c9ab4bf49f0547b4a2c8b568b97 (from 7ddaa79ffeee3857b25ec298cc4deb9acb46b4e1)
+Merge: 7ddaa79 dc2281d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Apr 20 20:52:56 2016 -0700
+
+    Merge pull request #3579 from thinkyhead/rc_fix_dogm_and_mbl_menus
+    
+    Fix menu redraw for DOGLCD, improve MBL
+
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index a1281cf..0ecbbcb 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -517,7 +517,7 @@ static void _drawmenu_setting_edit_generic(bool isSelected, uint8_t row, const c
+ #define lcd_implementation_drawmenu_setting_edit_callback_long5(sel, row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(sel, row, pstr, ftostr5(*(data)))
+ #define lcd_implementation_drawmenu_setting_edit_callback_bool(sel, row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(sel, row, pstr, (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+ 
+-void lcd_implementation_drawedit(const char* pstr, const char* value) {
++void lcd_implementation_drawedit(const char* pstr, const char* value=NULL) {
+   uint8_t rows = 1;
+   uint8_t lcd_width = LCD_WIDTH, char_width = DOG_CHAR_WIDTH;
+   uint8_t vallen = lcd_strlen(value);
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 18ea1cb..8ffbb50 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -70,6 +70,9 @@
+ #ifndef MSG_LEVEL_BED_WAITING
+   #define MSG_LEVEL_BED_WAITING               "Click to Begin"
+ #endif
++#ifndef MSG_LEVEL_BED_NEXT_POINT
++  #define MSG_LEVEL_BED_NEXT_POINT            "Next Point"
++#endif
+ #ifndef MSG_LEVEL_BED_DONE
+   #define MSG_LEVEL_BED_DONE                  "Leveling Done!"
+ #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 3e77278..01644b9 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -262,7 +262,7 @@ static void lcd_status_screen();
+   uint8_t currentMenuViewOffset;              /* scroll offset in the current menu */
+   millis_t next_button_update_ms;
+   uint8_t lastEncoderBits;
+-  uint32_t encoderPosition;
++  uint32_t encoderPosition, nextEncoderPosition;
+   #if PIN_EXISTS(SD_DETECT)
+     uint8_t lcd_sd_status;
+   #endif
+@@ -277,6 +277,7 @@ typedef struct {
+ } menuPosition;
+ 
+ menuFunc_t currentMenu = lcd_status_screen; // pointer to the currently active menu handler
++menuFunc_t nextMenu = NULL; // the next menu handler to activate
+ 
+ menuPosition menu_history[10];
+ uint8_t menu_history_depth = 0;
+@@ -311,21 +312,16 @@ float raw_Ki, raw_Kd;
+  * Remembers the previous position
+  */
+ static void lcd_goto_menu(menuFunc_t menu, const bool feedback = false, const uint32_t encoder = 0) {
+-  if (currentMenu != menu) {
+-    currentMenu = menu;
+-    lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
++  if (currentMenu != menu && nextMenu != menu) {
++    nextMenu = menu;
++    nextEncoderPosition = encoder;
+     #if ENABLED(NEWPANEL)
+-      encoderPosition = encoder;
+       if (feedback) lcd_quick_feedback();
+     #endif
+     if (menu == lcd_status_screen) {
+       defer_return_to_status = false;
+       menu_history_depth = 0;
+     }
+-    #if ENABLED(LCD_PROGRESS_BAR)
+-      // For LCD_PROGRESS_BAR re-initialize custom characters
+-      lcd_set_custom_characters(menu == lcd_status_screen);
+-    #endif
+   }
+ }
+ 
+@@ -891,15 +887,13 @@ void lcd_cooldown() {
+    *
+    */
+ 
+-  static int _lcd_level_bed_position;
+-  static bool mbl_wait_for_move = false;
++  static uint8_t _lcd_level_bed_position;
+ 
+   // Utility to go to the next mesh point
+   // A raise is added between points if MIN_Z_HEIGHT_FOR_HOMING is in use
+   // Note: During Manual Bed Leveling the homed Z position is MESH_HOME_SEARCH_Z
+   // Z position will be restored with the final action, a G28
+   inline void _mbl_goto_xy(float x, float y) {
+-    mbl_wait_for_move = true;
+     current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+       #if MIN_Z_HEIGHT_FOR_HOMING > 0
+         + MIN_Z_HEIGHT_FOR_HOMING
+@@ -914,59 +908,38 @@ void lcd_cooldown() {
+       line_to_current(Z_AXIS);
+     #endif
+     st_synchronize();
+-    mbl_wait_for_move = false;
++  }
++
++  static void _lcd_level_goto_next_point();
++
++  static void _lcd_level_bed_done() {
++    if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_DONE));
+   }
+ 
+   /**
+-   * 5. MBL Wait for controller movement and clicks:
+-   *        - Movement adjusts the Z axis
+-   *        - Click saves the Z, goes to the next mesh point
++   * Step 7: Get the Z coordinate, then goto next point or exit
+    */
+-  static void _lcd_level_bed_procedure() {
+-    // Menu handlers may be called in a re-entrant fashion
+-    // if they call st_synchronize or plan_buffer_line. So
+-    // while waiting for a move we just ignore new input.
+-    if (mbl_wait_for_move) {
+-      lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
+-      return;
+-    }
+-
++  static void _lcd_level_bed_get_z() {
+     ENCODER_DIRECTION_NORMAL();
+ 
+     // Encoder wheel adjusts the Z position
+     if (encoderPosition && movesplanned() <= 3) {
+       refresh_cmd_timeout();
+       current_position[Z_AXIS] += float((int32_t)encoderPosition) * (MBL_Z_STEP);
+-      if (min_software_endstops) NOLESS(current_position[Z_AXIS], Z_MIN_POS);
+-      if (max_software_endstops) NOMORE(current_position[Z_AXIS], Z_MAX_POS);
+-      encoderPosition = 0;
++      NOLESS(current_position[Z_AXIS], 0);
++      NOMORE(current_position[Z_AXIS], MESH_HOME_SEARCH_Z * 2);
+       line_to_current(Z_AXIS);
+-      lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
+     }
++    encoderPosition = 0;
+ 
+-    // Update on first display, then only on updates to Z position
+-    if (lcdDrawUpdate) {
+-      float v = current_position[Z_AXIS] - MESH_HOME_SEARCH_Z;
+-      lcd_implementation_drawedit(PSTR(MSG_MOVE_Z), ftostr43(v + (v < 0 ? -0.0001 : 0.0001), '+'));
+-    }
+-
+-    // We want subsequent calls, but don't force redraw
+-    // Set here so it can be overridden by lcd_return_to_status below
+-    lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
+-
+-    // Click sets the current Z and moves to the next position
+     static bool debounce_click = false;
+     if (LCD_CLICKED) {
+       if (!debounce_click) {
+         debounce_click = true; // ignore multiple "clicks" in a row
+         mbl.set_zigzag_z(_lcd_level_bed_position++, current_position[Z_AXIS]);
+         if (_lcd_level_bed_position == (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS)) {
+-          lcd_return_to_status();
+-          LCD_MESSAGEPGM(MSG_LEVEL_BED_DONE);
+-          #if HAS_BUZZER
+-            buzz(200, 659);
+-            buzz(200, 698);
+-          #endif
++          lcd_goto_menu(_lcd_level_bed_done, true);
++
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+             #if MIN_Z_HEIGHT_FOR_HOMING > 0
+               + MIN_Z_HEIGHT_FOR_HOMING
+@@ -974,65 +947,98 @@ void lcd_cooldown() {
+           ;
+           line_to_current(Z_AXIS);
+           st_synchronize();
++
+           mbl.active = true;
+           enqueue_and_echo_commands_P(PSTR("G28"));
++          lcd_return_to_status();
++          //LCD_MESSAGEPGM(MSG_LEVEL_BED_DONE);
++          #if HAS_BUZZER
++            buzz(200, 659);
++            buzz(200, 698);
++          #endif
+         }
+         else {
+-          #if ENABLED(NEWPANEL)
+-            lcd_quick_feedback();
+-          #endif
+-          int ix, iy;
+-          mbl.zigzag(_lcd_level_bed_position, ix, iy);
+-          _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
+-          encoderPosition = 0;
++          lcd_goto_menu(_lcd_level_goto_next_point, true);
+         }
+       }
+     }
+     else {
+       debounce_click = false;
+     }
++
++    // Update on first display, then only on updates to Z position
++    // Show message above on clicks instead
++    if (lcdDrawUpdate) {
++      float v = current_position[Z_AXIS] - MESH_HOME_SEARCH_Z;
++      lcd_implementation_drawedit(PSTR(MSG_MOVE_Z), ftostr43(v + (v < 0 ? -0.0001 : 0.0001), '+'));
++    }
++
+   }
+ 
+   /**
+-   * 4. MBL Display "Click to Begin", wait for click
+-   *        Move to the first probe position
++   * Step 6: Display "Next point: 1 / 9" while waiting for move to finish
++   */
++  static void _lcd_level_bed_moving() {
++    if (lcdDrawUpdate) {
++      char msg[10];
++      sprintf_P(msg, PSTR("%i / %u"), (int)(_lcd_level_bed_position + 1), (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS));
++      lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_NEXT_POINT), msg);
++    }
++  }
++
++  /**
++   * Step 5: Initiate a move to the next point
++   */
++  static void _lcd_level_goto_next_point() {
++    // Set the menu to display ahead of blocking call
++    lcd_goto_menu(_lcd_level_bed_moving);
++
++    // _mbl_goto_xy runs the menu loop until the move is done
++    int ix, iy;
++    mbl.zigzag(_lcd_level_bed_position, ix, iy);
++    _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
++
++    // After the blocking function returns, change menus
++    lcd_goto_menu(_lcd_level_bed_get_z);
++  }
++
++  /**
++   * Step 4: Display "Click to Begin", wait for click
++   *         Move to the first probe position
+    */
+   static void _lcd_level_bed_homing_done() {
+-    if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_WAITING), NULL);
+-    lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
+-    if (mbl_wait_for_move) return;
++    if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_WAITING));
+     if (LCD_CLICKED) {
++      _lcd_level_bed_position = 0;
+       current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-      _mbl_goto_xy(MESH_MIN_X, MESH_MIN_Y);
+-      _lcd_level_bed_position = 0;
+-      lcd_goto_menu(_lcd_level_bed_procedure, true);
++      lcd_goto_menu(_lcd_level_goto_next_point, true);
+     }
+   }
+ 
+   /**
+-   * 3. MBL Display "Hoing XYZ" - Wait for homing to finish
++   * Step 3: Display "Homing XYZ" - Wait for homing to finish
+    */
+   static void _lcd_level_bed_homing() {
+     if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_HOMING), NULL);
+-    lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
+-    if (axis_known_position[X_AXIS] && axis_known_position[Y_AXIS] && axis_known_position[Z_AXIS])
++    if (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS])
+       lcd_goto_menu(_lcd_level_bed_homing_done);
++    lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW; // counts as a draw flag during graphical loop
+   }
+ 
+   /**
+-   * 2. MBL Continue Bed Leveling...
++   * Step 2: Continue Bed Leveling...
+    */
+   static void _lcd_level_bed_continue() {
+     defer_return_to_status = true;
+-    axis_known_position[X_AXIS] = axis_known_position[Y_AXIS] = axis_known_position[Z_AXIS] = false;
++    axis_homed[X_AXIS] = axis_homed[Y_AXIS] = axis_homed[Z_AXIS] = false;
+     mbl.reset();
+     enqueue_and_echo_commands_P(PSTR("G28"));
+     lcd_goto_menu(_lcd_level_bed_homing);
+   }
+ 
+   /**
+-   * 1. MBL entry-point: "Cancel" or "Level Bed"
++   * Step 1: MBL entry-point: "Cancel" or "Level Bed"
+    */
+   static void lcd_level_bed() {
+     START_MENU();
+@@ -1072,8 +1078,9 @@ static void lcd_prepare_menu() {
+   // Level Bed
+   //
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    if (axis_known_position[X_AXIS] && axis_known_position[Y_AXIS])
+-      MENU_ITEM(gcode, MSG_LEVEL_BED, PSTR("G29"));
++    MENU_ITEM(gcode, MSG_LEVEL_BED,
++      axis_homed[X_AXIS] && axis_homed[Y_AXIS] ? PSTR("G29") : PSTR("G28\nG29")
++    );
+   #elif ENABLED(MANUAL_BED_LEVELING)
+     MENU_ITEM(submenu, MSG_LEVEL_BED, lcd_level_bed);
+   #endif
+@@ -1157,10 +1164,9 @@ static void _lcd_move(const char* name, AxisEnum axis, float min, float max) {
+     current_position[axis] += float((int32_t)encoderPosition) * move_menu_scale;
+     if (min_software_endstops) NOLESS(current_position[axis], min);
+     if (max_software_endstops) NOMORE(current_position[axis], max);
+-    encoderPosition = 0;
+     line_to_current(axis);
+-    lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+   }
++  encoderPosition = 0;
+   if (lcdDrawUpdate) lcd_implementation_drawedit(name, ftostr31(current_position[axis]));
+   if (LCD_CLICKED) lcd_goto_previous_menu(true);
+ }
+@@ -1186,10 +1192,9 @@ static void lcd_move_e(
+   #endif
+   if (encoderPosition && movesplanned() <= 3) {
+     current_position[E_AXIS] += float((int32_t)encoderPosition) * move_menu_scale;
+-    encoderPosition = 0;
+     line_to_current(E_AXIS);
+-    lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+   }
++  encoderPosition = 0;
+   if (lcdDrawUpdate) {
+     PGM_P pos_label;
+     #if EXTRUDERS == 1
+@@ -1342,7 +1347,7 @@ static void lcd_control_menu() {
+ 
+   static void _lcd_autotune(int e) {
+     char cmd[30];
+-    sprintf_P(cmd, PSTR("M303 U1 E%d S%d"), e,
++    sprintf_P(cmd, PSTR("M303 U1 E%i S%i"), e,
+       #if HAS_PID_FOR_BOTH
+         e < 0 ? autotune_temp_bed : autotune_temp[e]
+       #elif ENABLED(PIDTEMPBED)
+@@ -1678,7 +1683,6 @@ static void lcd_control_volumetric_menu() {
+         lcd_contrast &= 0x3F;
+       #endif
+       encoderPosition = 0;
+-      lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+       u8g.setContrast(lcd_contrast);
+     }
+     if (lcdDrawUpdate) {
+@@ -1829,12 +1833,12 @@ static void lcd_control_volumetric_menu() {
+   } \
+   static void menu_action_setting_edit_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue) { \
+     _menu_action_setting_edit_ ## _name(pstr, ptr, minValue, maxValue); \
+-    currentMenu = menu_edit_ ## _name; \
++    lcd_goto_menu(menu_edit_ ## _name); \
+   }\
+   static void menu_action_setting_edit_callback_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue, menuFunc_t callback) { \
+     _menu_action_setting_edit_ ## _name(pstr, ptr, minValue, maxValue); \
+-    currentMenu = menu_edit_callback_ ## _name; \
+     callbackFunc = callback; \
++    lcd_goto_menu(menu_edit_callback_ ## _name); \
+   }
+ menu_edit_type(int, int3, itostr3, 1);
+ menu_edit_type(float, float3, ftostr3, 1);
+@@ -1900,7 +1904,6 @@ menu_edit_type(unsigned long, long5, ftostr5, 0.01);
+ #endif
+ 
+ void lcd_quick_feedback() {
+-  lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
+   next_button_update_ms = millis() + 500;
+ 
+   #if ENABLED(LCD_USE_I2C_BUZZER)
+@@ -2067,7 +2070,7 @@ bool lcd_blink() {
+  *   - Act on RepRap World keypad input
+  *   - Update the encoder position
+  *   - Apply acceleration to the encoder position
+- *   - Set lcdDrawUpdate = LCDVIEW_CALL_REDRAW_NEXT on controller events
++ *   - Set lcdDrawUpdate = LCDVIEW_CALL_REDRAW_NOW on controller events
+  *   - Reset the Info Screen timeout if there's any input
+  *   - Update status indicators, if any
+  *
+@@ -2075,17 +2078,21 @@ bool lcd_blink() {
+  *   - Call the handler only if lcdDrawUpdate != LCDVIEW_NONE
+  *   - Before calling the handler, LCDVIEW_CALL_NO_REDRAW => LCDVIEW_NONE
+  *   - Call the menu handler. Menu handlers should do the following:
+- *     - If a value changes, set lcdDrawUpdate to LCDVIEW_REDRAW_NOW
++ *     - If a value changes, set lcdDrawUpdate to LCDVIEW_REDRAW_NOW and draw the value
++ *       (Encoder events automatically set lcdDrawUpdate for you.)
+  *     - if (lcdDrawUpdate) { redraw }
+  *     - Before exiting the handler set lcdDrawUpdate to:
+- *       - LCDVIEW_REDRAW_NOW or LCDVIEW_NONE for no callbacks until the next controller event.
+  *       - LCDVIEW_CLEAR_CALL_REDRAW to clear screen and set LCDVIEW_CALL_REDRAW_NEXT.
+- *       - LCDVIEW_CALL_NO_REDRAW for a callback with no forced redraw on the next loop.
+- *     - NOTE: For some displays, the menu handler may be called 2 or more times per loop.
++ *       - LCDVIEW_REDRAW_NOW or LCDVIEW_NONE to keep drawingm but only in this loop.
++ *       - LCDVIEW_REDRAW_NEXT to keep drawing and draw on the next loop also.
++ *       - LCDVIEW_CALL_NO_REDRAW to keep drawing (or start drawing) with no redraw on the next loop.
++ *     - NOTE: For graphical displays menu handlers may be called 2 or more times per loop,
++ *             so don't change lcdDrawUpdate without considering this.
+  *
+  *   After the menu handler callback runs (or not):
++ *   - Set lcdDrawUpdate to nextLcdDrawUpdate (usually unchanged)
+  *   - Clear the LCD if lcdDrawUpdate == LCDVIEW_CLEAR_CALL_REDRAW
+- *   - Update lcdDrawUpdate for the next loop (i.e., move one state down, usually)
++ *   - Transition lcdDrawUpdate to the next state
+  *
+  * No worries. This function is only called from the main thread.
+  */
+@@ -2217,12 +2224,13 @@ void lcd_update() {
+       }
+ 
+       #if ENABLED(DOGLCD)  // Changes due to different driver architecture of the DOGM display
+-        bool blink = lcd_blink();
++        static int8_t dot_color = 0;
++        dot_color = 1 - dot_color;
+         u8g.firstPage();
+         do {
+           lcd_setFont(FONT_MENU);
+           u8g.setPrintPos(125, 0);
+-          u8g.setColorIndex(blink ? 1 : 0); // Set color for the alive dot
++          u8g.setColorIndex(dot_color); // Set color for the alive dot
+           u8g.drawPixel(127, 63); // draw alive dot
+           u8g.setColorIndex(1); // black on white
+           (*currentMenu)();
+@@ -2242,6 +2250,18 @@ void lcd_update() {
+ 
+     #endif // ULTIPANEL
+ 
++    // If a new menu was set, update the pointer, set to clear & redraw
++    if (nextMenu) {
++      currentMenu = nextMenu;
++      encoderPosition = nextEncoderPosition;
++      nextMenu = NULL;
++      lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
++      #if ENABLED(LCD_PROGRESS_BAR)
++        // For LCD_PROGRESS_BAR re-initialize custom characters
++        lcd_set_custom_characters(currentMenu == lcd_status_screen);
++      #endif
++    }
++
+     switch (lcdDrawUpdate) {
+       case LCDVIEW_CLEAR_CALL_REDRAW:
+         lcd_implementation_clear();
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 3787db0..b6d60c2 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -873,7 +873,7 @@ static void lcd_implementation_drawmenu_setting_edit_generic_P(bool sel, uint8_t
+ #define lcd_implementation_drawmenu_setting_edit_callback_long5(sel, row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(sel, row, pstr, '>', ftostr5(*(data)))
+ #define lcd_implementation_drawmenu_setting_edit_callback_bool(sel, row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(sel, row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+ 
+-void lcd_implementation_drawedit(const char* pstr, const char* value) {
++void lcd_implementation_drawedit(const char* pstr, const char* value=NULL) {
+   lcd.setCursor(1, 1);
+   lcd_printPGM(pstr);
+   if (value != NULL) {
+
+commit 6fac4d9211c32c9ab4bf49f0547b4a2c8b568b97 (from dc2281d2f41a221c1635e710fcd4f68f36983434)
+Merge: 7ddaa79 dc2281d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Apr 20 20:52:56 2016 -0700
+
+    Merge pull request #3579 from thinkyhead/rc_fix_dogm_and_mbl_menus
+    
+    Fix menu redraw for DOGLCD, improve MBL
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index cf1c5cd..97add8a 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -637,22 +637,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -672,6 +657,22 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 7c40962..cc08d72 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -233,12 +233,12 @@ void kill(const char*);
+  */
+ enum DebugFlags {
+   DEBUG_NONE          = 0,
+-  DEBUG_ECHO          = _BV(0),
+-  DEBUG_INFO          = _BV(1),
+-  DEBUG_ERRORS        = _BV(2),
+-  DEBUG_DRYRUN        = _BV(3),
+-  DEBUG_COMMUNICATION = _BV(4),
+-  DEBUG_LEVELING      = _BV(5)
++  DEBUG_ECHO          = _BV(0), ///< Echo commands in order as they are processed
++  DEBUG_INFO          = _BV(1), ///< Print messages for code that has debug output
++  DEBUG_ERRORS        = _BV(2), ///< Not implemented
++  DEBUG_DRYRUN        = _BV(3), ///< Ignore temperature setting and E movement commands
++  DEBUG_COMMUNICATION = _BV(4), ///< Not implemented
++  DEBUG_LEVELING      = _BV(5)  ///< Print detailed output for homing and leveling
+ };
+ extern uint8_t marlin_debug_flags;
+ #define DEBUGGING(F) (marlin_debug_flags & (DEBUG_## F))
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ecd9f9e..66e8484 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1427,6 +1427,7 @@ inline void sync_plan_position() {
+   #endif
+   plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
++inline void sync_plan_position_e() { plan_set_e_position(current_position[E_AXIS]); }
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
+@@ -2320,7 +2321,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+       feedrate = retract_feedrate * 60;
+       current_position[E_AXIS] += (swapping ? retract_length_swap : retract_length) / volumetric_multiplier[active_extruder];
+-      plan_set_e_position(current_position[E_AXIS]);
++      sync_plan_position_e();
+       prepare_move();
+ 
+       if (retract_zlift > 0.01) {
+@@ -2348,7 +2349,7 @@ static void homeaxis(AxisEnum axis) {
+       feedrate = retract_recover_feedrate * 60;
+       float move_e = swapping ? retract_length_swap + retract_recover_length_swap : retract_length + retract_recover_length;
+       current_position[E_AXIS] -= move_e / volumetric_multiplier[active_extruder];
+-      plan_set_e_position(current_position[E_AXIS]);
++      sync_plan_position_e();
+       prepare_move();
+     }
+ 
+@@ -2439,7 +2440,7 @@ inline void gcode_G0_G1() {
+         // Is this move an attempt to retract or recover?
+         if ((echange < -MIN_RETRACT && !retracted[active_extruder]) || (echange > MIN_RETRACT && retracted[active_extruder])) {
+           current_position[E_AXIS] = destination[E_AXIS]; // hide the slicer-generated retract/recover from calculations
+-          plan_set_e_position(current_position[E_AXIS]);  // AND from the planner
++          sync_plan_position_e();  // AND from the planner
+           retract(!retracted[active_extruder]);
+           return;
+         }
+@@ -3642,8 +3643,9 @@ inline void gcode_G28() {
+  * G92: Set current position to given X Y Z E
+  */
+ inline void gcode_G92() {
+-  if (!code_seen(axis_codes[E_AXIS]))
+-    st_synchronize();
++  bool didE = code_seen(axis_codes[E_AXIS]);
++
++  if (!didE) st_synchronize();
+ 
+   bool didXYZ = false;
+   for (int i = 0; i < NUM_AXIS; i++) {
+@@ -3653,14 +3655,11 @@ inline void gcode_G92() {
+ 
+       current_position[i] = v;
+ 
+-      if (i == E_AXIS)
+-        plan_set_e_position(v);
+-      else {
++      if (i != E_AXIS) {
+         position_shift[i] += v - p; // Offset the coordinate space
+         update_software_endstops((AxisEnum)i);
+-		  
+         didXYZ = true;
+-	  }
++      }
+     }
+   }
+   if (didXYZ) {
+@@ -3670,6 +3669,9 @@ inline void gcode_G92() {
+       sync_plan_position();
+     #endif
+   }
++  else if (didE) {
++    sync_plan_position_e();
++  }
+ }
+ 
+ #if ENABLED(ULTIPANEL)
+@@ -6106,7 +6108,7 @@ inline void gcode_M503() {
+     #endif
+ 
+     current_position[E_AXIS] = destination[E_AXIS]; //the long retract of L is compensated by manual filament feeding
+-    plan_set_e_position(current_position[E_AXIS]);
++    sync_plan_position_e();
+ 
+     RUNPLAN; //should do nothing
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 7ed915f..1148868 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -619,22 +619,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -654,6 +639,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index f463080..c511300 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -616,22 +616,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -651,6 +636,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 466aa34..adf056e 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -629,22 +629,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -664,6 +649,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 8f9c51b..866556d 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -631,22 +631,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -666,6 +651,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 62505a9..4480757 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -654,22 +654,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -689,6 +674,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 0b529eb..b8bbfe4 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -637,22 +637,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -672,6 +657,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 03fd7e5..f147f7c 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -631,22 +631,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -666,6 +651,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 7a03626..8fc4e22 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -645,22 +645,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  //#define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                            // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                            // When defined, it will:
+-                            // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                            // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                            // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                            // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -680,6 +665,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define MANUAL_Z_HOME_POS 0.1  // Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index cde38d8..3f68ad1 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -658,22 +658,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -693,6 +678,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index d56ba28..79469c7 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -629,22 +629,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -664,6 +649,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 07135c6..34933b7 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -637,22 +637,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -672,6 +657,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index ee10b51..561b0ac 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -764,22 +764,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #endif
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -798,6 +783,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #define MANUAL_Z_HOME_POS 405 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index bb499ff..1ccee08 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -764,22 +764,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #endif
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -798,6 +783,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #define MANUAL_Z_HOME_POS 250 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index f98ac20..c3e3e3c 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -768,22 +768,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #endif
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -802,6 +787,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define MANUAL_Z_HOME_POS 250 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 5cd4077..3721839 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -755,22 +755,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #endif
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -789,6 +774,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define MANUAL_Z_HOME_POS 277 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 35517ad..483aa78 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -762,22 +762,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #endif
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  // #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -796,6 +781,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define MANUAL_Z_HOME_POS 381.4 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 49f2c8e..2f5cfce 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -640,22 +640,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -675,6 +660,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index b9657c3..514fbef 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -627,22 +627,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MECHANICAL_PROBE
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+-  // it is highly recommended you leave Z_SAFE_HOMING enabled!
+-
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+-                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+-                          // When defined, it will:
+-                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+-                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+-                          // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+-                          // - Block Z homing only when the Z probe is outside bed area.
+-
+-  #if ENABLED(Z_SAFE_HOMING)
+-
+-    #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+-    #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+-
+-  #endif
++  // it is highly recommended you also enable Z_SAFE_HOMING below!
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+@@ -662,6 +647,21 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   //#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
++// Use "Z Safe Homing" to avoid homing with a Z probe outside the bed area.
++//
++// With this feature enabled:
++//
++// - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
++// - If stepper drivers time out, it will need X and Y homing again before Z homing.
++// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Prevent Z homing when the Z probe is outside bed area.
++//#define Z_SAFE_HOMING
++
++#if ENABLED(Z_SAFE_HOMING)
++  #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
++  #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
++#endif
++
+ // @section movement
+ 
+ /**
+diff --git a/Marlin/stopwatch.cpp b/Marlin/stopwatch.cpp
+index 5bc0a28..60d556a 100644
+--- a/Marlin/stopwatch.cpp
++++ b/Marlin/stopwatch.cpp
+@@ -24,11 +24,14 @@
+ #include "stopwatch.h"
+ 
+ Stopwatch::Stopwatch() {
+-   this->reset();
+- }
++  this->reset();
++}
+ 
+ void Stopwatch::stop() {
+-  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("Stopwatch::stop()");
++  #if ENABLED(DEBUG_STOPWATCH)
++    debug(PSTR("stop"));
++  #endif
++
+   if (!this->isRunning()) return;
+ 
+   this->status = STPWTCH_STOPPED;
+@@ -36,7 +39,10 @@ void Stopwatch::stop() {
+ }
+ 
+ void Stopwatch::pause() {
+-  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("Stopwatch::pause()");
++  #if ENABLED(DEBUG_STOPWATCH)
++    debug(PSTR("pause"));
++  #endif
++
+   if (!this->isRunning()) return;
+ 
+   this->status = STPWTCH_PAUSED;
+@@ -44,7 +50,10 @@ void Stopwatch::pause() {
+ }
+ 
+ void Stopwatch::start() {
+-  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("Stopwatch::start()");
++  #if ENABLED(DEBUG_STOPWATCH)
++    debug(PSTR("start"));
++  #endif
++
+   if (this->isRunning()) return;
+ 
+   if (this->isPaused()) this->accumulator = this->duration();
+@@ -55,7 +64,9 @@ void Stopwatch::start() {
+ }
+ 
+ void Stopwatch::reset() {
+-  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("Stopwatch::reset()");
++  #if ENABLED(DEBUG_STOPWATCH)
++    debug(PSTR("reset"));
++  #endif
+ 
+   this->status = STPWTCH_STOPPED;
+   this->startTimestamp = 0;
+@@ -75,3 +86,15 @@ uint16_t Stopwatch::duration() {
+   return (((this->isRunning()) ? millis() : this->stopTimestamp)
+           - this->startTimestamp) / 1000 + this->accumulator;
+ }
++
++#if ENABLED(DEBUG_STOPWATCH)
++
++  void Stopwatch::debug(const char func[]) {
++    if (DEBUGGING(INFO)) {
++      SERIAL_ECHOPGM("Stopwatch::");
++      serialprintPGM(func);
++      SERIAL_ECHOLNPGM("()");
++    }
++  }
++
++#endif
+diff --git a/Marlin/stopwatch.h b/Marlin/stopwatch.h
+index d6ef8a7..53c0f14 100644
+--- a/Marlin/stopwatch.h
++++ b/Marlin/stopwatch.h
+@@ -23,10 +23,15 @@
+ #ifndef STOPWATCH_H
+ #define STOPWATCH_H
+ 
++#include "macros.h"
++
++// Print debug messages with M111 S2 (Uses 156 bytes of PROGMEM)
++//#define DEBUG_STOPWATCH
++
+ enum StopwatchStatus {
+-  STPWTCH_STOPPED = 0x0,
+-  STPWTCH_RUNNING = 0x1,
+-  STPWTCH_PAUSED  = 0x2
++  STPWTCH_STOPPED,
++  STPWTCH_RUNNING,
++  STPWTCH_PAUSED
+ };
+ 
+ /**
+@@ -94,6 +99,16 @@ class Stopwatch {
+      * @return uint16_t
+      */
+     uint16_t duration();
++
++    #if ENABLED(DEBUG_STOPWATCH)
++
++      /**
++       * @brief Prints a debug message
++       * @details Prints a simple debug message "Stopwatch::function"
++       */
++      static void debug(const char func[]);
++
++    #endif
+ };
+ 
+ #endif //STOPWATCH_H
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+index 84d69df..c1d6008 100644
+--- a/Marlin/twibus.cpp
++++ b/Marlin/twibus.cpp
+@@ -28,7 +28,7 @@
+ 
+ #include <Wire.h>
+ 
+-TWIBus::twibus() {
++TWIBus::TWIBus() {
+   Wire.begin(); // We use no address so we will join the BUS as the master
+   this->reset();
+ }
+@@ -42,25 +42,26 @@ void TWIBus::reset() {
+ void TWIBus::address(uint8_t addr) {
+   this->addr = addr;
+ 
+-  if (DEBUGGING(INFO)) {
+-    SERIAL_ECHOPAIR("TWIBus::sendto: ", this->addr);
+-    SERIAL_EOL;
+-  }
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("sendto"), this->addr);
++  #endif
+ }
+ 
+ void TWIBus::addbyte(char c) {
+   if (buffer_s >= sizeof(this->buffer)) return;
+   this->buffer[this->buffer_s++] = c;
+ 
+-  if (DEBUGGING(INFO)) {
+-    SERIAL_ECHOPAIR("TWIBus::addbyte: ", this->buffer[this->buffer_s -1]);
+-    SERIAL_EOL;
+-  }
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("addbyte"), this->buffer[this->buffer_s - 1]);
++  #endif
+ }
+ 
+ void TWIBus::send() {
+   if (!this->addr) return;
+-  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("TWIBus::send()");
++
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("send()"));
++  #endif
+ 
+   Wire.beginTransmission(this->addr);
+   Wire.write(this->buffer, this->buffer_s);
+@@ -72,10 +73,10 @@ void TWIBus::send() {
+ 
+ void TWIBus::reqbytes(uint8_t bytes) {
+   if (!this->addr) return;
+-  if (DEBUGGING(INFO)) {
+-    SERIAL_ECHOPAIR("TWIBus::reqbytes(): ", bytes);
+-    SERIAL_EOL;
+-  }
++
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("reqbytes"), bytes);
++  #endif
+ 
+   millis_t t = millis() + this->timeout;
+   Wire.requestFrom(this->addr, bytes);
+@@ -101,4 +102,17 @@ void TWIBus::reqbytes(uint8_t bytes) {
+   this->reset();
+ }
+ 
++#if ENABLED(DEBUG_TWIBUS)
++
++  void TWIBus::debug(const char func[], int32_t val/*=-1*/) {
++    if (DEBUGGING(INFO)) {
++      SERIAL_ECHOPGM("TWIBus::");
++      serialprintPGM(func);
++      if (val >= 0) SERIAL_ECHOPAIR(": ", val);
++      SERIAL_EOL;
++    }
++  }
++
++#endif
++
+ #endif //EXPERIMENTAL_I2CBUS
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+index 5ab7257..d0d0e0f 100644
+--- a/Marlin/twibus.h
++++ b/Marlin/twibus.h
+@@ -23,6 +23,11 @@
+ #ifndef TWIBUS_H
+ #define TWIBUS_H
+ 
++#include "macros.h"
++
++// Print debug messages with M111 S2 (Uses 236 bytes of PROGMEM)
++//#define DEBUG_TWIBUS
++
+ /**
+  * TWIBUS class
+  *
+@@ -117,6 +122,16 @@ class TWIBus {
+      * @param bytes the number of bytes to request
+      */
+     void reqbytes(uint8_t bytes);
++
++    #if ENABLED(DEBUG_TWIBUS)
++
++      /**
++       * @brief Prints a debug message
++       * @details Prints a simple debug message "TWIBus::function: value"
++       */
++      static void debug(const char func[], int32_t val = -1);
++
++    #endif
+ };
+ 
+ #endif //TWIBUS_H
+

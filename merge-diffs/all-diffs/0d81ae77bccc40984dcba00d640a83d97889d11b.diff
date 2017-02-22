@@ -1,0 +1,1994 @@
+commit 0d81ae77bccc40984dcba00d640a83d97889d11b (from 84df13f7d171cbd3a44ea7759bda93eff7b6c635)
+Merge: 84df13f 76cf07c
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Fri Jan 31 07:09:10 2014 -0800
+
+    Merge pull request #727 from drf5n/oversampling
+    
+    temperature.cpp: Actually use OVERSAMPLENR in the oversampling calculation.
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 33a1c3a..1da62fc 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -168,7 +168,7 @@
+                                   // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
+   #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
+   #define K1 0.95 //smoothing factor within the PID
+-  #define PID_dT ((16.0 * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
++  #define PID_dT ((OVERSAMPLENR * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
+ 
+ // If you are using a preconfigured hotend then you can use one of the value sets by uncommenting it
+ // Ultimaker
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 308ac5e..66a097d 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1190,7 +1190,7 @@ ISR(TIMER0_COMPB_vect)
+ //      break;
+   }
+     
+-  if(temp_count >= 16) // 8 ms * 16 = 128ms.
++  if(temp_count >= OVERSAMPLENR) // 8 * 16 * 1/(16000000/64/256)  = 131ms.
+   {
+     if (!temp_meas_ready) //Only update the raw values if they have been read. Else we could be updating them during reading.
+     {
+
+commit 0d81ae77bccc40984dcba00d640a83d97889d11b (from 76cf07c3f75708316f128f52d904115358cb8b23)
+Merge: 84df13f 76cf07c
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Fri Jan 31 07:09:10 2014 -0800
+
+    Merge pull request #727 from drf5n/oversampling
+    
+    temperature.cpp: Actually use OVERSAMPLENR in the oversampling calculation.
+
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index 1fb7245..3409ade 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -37,7 +37,7 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size)
+ // the default values are used whenever there is a change to the data, to prevent
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V09"
++#define EEPROM_VERSION "V10"
+ 
+ #ifdef EEPROM_SETTINGS
+ void Config_StoreSettings() 
+@@ -70,6 +70,7 @@ void Config_StoreSettings()
+   EEPROM_WRITE_VAR(i,absPreheatHotendTemp);
+   EEPROM_WRITE_VAR(i,absPreheatHPBTemp);
+   EEPROM_WRITE_VAR(i,absPreheatFanSpeed);
++  EEPROM_WRITE_VAR(i,zprobe_zoffset);
+   #ifdef PIDTEMP
+     EEPROM_WRITE_VAR(i,Kp);
+     EEPROM_WRITE_VAR(i,Ki);
+@@ -210,6 +211,7 @@ void Config_RetrieveSettings()
+         EEPROM_READ_VAR(i,absPreheatHotendTemp);
+         EEPROM_READ_VAR(i,absPreheatHPBTemp);
+         EEPROM_READ_VAR(i,absPreheatFanSpeed);
++        EEPROM_READ_VAR(i,zprobe_zoffset);
+         #ifndef PIDTEMP
+         float Kp,Ki,Kd;
+         #endif
+@@ -272,6 +274,9 @@ void Config_ResetDefault()
+     absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+ #endif
++#ifdef ENABLE_AUTO_BED_LEVELING
++    zprobe_zoffset = -Z_PROBE_OFFSET_FROM_EXTRUDER;
++#endif
+ #ifdef DOGLCD
+     lcd_contrast = DEFAULT_LCD_CONTRAST;
+ #endif
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index 59ec4d4..29a5578 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -14,7 +14,7 @@
+ #
+ #  1. Modify the line containg "ARDUINO_INSTALL_DIR" to point to the directory that
+ #     contains the Arduino installation (for example, under Mac OS X, this
+-#     might be /Applications/arduino-0012).
++#     might be /Applications/Arduino.app/Contents/Resources/Java).
+ #
+ #  2. Modify the line containing "UPLOAD_PORT" to refer to the filename
+ #     representing the USB or serial connection to your Arduino board
+@@ -40,8 +40,8 @@
+ HARDWARE_MOTHERBOARD ?= 11
+ 
+ # Arduino source install directory, and version number
+-ARDUINO_INSTALL_DIR  ?= ../../arduino-0022
+-ARDUINO_VERSION      ?= 22
++ARDUINO_INSTALL_DIR  ?= /Applications/Arduino.app/Contents/Resources/Java
++ARDUINO_VERSION      ?= 105
+ 
+ # You can optionally set a path to the avr-gcc tools. Requires a trailing slash. (ex: /usr/local/avr-gcc/bin)
+ AVR_TOOLS_PATH ?=
+@@ -142,6 +142,12 @@ MCU              ?= at90usb1286
+ else ifeq  ($(HARDWARE_MOTHERBOARD),82)
+ HARDWARE_VARIANT ?= Teensy
+ MCU              ?= at90usb646
++else ifeq  ($(HARDWARE_MOTHERBOARD),83)
++HARDWARE_VARIANT ?= Teensy
++MCU              ?= at90usb1286
++else ifeq  ($(HARDWARE_MOTHERBOARD),84)
++HARDWARE_VARIANT ?= Teensy
++MCU              ?= at90usb1286
+ 
+ #Gen3+
+ else ifeq  ($(HARDWARE_MOTHERBOARD),9)
+@@ -227,6 +233,10 @@ SRC = wiring.c \
+ 	wiring_analog.c wiring_digital.c \
+ 	wiring_pulse.c \
+ 	wiring_shift.c WInterrupts.c
++ifeq ($(HARDWARE_VARIANT), Teensy)
++SRC = wiring.c
++VPATH += $(ARDUINO_INSTALL_DIR)/hardware/teensy/cores/teensy
++endif
+ CXXSRC = WMath.cpp WString.cpp Print.cpp Marlin_main.cpp	\
+ 	MarlinSerial.cpp Sd2Card.cpp SdBaseFile.cpp SdFatUtil.cpp	\
+ 	SdFile.cpp SdVolume.cpp motion_control.cpp planner.cpp		\
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index be4115e..af3325b 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -210,6 +210,7 @@ extern float endstop_adj[3];
+ extern float min_pos[3];
+ extern float max_pos[3];
+ extern bool axis_known_position[3];
++extern float zprobe_zoffset;
+ extern int fanSpeed;
+ #ifdef BARICUDA
+ extern int ValvePressure;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8f00640..920aed0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -196,6 +196,7 @@ float endstop_adj[3]={0,0,0};
+ float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+ float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ bool axis_known_position[3] = {false, false, false};
++float zprobe_zoffset;
+ 
+ // Extruder offset
+ #if EXTRUDERS > 1
+@@ -240,6 +241,7 @@ int EtoPPressure=0;
+ float delta[3] = {0.0, 0.0, 0.0};
+ #endif
+ 
++  
+ //===========================================================================
+ //=============================private variables=============================
+ //===========================================================================
+@@ -779,7 +781,7 @@ static unsigned long delayed_move_time = 0; // used in mode 1
+ static float duplicate_extruder_x_offset = DEFAULT_DUPLICATION_X_OFFSET; // used in mode 2
+ static float duplicate_extruder_temp_offset = 0; // used in mode 2
+ bool extruder_duplication_enabled = false; // used in mode 2
+-#endif //DUAL_X_CARRIAGE
++#endif //DUAL_X_CARRIAGE    
+ 
+ static void axis_is_at_home(int axis) {
+ #ifdef DUAL_X_CARRIAGE
+@@ -792,8 +794,8 @@ static void axis_is_at_home(int axis) {
+     }
+     else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && active_extruder == 0) {
+       current_position[X_AXIS] = base_home_pos(X_AXIS) + add_homeing[X_AXIS];
+-      min_pos[X_AXIS] =          base_min_pos(X_AXIS) + add_homeing[X_AXIS];
+-      max_pos[X_AXIS] =          min(base_max_pos(X_AXIS) + add_homeing[X_AXIS],
++      min_pos[X_AXIS] =          base_min_pos(X_AXIS) + add_homeing[X_AXIS]; 
++      max_pos[X_AXIS] =          min(base_max_pos(X_AXIS) + add_homeing[X_AXIS], 
+                                   max(extruder_offset[X_AXIS][1], X2_MAX_POS) - duplicate_extruder_x_offset);
+       return;
+     }
+@@ -824,7 +826,7 @@ static void set_bed_level_equation_lsq(double *plane_equation_coefficients)
+     current_position[Z_AXIS] = corrected_position.z;
+ 
+     // but the bed at 0 so we don't go below it.
+-    current_position[Z_AXIS] = -Z_PROBE_OFFSET_FROM_EXTRUDER;
++    current_position[Z_AXIS] = zprobe_zoffset; // in the lsq we reach here after raising the extruder due to the loop structure
+ 
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
+@@ -860,7 +862,7 @@ static void set_bed_level_equation(float z_at_xLeft_yFront, float z_at_xRight_yF
+     current_position[Z_AXIS] = corrected_position.z;
+ 
+     // but the bed at 0 so we don't go below it.
+-    current_position[Z_AXIS] = -Z_PROBE_OFFSET_FROM_EXTRUDER;
++    current_position[Z_AXIS] = zprobe_zoffset;
+ 
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
+@@ -885,7 +887,7 @@ static void run_z_probe() {
+     st_synchronize();
+ 
+     // move back down slowly to find bed
+-    feedrate = homing_feedrate[Z_AXIS]/4;
++    feedrate = homing_feedrate[Z_AXIS]/4; 
+     zPosition -= home_retract_mm(Z_AXIS) * 2;
+     plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], zPosition, current_position[E_AXIS], feedrate/60, active_extruder);
+     st_synchronize();
+@@ -982,7 +984,7 @@ static void homeaxis(int axis) {
+ 
+     current_position[axis] = 0;
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-
++	
+ 
+     // Engage Servo endstop if enabled
+     #ifdef SERVO_ENDSTOPS
+@@ -1040,7 +1042,7 @@ static void homeaxis(int axis) {
+ #if defined (ENABLE_AUTO_BED_LEVELING) && (PROBE_SERVO_DEACTIVATION_DELAY > 0)
+     if (axis==Z_AXIS) retract_z_probe();
+ #endif
+-
++    
+   }
+ }
+ #define HOMEAXIS(LETTER) homeaxis(LETTER##_AXIS)
+@@ -1114,7 +1116,7 @@ void process_commands()
+         destination[Y_AXIS]=current_position[Y_AXIS];
+         destination[Z_AXIS]=current_position[Z_AXIS];
+         current_position[Z_AXIS]+=retract_zlift;
+-        destination[E_AXIS]=current_position[E_AXIS]+retract_length+retract_recover_length;
++        destination[E_AXIS]=current_position[E_AXIS]+retract_length+retract_recover_length; 
+         feedrate=retract_recover_feedrate;
+         retracted=false;
+         prepare_move();
+@@ -1228,10 +1230,10 @@ void process_commands()
+         // reset state used by the different modes
+         memcpy(raised_parked_position, current_position, sizeof(raised_parked_position));
+         delayed_move_time = 0;
+-        active_extruder_parked = true;
+-      #else
++        active_extruder_parked = true; 
++      #else      
+         HOMEAXIS(X);
+-      #endif
++      #endif         
+       }
+ 
+       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
+@@ -1250,7 +1252,7 @@ void process_commands()
+           current_position[Y_AXIS]=code_value()+add_homeing[1];
+         }
+       }
+-
++      
+       #if Z_HOME_DIR < 0                      // If homing towards BED do Z last
+         #ifndef Z_SAFE_HOMING
+           if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+@@ -1262,14 +1264,14 @@ void process_commands()
+             #endif
+             HOMEAXIS(Z);
+           }
+-        #else                      // Z Safe mode activated.
++        #else                      // Z Safe mode activated. 
+           if(home_all_axis) {
+             destination[X_AXIS] = round(Z_SAFE_HOMING_X_POINT - X_PROBE_OFFSET_FROM_EXTRUDER);
+             destination[Y_AXIS] = round(Z_SAFE_HOMING_Y_POINT - Y_PROBE_OFFSET_FROM_EXTRUDER);
+             destination[Z_AXIS] = Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS) * (-1);    // Set destination away from bed
+             feedrate = XY_TRAVEL_SPEED;
+             current_position[Z_AXIS] = 0;
+-
++			
+             plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+             plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate, active_extruder);
+             st_synchronize();
+@@ -1287,7 +1289,7 @@ void process_commands()
+               && (current_position[Y_AXIS]+Y_PROBE_OFFSET_FROM_EXTRUDER <= Y_MAX_POS)) {
+ 
+               current_position[Z_AXIS] = 0;
+-              plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++              plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);			  
+               destination[Z_AXIS] = Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS) * (-1);    // Set destination away from bed
+               feedrate = max_feedrate[Z_AXIS];
+               plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate, active_extruder);
+@@ -1307,8 +1309,8 @@ void process_commands()
+         #endif
+       #endif
+ 
+-
+-
++      
++     
+       if(code_seen(axis_codes[Z_AXIS])) {
+         if(code_value_long() != 0) {
+           current_position[Z_AXIS]=code_value()+add_homeing[2];
+@@ -1316,7 +1318,7 @@ void process_commands()
+       }
+       #ifdef ENABLE_AUTO_BED_LEVELING
+         if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+-          current_position[Z_AXIS] -= Z_PROBE_OFFSET_FROM_EXTRUDER;  //Add Z_Probe offset (the distance is negative)
++          current_position[Z_AXIS] += zprobe_zoffset;  //Add Z_Probe offset (the distance is negative)
+         }
+       #endif
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+@@ -1471,7 +1473,7 @@ void process_commands()
+             run_z_probe();
+             float z_at_xLeft_yFront = current_position[Z_AXIS];
+             retract_z_probe();
+-
++            
+             SERIAL_PROTOCOLPGM("Bed x: ");
+             SERIAL_PROTOCOL(LEFT_PROBE_BED_POSITION);
+             SERIAL_PROTOCOLPGM(" y: ");
+@@ -1489,7 +1491,7 @@ void process_commands()
+             run_z_probe();
+             float z_at_xRight_yFront = current_position[Z_AXIS];
+             retract_z_probe(); // Retract Z Servo endstop if available
+-
++            
+             SERIAL_PROTOCOLPGM("Bed x: ");
+             SERIAL_PROTOCOL(RIGHT_PROBE_BED_POSITION);
+             SERIAL_PROTOCOLPGM(" y: ");
+@@ -1504,10 +1506,10 @@ void process_commands()
+          
+             
+ #endif // ACCURATE_BED_LEVELING
+-            st_synchronize();
++            st_synchronize();            
+ 
+             // The following code correct the Z height difference from z-probe position and hotend tip position.
+-            // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend.
++            // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend. 
+             // When the bed is uneven, this height must be corrected.
+             real_z = float(st_get_position(Z_AXIS))/axis_steps_per_unit[Z_AXIS];  //get the real Z (since the auto bed leveling is already correcting the plane)
+             x_tmp = current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
+@@ -1519,11 +1521,11 @@ void process_commands()
+             plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+         }
+         break;
+-
++        
+     case 30: // G30 Single Z Probe
+         {
+             engage_z_probe(); // Engage Z Servo endstop if available
+-
++            
+             st_synchronize();
+             // TODO: make sure the bed_level_rotation_matrix is identity or the planner will get set incorectly
+             setup_for_endstop_move();
+@@ -1674,14 +1676,14 @@ void process_commands()
+         card.removeFile(strchr_pointer + 4);
+       }
+       break;
+-    case 32: //M32 - Select file and start SD print
++    case 32: //M32 - Select file and start SD print 
+     {
+       if(card.sdprinting) {
+         st_synchronize();
+ 
+       }
+-      starpos = (strchr(strchr_pointer + 4,'*'));
+-
++      starpos = (strchr(strchr_pointer + 4,'*')); 
++      
+       char* namestartpos = (strchr(strchr_pointer + 4,'!'));   //find ! to indicate filename string start.
+       if(namestartpos==NULL)
+       {
+@@ -1689,16 +1691,16 @@ void process_commands()
+       }
+       else
+         namestartpos++; //to skip the '!'
+-
++        
+       if(starpos!=NULL)
+         *(starpos-1)='\0';
+-
++            
+       bool call_procedure=(code_seen('P'));
+-
+-      if(strchr_pointer>namestartpos)
++      
++      if(strchr_pointer>namestartpos) 
+         call_procedure=false;  //false alert, 'P' found within filename
+-
+-      if( card.cardOK )
++      
++      if( card.cardOK ) 
+       {
+         card.openFile(namestartpos,true,!call_procedure);
+         if(code_seen('S'))
+@@ -1771,7 +1773,7 @@ void process_commands()
+ #ifdef DUAL_X_CARRIAGE
+       if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && tmp_extruder == 0)
+         setTargetHotend1(code_value() == 0.0 ? 0.0 : code_value() + duplicate_extruder_temp_offset);
+-#endif
++#endif          
+       setWatch();
+       break;
+     case 140: // M140 set bed temp
+@@ -1827,7 +1829,7 @@ void process_commands()
+             SERIAL_PROTOCOL_F(rawHotendTemp(cur_extruder)/OVERSAMPLENR,0);
+           }
+         #endif
+-
++		
+         SERIAL_PROTOCOLLN("");
+       return;
+       break;
+@@ -1845,14 +1847,14 @@ void process_commands()
+ #ifdef DUAL_X_CARRIAGE
+         if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && tmp_extruder == 0)
+           setTargetHotend1(code_value() == 0.0 ? 0.0 : code_value() + duplicate_extruder_temp_offset);
+-#endif
++#endif          
+         CooldownNoWait = true;
+       } else if (code_seen('R')) {
+         setTargetHotend(code_value(), tmp_extruder);
+ #ifdef DUAL_X_CARRIAGE
+         if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && tmp_extruder == 0)
+           setTargetHotend1(code_value() == 0.0 ? 0.0 : code_value() + duplicate_extruder_temp_offset);
+-#endif
++#endif          
+         CooldownNoWait = false;
+       }
+       #ifdef AUTOTEMP
+@@ -2016,7 +2018,7 @@ void process_commands()
+             SET_OUTPUT(SUICIDE_PIN);
+             WRITE(SUICIDE_PIN, HIGH);
+         #endif
+-
++        
+         #ifdef ULTIPANEL
+           powersupply = true;
+           LCD_MESSAGEPGM(WELCOME_MSG);
+@@ -2173,18 +2175,18 @@ void process_commands()
+       #endif
+       break;
+       //TODO: update for all axis, use for loop
+-    #ifdef BLINKM
++    #ifdef BLINKM  
+     case 150: // M150
+       {
+         byte red;
+         byte grn;
+         byte blu;
+-
++        
+         if(code_seen('R')) red = code_value();
+         if(code_seen('U')) grn = code_value();
+         if(code_seen('B')) blu = code_value();
+-
+-        SendColors(red,grn,blu);
++        
++        SendColors(red,grn,blu);        
+       }
+       break;
+     #endif //BLINKM
+@@ -2306,7 +2308,7 @@ void process_commands()
+       {
+         extruder_offset[Z_AXIS][tmp_extruder] = code_value();
+       }
+-      #endif
++      #endif       
+       SERIAL_ECHO_START;
+       SERIAL_ECHOPGM(MSG_HOTEND_OFFSET);
+       for(tmp_extruder = 0; tmp_extruder < EXTRUDERS; tmp_extruder++)
+@@ -2339,17 +2341,17 @@ void process_commands()
+       }
+     }
+     break;
+-
++	
+ 	case 226: // M226 P<pin number> S<pin state>- Wait until the specified pin reaches the state required
+ 	{
+       if(code_seen('P')){
+         int pin_number = code_value(); // pin number
+         int pin_state = -1; // required pin state - default is inverted
+-
++        
+         if(code_seen('S')) pin_state = code_value(); // required pin state
+-
++      
+         if(pin_state >= -1 && pin_state <= 1){
+-
++        
+           for(int8_t i = 0; i < (int8_t)sizeof(sensitive_pins); i++)
+           {
+             if (sensitive_pins[i] == pin_number)
+@@ -2358,28 +2360,28 @@ void process_commands()
+               break;
+             }
+           }
+-
++        
+           if (pin_number > -1)
+           {
+             st_synchronize();
+-
++            
+             pinMode(pin_number, INPUT);
+-
++            
+             int target;
+             switch(pin_state){
+             case 1:
+               target = HIGH;
+               break;
+-
++            
+             case 0:
+               target = LOW;
+               break;
+-
++            
+             case -1:
+               target = !digitalRead(pin_number);
+               break;
+             }
+-
++            
+             while(digitalRead(pin_number) != target){
+               manage_heater();
+               manage_inactivity();
+@@ -2389,7 +2391,7 @@ void process_commands()
+         }
+       }
+     }
+-    break;
++    break;	
+ 
+     #if NUM_SERVOS > 0
+     case 280: // M280 - set servo position absolute. P: servo index, S: angle or microseconds
+@@ -2565,13 +2567,13 @@ void process_commands()
+         engage_z_probe();    // Engage Z Servo endstop if available
+     }
+     break;
+-
++    
+     case 402:
+     {
+         retract_z_probe();    // Retract Z Servo endstop if enabled
+     }
+     break;
+-#endif
++#endif    
+     case 500: // M500 Store settings in EEPROM
+     {
+         Config_StoreSettings();
+@@ -2729,14 +2731,14 @@ void process_commands()
+               //    M605 S0: Full control mode. The slicer has full control over x-carriage movement
+               //    M605 S1: Auto-park mode. The inactive head will auto park/unpark without slicer involvement
+               //    M605 S2 [Xnnn] [Rmmm]: Duplication mode. The second extruder will duplicate the first with nnn
+-              //                         millimeters x-offset and an optional differential hotend temperature of
++              //                         millimeters x-offset and an optional differential hotend temperature of 
+               //                         mmm degrees. E.g., with "M605 S2 X100 R2" the second extruder will duplicate
+               //                         the first with a spacing of 100mm in the x direction and 2 degrees hotter.
+               //
+               //    Note: the X axis should be homed after changing dual x-carriage mode.
+     {
+         st_synchronize();
+-
++        
+         if (code_seen('S'))
+           dual_x_carriage_mode = code_value();
+ 
+@@ -2747,7 +2749,7 @@ void process_commands()
+ 
+           if (code_seen('R'))
+             duplicate_extruder_temp_offset = code_value();
+-
++            
+           SERIAL_ECHO_START;
+           SERIAL_ECHOPGM(MSG_HOTEND_OFFSET);
+           SERIAL_ECHO(" ");
+@@ -2763,13 +2765,13 @@ void process_commands()
+         {
+           dual_x_carriage_mode = DEFAULT_DUAL_X_CARRIAGE_MODE;
+         }
+-
++        
+         active_extruder_parked = false;
+         extruder_duplication_enabled = false;
+         delayed_move_time = 0;
+     }
+     break;
+-    #endif //DUAL_X_CARRIAGE
++    #endif //DUAL_X_CARRIAGE         
+ 
+     case 907: // M907 Set digital trimpot motor current using axis codes.
+     {
+@@ -2778,6 +2780,15 @@ void process_commands()
+         if(code_seen('B')) digipot_current(4,code_value());
+         if(code_seen('S')) for(int i=0;i<=4;i++) digipot_current(i,code_value());
+       #endif
++      #ifdef MOTOR_CURRENT_PWM_XY_PIN
++        if(code_seen('X')) digipot_current(0, code_value());
++      #endif
++      #ifdef MOTOR_CURRENT_PWM_Z_PIN
++        if(code_seen('Z')) digipot_current(1, code_value());
++      #endif
++      #ifdef MOTOR_CURRENT_PWM_E_PIN
++        if(code_seen('E')) digipot_current(2, code_value());
++      #endif
+     }
+     break;
+     case 908: // M908 Control digital trimpot directly.
+@@ -2850,19 +2861,19 @@ void process_commands()
+         // Save current position to return to after applying extruder offset
+         memcpy(destination, current_position, sizeof(destination));
+       #ifdef DUAL_X_CARRIAGE
+-        if (dual_x_carriage_mode == DXC_AUTO_PARK_MODE && Stopped == false &&
++        if (dual_x_carriage_mode == DXC_AUTO_PARK_MODE && Stopped == false && 
+             (delayed_move_time != 0 || current_position[X_AXIS] != x_home_pos(active_extruder)))
+         {
+           // Park old head: 1) raise 2) move to park position 3) lower
+-          plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + TOOLCHANGE_PARK_ZLIFT,
++          plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + TOOLCHANGE_PARK_ZLIFT, 
+                 current_position[E_AXIS], max_feedrate[Z_AXIS], active_extruder);
+-          plan_buffer_line(x_home_pos(active_extruder), current_position[Y_AXIS], current_position[Z_AXIS] + TOOLCHANGE_PARK_ZLIFT,
++          plan_buffer_line(x_home_pos(active_extruder), current_position[Y_AXIS], current_position[Z_AXIS] + TOOLCHANGE_PARK_ZLIFT, 
+                 current_position[E_AXIS], max_feedrate[X_AXIS], active_extruder);
+-          plan_buffer_line(x_home_pos(active_extruder), current_position[Y_AXIS], current_position[Z_AXIS],
++          plan_buffer_line(x_home_pos(active_extruder), current_position[Y_AXIS], current_position[Z_AXIS], 
+                 current_position[E_AXIS], max_feedrate[Z_AXIS], active_extruder);
+           st_synchronize();
+         }
+-
++        
+         // apply Y & Z extruder offset (x offset is already used in determining home pos)
+         current_position[Y_AXIS] = current_position[Y_AXIS] -
+                      extruder_offset[Y_AXIS][active_extruder] +
+@@ -2870,7 +2881,7 @@ void process_commands()
+         current_position[Z_AXIS] = current_position[Z_AXIS] -
+                      extruder_offset[Z_AXIS][active_extruder] +
+                      extruder_offset[Z_AXIS][tmp_extruder];
+-
++                     
+         active_extruder = tmp_extruder;
+ 
+         // This function resets the max/min values - the current position may be overwritten below.
+@@ -2878,18 +2889,18 @@ void process_commands()
+ 
+         if (dual_x_carriage_mode == DXC_FULL_CONTROL_MODE)
+         {
+-          current_position[X_AXIS] = inactive_extruder_x_pos;
++          current_position[X_AXIS] = inactive_extruder_x_pos; 
+           inactive_extruder_x_pos = destination[X_AXIS];
+         }
+         else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE)
+         {
+           active_extruder_parked = (active_extruder == 0); // this triggers the second extruder to move into the duplication position
+           if (active_extruder == 0 || active_extruder_parked)
+-            current_position[X_AXIS] = inactive_extruder_x_pos;
++            current_position[X_AXIS] = inactive_extruder_x_pos; 
+           else
+-            current_position[X_AXIS] = destination[X_AXIS] + duplicate_extruder_x_offset;
++            current_position[X_AXIS] = destination[X_AXIS] + duplicate_extruder_x_offset; 
+           inactive_extruder_x_pos = destination[X_AXIS];
+-          extruder_duplication_enabled = false;
++          extruder_duplication_enabled = false; 
+         }
+         else
+         {
+@@ -2899,7 +2910,7 @@ void process_commands()
+           active_extruder_parked = true;
+           delayed_move_time = 0;
+         }
+-      #else
++      #else    
+         // Offset extruder (only by XY)
+         int i;
+         for(i = 0; i < 2; i++) {
+@@ -3112,13 +3123,13 @@ void prepare_move()
+     {
+       // move duplicate extruder into correct duplication position.
+       plan_set_position(inactive_extruder_x_pos, current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-      plan_buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset, current_position[Y_AXIS], current_position[Z_AXIS],
++      plan_buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset, current_position[Y_AXIS], current_position[Z_AXIS], 
+           current_position[E_AXIS], max_feedrate[X_AXIS], 1);
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       st_synchronize();
+       extruder_duplication_enabled = true;
+       active_extruder_parked = false;
+-    }
++    }  
+     else if (dual_x_carriage_mode == DXC_AUTO_PARK_MODE) // handle unparking of head
+     {
+       if (current_position[E_AXIS] == destination[E_AXIS])
+@@ -3127,7 +3138,7 @@ void prepare_move()
+         // be used as start of first non-travel move)
+         if (delayed_move_time != 0xFFFFFFFFUL)
+         {
+-          memcpy(current_position, destination, sizeof(current_position));
++          memcpy(current_position, destination, sizeof(current_position)); 
+           if (destination[Z_AXIS] > raised_parked_position[Z_AXIS])
+             raised_parked_position[Z_AXIS] = destination[Z_AXIS];
+           delayed_move_time = millis();
+@@ -3137,9 +3148,9 @@ void prepare_move()
+       delayed_move_time = 0;
+       // unpark extruder: 1) raise, 2) move into starting XY position, 3) lower
+       plan_buffer_line(raised_parked_position[X_AXIS], raised_parked_position[Y_AXIS], raised_parked_position[Z_AXIS],    current_position[E_AXIS], max_feedrate[Z_AXIS], active_extruder);
+-      plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], raised_parked_position[Z_AXIS],
++      plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], raised_parked_position[Z_AXIS], 
+           current_position[E_AXIS], min(max_feedrate[X_AXIS],max_feedrate[Y_AXIS]), active_extruder);
+-      plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS],
++      plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], 
+           current_position[E_AXIS], max_feedrate[Z_AXIS], active_extruder);
+       active_extruder_parked = false;
+     }
+@@ -3287,8 +3298,8 @@ void manage_inactivity()
+      enable_e0();
+      float oldepos=current_position[E_AXIS];
+      float oldedes=destination[E_AXIS];
+-     plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS],
+-                      current_position[E_AXIS]+EXTRUDER_RUNOUT_EXTRUDE*EXTRUDER_RUNOUT_ESTEPS/axis_steps_per_unit[E_AXIS],
++     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], 
++                      destination[E_AXIS]+EXTRUDER_RUNOUT_EXTRUDE*EXTRUDER_RUNOUT_ESTEPS/axis_steps_per_unit[E_AXIS], 
+                       EXTRUDER_RUNOUT_SPEED/60.*EXTRUDER_RUNOUT_ESTEPS/axis_steps_per_unit[E_AXIS], active_extruder);
+      current_position[E_AXIS]=oldepos;
+      destination[E_AXIS]=oldedes;
+@@ -3305,7 +3316,7 @@ void manage_inactivity()
+       // travel moves have been received so enact them
+       delayed_move_time = 0xFFFFFFFFUL; // force moves to be done
+       memcpy(destination,current_position,sizeof(destination));
+-      prepare_move();
++      prepare_move(); 
+     }
+   #endif
+   #ifdef TEMP_STAT_LEDS
+diff --git a/Marlin/createTemperatureLookupMarlin.py b/Marlin/createTemperatureLookupMarlin.py
+old mode 100644
+new mode 100755
+index e09294e..77187b8
+--- a/Marlin/createTemperatureLookupMarlin.py
++++ b/Marlin/createTemperatureLookupMarlin.py
+@@ -54,9 +54,25 @@ class Thermistor:
+         self.c2 = c2
+         self.c3 = c3
+ 
++    def res(self,adc):
++        "Convert ADC reading into a resolution"
++        res = self.temp(adc)-self.temp(adc+1)
++        return res
++
++    def v(self,adc):
++        "Convert ADC reading into a Voltage"
++        v = adc * self.vadc / (1024 )   # convert the 10 bit ADC value to a voltage
++        return v
++
++    def r(self,adc):
++        "Convert ADC reading into a resistance in Ohms"
++        v = adc * self.vadc / (1024 )   # convert the 10 bit ADC value to a voltage
++        r = self.rp * v / (self.vcc - v)    # resistance of thermistor
++        return r
++
+     def temp(self,adc):
+         "Convert ADC reading into a temperature in Celcius"
+-        v = adc * self.vadc / (1024 * 16)   # convert the 10 bit ADC value to a voltage
++        v = adc * self.vadc / (1024 )   # convert the 10 bit ADC value to a voltage
+         r = self.rp * v / (self.vcc - v)    # resistance of thermistor
+         lnr = log(r)
+         Tinv = self.c1 + (self.c2*lnr) + (self.c3*pow(lnr,3))
+@@ -67,7 +83,7 @@ class Thermistor:
+         y = (self.c1 - (1/(temp+273.15))) / (2*self.c3)
+ 	x = sqrt(pow(self.c2 / (3*self.c3),3) + pow(y,2))
+         r = exp(pow(x-y,1.0/3) - pow(x+y,1.0/3)) # resistance of thermistor
+-        return (r / (self.rp + r)) * (1024*16)
++        return (r / (self.rp + r)) * (1024)
+ 
+ def main(argv):
+ 
+@@ -107,7 +123,7 @@ def main(argv):
+         elif opt == "--num-temps":
+             num_temps =  int(arg)
+ 
+-    max_adc = (1024 * 16) - 1
++    max_adc = (1024 ) - 1
+     min_temp = 0
+     max_temp = 350
+     increment = int(max_adc/(num_temps-1));
+@@ -118,17 +134,18 @@ def main(argv):
+     temps = range(max_temp, min_temp + tmp, tmp);
+ 
+     print "// Thermistor lookup table for Marlin"
+-    print "// ./createTemperatureLookup.py --rp=%s --t1=%s:%s --t2=%s:%s --t3=%s:%s --num-temps=%s" % (rp, t1, r1, t2, r2, t3, r3, num_temps)
+-    print "#define NUMTEMPS %s" % (len(temps))
+-    print "short temptable[NUMTEMPS][2] = {"
++    print "// ./createTemperatureLookupMarlin.py --rp=%s --t1=%s:%s --t2=%s:%s --t3=%s:%s --num-temps=%s" % (rp, t1, r1, t2, r2, t3, r3, num_temps)
++    print "// Steinhart-Hart Coefficients: %.15g, %.15g,  %.15g " % (t.c1, t.c2, t.c3)
++    print "//#define NUMTEMPS %s" % (len(temps))
++    print "const short temptable[NUMTEMPS][2] PROGMEM = {"
+ 
+     counter = 0
+     for temp in temps:
+         counter = counter +1
+         if counter == len(temps):
+-            print "   {%s, %s}" % (int(t.adc(temp)), temp)
++            print "   {(short)(%.2f*OVERSAMPLENR), %s}  // v=%s r=%s res=%s C/count" % ((t.adc(temp)), temp, t.v(t.adc(temp)), t.r(t.adc(temp)),t.res(t.adc(temp)))
+         else:
+-            print "   {%s, %s}," % (int(t.adc(temp)), temp)
++            print "   {(short)(%.2f*OVERSAMPLENR), %s}, // v=%s r=%s res=%s C/count" % ((t.adc(temp)), temp, t.v(t.adc(temp)), t.r(t.adc(temp)),t.res(t.adc(temp)))
+     print "};"
+     
+ def usage():
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index f26a9f8..a969d56 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -2035,6 +2035,10 @@ pins
+ /*
+ pins
+ */
++
++//#define AT90USBxx_TEENSYPP_ASSIGNMENTS // Use Teensy++ 2.0 assignments 
++#ifndef AT90USBxx_TEENSYPP_ASSIGNMENTS // Use traditional Marlin pin assignments
++
+ #define DIO0_PIN        PINA0
+ #define DIO0_RPORT      PINA
+ #define DIO0_WPORT      PORTA
+@@ -2667,7 +2671,653 @@ pins
+ #define PF7_WPORT		PORTF
+ #define PF7_PWM			NULL
+ #define PF7_DDR			DDRF
+-#endif
++
++#else // AT90USBxx_TEENSYPP_ASSIGNMENTS -- Use Teensyduino Teensy++2.0 assignments.
++
++/*
++
++AT90USB  51 50 49 48 47 46 45 44 10 11 12 13 14 15 16 17 35 36 37 38 39 40 41 42 25 26 27 28 29 30 31 32 33 34 43 09 18 19 01 02 61 60 59 58 57 56 55 54 
++Port     A0 A1 A2 A3 A4 A5 A6 A7 B0 B1 B2 B3 B4 B5 B6 B7 C0 C1 C2 C3 C4 C5 C6 C7 D0 D1 D2 D3 D4 D5 D6 D7 E0 E1 E2 E3 E4 E5 E6 E7 F0 F1 F2 F3 F4 F5 F6 F7 
++Marlin   00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
++Teensy   28 29 30 31 32 33 34 35 20 21 22 23 24 25 26 27 10 11 12 13 14 15 16 17 00 01 02 03 04 05 06 07 08 09(46*47)36 37 18 19 38 39 40 41 42 43 44 45
++         The pins 46 and 47 are not supported by Teensyduino, but are supported below.
++*/
++
++#define DIO0_PIN PIND0
++#define DIO0_RPORT PIND
++#define DIO0_WPORT PORTD
++#define DIO0_PWM NULL
++#define DIO0_DDR DDRD
++
++#define DIO1_PIN PIND1
++#define DIO1_RPORT PIND
++#define DIO1_WPORT PORTD
++#define DIO1_PWM NULL
++#define DIO1_DDR DDRD
++
++#define DIO2_PIN PIND2
++#define DIO2_RPORT PIND
++#define DIO2_WPORT PORTD
++#define DIO2_PWM NULL
++#define DIO2_DDR DDRD
++
++#define DIO3_PIN PIND3
++#define DIO3_RPORT PIND
++#define DIO3_WPORT PORTD
++#define DIO3_PWM NULL
++#define DIO3_DDR DDRD
++
++#define DIO4_PIN PIND4
++#define DIO4_RPORT PIND
++#define DIO4_WPORT PORTD
++#define DIO4_PWM NULL
++#define DIO4_DDR DDRD
++
++#define DIO5_PIN PIND5
++#define DIO5_RPORT PIND
++#define DIO5_WPORT PORTD
++#define DIO5_PWM NULL
++#define DIO5_DDR DDRD
++
++#define DIO6_PIN PIND6
++#define DIO6_RPORT PIND
++#define DIO6_WPORT PORTD
++#define DIO6_PWM NULL
++#define DIO6_DDR DDRD
++
++#define DIO7_PIN PIND7
++#define DIO7_RPORT PIND
++#define DIO7_WPORT PORTD
++#define DIO7_PWM NULL
++#define DIO7_DDR DDRD
++
++#define DIO8_PIN PINE0
++#define DIO8_RPORT PINE
++#define DIO8_WPORT PORTE
++#define DIO8_PWM NULL
++#define DIO8_DDR DDRE
++
++#define DIO9_PIN PINE1
++#define DIO9_RPORT PINE
++#define DIO9_WPORT PORTE
++#define DIO9_PWM NULL
++#define DIO9_DDR DDRE
++
++#define DIO10_PIN PINC0
++#define DIO10_RPORT PINC
++#define DIO10_WPORT PORTC
++#define DIO10_PWM NULL
++#define DIO10_DDR DDRC
++
++#define DIO11_PIN PINC1
++#define DIO11_RPORT PINC
++#define DIO11_WPORT PORTC
++#define DIO11_PWM NULL
++#define DIO11_DDR DDRC
++
++#define DIO12_PIN PINC2
++#define DIO12_RPORT PINC
++#define DIO12_WPORT PORTC
++#define DIO12_PWM NULL
++#define DIO12_DDR DDRC
++
++#define DIO13_PIN PINC3
++#define DIO13_RPORT PINC
++#define DIO13_WPORT PORTC
++#define DIO13_PWM NULL
++#define DIO13_DDR DDRC
++
++#define DIO14_PIN PINC4
++#define DIO14_RPORT PINC
++#define DIO14_WPORT PORTC
++#define DIO14_PWM NULL
++#define DIO14_DDR DDRC
++
++#define DIO15_PIN PINC5
++#define DIO15_RPORT PINC
++#define DIO15_WPORT PORTC
++#define DIO15_PWM NULL
++#define DIO15_DDR DDRC
++
++#define DIO16_PIN PINC6
++#define DIO16_RPORT PINC
++#define DIO16_WPORT PORTC
++#define DIO16_PWM NULL
++#define DIO16_DDR DDRC
++
++#define DIO17_PIN PINC7
++#define DIO17_RPORT PINC
++#define DIO17_WPORT PORTC
++#define DIO17_PWM NULL
++#define DIO17_DDR DDRC
++
++#define DIO18_PIN PINE6
++#define DIO18_RPORT PINE
++#define DIO18_WPORT PORTE
++#define DIO18_PWM NULL
++#define DIO18_DDR DDRE
++
++#define DIO19_PIN PINE7
++#define DIO19_RPORT PINE
++#define DIO19_WPORT PORTE
++#define DIO19_PWM NULL
++#define DIO19_DDR DDRE
++
++#define DIO20_PIN PINB0
++#define DIO20_RPORT PINB
++#define DIO20_WPORT PORTB
++#define DIO20_PWM NULL
++#define DIO20_DDR DDRB
++
++#define DIO21_PIN PINB1
++#define DIO21_RPORT PINB
++#define DIO21_WPORT PORTB
++#define DIO21_PWM NULL
++#define DIO21_DDR DDRB
++
++#define DIO22_PIN PINB2
++#define DIO22_RPORT PINB
++#define DIO22_WPORT PORTB
++#define DIO22_PWM NULL
++#define DIO22_DDR DDRB
++
++#define DIO23_PIN PINB3
++#define DIO23_RPORT PINB
++#define DIO23_WPORT PORTB
++#define DIO23_PWM NULL
++#define DIO23_DDR DDRB
++
++#define DIO24_PIN PINB4
++#define DIO24_RPORT PINB
++#define DIO24_WPORT PORTB
++#define DIO24_PWM NULL
++#define DIO24_DDR DDRB
++
++#define DIO25_PIN PINB5
++#define DIO25_RPORT PINB
++#define DIO25_WPORT PORTB
++#define DIO25_PWM NULL
++#define DIO25_DDR DDRB
++
++#define DIO26_PIN PINB6
++#define DIO26_RPORT PINB
++#define DIO26_WPORT PORTB
++#define DIO26_PWM NULL
++#define DIO26_DDR DDRB
++
++#define DIO27_PIN PINB7
++#define DIO27_RPORT PINB
++#define DIO27_WPORT PORTB
++#define DIO27_PWM NULL
++#define DIO27_DDR DDRB
++
++#define DIO28_PIN PINA0
++#define DIO28_RPORT PINA
++#define DIO28_WPORT PORTA
++#define DIO28_PWM NULL
++#define DIO28_DDR DDRA
++
++#define DIO29_PIN PINA1
++#define DIO29_RPORT PINA
++#define DIO29_WPORT PORTA
++#define DIO29_PWM NULL
++#define DIO29_DDR DDRA
++
++#define DIO30_PIN PINA2
++#define DIO30_RPORT PINA
++#define DIO30_WPORT PORTA
++#define DIO30_PWM NULL
++#define DIO30_DDR DDRA
++
++#define DIO31_PIN PINA3
++#define DIO31_RPORT PINA
++#define DIO31_WPORT PORTA
++#define DIO31_PWM NULL
++#define DIO31_DDR DDRA
++
++#define DIO32_PIN PINA4
++#define DIO32_RPORT PINA
++#define DIO32_WPORT PORTA
++#define DIO32_PWM NULL
++#define DIO32_DDR DDRA
++
++#define DIO33_PIN PINA5
++#define DIO33_RPORT PINA
++#define DIO33_WPORT PORTA
++#define DIO33_PWM NULL
++#define DIO33_DDR DDRA
++
++#define DIO34_PIN PINA6
++#define DIO34_RPORT PINA
++#define DIO34_WPORT PORTA
++#define DIO34_PWM NULL
++#define DIO34_DDR DDRA
++
++#define DIO35_PIN PINA7
++#define DIO35_RPORT PINA
++#define DIO35_WPORT PORTA
++#define DIO35_PWM NULL
++#define DIO35_DDR DDRA
++
++#define DIO36_PIN PINE4
++#define DIO36_RPORT PINE
++#define DIO36_WPORT PORTE
++#define DIO36_PWM NULL
++#define DIO36_DDR DDRE
++
++#define DIO37_PIN PINE5
++#define DIO37_RPORT PINE
++#define DIO37_WPORT PORTE
++#define DIO37_PWM NULL
++#define DIO37_DDR DDRE
++
++#define DIO38_PIN PINF0
++#define DIO38_RPORT PINF
++#define DIO38_WPORT PORTF
++#define DIO38_PWM NULL
++#define DIO38_DDR DDRF
++
++#define DIO39_PIN PINF1
++#define DIO39_RPORT PINF
++#define DIO39_WPORT PORTF
++#define DIO39_PWM NULL
++#define DIO39_DDR DDRF
++
++#define DIO40_PIN PINF2
++#define DIO40_RPORT PINF
++#define DIO40_WPORT PORTF
++#define DIO40_PWM NULL
++#define DIO40_DDR DDRF
++
++#define DIO41_PIN PINF3
++#define DIO41_RPORT PINF
++#define DIO41_WPORT PORTF
++#define DIO41_PWM NULL
++#define DIO41_DDR DDRF
++
++#define DIO42_PIN PINF4
++#define DIO42_RPORT PINF
++#define DIO42_WPORT PORTF
++#define DIO42_PWM NULL
++#define DIO42_DDR DDRF
++
++#define DIO43_PIN PINF5
++#define DIO43_RPORT PINF
++#define DIO43_WPORT PORTF
++#define DIO43_PWM NULL
++#define DIO43_DDR DDRF
++
++#define DIO44_PIN PINF6
++#define DIO44_RPORT PINF
++#define DIO44_WPORT PORTF
++#define DIO44_PWM NULL
++#define DIO44_DDR DDRF
++
++#define DIO45_PIN PINF7
++#define DIO45_RPORT PINF
++#define DIO45_WPORT PORTF
++#define DIO45_PWM NULL
++#define DIO45_DDR DDRF
++
++#define AIO0_PIN PINF0
++#define AIO0_RPORT PINF
++#define AIO0_WPORT PORTF
++#define AIO0_PWM NULL
++#define AIO0_DDR DDRF
++
++#define AIO1_PIN PINF1
++#define AIO1_RPORT PINF
++#define AIO1_WPORT PORTF
++#define AIO1_PWM NULL
++#define AIO1_DDR DDRF
++
++#define AIO2_PIN PINF2
++#define AIO2_RPORT PINF
++#define AIO2_WPORT PORTF
++#define AIO2_PWM NULL
++#define AIO2_DDR DDRF
++
++#define AIO3_PIN PINF3
++#define AIO3_RPORT PINF
++#define AIO3_WPORT PORTF
++#define AIO3_PWM NULL
++#define AIO3_DDR DDRF
++
++#define AIO4_PIN PINF4
++#define AIO4_RPORT PINF
++#define AIO4_WPORT PORTF
++#define AIO4_PWM NULL
++#define AIO4_DDR DDRF
++
++#define AIO5_PIN PINF5
++#define AIO5_RPORT PINF
++#define AIO5_WPORT PORTF
++#define AIO5_PWM NULL
++#define AIO5_DDR DDRF
++
++#define AIO6_PIN PINF6
++#define AIO6_RPORT PINF
++#define AIO6_WPORT PORTF
++#define AIO6_PWM NULL
++#define AIO6_DDR DDRF
++
++#define AIO7_PIN PINF7
++#define AIO7_RPORT PINF
++#define AIO7_WPORT PORTF
++#define AIO7_PWM NULL
++#define AIO7_DDR DDRF
++
++//-- Begin not supported by Teensyduino
++//-- don't use Arduino functions on these pins pinMode/digitalWrite/etc
++#define DIO46_PIN PINE2
++#define DIO46_RPORT PINE
++#define DIO46_WPORT PORTE
++#define DIO46_PWM NULL
++#define DIO46_DDR DDRE
++
++#define DIO47_PIN PINE3
++#define DIO47_RPORT PINE
++#define DIO47_WPORT PORTE
++#define DIO47_PWM NULL
++#define DIO47_DDR DDRE
++//-- end not supported by Teensyduino
++
++#undef PA0
++#define PA0_PIN PINA0
++#define PA0_RPORT PINA
++#define PA0_WPORT PORTA
++#define PA0_PWM NULL
++#define PA0_DDR DDRA
++#undef PA1
++#define PA1_PIN PINA1
++#define PA1_RPORT PINA
++#define PA1_WPORT PORTA
++#define PA1_PWM NULL
++#define PA1_DDR DDRA
++#undef PA2
++#define PA2_PIN PINA2
++#define PA2_RPORT PINA
++#define PA2_WPORT PORTA
++#define PA2_PWM NULL
++#define PA2_DDR DDRA
++#undef PA3
++#define PA3_PIN PINA3
++#define PA3_RPORT PINA
++#define PA3_WPORT PORTA
++#define PA3_PWM NULL
++#define PA3_DDR DDRA
++#undef PA4
++#define PA4_PIN PINA4
++#define PA4_RPORT PINA
++#define PA4_WPORT PORTA
++#define PA4_PWM NULL
++#define PA4_DDR DDRA
++#undef PA5
++#define PA5_PIN PINA5
++#define PA5_RPORT PINA
++#define PA5_WPORT PORTA
++#define PA5_PWM NULL
++#define PA5_DDR DDRA
++#undef PA6
++#define PA6_PIN PINA6
++#define PA6_RPORT PINA
++#define PA6_WPORT PORTA
++#define PA6_PWM NULL
++#define PA6_DDR DDRA
++#undef PA7
++#define PA7_PIN PINA7
++#define PA7_RPORT PINA
++#define PA7_WPORT PORTA
++#define PA7_PWM NULL
++#define PA7_DDR DDRA
++
++#undef PB0
++#define PB0_PIN PINB0
++#define PB0_RPORT PINB
++#define PB0_WPORT PORTB
++#define PB0_PWM NULL
++#define PB0_DDR DDRB
++#undef PB1
++#define PB1_PIN PINB1
++#define PB1_RPORT PINB
++#define PB1_WPORT PORTB
++#define PB1_PWM NULL
++#define PB1_DDR DDRB
++#undef PB2
++#define PB2_PIN PINB2
++#define PB2_RPORT PINB
++#define PB2_WPORT PORTB
++#define PB2_PWM NULL
++#define PB2_DDR DDRB
++#undef PB3
++#define PB3_PIN PINB3
++#define PB3_RPORT PINB
++#define PB3_WPORT PORTB
++#define PB3_PWM NULL
++#define PB3_DDR DDRB
++#undef PB4
++#define PB4_PIN PINB4
++#define PB4_RPORT PINB
++#define PB4_WPORT PORTB
++#define PB4_PWM NULL
++#define PB4_DDR DDRB
++#undef PB5
++#define PB5_PIN PINB5
++#define PB5_RPORT PINB
++#define PB5_WPORT PORTB
++#define PB5_PWM NULL
++#define PB5_DDR DDRB
++#undef PB6
++#define PB6_PIN PINB6
++#define PB6_RPORT PINB
++#define PB6_WPORT PORTB
++#define PB6_PWM NULL
++#define PB6_DDR DDRB
++#undef PB7
++#define PB7_PIN PINB7
++#define PB7_RPORT PINB
++#define PB7_WPORT PORTB
++#define PB7_PWM NULL
++#define PB7_DDR DDRB
++
++#undef PC0
++#define PC0_PIN PINC0
++#define PC0_RPORT PINC
++#define PC0_WPORT PORTC
++#define PC0_PWM NULL
++#define PC0_DDR DDRC
++#undef PC1
++#define PC1_PIN PINC1
++#define PC1_RPORT PINC
++#define PC1_WPORT PORTC
++#define PC1_PWM NULL
++#define PC1_DDR DDRC
++#undef PC2
++#define PC2_PIN PINC2
++#define PC2_RPORT PINC
++#define PC2_WPORT PORTC
++#define PC2_PWM NULL
++#define PC2_DDR DDRC
++#undef PC3
++#define PC3_PIN PINC3
++#define PC3_RPORT PINC
++#define PC3_WPORT PORTC
++#define PC3_PWM NULL
++#define PC3_DDR DDRC
++#undef PC4
++#define PC4_PIN PINC4
++#define PC4_RPORT PINC
++#define PC4_WPORT PORTC
++#define PC4_PWM NULL
++#define PC4_DDR DDRC
++#undef PC5
++#define PC5_PIN PINC5
++#define PC5_RPORT PINC
++#define PC5_WPORT PORTC
++#define PC5_PWM NULL
++#define PC5_DDR DDRC
++#undef PC6
++#define PC6_PIN PINC6
++#define PC6_RPORT PINC
++#define PC6_WPORT PORTC
++#define PC6_PWM NULL
++#define PC6_DDR DDRC
++#undef PC7
++#define PC7_PIN PINC7
++#define PC7_RPORT PINC
++#define PC7_WPORT PORTC
++#define PC7_PWM NULL
++#define PC7_DDR DDRC
++
++#undef PD0
++#define PD0_PIN PIND0
++#define PD0_RPORT PIND
++#define PD0_WPORT PORTD
++#define PD0_PWM NULL
++#define PD0_DDR DDRD
++#undef PD1
++#define PD1_PIN PIND1
++#define PD1_RPORT PIND
++#define PD1_WPORT PORTD
++#define PD1_PWM NULL
++#define PD1_DDR DDRD
++#undef PD2
++#define PD2_PIN PIND2
++#define PD2_RPORT PIND
++#define PD2_WPORT PORTD
++#define PD2_PWM NULL
++#define PD2_DDR DDRD
++#undef PD3
++#define PD3_PIN PIND3
++#define PD3_RPORT PIND
++#define PD3_WPORT PORTD
++#define PD3_PWM NULL
++#define PD3_DDR DDRD
++#undef PD4
++#define PD4_PIN PIND4
++#define PD4_RPORT PIND
++#define PD4_WPORT PORTD
++#define PD4_PWM NULL
++#define PD4_DDR DDRD
++#undef PD5
++#define PD5_PIN PIND5
++#define PD5_RPORT PIND
++#define PD5_WPORT PORTD
++#define PD5_PWM NULL
++#define PD5_DDR DDRD
++#undef PD6
++#define PD6_PIN PIND6
++#define PD6_RPORT PIND
++#define PD6_WPORT PORTD
++#define PD6_PWM NULL
++#define PD6_DDR DDRD
++#undef PD7
++#define PD7_PIN PIND7
++#define PD7_RPORT PIND
++#define PD7_WPORT PORTD
++#define PD7_PWM NULL
++#define PD7_DDR DDRD
++
++#undef PE0
++#define PE0_PIN PINE0
++#define PE0_RPORT PINE
++#define PE0_WPORT PORTE
++#define PE0_PWM NULL
++#define PE0_DDR DDRE
++#undef PE1
++#define PE1_PIN PINE1
++#define PE1_RPORT PINE
++#define PE1_WPORT PORTE
++#define PE1_PWM NULL
++#define PE1_DDR DDRE
++#undef PE2
++#define PE2_PIN PINE2
++#define PE2_RPORT PINE
++#define PE2_WPORT PORTE
++#define PE2_PWM NULL
++#define PE2_DDR DDRE
++#undef PE3
++#define PE3_PIN PINE3
++#define PE3_RPORT PINE
++#define PE3_WPORT PORTE
++#define PE3_PWM NULL
++#define PE3_DDR DDRE
++#undef PE4
++#define PE4_PIN PINE4
++#define PE4_RPORT PINE
++#define PE4_WPORT PORTE
++#define PE4_PWM NULL
++#define PE4_DDR DDRE
++#undef PE5
++#define PE5_PIN PINE5
++#define PE5_RPORT PINE
++#define PE5_WPORT PORTE
++#define PE5_PWM NULL
++#define PE5_DDR DDRE
++#undef PE6
++#define PE6_PIN PINE6
++#define PE6_RPORT PINE
++#define PE6_WPORT PORTE
++#define PE6_PWM NULL
++#define PE6_DDR DDRE
++#undef PE7
++#define PE7_PIN PINE7
++#define PE7_RPORT PINE
++#define PE7_WPORT PORTE
++#define PE7_PWM NULL
++#define PE7_DDR DDRE
++
++#undef PF0
++#define PF0_PIN PINF0
++#define PF0_RPORT PINF
++#define PF0_WPORT PORTF
++#define PF0_PWM NULL
++#define PF0_DDR DDRF
++#undef PF1
++#define PF1_PIN PINF1
++#define PF1_RPORT PINF
++#define PF1_WPORT PORTF
++#define PF1_PWM NULL
++#define PF1_DDR DDRF
++#undef PF2
++#define PF2_PIN PINF2
++#define PF2_RPORT PINF
++#define PF2_WPORT PORTF
++#define PF2_PWM NULL
++#define PF2_DDR DDRF
++#undef PF3
++#define PF3_PIN PINF3
++#define PF3_RPORT PINF
++#define PF3_WPORT PORTF
++#define PF3_PWM NULL
++#define PF3_DDR DDRF
++#undef PF4
++#define PF4_PIN PINF4
++#define PF4_RPORT PINF
++#define PF4_WPORT PORTF
++#define PF4_PWM NULL
++#define PF4_DDR DDRF
++#undef PF5
++#define PF5_PIN PINF5
++#define PF5_RPORT PINF
++#define PF5_WPORT PORTF
++#define PF5_PWM NULL
++#define PF5_DDR DDRF
++#undef PF6
++#define PF6_PIN PINF6
++#define PF6_RPORT PINF
++#define PF6_WPORT PORTF
++#define PF6_PWM NULL
++#define PF6_DDR DDRF
++#undef PF7
++#define PF7_PIN PINF7
++#define PF7_RPORT PINF
++#define PF7_WPORT PORTF
++#define PF7_PWM NULL
++#define PF7_DDR DDRF
++
++#endif // AT90USBxx_TEENSYPP_ASSIGNMENTS Teensyduino assignments
++#endif // __AVR_AT90usbxxx__
+ 
+ 
+ #if defined (__AVR_ATmega1281__) || defined (__AVR_ATmega2561__)
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 48cd411..52b1b16 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -23,7 +23,7 @@
+ 
+ #define PROTOCOL_VERSION "1.0"
+ 
+-#if MOTHERBOARD == 7 || MOTHERBOARD == 71
++#if MOTHERBOARD == 7 || MOTHERBOARD == 71 || MOTHERBOARD == 72
+ 	#define MACHINE_NAME "Ultimaker"
+ 	#define FIRMWARE_URL "http://firmware.ultimaker.com"
+ #elif MOTHERBOARD == 80
+@@ -138,7 +138,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
+-
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ // Serial Console Messages
+ 
+ 	#define MSG_Enqueing "enqueing \""
+@@ -305,6 +305,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+@@ -471,6 +472,7 @@
+ 	#define MSG_CNG_SDCARD "Changer de carte SD"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+@@ -640,6 +642,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 	
+ // Serial Console Messages
+ 
+@@ -813,6 +816,7 @@
+ 	#define MSG_STEPPER_RELEASED "Desacoplada."
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+@@ -976,6 +980,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+@@ -1139,6 +1144,7 @@
+ 	#define MSG_CNG_SDCARD           "Cambia SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ 	// Serial Console Messages
+ 
+@@ -1311,6 +1317,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "Sonda fora da mesa"
+     #define MSG_POSITION_UNKNOWN "Home X/Y antes de Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+@@ -1479,6 +1486,7 @@
+ 	#define MSG_CNG_SDCARD "Change SD-Card"
+     #define MSG_ZPROBE_OUT "ZProbe Outside Bed"
+     #define MSG_POSITION_UNKNOWN "Home X/Y before Z"
++    #define MSG_ZPROBE_ZOFFSET "Z Offset"
+ 
+ // Serial Console Messages
+ 
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index b7cbac4..d896bca 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -1295,6 +1295,90 @@
+ 
+ #endif
+ 
++#if MOTHERBOARD == 72
++#define KNOWN_BOARD
++/*****************************************************************
++* Ultiboard v2.0 pin assignment
++******************************************************************/
++
++#ifndef __AVR_ATmega2560__
++ #error Oops!  Make sure you have 'Arduino Mega 2560' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define X_STEP_PIN 25
++#define X_DIR_PIN 23
++#define X_STOP_PIN 22
++#define X_ENABLE_PIN 27
++
++#define Y_STEP_PIN 32
++#define Y_DIR_PIN 33
++#define Y_STOP_PIN 26
++#define Y_ENABLE_PIN 31
++
++#define Z_STEP_PIN 35
++#define Z_DIR_PIN 36
++#define Z_STOP_PIN 29
++#define Z_ENABLE_PIN 34
++
++#define HEATER_BED_PIN 4
++#define TEMP_BED_PIN 10
++
++#define HEATER_0_PIN  2
++#define TEMP_0_PIN 8
++
++#define HEATER_1_PIN 3
++#define TEMP_1_PIN 9
++
++#define HEATER_2_PIN -1
++#define TEMP_2_PIN -1
++
++#define E0_STEP_PIN         42
++#define E0_DIR_PIN          43
++#define E0_ENABLE_PIN       37
++
++#define E1_STEP_PIN         49
++#define E1_DIR_PIN          47
++#define E1_ENABLE_PIN       48
++
++#define SDPOWER            -1
++#define SDSS               53
++#define LED_PIN            8
++#define FAN_PIN            7
++#define PS_ON_PIN          12
++#define KILL_PIN           -1
++#define SUICIDE_PIN        -1  //PIN that has to be turned on right after start, to keep power flowing.
++#define SAFETY_TRIGGERED_PIN     28 //PIN to detect the safety circuit has triggered
++#define MAIN_VOLTAGE_MEASURE_PIN 14 //Analogue PIN to measure the main voltage, with a 100k - 4k7 resitor divider.
++
++#define MOTOR_CURRENT_PWM_XY_PIN 44
++#define MOTOR_CURRENT_PWM_Z_PIN 45
++#define MOTOR_CURRENT_PWM_E_PIN 46
++//Motor current PWM conversion, PWM value = MotorCurrentSetting * 255 / range
++#define MOTOR_CURRENT_PWM_RANGE 2000
++#define DEFAULT_PWM_MOTOR_CURRENT  {1300, 1300, 1250}
++
++//arduino pin witch triggers an piezzo beeper
++#define BEEPER 18
++
++#define LCD_PINS_RS 20
++#define LCD_PINS_ENABLE 15
++#define LCD_PINS_D4 14
++#define LCD_PINS_D5 21
++#define LCD_PINS_D6 5
++#define LCD_PINS_D7 6
++
++//buttons are directly attached
++#define BTN_EN1 40
++#define BTN_EN2 41
++#define BTN_ENC 19  //the click
++
++#define BLEN_C 2
++#define BLEN_B 1
++#define BLEN_A 0
++
++#define SDCARDDETECT 39
++
++#endif//MOTHERBOARD == 72
+ 
+ /****************************************************************************************
+ * RUMBA pin assignment
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index f45ef7d..eaba436 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -72,6 +72,9 @@ static volatile bool endstop_z_hit=false;
+ #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ bool abort_on_endstop_hit = false;
+ #endif
++#ifdef MOTOR_CURRENT_PWM_XY_PIN
++  int motor_current_setting[3] = DEFAULT_PWM_MOTOR_CURRENT;
++#endif
+ 
+ static bool old_x_min_endstop=false;
+ static bool old_x_max_endstop=false;
+@@ -1198,6 +1201,16 @@ void digipot_init() //Initialize Digipot Motor Current
+       //digitalPotWrite(digipot_ch[i], digipot_motor_current[i]);
+       digipot_current(i,digipot_motor_current[i]);
+   #endif
++  #ifdef MOTOR_CURRENT_PWM_XY_PIN
++    pinMode(MOTOR_CURRENT_PWM_XY_PIN, OUTPUT);
++    pinMode(MOTOR_CURRENT_PWM_Z_PIN, OUTPUT);
++    pinMode(MOTOR_CURRENT_PWM_E_PIN, OUTPUT);
++    digipot_current(0, motor_current_setting[0]);
++    digipot_current(1, motor_current_setting[1]);
++    digipot_current(2, motor_current_setting[2]);
++    //Set timer5 to 31khz so the PWM of the motor power is as constant as possible. (removes a buzzing noise)
++    TCCR5B = (TCCR5B & ~(_BV(CS50) | _BV(CS51) | _BV(CS52))) | _BV(CS50);
++  #endif
+ }
+ 
+ void digipot_current(uint8_t driver, int current)
+@@ -1206,6 +1219,11 @@ void digipot_current(uint8_t driver, int current)
+     const uint8_t digipot_ch[] = DIGIPOT_CHANNELS;
+     digitalPotWrite(digipot_ch[driver], current);
+   #endif
++  #ifdef MOTOR_CURRENT_PWM_XY_PIN
++  if (driver == 0) analogWrite(MOTOR_CURRENT_PWM_XY_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
++  if (driver == 1) analogWrite(MOTOR_CURRENT_PWM_Z_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
++  if (driver == 2) analogWrite(MOTOR_CURRENT_PWM_E_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
++  #endif
+ }
+ 
+ void microstep_init()
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 74c3684..66a097d 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1039,7 +1039,7 @@ ISR(TIMER0_COMPB_vect)
+   static unsigned long raw_temp_1_value = 0;
+   static unsigned long raw_temp_2_value = 0;
+   static unsigned long raw_temp_bed_value = 0;
+-  static unsigned char temp_state = 0;
++  static unsigned char temp_state = 8;
+   static unsigned char pwm_count = (1 << SOFT_PWM_SCALE);
+   static unsigned char soft_pwm_0;
+   #if (EXTRUDERS > 1) || defined(HEATERS_PARALLEL)
+@@ -1181,6 +1181,9 @@ ISR(TIMER0_COMPB_vect)
+       temp_state = 0;
+       temp_count++;
+       break;
++    case 8: //Startup, delay initial temp reading a tiny bit so the hardware can settle.
++      temp_state = 0;
++      break;
+ //    default:
+ //      SERIAL_ERROR_START;
+ //      SERIAL_ERRORLNPGM("Temp measurement error!");
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index ecac95f..58a2466 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -563,6 +563,78 @@ const short temptable_10[][2] PROGMEM = {
+    {1016*OVERSAMPLENR, 0}
+ };
+ #endif
++
++#if (THERMISTORHEATER_0 == 20) || (THERMISTORHEATER_1 == 20) || (THERMISTORHEATER_2 == 20) || (THERMISTORBED == 20) // PT100 with INA826 amp on Ultimaker v2.0 electronics
++/* The PT100 in the Ultimaker v2.0 electronics has a high sample value for a high temperature.
++This does not match the normal thermistor behaviour so we need to set the following defines */
++#if (THERMISTORHEATER_0 == 20)
++# define HEATER_0_RAW_HI_TEMP 16383
++# define HEATER_0_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORHEATER_1 == 20)
++# define HEATER_1_RAW_HI_TEMP 16383
++# define HEATER_1_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORHEATER_2 == 20)
++# define HEATER_2_RAW_HI_TEMP 16383
++# define HEATER_2_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORBED == 20)
++# define HEATER_BED_RAW_HI_TEMP 16383
++# define HEATER_BED_RAW_LO_TEMP 0
++#endif
++const short temptable_20[][2] PROGMEM = {
++{         0*OVERSAMPLENR ,       0     },
++{       227*OVERSAMPLENR ,       1     },
++{       236*OVERSAMPLENR ,       10     },
++{       245*OVERSAMPLENR ,       20     },
++{       253*OVERSAMPLENR ,       30     },
++{       262*OVERSAMPLENR ,       40     },
++{       270*OVERSAMPLENR ,       50     },
++{       279*OVERSAMPLENR ,       60     },
++{       287*OVERSAMPLENR ,       70     },
++{       295*OVERSAMPLENR ,       80     },
++{       304*OVERSAMPLENR ,       90     },
++{       312*OVERSAMPLENR ,       100     },
++{       320*OVERSAMPLENR ,       110     },
++{       329*OVERSAMPLENR ,       120     },
++{       337*OVERSAMPLENR ,       130     },
++{       345*OVERSAMPLENR ,       140     },
++{       353*OVERSAMPLENR ,       150     },
++{       361*OVERSAMPLENR ,       160     },
++{       369*OVERSAMPLENR ,       170     },
++{       377*OVERSAMPLENR ,       180     },
++{       385*OVERSAMPLENR ,       190     },
++{       393*OVERSAMPLENR ,       200     },
++{       401*OVERSAMPLENR ,       210     },
++{       409*OVERSAMPLENR ,       220     },
++{       417*OVERSAMPLENR ,       230     },
++{       424*OVERSAMPLENR ,       240     },
++{       432*OVERSAMPLENR ,       250     },
++{       440*OVERSAMPLENR ,       260     },
++{       447*OVERSAMPLENR ,       270     },
++{       455*OVERSAMPLENR ,       280     },
++{       463*OVERSAMPLENR ,       290     },
++{       470*OVERSAMPLENR ,       300     },
++{       478*OVERSAMPLENR ,       310     },
++{       485*OVERSAMPLENR ,       320     },
++{       493*OVERSAMPLENR ,       330     },
++{       500*OVERSAMPLENR ,       340     },
++{       507*OVERSAMPLENR ,       350     },
++{       515*OVERSAMPLENR ,       360     },
++{       522*OVERSAMPLENR ,       370     },
++{       529*OVERSAMPLENR ,       380     },
++{       537*OVERSAMPLENR ,       390     },
++{       544*OVERSAMPLENR ,       400     },
++{       614*OVERSAMPLENR ,       500     },
++{       681*OVERSAMPLENR ,       600     },
++{       744*OVERSAMPLENR ,       700     },
++{       805*OVERSAMPLENR ,       800     },
++{       862*OVERSAMPLENR ,       900     },
++{       917*OVERSAMPLENR ,       1000     },
++{       968*OVERSAMPLENR ,       1100     }
++};
++#endif
+ 
+ #if (THERMISTORHEATER_0 == 51) || (THERMISTORHEATER_1 == 51) || (THERMISTORHEATER_2 == 51) || (THERMISTORBED == 51)
+ // 100k EPCOS (WITH 1kohm RESISTOR FOR PULLUP, R9 ON SANGUINOLOLU! NOT FOR 4.7kohm PULLUP! THIS IS NOT NORMAL!)
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index fe8cab0..84a3ebf 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -19,6 +19,7 @@ int absPreheatHotendTemp;
+ int absPreheatHPBTemp;
+ int absPreheatFanSpeed;
+ 
++
+ #ifdef ULTIPANEL
+ static float manual_feedrate[] = MANUAL_FEEDRATE;
+ #endif // ULTIPANEL
+@@ -705,6 +706,7 @@ static void lcd_control_motion_menu()
+ {
+     START_MENU();
+     MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
++    MENU_ITEM_EDIT(float32, MSG_ZPROBE_ZOFFSET, &zprobe_zoffset, 0.5, 50);
+     MENU_ITEM_EDIT(float5, MSG_ACC, &acceleration, 500, 99000);
+     MENU_ITEM_EDIT(float3, MSG_VXY_JERK, &max_xy_jerk, 1, 990);
+     MENU_ITEM_EDIT(float52, MSG_VZ_JERK, &max_z_jerk, 0.1, 990);
+@@ -987,7 +989,6 @@ void lcd_init()
+ #ifdef NEWPANEL
+     pinMode(BTN_EN1,INPUT);
+     pinMode(BTN_EN2,INPUT);
+-    pinMode(SDCARDDETECT,INPUT);
+     WRITE(BTN_EN1,HIGH);
+     WRITE(BTN_EN2,HIGH);
+   #if BTN_ENC > 0
+@@ -1001,11 +1002,11 @@ void lcd_init()
+     WRITE(SHIFT_OUT,HIGH);
+     WRITE(SHIFT_LD,HIGH);
+   #endif
+-#else
+-  #ifdef SR_LCD_2W_NL
++#else  // Not NEWPANEL
++  #ifdef SR_LCD_2W_NL // Non latching 2 wire shiftregister
+      pinMode (SR_DATA_PIN, OUTPUT);
+      pinMode (SR_CLK_PIN, OUTPUT);
+-  #else
++  #elif defined(SHIFT_CLK) 
+      pinMode(SHIFT_CLK,OUTPUT);
+      pinMode(SHIFT_LD,OUTPUT);
+      pinMode(SHIFT_EN,OUTPUT);
+@@ -1013,16 +1014,21 @@ void lcd_init()
+      WRITE(SHIFT_OUT,HIGH);
+      WRITE(SHIFT_LD,HIGH);
+      WRITE(SHIFT_EN,LOW);
+-   #endif // SR_LCD_2W_NL
++  #else
++     #ifdef ULTIPANEL
++     #error ULTIPANEL requires an encoder
++     #endif
++  #endif // SR_LCD_2W_NL
+ #endif//!NEWPANEL
+ 
+-#if (SDCARDDETECT > 0)
++#if defined (SDSUPPORT) && defined(SDCARDDETECT) && (SDCARDDETECT > 0)
++    pinMode(SDCARDDETECT,INPUT);
+     WRITE(SDCARDDETECT, HIGH);
+     lcd_oldcardstatus = IS_SD_INSERTED;
+ #endif//(SDCARDDETECT > 0)
+-    #ifdef LCD_HAS_SLOW_BUTTONS
++#ifdef LCD_HAS_SLOW_BUTTONS
+     slow_buttons = 0;
+-    #endif
++#endif
+     lcd_buttons_update();
+ #ifdef ULTIPANEL
+     encoderDiff = 0;
+diff --git a/README.md b/README.md
+index 5e42b43..e85be7c 100644
+--- a/README.md
++++ b/README.md
+@@ -19,6 +19,7 @@ Lampmaker, Bradley Feldman, and others...
+ 
+ 
+ Features:
++=========
+ 
+ *   Interrupt based movement with real linear acceleration
+ *   High steprate
+@@ -56,7 +57,8 @@ The default baudrate is 250000. This baudrate has less jitter and hence errors t
+ Differences and additions to the already good Sprinter firmware:
+ ================================================================
+ 
+-*Look-ahead:*
++Look-ahead:
++-----------
+ 
+ Marlin has look-ahead. While sprinter has to break and re-accelerate at each corner,
+ lookahead will only decelerate and accelerate to a velocity,
+@@ -64,18 +66,21 @@ so that the change in vectorial velocity magnitude is less than the xy_jerk_velo
+ This is only possible, if some future moves are already processed, hence the name.
+ It leads to less over-deposition at corners, especially at flat angles.
+ 
+-*Arc support:*
++Arc support:
++------------
+ 
+ Slic3r can find curves that, although broken into segments, were ment to describe an arc.
+ Marlin is able to print those arcs. The advantage is the firmware can choose the resolution,
+ and can perform the arc with nearly constant velocity, resulting in a nice finish.
+ Also, less serial communication is needed.
+ 
+-*Temperature Oversampling:*
++Temperature Oversampling:
++-------------------------
+ 
+ To reduce noise and make the PID-differential term more useful, 16 ADC conversion results are averaged.
+ 
+-*AutoTemp:*
++AutoTemp:
++---------
+ 
+ If your gcode contains a wide spread of extruder velocities, or you realtime change the building speed, the temperature should be changed accordingly.
+ Usually, higher speed requires higher temperature.
+@@ -88,36 +93,42 @@ The wanted temperature then will be set to t=tempmin+factor*maxerate, while bein
+ If the target temperature is set manually or by gcode to a value less then tempmin, it will be kept without change.
+ Ideally, your gcode can be completely free of temperature controls, apart from a M109 S T F in the start.gcode, and a M109 S0 in the end.gcode.
+ 
+-*EEPROM:*
++EEPROM:
++-------
+ 
+ If you know your PID values, the acceleration and max-velocities of your unique machine, you can set them, and finally store them in the EEPROM.
+ After each reboot, it will magically load them from EEPROM, independent what your Configuration.h says.
+ 
+-*LCD Menu:*
++LCD Menu:
++---------
+ 
+ If your hardware supports it, you can build yourself a LCD-CardReader+Click+encoder combination. It will enable you to realtime tune temperatures,
+ accelerations, velocities, flow rates, select and print files from the SD card, preheat, disable the steppers, and do other fancy stuff.
+ One working hardware is documented here: http://www.thingiverse.com/thing:12663
+ Also, with just a 20x4 or 16x2 display, useful data is shown.
+ 
+-*SD card folders:*
++SD card folders:
++----------------
+ 
+ If you have an SD card reader attached to your controller, also folders work now. Listing the files in pronterface will show "/path/subpath/file.g".
+ You can write to file in a subfolder by specifying a similar text using small letters in the path.
+ Also, backup copies of various operating systems are hidden, as well as files not ending with ".g".
+ 
+-*SD card folders:*
++SD card folders:
++----------------
+ 
+ If you place a file auto[0-9].g into the root of the sd card, it will be automatically executed if you boot the printer. The same file will be executed by selecting "Autostart" from the menu.
+ First *0 will be performed, than *1 and so on. That way, you can heat up or even print automatically without user interaction.
+ 
+-*Endstop trigger reporting:*
++Endstop trigger reporting:
++--------------------------
+ 
+ If an endstop is hit while moving towards the endstop, the location at which the firmware thinks that the endstop was triggered is outputed on the serial port.
+ This is useful, because the user gets a warning message.
+ However, also tools like QTMarlin can use this for finding acceptable combinations of velocity+acceleration.
+ 
+-*Coding paradigm:*
++Coding paradigm:
++----------------
+ 
+ Not relevant from a user side, but Marlin was split into thematic junks, and has tried to partially enforced private variables.
+ This is intended to make it clearer, what interacts which what, and leads to a higher level of modularization.
+@@ -127,7 +138,8 @@ In the serial communication, a #define based level of abstraction was enforced,
+ some transfer is information (usually beginning with "echo:"), an error "error:", or just normal protocol,
+ necessary for backwards compatibility.
+ 
+-*Interrupt based temperature measurements:*
++Interrupt based temperature measurements:
++-----------------------------------------
+ 
+ An interrupt is used to manage ADC conversions, and enforce checking for critical temperatures.
+ This leads to less blocking in the heater management routine.
+@@ -276,7 +288,9 @@ The first define tells firmware how many servos you have.
+ The second tells what axis this servo will be attached to. In the example above, we have a servo in Z axis.
+ The third one tells the angle in 2 situations: Probing (165º) and resting (60º). Check this with command M280 P0 S{angle} (example: M280 P0 S60 moves the servo to 60º)
+ 
+-*For RAMPS users:*
++For RAMPS users:
++----------------
++
+ By default, RAMPS have no power on servo bus (if you happen to have a multimeter, check the voltage on servo power pins).
+ In order to get the servo working, you need to supply 5V to 5V pin.. You can do it using your power supply (if it has a 5V output) or jumping the "Vcc" from Arduino to the 5V RAMPS rail.
+ These 2 pins are located just between the Reset Button and the yellow fuses... There are marks in the board showing 5V and VCC.. just connect them..
+

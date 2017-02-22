@@ -1,0 +1,167 @@
+commit 5ff10991c0b57ed8c59f46e8373c9fe0738fc1d3 (from b95902053220af06dfd886b2ba9565845e882773)
+Merge: b959020 6398d49
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 3 17:09:23 2016 -0700
+
+    Merge pull request #3671 from thinkyhead/rc_ultimate_stepper_planner_patch
+    
+    Ultimate followup to Stepper/Planner patch
+
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 9f8a4a3..4fe8dee 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -21,24 +21,12 @@
+  */
+ 
+ /**
+- * planner.cpp - Buffer movement commands and manage the acceleration profile plan
+- * Part of Grbl
++ * planner.cpp
+  *
+- * Copyright (c) 2009-2011 Simen Svale Skogsrud
+- *
+- * Grbl is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * Grbl is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
++ * Buffer movement commands and manage the acceleration profile plan
+  *
++ * Derived from Grbl
++ * Copyright (c) 2009-2011 Simen Svale Skogsrud
+  *
+  * The ring buffer implementation gleaned from the wiring_serial library by David A. Mellis.
+  *
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index f4e126c..e1dc894 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -21,27 +21,13 @@
+  */
+ 
+ /**
+-  planner.h - buffers movement commands and manages the acceleration profile plan
+-  Part of Grbl
+-
+-  Copyright (c) 2009-2011 Simen Svale Skogsrud
+-
+-  Grbl is free software: you can redistribute it and/or modify
+-  it under the terms of the GNU General Public License as published by
+-  the Free Software Foundation, either version 3 of the License, or
+-  (at your option) any later version.
+-
+-  Grbl is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-  GNU General Public License for more details.
+-
+-  You should have received a copy of the GNU General Public License
+-  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+-*/
+-
+-// This module is to be considered a sub-module of stepper.c. Please don't include
+-// this file from any other module.
++ * planner.h
++ *
++ * Buffer movement commands and manage the acceleration profile plan
++ *
++ * Derived from Grbl
++ * Copyright (c) 2009-2011 Simen Svale Skogsrud
++ */
+ 
+ #ifndef PLANNER_H
+ #define PLANNER_H
+@@ -268,6 +254,17 @@ class Planner {
+         return NULL;
+     }
+ 
++    #if ENABLED(AUTOTEMP)
++      float autotemp_max = 250;
++      float autotemp_min = 210;
++      float autotemp_factor = 0.1;
++      bool autotemp_enabled = false;
++      void getHighESpeed();
++      void autotemp_M109();
++    #endif
++
++  private:
++
+     /**
+      * Get the index of the next / previous block in the ring buffer
+      */
+@@ -305,18 +302,6 @@ class Planner {
+       return sqrt(target_velocity * target_velocity - 2 * acceleration * distance);
+     }
+ 
+-
+-    #if ENABLED(AUTOTEMP)
+-      float autotemp_max = 250;
+-      float autotemp_min = 210;
+-      float autotemp_factor = 0.1;
+-      bool autotemp_enabled = false;
+-      void getHighESpeed();
+-      void autotemp_M109();
+-    #endif
+-
+-  private:
+-
+     void calculate_trapezoid_for_block(block_t* block, float entry_factor, float exit_factor);
+ 
+     void reverse_pass_kernel(block_t* previous, block_t* current, block_t* next);
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index e282801..bcd33d9 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -979,9 +979,3 @@ void Stepper::microstep_readings() {
+     SERIAL_PROTOCOLLN(digitalRead(E1_MS2_PIN));
+   #endif
+ }
+-
+-#if ENABLED(Z_DUAL_ENDSTOPS)
+-  void Stepper::set_homing_flag(bool state) { performing_homing = state; }
+-  void Stepper::set_z_lock(bool state) { locked_z_motor = state; }
+-  void Stepper::set_z2_lock(bool state) { locked_z2_motor = state; }
+-#endif
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 99604c9..d1747ee 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -224,9 +224,9 @@ class Stepper {
+     void microstep_readings();
+ 
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+-      void set_homing_flag(bool state);
+-      void set_z_lock(bool state);
+-      void set_z2_lock(bool state);
++      FORCE_INLINE void set_homing_flag(bool state) { performing_homing = state; }
++      FORCE_INLINE void set_z_lock(bool state) { locked_z_motor = state; }
++      FORCE_INLINE void set_z2_lock(bool state) { locked_z2_motor = state; }
+     #endif
+ 
+     #if ENABLED(BABYSTEPPING)
+@@ -249,6 +249,8 @@ class Stepper {
+       return endstops_trigsteps[axis] / planner.axis_steps_per_unit[axis];
+     }
+ 
++  private:
++
+     FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+       unsigned short timer;
+ 
+@@ -324,7 +326,6 @@ class Stepper {
+       // SERIAL_ECHOLN(current_block->final_advance/256.0);
+     }
+ 
+-  private:
+     void digipot_init();
+     void microstep_init();
+ 
+

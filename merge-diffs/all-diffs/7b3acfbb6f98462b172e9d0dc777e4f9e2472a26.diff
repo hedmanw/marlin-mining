@@ -1,0 +1,854 @@
+commit 7b3acfbb6f98462b172e9d0dc777e4f9e2472a26 (from 56126786a65d2b211c23d277f85512296a033f10)
+Merge: 5612678 68ce419
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 14 00:27:22 2015 -0700
+
+    Merge pull request #2072 from thinkyhead/better_arc_code
+    
+    Consolidate arc code, remove motion_control.*
+
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index e23c2a1..34ad134 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -266,8 +266,8 @@ VPATH += $(ARDUINO_INSTALL_DIR)/hardware/teensy/cores/teensy
+ endif
+ CXXSRC = WMath.cpp WString.cpp Print.cpp Marlin_main.cpp	\
+ 	MarlinSerial.cpp Sd2Card.cpp SdBaseFile.cpp SdFatUtil.cpp	\
+-	SdFile.cpp SdVolume.cpp motion_control.cpp planner.cpp		\
+-	stepper.cpp temperature.cpp cardreader.cpp configuration_store.cpp \
++	SdFile.cpp SdVolume.cpp planner.cpp stepper.cpp \
++	temperature.cpp cardreader.cpp configuration_store.cpp \
+ 	watchdog.cpp SPI.cpp servo.cpp Tone.cpp ultralcd.cpp digipot_mcp4451.cpp \
+ 	vector_3.cpp qr_solve.cpp
+ ifeq ($(LIQUID_TWI2), 0)
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index c62ba91..af36245 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -207,7 +207,6 @@ void disable_all_steppers();
+ void FlushSerialRequestResend();
+ void ok_to_send();
+ 
+-void get_coordinates();
+ #ifdef DELTA
+   void calculate_delta(float cartesian[3]);
+   #ifdef ENABLE_AUTO_BED_LEVELING
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ecdad99..803ea07 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -47,7 +47,6 @@
+ #include "planner.h"
+ #include "stepper.h"
+ #include "temperature.h"
+-#include "motion_control.h"
+ #include "cardreader.h"
+ #include "watchdog.h"
+ #include "configuration_store.h"
+@@ -226,7 +225,7 @@ bool Running = true;
+ 
+ uint8_t marlin_debug_flags = DEBUG_INFO|DEBUG_ERRORS;
+ 
+-static float feedrate = 1500.0, next_feedrate, saved_feedrate;
++static float feedrate = 1500.0, saved_feedrate;
+ float current_position[NUM_AXIS] = { 0.0 };
+ static float destination[NUM_AXIS] = { 0.0 };
+ bool axis_known_position[3] = { false };
+@@ -258,7 +257,6 @@ const char errormagic[] PROGMEM = "Error:";
+ const char echomagic[] PROGMEM = "echo:";
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ 
+-static float offset[3] = { 0 };
+ static bool relative_mode = false;  //Determines Absolute or Relative Coordinates
+ static char serial_char;
+ static int serial_count = 0;
+@@ -401,7 +399,6 @@ bool target_direction;
+ //================================ Functions ================================
+ //===========================================================================
+ 
+-void get_arc_coordinates();
+ bool setTargetedHotend(int code);
+ 
+ void serial_echopair_P(const char *s_P, float v)         { serialprintPGM(s_P); SERIAL_ECHO(v); }
+@@ -1771,11 +1768,31 @@ static void homeaxis(AxisEnum axis) {
+  */
+ 
+ /**
++ * Set XYZE destination and feedrate from the current GCode command
++ *
++ *  - Set destination from included axis codes
++ *  - Set to current for missing axis codes
++ *  - Set the feedrate, if included
++ */
++void gcode_get_destination() {
++  for (int i = 0; i < NUM_AXIS; i++) {
++    if (code_seen(axis_codes[i]))
++      destination[i] = code_value() + (axis_relative_modes[i] || relative_mode ? current_position[i] : 0);
++    else
++      destination[i] = current_position[i];
++  }
++  if (code_seen('F')) {
++    float next_feedrate = code_value();
++    if (next_feedrate > 0.0) feedrate = next_feedrate;
++  }
++}
++
++/**
+  * G0, G1: Coordinated movement of X Y Z E axes
+  */
+ inline void gcode_G0_G1() {
+   if (IsRunning()) {
+-    get_coordinates(); // For X Y Z E F
++    gcode_get_destination(); // For X Y Z E F
+ 
+     #ifdef FWRETRACT
+ 
+@@ -1798,13 +1815,157 @@ inline void gcode_G0_G1() {
+ }
+ 
+ /**
++ * Plan an arc in 2 dimensions
++ *
++ * The arc is approximated by generating many small linear segments.
++ * The length of each segment is configured in MM_PER_ARC_SEGMENT (Default 1mm)
++ * Arcs should only be made relatively large (over 5mm), as larger arcs with
++ * larger segments will tend to be more efficient. Your slicer should have
++ * options for G2/G3 arc generation. In future these options may be GCode tunable.
++ */
++void plan_arc(
++  float *target,    // Destination position
++  float *offset,    // Center of rotation relative to current_position
++  uint8_t clockwise // Clockwise?
++) {
++
++  float radius = hypot(offset[X_AXIS], offset[Y_AXIS]),
++        center_axis0 = current_position[X_AXIS] + offset[X_AXIS],
++        center_axis1 = current_position[Y_AXIS] + offset[Y_AXIS],
++        linear_travel = target[Z_AXIS] - current_position[Z_AXIS],
++        extruder_travel = target[E_AXIS] - current_position[E_AXIS],
++        r_axis0 = -offset[X_AXIS],  // Radius vector from center to current location
++        r_axis1 = -offset[Y_AXIS],
++        rt_axis0 = target[X_AXIS] - center_axis0,
++        rt_axis1 = target[Y_AXIS] - center_axis1;
++  
++  // CCW angle of rotation between position and target from the circle center. Only one atan2() trig computation required.
++  float angular_travel = atan2(r_axis0*rt_axis1-r_axis1*rt_axis0, r_axis0*rt_axis0+r_axis1*rt_axis1);
++  if (angular_travel < 0) { angular_travel += RADIANS(360); }
++  if (clockwise) { angular_travel -= RADIANS(360); }
++  
++  // Make a circle if the angular rotation is 0
++  if (current_position[X_AXIS] == target[X_AXIS] && current_position[Y_AXIS] == target[Y_AXIS] && angular_travel == 0)
++    angular_travel += RADIANS(360);
++  
++  float mm_of_travel = hypot(angular_travel*radius, fabs(linear_travel));
++  if (mm_of_travel < 0.001) { return; }
++  uint16_t segments = floor(mm_of_travel / MM_PER_ARC_SEGMENT);
++  if (segments == 0) segments = 1;
++  
++  float theta_per_segment = angular_travel/segments;
++  float linear_per_segment = linear_travel/segments;
++  float extruder_per_segment = extruder_travel/segments;
++  
++  /* Vector rotation by transformation matrix: r is the original vector, r_T is the rotated vector,
++     and phi is the angle of rotation. Based on the solution approach by Jens Geisler.
++         r_T = [cos(phi) -sin(phi);
++                sin(phi)  cos(phi] * r ;
++     
++     For arc generation, the center of the circle is the axis of rotation and the radius vector is 
++     defined from the circle center to the initial position. Each line segment is formed by successive
++     vector rotations. This requires only two cos() and sin() computations to form the rotation
++     matrix for the duration of the entire arc. Error may accumulate from numerical round-off, since
++     all double numbers are single precision on the Arduino. (True double precision will not have
++     round off issues for CNC applications.) Single precision error can accumulate to be greater than
++     tool precision in some cases. Therefore, arc path correction is implemented. 
++
++     Small angle approximation may be used to reduce computation overhead further. This approximation
++     holds for everything, but very small circles and large MM_PER_ARC_SEGMENT values. In other words,
++     theta_per_segment would need to be greater than 0.1 rad and N_ARC_CORRECTION would need to be large
++     to cause an appreciable drift error. N_ARC_CORRECTION~=25 is more than small enough to correct for 
++     numerical drift error. N_ARC_CORRECTION may be on the order a hundred(s) before error becomes an
++     issue for CNC machines with the single precision Arduino calculations.
++     
++     This approximation also allows plan_arc to immediately insert a line segment into the planner 
++     without the initial overhead of computing cos() or sin(). By the time the arc needs to be applied
++     a correction, the planner should have caught up to the lag caused by the initial plan_arc overhead. 
++     This is important when there are successive arc motions. 
++  */
++  // Vector rotation matrix values
++  float cos_T = 1-0.5*theta_per_segment*theta_per_segment; // Small angle approximation
++  float sin_T = theta_per_segment;
++  
++  float arc_target[4];
++  float sin_Ti;
++  float cos_Ti;
++  float r_axisi;
++  uint16_t i;
++  int8_t count = 0;
++
++  // Initialize the linear axis
++  arc_target[Z_AXIS] = current_position[Z_AXIS];
++  
++  // Initialize the extruder axis
++  arc_target[E_AXIS] = current_position[E_AXIS];
++
++  float feed_rate = feedrate*feedrate_multiplier/60/100.0;
++
++  for (i = 1; i < segments; i++) { // Increment (segments-1)
++
++    if (count < N_ARC_CORRECTION) {
++      // Apply vector rotation matrix to previous r_axis0 / 1
++      r_axisi = r_axis0*sin_T + r_axis1*cos_T;
++      r_axis0 = r_axis0*cos_T - r_axis1*sin_T;
++      r_axis1 = r_axisi;
++      count++;
++    }
++    else {
++      // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments.
++      // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
++      cos_Ti = cos(i*theta_per_segment);
++      sin_Ti = sin(i*theta_per_segment);
++      r_axis0 = -offset[X_AXIS]*cos_Ti + offset[Y_AXIS]*sin_Ti;
++      r_axis1 = -offset[X_AXIS]*sin_Ti - offset[Y_AXIS]*cos_Ti;
++      count = 0;
++    }
++
++    // Update arc_target location
++    arc_target[X_AXIS] = center_axis0 + r_axis0;
++    arc_target[Y_AXIS] = center_axis1 + r_axis1;
++    arc_target[Z_AXIS] += linear_per_segment;
++    arc_target[E_AXIS] += extruder_per_segment;
++
++    clamp_to_software_endstops(arc_target);
++    plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate, active_extruder);
++  }
++  // Ensure last segment arrives at target location.
++  plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], feed_rate, active_extruder);
++
++  // As far as the parser is concerned, the position is now == target. In reality the
++  // motion control system might still be processing the action and the real tool position
++  // in any intermediate location.
++  set_current_to_destination();
++}
++
++/**
+  * G2: Clockwise Arc
+  * G3: Counterclockwise Arc
+  */
+ inline void gcode_G2_G3(bool clockwise) {
+   if (IsRunning()) {
+-    get_arc_coordinates();
+-    prepare_arc_move(clockwise);
++
++    #ifdef SF_ARC_FIX
++      bool relative_mode_backup = relative_mode;
++      relative_mode = true;
++    #endif
++
++    gcode_get_destination();
++
++    #ifdef SF_ARC_FIX
++      relative_mode = relative_mode_backup;
++    #endif
++
++    // Center of arc as offset from current_position
++    float arc_offset[2] = {
++      code_seen('I') ? code_value() : 0,
++      code_seen('J') ? code_value() : 0
++    };
++
++    // Send an arc to the planner
++    plan_arc(destination, arc_offset, clockwise);
++
++    refresh_cmd_timeout();
+   }
+ }
+ 
+@@ -4308,7 +4469,7 @@ inline void gcode_M303() {
+     //SoftEndsEnabled = false;              // Ignore soft endstops during calibration
+     //SERIAL_ECHOLN(" Soft endstops disabled ");
+     if (IsRunning()) {
+-      //get_coordinates(); // For X Y Z E F
++      //gcode_get_destination(); // For X Y Z E F
+       delta[X_AXIS] = delta_x;
+       delta[Y_AXIS] = delta_y;
+       calculate_SCARA_forward_Transform(delta);
+@@ -4932,7 +5093,7 @@ inline void gcode_T() {
+         make_move = true;
+       #endif
+ 
+-      next_feedrate = code_value();
++      float next_feedrate = code_value();
+       if (next_feedrate > 0.0) feedrate = next_feedrate;
+     }
+     #if EXTRUDERS > 1
+@@ -5562,33 +5723,6 @@ void ok_to_send() {
+   SERIAL_EOL;  
+ }
+ 
+-void get_coordinates() {
+-  for (int i = 0; i < NUM_AXIS; i++) {
+-    if (code_seen(axis_codes[i]))
+-      destination[i] = code_value() + (axis_relative_modes[i] || relative_mode ? current_position[i] : 0);
+-    else
+-      destination[i] = current_position[i];
+-  }
+-  if (code_seen('F')) {
+-    next_feedrate = code_value();
+-    if (next_feedrate > 0.0) feedrate = next_feedrate;
+-  }
+-}
+-
+-void get_arc_coordinates() {
+-  #ifdef SF_ARC_FIX
+-    bool relative_mode_backup = relative_mode;
+-    relative_mode = true;
+-  #endif
+-    get_coordinates();
+-  #ifdef SF_ARC_FIX
+-    relative_mode = relative_mode_backup;
+-  #endif
+-
+-  offset[0] = code_seen('I') ? code_value() : 0;
+-  offset[1] = code_seen('J') ? code_value() : 0;
+-}
+-
+ void clamp_to_software_endstops(float target[3]) {
+   if (min_software_endstops) {
+     NOLESS(target[X_AXIS], min_pos[X_AXIS]);
+@@ -5912,19 +6046,6 @@ void prepare_move() {
+   set_current_to_destination();
+ }
+ 
+-void prepare_arc_move(char isclockwise) {
+-  float r = hypot(offset[X_AXIS], offset[Y_AXIS]); // Compute arc radius for mc_arc
+-
+-  // Trace the arc
+-  mc_arc(current_position, destination, offset, X_AXIS, Y_AXIS, Z_AXIS, feedrate*feedrate_multiplier/60/100.0, r, isclockwise, active_extruder);
+-
+-  // As far as the parser is concerned, the position is now == target. In reality the
+-  // motion control system might still be processing the action and the real tool position
+-  // in any intermediate location.
+-  set_current_to_destination();
+-  refresh_cmd_timeout();
+-}
+-
+ #if HAS_CONTROLLERFAN
+ 
+   void controllerFan() {
+diff --git a/Marlin/motion_control.cpp b/Marlin/motion_control.cpp
+deleted file mode 100644
+index b26cbaf..0000000
+--- a/Marlin/motion_control.cpp
++++ /dev/null
+@@ -1,145 +0,0 @@
+-/*
+-  motion_control.c - high level interface for issuing motion commands
+-  Part of Grbl
+-
+-  Copyright (c) 2009-2011 Simen Svale Skogsrud
+-  Copyright (c) 2011 Sungeun K. Jeon
+-  
+-  Grbl is free software: you can redistribute it and/or modify
+-  it under the terms of the GNU General Public License as published by
+-  the Free Software Foundation, either version 3 of the License, or
+-  (at your option) any later version.
+-
+-  Grbl is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-  GNU General Public License for more details.
+-
+-  You should have received a copy of the GNU General Public License
+-  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+-*/
+-
+-#include "Marlin.h"
+-#include "stepper.h"
+-#include "planner.h"
+-
+-// The arc is approximated by generating a huge number of tiny, linear segments. The length of each 
+-// segment is configured in settings.mm_per_arc_segment.  
+-void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8_t axis_1, 
+-  uint8_t axis_linear, float feed_rate, float radius, uint8_t isclockwise, uint8_t extruder)
+-{      
+-  //   int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
+-  //   plan_set_acceleration_manager_enabled(false); // disable acceleration management for the duration of the arc
+-  float center_axis0 = position[axis_0] + offset[axis_0];
+-  float center_axis1 = position[axis_1] + offset[axis_1];
+-  float linear_travel = target[axis_linear] - position[axis_linear];
+-  float extruder_travel = target[E_AXIS] - position[E_AXIS];
+-  float r_axis0 = -offset[axis_0];  // Radius vector from center to current location
+-  float r_axis1 = -offset[axis_1];
+-  float rt_axis0 = target[axis_0] - center_axis0;
+-  float rt_axis1 = target[axis_1] - center_axis1;
+-  
+-  // CCW angle between position and target from circle center. Only one atan2() trig computation required.
+-  float angular_travel = atan2(r_axis0*rt_axis1-r_axis1*rt_axis0, r_axis0*rt_axis0+r_axis1*rt_axis1);
+-  if (angular_travel < 0) { angular_travel += 2*M_PI; }
+-  if (isclockwise) { angular_travel -= 2*M_PI; }
+-  
+-  //20141002:full circle for G03 did not work, e.g. G03 X80 Y80 I20 J0 F2000 is giving an Angle of zero so head is not moving
+-  //to compensate when start pos = target pos && angle is zero -> angle = 2Pi
+-  if (position[axis_0] == target[axis_0] && position[axis_1] == target[axis_1] && angular_travel == 0)
+-  {
+-	  angular_travel += 2*M_PI;
+-  }
+-  //end fix G03
+-  
+-  float millimeters_of_travel = hypot(angular_travel*radius, fabs(linear_travel));
+-  if (millimeters_of_travel < 0.001) { return; }
+-  uint16_t segments = floor(millimeters_of_travel/MM_PER_ARC_SEGMENT);
+-  if(segments == 0) segments = 1;
+-  
+-  /*  
+-    // Multiply inverse feed_rate to compensate for the fact that this movement is approximated
+-    // by a number of discrete segments. The inverse feed_rate should be correct for the sum of 
+-    // all segments.
+-    if (invert_feed_rate) { feed_rate *= segments; }
+-  */
+-  float theta_per_segment = angular_travel/segments;
+-  float linear_per_segment = linear_travel/segments;
+-  float extruder_per_segment = extruder_travel/segments;
+-  
+-  /* Vector rotation by transformation matrix: r is the original vector, r_T is the rotated vector,
+-     and phi is the angle of rotation. Based on the solution approach by Jens Geisler.
+-         r_T = [cos(phi) -sin(phi);
+-                sin(phi)  cos(phi] * r ;
+-     
+-     For arc generation, the center of the circle is the axis of rotation and the radius vector is 
+-     defined from the circle center to the initial position. Each line segment is formed by successive
+-     vector rotations. This requires only two cos() and sin() computations to form the rotation
+-     matrix for the duration of the entire arc. Error may accumulate from numerical round-off, since
+-     all double numbers are single precision on the Arduino. (True double precision will not have
+-     round off issues for CNC applications.) Single precision error can accumulate to be greater than
+-     tool precision in some cases. Therefore, arc path correction is implemented. 
+-
+-     Small angle approximation may be used to reduce computation overhead further. This approximation
+-     holds for everything, but very small circles and large mm_per_arc_segment values. In other words,
+-     theta_per_segment would need to be greater than 0.1 rad and N_ARC_CORRECTION would need to be large
+-     to cause an appreciable drift error. N_ARC_CORRECTION~=25 is more than small enough to correct for 
+-     numerical drift error. N_ARC_CORRECTION may be on the order a hundred(s) before error becomes an
+-     issue for CNC machines with the single precision Arduino calculations.
+-     
+-     This approximation also allows mc_arc to immediately insert a line segment into the planner 
+-     without the initial overhead of computing cos() or sin(). By the time the arc needs to be applied
+-     a correction, the planner should have caught up to the lag caused by the initial mc_arc overhead. 
+-     This is important when there are successive arc motions. 
+-  */
+-  // Vector rotation matrix values
+-  float cos_T = 1-0.5*theta_per_segment*theta_per_segment; // Small angle approximation
+-  float sin_T = theta_per_segment;
+-  
+-  float arc_target[4];
+-  float sin_Ti;
+-  float cos_Ti;
+-  float r_axisi;
+-  uint16_t i;
+-  int8_t count = 0;
+-
+-  // Initialize the linear axis
+-  arc_target[axis_linear] = position[axis_linear];
+-  
+-  // Initialize the extruder axis
+-  arc_target[E_AXIS] = position[E_AXIS];
+-
+-  for (i = 1; i<segments; i++) { // Increment (segments-1)
+-    
+-    if (count < N_ARC_CORRECTION) {
+-      // Apply vector rotation matrix 
+-      r_axisi = r_axis0*sin_T + r_axis1*cos_T;
+-      r_axis0 = r_axis0*cos_T - r_axis1*sin_T;
+-      r_axis1 = r_axisi;
+-      count++;
+-    } else {
+-      // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments.
+-      // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
+-      cos_Ti = cos(i*theta_per_segment);
+-      sin_Ti = sin(i*theta_per_segment);
+-      r_axis0 = -offset[axis_0]*cos_Ti + offset[axis_1]*sin_Ti;
+-      r_axis1 = -offset[axis_0]*sin_Ti - offset[axis_1]*cos_Ti;
+-      count = 0;
+-    }
+-
+-    // Update arc_target location
+-    arc_target[axis_0] = center_axis0 + r_axis0;
+-    arc_target[axis_1] = center_axis1 + r_axis1;
+-    arc_target[axis_linear] += linear_per_segment;
+-    arc_target[E_AXIS] += extruder_per_segment;
+-
+-    clamp_to_software_endstops(arc_target);
+-    plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate, extruder);
+-    
+-  }
+-  // Ensure last segment arrives at target location.
+-  plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], feed_rate, extruder);
+-
+-  //   plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+-}
+-
+diff --git a/Marlin/motion_control.h b/Marlin/motion_control.h
+deleted file mode 100644
+index ca50f80..0000000
+--- a/Marlin/motion_control.h
++++ /dev/null
+@@ -1,32 +0,0 @@
+-/*
+-  motion_control.h - high level interface for issuing motion commands
+-  Part of Grbl
+-
+-  Copyright (c) 2009-2011 Simen Svale Skogsrud
+-  Copyright (c) 2011 Sungeun K. Jeon
+-  
+-  Grbl is free software: you can redistribute it and/or modify
+-  it under the terms of the GNU General Public License as published by
+-  the Free Software Foundation, either version 3 of the License, or
+-  (at your option) any later version.
+-
+-  Grbl is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-  GNU General Public License for more details.
+-
+-  You should have received a copy of the GNU General Public License
+-  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+-*/
+-
+-#ifndef motion_control_h
+-#define motion_control_h
+-
+-// Execute an arc in offset mode format. position == current xyz, target == target xyz, 
+-// offset == offset from current xyz, axis_XXX defines circle plane in tool space, axis_linear is
+-// the direction of helical travel, radius == circle radius, isclockwise boolean. Used
+-// for vector transformation direction.
+-void mc_arc(float *position, float *target, float *offset, unsigned char axis_0, unsigned char axis_1,
+-  unsigned char axis_linear, float feed_rate, float radius, unsigned char isclockwise, uint8_t extruder);
+-  
+-#endif
+
+commit 7b3acfbb6f98462b172e9d0dc777e4f9e2472a26 (from 68ce419147dc37f5ffaf523024510f6d6bc16ed4)
+Merge: 5612678 68ce419
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 14 00:27:22 2015 -0700
+
+    Merge pull request #2072 from thinkyhead/better_arc_code
+    
+    Consolidate arc code, remove motion_control.*
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 823fadc..f71699d 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -605,10 +605,9 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+ 
+ #ifdef EEPROM_SETTINGS
+   // To disable EEPROM Serial responses and decrease program space by ~1700 byte: comment this out:
+-  #define EEPROM_CHITCHAT // please keep turned on if you can.
++  #define EEPROM_CHITCHAT // Please keep turned on if you can.
+ #endif
+ 
+-
+ // @section temperature
+ 
+ // Preheat Constants
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index eed90c8..803ea07 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -6103,7 +6103,7 @@ void calculate_SCARA_forward_Transform(float f_scara[3])
+   
+     delta[X_AXIS] = x_cos + y_cos + SCARA_offset_x;  //theta
+     delta[Y_AXIS] = x_sin + y_sin + SCARA_offset_y;  //theta+phi
+-  
++
+     //SERIAL_ECHOPGM(" delta[X_AXIS]="); SERIAL_ECHO(delta[X_AXIS]);
+     //SERIAL_ECHOPGM(" delta[Y_AXIS]="); SERIAL_ECHOLN(delta[Y_AXIS]);
+ }  
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 639b4f2..4b60172 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -20,6 +20,7 @@ CardReader::CardReader() {
+ 
+   autostart_stilltocheck = true; //the SD start is delayed, because otherwise the serial cannot answer fast enough to make contact with the host software.
+   autostart_index = 0;
++
+   //power to SD reader
+   #if SDPOWER > -1
+     OUT_WRITE(SDPOWER, HIGH);
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index ff73050..9ccd1de 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -245,8 +245,8 @@ void PID_autotune(float temp, int extruder, int ncycles)
+         }
+       #endif
+ 
+-      if (heating == true && input > temp) {
+-        if (ms - t2 > 5000) {
++      if (heating && input > temp) {
++        if (ms > t2 + 5000) {
+           heating = false;
+           if (extruder < 0)
+             soft_pwm_bed = (bias - d) >> 1;
+@@ -257,8 +257,9 @@ void PID_autotune(float temp, int extruder, int ncycles)
+           max = temp;
+         }
+       }
+-      if (heating == false && input < temp) {
+-        if (ms - t1 > 5000) {
++
++      if (!heating && input < temp) {
++        if (ms > t1 + 5000) {
+           heating = true;
+           t2 = ms;
+           t_low = t2 - t1;
+@@ -787,7 +788,7 @@ static void updateTemperaturesFromRawValues() {
+   #ifdef HEATER_0_USES_MAX6675
+     current_temperature_raw[0] = read_max6675();
+   #endif
+-  for(uint8_t e = 0; e < EXTRUDERS; e++) {
++  for (uint8_t e = 0; e < EXTRUDERS; e++) {
+     current_temperature[e] = analog2temp(current_temperature_raw[e], e);
+   }
+   current_temperature_bed = analog2tempBed(current_temperature_bed_raw);
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 7f9a88e..3f87e8b 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -15,8 +15,8 @@
+ ////////////////////////////////////
+ // Setup button and encode mappings for each panel (into 'buttons' variable
+ //
+-// This is just to map common functions (across different panels) onto the same 
+-// macro name. The mapping is independent of whether the button is directly connected or 
++// This is just to map common functions (across different panels) onto the same
++// macro name. The mapping is independent of whether the button is directly connected or
+ // via a shift/i2c register.
+ 
+ #ifdef ULTIPANEL
+@@ -38,7 +38,7 @@
+ //
+ #if defined(LCD_I2C_VIKI)
+   #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
+-  
++
+   // button and encoder bit positions within 'buttons'
+   #define B_LE (BUTTON_LEFT<<B_I2C_BTN_OFFSET)    // The remaining normalized buttons are all read via I2C
+   #define B_UP (BUTTON_UP<<B_I2C_BTN_OFFSET)
+@@ -46,22 +46,22 @@
+   #define B_DW (BUTTON_DOWN<<B_I2C_BTN_OFFSET)
+   #define B_RI (BUTTON_RIGHT<<B_I2C_BTN_OFFSET)
+ 
+-  #if defined(BTN_ENC) && BTN_ENC > -1 
++  #if defined(BTN_ENC) && BTN_ENC > -1
+     // the pause/stop/restart button is connected to BTN_ENC when used
+-    #define B_ST (EN_C)                            // Map the pause/stop/resume button into its normalized functional name 
++    #define B_ST (EN_C)                            // Map the pause/stop/resume button into its normalized functional name
+     #define LCD_CLICKED (buttons&(B_MI|B_RI|B_ST)) // pause/stop button also acts as click until we implement proper pause/stop.
+   #else
+     #define LCD_CLICKED (buttons&(B_MI|B_RI))
+-  #endif  
++  #endif
+ 
+   // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
+   #define LCD_HAS_SLOW_BUTTONS
+ 
+ #elif defined(LCD_I2C_PANELOLU2)
+   // encoder click can be read through I2C if not directly connected
+-  #if BTN_ENC <= 0 
++  #if BTN_ENC <= 0
+     #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
+-  
++
+     #define B_MI (PANELOLU2_ENCODER_C<<B_I2C_BTN_OFFSET) // requires LiquidTWI2 library v1.2.3 or later
+ 
+     #define LCD_CLICKED (buttons&B_MI)
+@@ -69,7 +69,7 @@
+     // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
+     #define LCD_HAS_SLOW_BUTTONS
+   #else
+-    #define LCD_CLICKED (buttons&EN_C)  
++    #define LCD_CLICKED (buttons&EN_C)
+   #endif
+ 
+ #elif defined(REPRAPWORLD_KEYPAD)
+@@ -101,7 +101,7 @@
+ 
+ #elif defined(NEWPANEL)
+   #define LCD_CLICKED (buttons&EN_C)
+-  
++
+ #else // old style ULTIPANEL
+   //bits in the shift register that carry the buttons for:
+   // left up center down right red(stop)
+@@ -143,7 +143,7 @@
+   #include <LiquidCrystal_I2C.h>
+   #define LCD_CLASS LiquidCrystal_I2C
+   LCD_CLASS lcd(LCD_I2C_ADDRESS,LCD_I2C_PIN_EN,LCD_I2C_PIN_RW,LCD_I2C_PIN_RS,LCD_I2C_PIN_D4,LCD_I2C_PIN_D5,LCD_I2C_PIN_D6,LCD_I2C_PIN_D7);
+-  
++
+ #elif defined(LCD_I2C_TYPE_MCP23017)
+   //for the LED indicators (which maybe mapped to different things in lcd_implementation_update_indicators())
+   #define LED_A 0x04 //100
+@@ -156,28 +156,28 @@
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+   #if defined(DETECT_DEVICE)
+-     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++    LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
+   #else
+-     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++    LCD_CLASS lcd(LCD_I2C_ADDRESS);
+   #endif
+-  
++
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+   #if defined(DETECT_DEVICE)
+-     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++    LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
+   #else
+-     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++    LCD_CLASS lcd(LCD_I2C_ADDRESS);
+   #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+     #define LCD_CLASS LiquidCrystal_I2C
+     LCD_CLASS lcd(LCD_I2C_ADDRESS, LCD_WIDTH, LCD_HEIGHT);
+-    
++
+ // 2 wire Non-latching LCD SR from:
+-// https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection 
++// https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection
+ #elif defined(SR_LCD_2W_NL)
+   extern "C" void __cxa_pure_virtual() { while (1); }
+   #include <LCD.h>
+@@ -353,65 +353,56 @@ static void lcd_implementation_init(
+   #endif
+ ) {
+ 
+-#if defined(LCD_I2C_TYPE_PCF8575)
++  #if defined(LCD_I2C_TYPE_PCF8575)
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-  #ifdef LCD_I2C_PIN_BL
+-    lcd.setBacklightPin(LCD_I2C_PIN_BL,POSITIVE);
+-    lcd.setBacklight(HIGH);
+-  #endif
+-  
+-#elif defined(LCD_I2C_TYPE_MCP23017)
++    #ifdef LCD_I2C_PIN_BL
++      lcd.setBacklightPin(LCD_I2C_PIN_BL, POSITIVE);
++      lcd.setBacklight(HIGH);
++    #endif
++
++  #elif defined(LCD_I2C_TYPE_MCP23017)
+     lcd.setMCPType(LTI_TYPE_MCP23017);
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+     lcd.setBacklight(0); //set all the LEDs off to begin with
+-    
+-#elif defined(LCD_I2C_TYPE_MCP23008)
++
++  #elif defined(LCD_I2C_TYPE_MCP23008)
+     lcd.setMCPType(LTI_TYPE_MCP23008);
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+ 
+-#elif defined(LCD_I2C_TYPE_PCA8574)
+-      lcd.init();
+-      lcd.backlight();
+-    
+-#else
++  #elif defined(LCD_I2C_TYPE_PCA8574)
++    lcd.init();
++    lcd.backlight();
++
++  #else
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-#endif
++  #endif
+ 
+-    lcd_set_custom_characters(
+-        #ifdef LCD_PROGRESS_BAR
+-            progress_bar_set
+-        #endif
+-    );
++  lcd_set_custom_characters(
++    #ifdef LCD_PROGRESS_BAR
++      progress_bar_set
++    #endif
++  );
+ 
+-    lcd.clear();
+-}
+-static void lcd_implementation_clear()
+-{
+-    lcd.clear();
++  lcd.clear();
+ }
+ 
++static void lcd_implementation_clear() { lcd.clear(); }
++
+ /* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
+ char lcd_printPGM(const char* str) {
+-  char c;
+-  char n = 0;
+-  while((c = pgm_read_byte(str++))) {
+-      n += charset_mapper(c);
+-  }
++  char c, n = 0;
++  while ((c = pgm_read_byte(str++))) n += charset_mapper(c);
+   return n;
+ }
+ 
+ char lcd_print(char* str) {
+   char c, n = 0;;
+   unsigned char i = 0;
+-  while((c = str[i++])) {
+-      n += charset_mapper(c);
+-  }
++  while ((c = str[i++])) n += charset_mapper(c);
+   return n;
+ }
+ 
+-unsigned lcd_print(char c) {
+-    return charset_mapper(c);
+-}
++unsigned lcd_print(char c) { return charset_mapper(c); }
+ 
+ /*
+ Possible status screens:
+@@ -437,7 +428,7 @@ Possible status screens:
+ 
+ 20x4   |01234567890123456789|
+        |T000/000D B000/000D |
+-       |T000/000D     Z000.0|
++       |T000/000D   Z000.00 |
+        |F100%  SD100% T--:--|
+        |Status line.........|
+ */
+@@ -728,13 +719,13 @@ static void lcd_implementation_drawmenu_sddirectory(bool sel, uint8_t row, const
+ 
+   static void lcd_implementation_update_indicators() {
+     #if defined(LCD_I2C_PANELOLU2) || defined(LCD_I2C_VIKI)
+-      //set the LEDS - referred to as backlights by the LiquidTWI2 library 
++      // Set the LEDS - referred to as backlights by the LiquidTWI2 library
+       static uint8_t ledsprev = 0;
+       uint8_t leds = 0;
+       if (target_temperature_bed > 0) leds |= LED_A;
+       if (target_temperature[0] > 0) leds |= LED_B;
+       if (fanSpeed) leds |= LED_C;
+-      #if EXTRUDERS > 1  
++      #if EXTRUDERS > 1
+         if (target_temperature[1] > 0) leds |= LED_C;
+       #endif
+       if (leds != ledsprev) {
+@@ -766,4 +757,4 @@ static void lcd_implementation_drawmenu_sddirectory(bool sel, uint8_t row, const
+ 
+ #endif // LCD_HAS_SLOW_BUTTONS
+ 
+-#endif //__ULTRALCD_IMPLEMENTATION_HITACHI_HD44780_H
++#endif // ULTRALCD_IMPLEMENTATION_HITACHI_HD44780_H
+

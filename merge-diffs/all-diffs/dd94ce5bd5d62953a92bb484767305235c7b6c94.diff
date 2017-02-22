@@ -1,0 +1,1600 @@
+commit dd94ce5bd5d62953a92bb484767305235c7b6c94 (from d988708cebb3332d867f23babeecf9513f7a400f)
+Merge: d988708 a26d70e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Apr 18 21:22:50 2016 -0700
+
+    Merge pull request #3565 from thinkyhead/rc_look_at_3563
+    
+    Output error message for M303 if PIDTEMP is disabled
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0714072..7b232e5 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -5559,20 +5559,25 @@ inline void gcode_M226() {
+  *       U<bool> with a non-zero value will apply the result to current settings
+  */
+ inline void gcode_M303() {
+-  int e = code_seen('E') ? code_value_short() : 0;
+-  int c = code_seen('C') ? code_value_short() : 5;
+-  bool u = code_seen('U') && code_value_short() != 0;
++  #if ENABLED(PIDTEMP)
++    int e = code_seen('E') ? code_value_short() : 0;
++    int c = code_seen('C') ? code_value_short() : 5;
++    bool u = code_seen('U') && code_value_short() != 0;
+ 
+-  float temp = code_seen('S') ? code_value() : (e < 0 ? 70.0 : 150.0);
++    float temp = code_seen('S') ? code_value() : (e < 0 ? 70.0 : 150.0);
+ 
+-  if (e >= 0 && e < EXTRUDERS)
+-    target_extruder = e;
++    if (e >= 0 && e < EXTRUDERS)
++      target_extruder = e;
+ 
+-  KEEPALIVE_STATE(NOT_BUSY); // don't send "busy: processing" messages during autotune output
++    KEEPALIVE_STATE(NOT_BUSY); // don't send "busy: processing" messages during autotune output
+ 
+-  PID_autotune(temp, e, c, u);
++    PID_autotune(temp, e, c, u);
+ 
+-  KEEPALIVE_STATE(IN_HANDLER);
++    KEEPALIVE_STATE(IN_HANDLER);
++  #else
++    SERIAL_ERROR_START;
++    SERIAL_ERRORLNPGM(MSG_ERR_M303_DISABLED);
++  #endif
+ }
+ 
+ #if ENABLED(SCARA)
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 9085a6a..0bbae44 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -159,6 +159,7 @@
+ #define MSG_ERR_M421_REQUIRES_XYZ           "M421 requires XYZ parameters"
+ #define MSG_ERR_MESH_INDEX_OOB              "Mesh XY index is out of bounds"
+ #define MSG_ERR_M428_TOO_FAR                "Too far from reference point"
++#define MSG_ERR_M303_DISABLED               "PIDTEMP disabled"
+ #define MSG_M119_REPORT                     "Reporting endstop status"
+ #define MSG_ENDSTOP_HIT                     "TRIGGERED"
+ #define MSG_ENDSTOP_OPEN                    "open"
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 3fad457..bfbadc6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -221,176 +221,180 @@ static void updateTemperaturesFromRawValues();
+ //================================ Functions ================================
+ //===========================================================================
+ 
+-void PID_autotune(float temp, int extruder, int ncycles, bool set_result/*=false*/) {
+-  float input = 0.0;
+-  int cycles = 0;
+-  bool heating = true;
++#if ENABLED(PIDTEMP)
+ 
+-  millis_t temp_ms = millis(), t1 = temp_ms, t2 = temp_ms;
+-  long t_high = 0, t_low = 0;
++  void PID_autotune(float temp, int extruder, int ncycles, bool set_result/*=false*/) {
++    float input = 0.0;
++    int cycles = 0;
++    bool heating = true;
+ 
+-  long bias, d;
+-  float Ku, Tu;
+-  float workKp = 0, workKi = 0, workKd = 0;
+-  float max = 0, min = 10000;
++    millis_t temp_ms = millis(), t1 = temp_ms, t2 = temp_ms;
++    long t_high = 0, t_low = 0;
+ 
+-  #if HAS_AUTO_FAN
+-    millis_t next_auto_fan_check_ms = temp_ms + 2500UL;
+-  #endif
++    long bias, d;
++    float Ku, Tu;
++    float workKp = 0, workKi = 0, workKd = 0;
++    float max = 0, min = 10000;
+ 
+-  if (extruder >= EXTRUDERS
+-    #if !HAS_TEMP_BED
+-       || extruder < 0
++    #if HAS_AUTO_FAN
++      millis_t next_auto_fan_check_ms = temp_ms + 2500UL;
+     #endif
+-  ) {
+-    SERIAL_ECHOLN(MSG_PID_BAD_EXTRUDER_NUM);
+-    return;
+-  }
+ 
+-  SERIAL_ECHOLN(MSG_PID_AUTOTUNE_START);
++    if (extruder >= EXTRUDERS
++      #if !HAS_TEMP_BED
++         || extruder < 0
++      #endif
++    ) {
++      SERIAL_ECHOLN(MSG_PID_BAD_EXTRUDER_NUM);
++      return;
++    }
+ 
+-  disable_all_heaters(); // switch off all heaters.
++    SERIAL_ECHOLN(MSG_PID_AUTOTUNE_START);
+ 
+-  if (extruder < 0)
+-    soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
+-  else
+-    soft_pwm[extruder] = bias = d = (PID_MAX) / 2;
++    disable_all_heaters(); // switch off all heaters.
+ 
+-  // PID Tuning loop
+-  for (;;) {
++    if (extruder < 0)
++      soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
++    else
++      soft_pwm[extruder] = bias = d = (PID_MAX) / 2;
+ 
+-    millis_t ms = millis();
++    // PID Tuning loop
++    for (;;) {
+ 
+-    if (temp_meas_ready) { // temp sample ready
+-      updateTemperaturesFromRawValues();
++      millis_t ms = millis();
+ 
+-      input = (extruder < 0) ? current_temperature_bed : current_temperature[extruder];
++      if (temp_meas_ready) { // temp sample ready
++        updateTemperaturesFromRawValues();
+ 
+-      max = max(max, input);
+-      min = min(min, input);
++        input = (extruder < 0) ? current_temperature_bed : current_temperature[extruder];
+ 
+-      #if HAS_AUTO_FAN
+-        if (ELAPSED(ms, next_auto_fan_check_ms)) {
+-          checkExtruderAutoFans();
+-          next_auto_fan_check_ms = ms + 2500UL;
+-        }
+-      #endif
++        max = max(max, input);
++        min = min(min, input);
++
++        #if HAS_AUTO_FAN
++          if (ELAPSED(ms, next_auto_fan_check_ms)) {
++            checkExtruderAutoFans();
++            next_auto_fan_check_ms = ms + 2500UL;
++          }
++        #endif
+ 
+-      if (heating && input > temp) {
+-        if (ELAPSED(ms, t2 + 5000UL)) {
+-          heating = false;
+-          if (extruder < 0)
+-            soft_pwm_bed = (bias - d) >> 1;
+-          else
+-            soft_pwm[extruder] = (bias - d) >> 1;
+-          t1 = ms;
+-          t_high = t1 - t2;
+-          max = temp;
++        if (heating && input > temp) {
++          if (ELAPSED(ms, t2 + 5000UL)) {
++            heating = false;
++            if (extruder < 0)
++              soft_pwm_bed = (bias - d) >> 1;
++            else
++              soft_pwm[extruder] = (bias - d) >> 1;
++            t1 = ms;
++            t_high = t1 - t2;
++            max = temp;
++          }
+         }
+-      }
+ 
+-      if (!heating && input < temp) {
+-        if (ELAPSED(ms, t1 + 5000UL)) {
+-          heating = true;
+-          t2 = ms;
+-          t_low = t2 - t1;
+-          if (cycles > 0) {
+-            long max_pow = extruder < 0 ? MAX_BED_POWER : PID_MAX;
+-            bias += (d * (t_high - t_low)) / (t_low + t_high);
+-            bias = constrain(bias, 20, max_pow - 20);
+-            d = (bias > max_pow / 2) ? max_pow - 1 - bias : bias;
+-
+-            SERIAL_PROTOCOLPGM(MSG_BIAS); SERIAL_PROTOCOL(bias);
+-            SERIAL_PROTOCOLPGM(MSG_D);    SERIAL_PROTOCOL(d);
+-            SERIAL_PROTOCOLPGM(MSG_T_MIN);  SERIAL_PROTOCOL(min);
+-            SERIAL_PROTOCOLPGM(MSG_T_MAX);  SERIAL_PROTOCOLLN(max);
+-            if (cycles > 2) {
+-              Ku = (4.0 * d) / (3.14159265 * (max - min) / 2.0);
+-              Tu = ((float)(t_low + t_high) / 1000.0);
+-              SERIAL_PROTOCOLPGM(MSG_KU); SERIAL_PROTOCOL(Ku);
+-              SERIAL_PROTOCOLPGM(MSG_TU); SERIAL_PROTOCOLLN(Tu);
+-              workKp = 0.6 * Ku;
+-              workKi = 2 * workKp / Tu;
+-              workKd = workKp * Tu / 8;
+-              SERIAL_PROTOCOLLNPGM(MSG_CLASSIC_PID);
+-              SERIAL_PROTOCOLPGM(MSG_KP); SERIAL_PROTOCOLLN(workKp);
+-              SERIAL_PROTOCOLPGM(MSG_KI); SERIAL_PROTOCOLLN(workKi);
+-              SERIAL_PROTOCOLPGM(MSG_KD); SERIAL_PROTOCOLLN(workKd);
+-              /**
+-              workKp = 0.33*Ku;
+-              workKi = workKp/Tu;
+-              workKd = workKp*Tu/3;
+-              SERIAL_PROTOCOLLNPGM(" Some overshoot ");
+-              SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
+-              SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
+-              SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
+-              workKp = 0.2*Ku;
+-              workKi = 2*workKp/Tu;
+-              workKd = workKp*Tu/3;
+-              SERIAL_PROTOCOLLNPGM(" No overshoot ");
+-              SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
+-              SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
+-              SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
+-              */
++        if (!heating && input < temp) {
++          if (ELAPSED(ms, t1 + 5000UL)) {
++            heating = true;
++            t2 = ms;
++            t_low = t2 - t1;
++            if (cycles > 0) {
++              long max_pow = extruder < 0 ? MAX_BED_POWER : PID_MAX;
++              bias += (d * (t_high - t_low)) / (t_low + t_high);
++              bias = constrain(bias, 20, max_pow - 20);
++              d = (bias > max_pow / 2) ? max_pow - 1 - bias : bias;
++
++              SERIAL_PROTOCOLPGM(MSG_BIAS); SERIAL_PROTOCOL(bias);
++              SERIAL_PROTOCOLPGM(MSG_D);    SERIAL_PROTOCOL(d);
++              SERIAL_PROTOCOLPGM(MSG_T_MIN);  SERIAL_PROTOCOL(min);
++              SERIAL_PROTOCOLPGM(MSG_T_MAX);  SERIAL_PROTOCOLLN(max);
++              if (cycles > 2) {
++                Ku = (4.0 * d) / (3.14159265 * (max - min) / 2.0);
++                Tu = ((float)(t_low + t_high) / 1000.0);
++                SERIAL_PROTOCOLPGM(MSG_KU); SERIAL_PROTOCOL(Ku);
++                SERIAL_PROTOCOLPGM(MSG_TU); SERIAL_PROTOCOLLN(Tu);
++                workKp = 0.6 * Ku;
++                workKi = 2 * workKp / Tu;
++                workKd = workKp * Tu / 8;
++                SERIAL_PROTOCOLLNPGM(MSG_CLASSIC_PID);
++                SERIAL_PROTOCOLPGM(MSG_KP); SERIAL_PROTOCOLLN(workKp);
++                SERIAL_PROTOCOLPGM(MSG_KI); SERIAL_PROTOCOLLN(workKi);
++                SERIAL_PROTOCOLPGM(MSG_KD); SERIAL_PROTOCOLLN(workKd);
++                /**
++                workKp = 0.33*Ku;
++                workKi = workKp/Tu;
++                workKd = workKp*Tu/3;
++                SERIAL_PROTOCOLLNPGM(" Some overshoot ");
++                SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
++                SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
++                SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
++                workKp = 0.2*Ku;
++                workKi = 2*workKp/Tu;
++                workKd = workKp*Tu/3;
++                SERIAL_PROTOCOLLNPGM(" No overshoot ");
++                SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
++                SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
++                SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
++                */
++              }
+             }
++            if (extruder < 0)
++              soft_pwm_bed = (bias + d) >> 1;
++            else
++              soft_pwm[extruder] = (bias + d) >> 1;
++            cycles++;
++            min = temp;
+           }
+-          if (extruder < 0)
+-            soft_pwm_bed = (bias + d) >> 1;
+-          else
+-            soft_pwm[extruder] = (bias + d) >> 1;
+-          cycles++;
+-          min = temp;
+         }
+       }
+-    }
+-    #define MAX_OVERSHOOT_PID_AUTOTUNE 20
+-    if (input > temp + MAX_OVERSHOOT_PID_AUTOTUNE) {
+-      SERIAL_PROTOCOLLNPGM(MSG_PID_TEMP_TOO_HIGH);
+-      return;
+-    }
+-    // Every 2 seconds...
+-    if (ELAPSED(ms, temp_ms + 2000UL)) {
+-      #if HAS_TEMP_HOTEND || HAS_TEMP_BED
+-        print_heaterstates();
+-        SERIAL_EOL;
+-      #endif
++      #define MAX_OVERSHOOT_PID_AUTOTUNE 20
++      if (input > temp + MAX_OVERSHOOT_PID_AUTOTUNE) {
++        SERIAL_PROTOCOLLNPGM(MSG_PID_TEMP_TOO_HIGH);
++        return;
++      }
++      // Every 2 seconds...
++      if (ELAPSED(ms, temp_ms + 2000UL)) {
++        #if HAS_TEMP_HOTEND || HAS_TEMP_BED
++          print_heaterstates();
++          SERIAL_EOL;
++        #endif
+ 
+-      temp_ms = ms;
+-    } // every 2 seconds
+-    // Over 2 minutes?
+-    if (((ms - t1) + (ms - t2)) > (10L * 60L * 1000L * 2L)) {
+-      SERIAL_PROTOCOLLNPGM(MSG_PID_TIMEOUT);
+-      return;
+-    }
+-    if (cycles > ncycles) {
+-      SERIAL_PROTOCOLLNPGM(MSG_PID_AUTOTUNE_FINISHED);
+-      const char* estring = extruder < 0 ? "bed" : "";
+-      SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(workKp);
+-      SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(workKi);
+-      SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(workKd);
+-
+-      // Use the result? (As with "M303 U1")
+-      if (set_result) {
+-        if (extruder < 0) {
+-          #if ENABLED(PIDTEMPBED)
+-            bedKp = workKp;
+-            bedKi = scalePID_i(workKi);
+-            bedKd = scalePID_d(workKd);
++        temp_ms = ms;
++      } // every 2 seconds
++      // Over 2 minutes?
++      if (((ms - t1) + (ms - t2)) > (10L * 60L * 1000L * 2L)) {
++        SERIAL_PROTOCOLLNPGM(MSG_PID_TIMEOUT);
++        return;
++      }
++      if (cycles > ncycles) {
++        SERIAL_PROTOCOLLNPGM(MSG_PID_AUTOTUNE_FINISHED);
++        const char* estring = extruder < 0 ? "bed" : "";
++        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(workKp);
++        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(workKi);
++        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(workKd);
++
++        // Use the result? (As with "M303 U1")
++        if (set_result) {
++          if (extruder < 0) {
++            #if ENABLED(PIDTEMPBED)
++              bedKp = workKp;
++              bedKi = scalePID_i(workKi);
++              bedKd = scalePID_d(workKd);
++              updatePID();
++            #endif
++          }
++          else {
++            PID_PARAM(Kp, extruder) = workKp;
++            PID_PARAM(Ki, extruder) = scalePID_i(workKi);
++            PID_PARAM(Kd, extruder) = scalePID_d(workKd);
+             updatePID();
+-          #endif
+-        }
+-        else {
+-          PID_PARAM(Kp, extruder) = workKp;
+-          PID_PARAM(Ki, extruder) = scalePID_i(workKi);
+-          PID_PARAM(Kd, extruder) = scalePID_d(workKd);
+-          updatePID();
++          }
+         }
++        return;
+       }
+-      return;
++      lcd_update();
+     }
+-    lcd_update();
+   }
+-}
++
++#endif // PIDTEMP
+ 
+ void updatePID() {
+   #if ENABLED(PIDTEMP)
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 9747d07..c49f2c4 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -169,7 +169,9 @@ int getHeaterPower(int heater);
+ void disable_all_heaters();
+ void updatePID();
+ 
+-void PID_autotune(float temp, int extruder, int ncycles, bool set_result=false);
++#if ENABLED(PIDTEMP)
++  void PID_autotune(float temp, int extruder, int ncycles, bool set_result=false);
++#endif
+ 
+ void setExtruderAutoFanState(int pin, bool state);
+ void checkExtruderAutoFans();
+
+commit dd94ce5bd5d62953a92bb484767305235c7b6c94 (from a26d70e93244001fdc80d1b6c439101bd07480e5)
+Merge: d988708 a26d70e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Apr 18 21:22:50 2016 -0700
+
+    Merge pull request #3565 from thinkyhead/rc_look_at_3563
+    
+    Output error message for M303 if PIDTEMP is disabled
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index e3a2d75..427e16f 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -297,7 +297,7 @@
+     #if ENABLED(USE_ZMIN_PLUG)
+       #define ENDSTOPPULLUP_ZMIN
+     #endif
+-    #if ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP)
++    #if DISABLED(DISABLE_Z_MIN_PROBE_ENDSTOP)
+       #define ENDSTOPPULLUP_ZMIN_PROBE
+     #endif
+   #endif
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index a1b2e70..d56ba28 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -352,11 +352,11 @@
+ // Specify here all the endstop connectors that are connected to any endstop or probe.
+ // Almost all printers will be using one per axis. Probes will use one or more of the
+ // extra connectors. Leave undefined any used for non-endstop and non-probe purposes.
+-#define USE_XMIN_PLUG
+-#define USE_YMIN_PLUG
++//#define USE_XMIN_PLUG
++//#define USE_YMIN_PLUG
+ #define USE_ZMIN_PLUG
+-//#define USE_XMAX_PLUG
+-//#define USE_YMAX_PLUG
++#define USE_XMAX_PLUG
++#define USE_YMAX_PLUG
+ //#define USE_ZMAX_PLUG
+ 
+ // coarse Endstop Settings
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 7600c68..ee10b51 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -376,10 +376,10 @@
+   #define DELTA_CARRIAGE_OFFSET 20.0 // mm
+ 
+   // Horizontal distance bridged by diagonal push rods when effector is centered.
+-  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET)
++  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-(DELTA_EFFECTOR_OFFSET)-(DELTA_CARRIAGE_OFFSET))
+ 
+   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
+-  #define DELTA_PRINTABLE_RADIUS 160
++  #define DELTA_PRINTABLE_RADIUS 160.0
+ 
+   // Delta calibration menu
+   // uncomment to add three points calibration menu option.
+@@ -532,8 +532,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // @section machine
+ 
+ // Travel limits after homing (units are in mm)
+-#define X_MIN_POS -DELTA_PRINTABLE_RADIUS
+-#define Y_MIN_POS -DELTA_PRINTABLE_RADIUS
++#define X_MIN_POS -(DELTA_PRINTABLE_RADIUS)
++#define Y_MIN_POS -(DELTA_PRINTABLE_RADIUS)
+ #define Z_MIN_POS 0
+ #define X_MAX_POS DELTA_PRINTABLE_RADIUS
+ #define Y_MAX_POS DELTA_PRINTABLE_RADIUS
+@@ -606,9 +606,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+     // Set the rectangle in which to probe.
+     #define DELTA_PROBEABLE_RADIUS (DELTA_PRINTABLE_RADIUS - 10)
+-    #define LEFT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define LEFT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define RIGHT_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+-    #define FRONT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define FRONT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+ 
+     #define MIN_PROBE_EDGE 10 // The Z probe minimum square sides can be no smaller than this.
+@@ -697,7 +697,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+@@ -706,7 +706,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+@@ -716,11 +716,11 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+@@ -729,7 +729,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+@@ -747,7 +747,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+ 
+     #define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+@@ -756,7 +756,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index abfaada..bb499ff 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -376,10 +376,10 @@
+   #define DELTA_CARRIAGE_OFFSET 18.0 // mm
+ 
+   // Horizontal distance bridged by diagonal push rods when effector is centered.
+-  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET)
++  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-(DELTA_EFFECTOR_OFFSET)-(DELTA_CARRIAGE_OFFSET))
+ 
+   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
+-  #define DELTA_PRINTABLE_RADIUS 140
++  #define DELTA_PRINTABLE_RADIUS 140.0
+ 
+   // Delta calibration menu
+   // uncomment to add three points calibration menu option.
+@@ -532,8 +532,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // @section machine
+ 
+ // Travel limits after homing (units are in mm)
+-#define X_MIN_POS -DELTA_PRINTABLE_RADIUS
+-#define Y_MIN_POS -DELTA_PRINTABLE_RADIUS
++#define X_MIN_POS -(DELTA_PRINTABLE_RADIUS)
++#define Y_MIN_POS -(DELTA_PRINTABLE_RADIUS)
+ #define Z_MIN_POS 0
+ #define X_MAX_POS DELTA_PRINTABLE_RADIUS
+ #define Y_MAX_POS DELTA_PRINTABLE_RADIUS
+@@ -606,9 +606,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+     // Set the rectangle in which to probe
+     #define DELTA_PROBEABLE_RADIUS (DELTA_PRINTABLE_RADIUS - 10)
+-    #define LEFT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define LEFT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define RIGHT_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+-    #define FRONT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define FRONT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+ 
+     #define MIN_PROBE_EDGE 10 // The Z probe minimum square sides can be no smaller than this.
+@@ -697,7 +697,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     #define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+@@ -706,7 +706,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+@@ -716,11 +716,11 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+@@ -729,7 +729,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+@@ -747,7 +747,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+@@ -756,7 +756,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 45186cf..f98ac20 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -376,10 +376,10 @@
+   #define DELTA_CARRIAGE_OFFSET 19.5 // mm
+ 
+   // Horizontal distance bridged by diagonal push rods when effector is centered.
+-  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET)
++  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-(DELTA_EFFECTOR_OFFSET)-(DELTA_CARRIAGE_OFFSET))
+ 
+   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
+-  #define DELTA_PRINTABLE_RADIUS 90
++  #define DELTA_PRINTABLE_RADIUS 90.0
+ 
+   // Delta calibration menu
+   // uncomment to add three points calibration menu option.
+@@ -532,8 +532,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // @section machine
+ 
+ // Travel limits after homing (units are in mm)
+-#define X_MIN_POS -DELTA_PRINTABLE_RADIUS
+-#define Y_MIN_POS -DELTA_PRINTABLE_RADIUS
++#define X_MIN_POS -(DELTA_PRINTABLE_RADIUS)
++#define Y_MIN_POS -(DELTA_PRINTABLE_RADIUS)
+ #define Z_MIN_POS 0
+ #define X_MAX_POS DELTA_PRINTABLE_RADIUS
+ #define Y_MAX_POS DELTA_PRINTABLE_RADIUS
+@@ -606,9 +606,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+     // Set the rectangle in which to probe
+     #define DELTA_PROBEABLE_RADIUS (DELTA_PRINTABLE_RADIUS - 10)
+-    #define LEFT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define LEFT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define RIGHT_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+-    #define FRONT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define FRONT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+ 
+     #define MIN_PROBE_EDGE 10 // The Z probe minimum square sides can be no smaller than this.
+@@ -697,7 +697,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+@@ -706,7 +706,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+@@ -751,7 +751,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+@@ -760,7 +760,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 0e29f9a..5cd4077 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -365,10 +365,10 @@
+   #define DELTA_CARRIAGE_OFFSET 30.0 // mm
+ 
+   // Horizontal distance bridged by diagonal push rods when effector is centered.
+-  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET)
++  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-(DELTA_EFFECTOR_OFFSET)-(DELTA_CARRIAGE_OFFSET))
+ 
+   // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
+-  #define DELTA_PRINTABLE_RADIUS 127
++  #define DELTA_PRINTABLE_RADIUS 127.0
+ 
+   // Delta calibration menu
+   // uncomment to add three points calibration menu option.
+@@ -521,8 +521,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // @section machine
+ 
+ // Travel limits after homing (units are in mm)
+-#define X_MIN_POS -DELTA_PRINTABLE_RADIUS
+-#define Y_MIN_POS -DELTA_PRINTABLE_RADIUS
++#define X_MIN_POS -(DELTA_PRINTABLE_RADIUS)
++#define Y_MIN_POS -(DELTA_PRINTABLE_RADIUS)
+ #define Z_MIN_POS 0
+ #define X_MAX_POS DELTA_PRINTABLE_RADIUS
+ #define Y_MAX_POS DELTA_PRINTABLE_RADIUS
+@@ -595,9 +595,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+     // Set the rectangle in which to probe
+     #define DELTA_PROBEABLE_RADIUS (DELTA_PRINTABLE_RADIUS-25)
+-    #define LEFT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define LEFT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define RIGHT_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+-    #define FRONT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define FRONT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+ 
+     #define MIN_PROBE_EDGE 10 // The Z probe minimum square sides can be no smaller than this.
+@@ -688,7 +688,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+@@ -697,7 +697,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+@@ -707,11 +707,11 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+ 
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+@@ -720,7 +720,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/10)
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+@@ -738,7 +738,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z Z_PROBE_ALLEN_KEY_DEPLOY_2_Z
+-    #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+ 
+     #define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y -125.00
+@@ -747,7 +747,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X Z_PROBE_ALLEN_KEY_STOW_1_X // move down to retract probe
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y Z_PROBE_ALLEN_KEY_STOW_1_Y
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 0.0
+-    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ/2)
++    #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 104a84e..35517ad 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -64,36 +64,6 @@
+ // example_configurations/delta directory.
+ //
+ 
+-#define DELTA
+-#if ENABLED(DELTA)
+-
+-  // Make delta curves from many straight lines (linear interpolation).
+-  // This is a trade-off between visible corners (not enough segments)
+-  // and processor overload (too many expensive sqrt calls).
+-  #define DELTA_SEGMENTS_PER_SECOND 160
+-
+-  // NOTE NB all values for DELTA_* values MUST be floating point, so always have a decimal point in them
+-
+-  // Center-to-center distance of the holes in the diagonal push rods.
+-  #define DELTA_DIAGONAL_ROD 317.3 + 2.5 // mm
+-
+-  // Horizontal offset from middle of printer to smooth rod center.
+-  #define DELTA_SMOOTH_ROD_OFFSET 220.1 // mm
+-
+-  // Horizontal offset of the universal joints on the end effector.
+-  #define DELTA_EFFECTOR_OFFSET 24.0 // mm
+-
+-  // Horizontal offset of the universal joints on the carriages.
+-  #define DELTA_CARRIAGE_OFFSET 22.0 // mm
+-
+-  // Horizontal distance bridged by diagonal push rods when effector is centered.
+-  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET + 1)
+-
+-  // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
+-  #define DELTA_PRINTABLE_RADIUS 140.0
+-
+-#endif
+-
+ // @section info
+ 
+ #if ENABLED(USE_AUTOMATIC_VERSIONING)
+@@ -376,6 +346,48 @@
+ // Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
+ 
++//===========================================================================
++//============================== Delta Settings =============================
++//===========================================================================
++// Enable DELTA kinematics and most of the default configuration for Deltas
++#define DELTA
++
++#if ENABLED(DELTA)
++
++  // Make delta curves from many straight lines (linear interpolation).
++  // This is a trade-off between visible corners (not enough segments)
++  // and processor overload (too many expensive sqrt calls).
++  #define DELTA_SEGMENTS_PER_SECOND 160
++
++  // NOTE NB all values for DELTA_* values MUST be floating point, so always have a decimal point in them
++
++  // Center-to-center distance of the holes in the diagonal push rods.
++  #define DELTA_DIAGONAL_ROD 317.3 + 2.5 // mm
++
++  // Horizontal offset from middle of printer to smooth rod center.
++  #define DELTA_SMOOTH_ROD_OFFSET 220.1 // mm
++
++  // Horizontal offset of the universal joints on the end effector.
++  #define DELTA_EFFECTOR_OFFSET 24.0 // mm
++
++  // Horizontal offset of the universal joints on the carriages.
++  #define DELTA_CARRIAGE_OFFSET 22.0 // mm
++
++  // Horizontal distance bridged by diagonal push rods when effector is centered.
++  #define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-(DELTA_EFFECTOR_OFFSET)-(DELTA_CARRIAGE_OFFSET) + 1)
++
++  // Print surface diameter/2 minus unreachable space (avoid collisions with vertical towers).
++  #define DELTA_PRINTABLE_RADIUS 140.0
++
++  // Delta calibration menu
++  // uncomment to add three points calibration menu option.
++  // See http://minow.blogspot.com/index.html#4918805519571907051
++  // If needed, adjust the X, Y, Z calibration coordinates
++  // in ultralcd.cpp@lcd_delta_calibrate_menu()
++  //#define DELTA_CALIBRATION_MENU
++
++#endif
++
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+ 
+@@ -452,11 +464,11 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
+-//#define Z_MIN_PROBE_ENDSTOP
++#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+ // The Z_MIN_PIN will then be used for both Z-homing and probing.
+-#define Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN
++//#define Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+@@ -489,7 +501,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // @section machine
+ 
+ // Invert the stepper direction. Change (or reverse the motor connector) if an axis goes the wrong way.
+-#define INVERT_X_DIR false
++#define INVERT_X_DIR false // DELTA does not invert
+ #define INVERT_Y_DIR false
+ #define INVERT_Z_DIR false
+ 
+@@ -502,13 +514,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
+-//#define MIN_Z_HEIGHT_FOR_HOMING 7 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+ // :[-1,1]
+-#define X_HOME_DIR 1
++#define X_HOME_DIR 1  // deltas always home to max
+ #define Y_HOME_DIR 1
+ #define Z_HOME_DIR 1
+ 
+@@ -518,8 +530,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // @section machine
+ 
+ // Travel limits after homing (units are in mm)
+-#define X_MIN_POS -DELTA_PRINTABLE_RADIUS
+-#define Y_MIN_POS -DELTA_PRINTABLE_RADIUS
++#define X_MIN_POS -(DELTA_PRINTABLE_RADIUS)
++#define Y_MIN_POS -(DELTA_PRINTABLE_RADIUS)
+ #define Z_MIN_POS 0
+ #define X_MAX_POS DELTA_PRINTABLE_RADIUS
+ #define Y_MAX_POS DELTA_PRINTABLE_RADIUS
+@@ -586,23 +598,24 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   // Enable this to sample the bed in a grid (least squares solution).
+   // Note: this feature generates 10KB extra code size.
+-  #define AUTO_BED_LEVELING_GRID
++  #define AUTO_BED_LEVELING_GRID  // Deltas only support grid mode.
+ 
+   #if ENABLED(AUTO_BED_LEVELING_GRID)
+ 
++    // Set the rectangle in which to probe
+     #define DELTA_PROBEABLE_RADIUS (DELTA_PRINTABLE_RADIUS - 10)
+-    #define LEFT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
++    #define LEFT_PROBE_BED_POSITION -(DELTA_PROBEABLE_RADIUS)
+     #define RIGHT_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
+-    #define FRONT_PROBE_BED_POSITION -DELTA_PROBEABLE_RADIUS
+-    #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS
++    #define FRONT_PROBE_BED_POSITION - (DELTA_PROBEABLE_RADIUS - 20)
++    #define BACK_PROBE_BED_POSITION DELTA_PROBEABLE_RADIUS - 40
+ 
+-    #define MIN_PROBE_EDGE 20 // The Z probe minimum square sides can be no smaller than this.
++    #define MIN_PROBE_EDGE 10 // The Z probe minimum square sides can be no smaller than this.
+ 
+     // Non-linear bed leveling will be used.
+     // Compensate by interpolating between the nearest four Z probe values for each point.
+     // Useful for deltas where the print surface may appear like a bowl or dome shape.
+     // Works best with AUTO_BED_LEVELING_GRID_POINTS 5 or higher.
+-    #define AUTO_BED_LEVELING_GRID_POINTS 7
++    #define AUTO_BED_LEVELING_GRID_POINTS 5
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+@@ -634,19 +647,18 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //    |           |
+   //    O-- FRONT --+
+   //  (0,0)
+-  #define X_PROBE_OFFSET_FROM_EXTRUDER 0.0     // X offset: -left  +right  [of the nozzle]
+-  #define Y_PROBE_OFFSET_FROM_EXTRUDER 0.0     // Y offset: -front +behind [the nozzle] 
+-  #define Z_PROBE_OFFSET_FROM_EXTRUDER 0.3     // Z offset: -below +above  [the nozzle]
++  #define X_PROBE_OFFSET_FROM_EXTRUDER 0.0     // Z probe to nozzle X offset: -left  +right
++  #define Y_PROBE_OFFSET_FROM_EXTRUDER 0.0     // Z probe to nozzle Y offset: -front +behind
++  #define Z_PROBE_OFFSET_FROM_EXTRUDER 0.3     // Z probe to nozzle Z offset: -below (always!)
+ 
+-  #define XY_TRAVEL_SPEED 7000         // X and Y axis travel speed between probes, in mm/min.
++  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+ 
+   #define Z_RAISE_BEFORE_PROBING 20   // How much the Z axis will be raised before traveling to the first probing point.
+-  #define Z_RAISE_BETWEEN_PROBINGS 5 // How much the Z axis will be raised when traveling from between next probing points.
++  #define Z_RAISE_BETWEEN_PROBINGS 10 // How much the Z axis will be raised when traveling from between next probing points.
+   #define Z_RAISE_AFTER_PROBING 20    // How much the Z axis will be raised after the last probing point.
+ 
+-  #define Z_PROBE_END_SCRIPT "G1 Z20 X0 Y0 F7000"
+-//#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+-                                                                            // Useful to retract a deployable Z probe.
++  //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
++                                                                             // Useful to retract a deployable Z probe.
+ 
+   // Probes are sensors/switches that need to be activated before they can be used
+   // and deactivated after their use.
+@@ -654,7 +666,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   // A fix mounted probe, like the normal inductive probe, must be deactivated to go below Z_PROBE_OFFSET_FROM_EXTRUDER
+   // when the hardware endstops are active.
+-  //#define FIX_MOUNTED_PROBE
++  #define FIX_MOUNTED_PROBE
+ 
+   // A Servo Probe can be defined in the servo section below.
+ 
+@@ -668,10 +680,91 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   // For example any setup that uses the nozzle itself as a probe.
+   //#define MECHANICAL_PROBE
+ 
++  // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
++  // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
++  //#define Z_PROBE_ALLEN_KEY
++
++  #if ENABLED(Z_PROBE_ALLEN_KEY)
++    // 2 or 3 sets of coordinates for deploying and retracting the spring loaded touch probe on G29,
++    // if servo actuated touch probe is not defined. Uncomment as appropriate for your printer/probe.
++
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
++
++    // Kossel Mini
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 28.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
++
++    // Kossel Pro
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
++
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
++    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
++  #endif
++
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you leave Z_SAFE_HOMING enabled!
+ 
+-  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
++  // #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
+                           // This feature is meant to avoid Z homing with Z probe outside the bed area.
+                           // When defined, it will:
+                           // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+@@ -700,7 +793,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #if ENABLED(MANUAL_HOME_POSITIONS)
+   #define MANUAL_X_HOME_POS 0
+   #define MANUAL_Y_HOME_POS 0
+-  #define MANUAL_Z_HOME_POS 386.5 // For delta: Distance between nozzle and print surface after homing.
++  #define MANUAL_Z_HOME_POS 381.4 // For delta: Distance between nozzle and print surface after homing.
+ #endif
+ 
+ // @section movement
+@@ -709,18 +802,23 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+  * MOVEMENT SETTINGS
+  */
+ 
+-#define HOMING_FEEDRATE {60*60, 60*60, 60*60, 0}  // set the homing speeds (mm/min)
++// delta homing speeds must be the same on xyz
++#define HOMING_FEEDRATE_XYZ (60*60)
++#define HOMING_FEEDRATE_E 0
++#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
+ 
+-// default settings
++// variables to calculate steps
+ #define XYZ_FULL_STEPS_PER_ROTATION 200
+ #define XYZ_MICROSTEPS 16
+ #define XYZ_BELT_PITCH 2
+ #define XYZ_PULLEY_TEETH 16
+-#define XYZ_STEPS ((XYZ_FULL_STEPS_PER_ROTATION) * (XYZ_MICROSTEPS) / double(XYZ_BELT_PITCH) / double(XYZ_PULLEY_TEETH))
++
++// delta speeds must be the same on xyz
++#define XYZ_STEPS (XYZ_FULL_STEPS_PER_ROTATION * XYZ_MICROSTEPS / double(XYZ_BELT_PITCH) / double(XYZ_PULLEY_TEETH))
+ 
+ #define DEFAULT_AXIS_STEPS_PER_UNIT   {XYZ_STEPS, XYZ_STEPS, XYZ_STEPS, 158}   // default steps per unit for PowerWasp
+-#define DEFAULT_MAX_FEEDRATE          {200, 200, 200, 200}    // (mm/sec)
+-#define DEFAULT_MAX_ACCELERATION      {9000,9000,9000,9000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for Skeinforge 40+, for older versions raise them a lot.
++#define DEFAULT_MAX_FEEDRATE          {200, 200, 200, 25}    // (mm/sec)
++#define DEFAULT_MAX_ACCELERATION      {9000,9000,9000,10000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for skeinforge 40+, for older versions raise them a lot.
+ 
+ #define DEFAULT_ACCELERATION          2000    // X, Y, Z and E acceleration in mm/s^2 for printing moves
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+@@ -786,11 +884,11 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Preheat Constants
+ #define PLA_PREHEAT_HOTEND_TEMP 180
+ #define PLA_PREHEAT_HPB_TEMP 70
+-#define PLA_PREHEAT_FAN_SPEED 100   // Insert Value between 0 and 255
++#define PLA_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
+ #define ABS_PREHEAT_HOTEND_TEMP 240
+-#define ABS_PREHEAT_HPB_TEMP 110
+-#define ABS_PREHEAT_FAN_SPEED 100   // Insert Value between 0 and 255
++#define ABS_PREHEAT_HPB_TEMP 100
++#define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
+ //=============================================================================
+ //============================= LCD and SD support ============================
+@@ -1151,8 +1249,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define FILAMENT_SENSOR_EXTRUDER_NUM 0   //The number of the extruder that has the filament sensor (0,1,2)
+   #define MEASUREMENT_DELAY_CM        14   //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
+ 
+-  #define MEASURED_UPPER_LIMIT         2.00  //upper limit factor used for sensor reading validation in mm
+-  #define MEASURED_LOWER_LIMIT         1.60  //lower limit factor for sensor reading validation in mm
++  #define MEASURED_UPPER_LIMIT         3.30  //upper limit factor used for sensor reading validation in mm
++  #define MEASURED_LOWER_LIMIT         1.90  //lower limit factor for sensor reading validation in mm
+   #define MAX_MEASUREMENT_DELAY       20     //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
+ 
+   #define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index f42f877..045e4d6 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -86,7 +86,7 @@
+  */
+ #if ENABLED(THERMAL_PROTECTION_BED)
+   #define THERMAL_PROTECTION_BED_PERIOD 20    // Seconds
+-  #define THERMAL_PROTECTION_BED_HYSTERESIS 4 // Degrees Celsius
++  #define THERMAL_PROTECTION_BED_HYSTERESIS 2 // Degrees Celsius
+ #endif
+ 
+ #if ENABLED(PIDTEMP)
+@@ -261,9 +261,9 @@
+ // @section homing
+ 
+ //homing hits the endstop, then retracts by this distance, before it tries to slowly bump again:
+-#define X_HOME_BUMP_MM 5
+-#define Y_HOME_BUMP_MM 5
+-#define Z_HOME_BUMP_MM 2
++#define X_HOME_BUMP_MM 2
++#define Y_HOME_BUMP_MM 2
++#define Z_HOME_BUMP_MM 2 // deltas need the same for all three axis
+ #define HOMING_BUMP_DIVISOR {2, 2, 4}  // Re-Bump Speed Divisor (Divides the Homing Feedrate)
+ //#define QUICK_HOME  //if this is defined, if both x and y are to be homed, a diagonal move will be performed initially.
+ 
+@@ -285,7 +285,7 @@
+ // Default stepper release if idle. Set to 0 to deactivate.
+ // Steppers will shut down DEFAULT_STEPPER_DEACTIVE_TIME seconds after the last move when DISABLE_INACTIVE_? is true.
+ // Time can be set by M18 and M84.
+-#define DEFAULT_STEPPER_DEACTIVE_TIME 60
++#define DEFAULT_STEPPER_DEACTIVE_TIME 120
+ #define DISABLE_INACTIVE_X true
+ #define DISABLE_INACTIVE_Y true
+ #define DISABLE_INACTIVE_Z true  // set to false if the nozzle will fall down on your printed part when print has finished.
+@@ -297,7 +297,8 @@
+ // @section lcd
+ 
+ #if ENABLED(ULTIPANEL)
+-  #define MANUAL_FEEDRATE {50*60, 50*60, 4*60, 60} // Feedrates for manual moves along X, Y, Z, E from panel
++  #define MANUAL_FEEDRATE_XYZ 50*60
++  #define MANUAL_FEEDRATE { MANUAL_FEEDRATE_XYZ, MANUAL_FEEDRATE_XYZ, MANUAL_FEEDRATE_XYZ, 60 } // Feedrates for manual moves along X, Y, Z, E from panel
+   #define ULTIPANEL_FEEDMULTIPLY  // Comment to disable setting feedrate multiplier via encoder
+ #endif
+ 
+@@ -307,7 +308,8 @@
+ #define DEFAULT_MINSEGMENTTIME        20000
+ 
+ // If defined the movements slow down when the look ahead buffer is only half full
+-#define SLOWDOWN
++// (don't use SLOWDOWN with DELTA because DELTA generates hundreds of segments per second)
++//#define SLOWDOWN
+ 
+ // Frequency limit
+ // See nophead's blog for more info
+diff --git a/Marlin/example_configurations/delta/kossel_xl/README.md b/Marlin/example_configurations/delta/kossel_xl/README.md
+index cfdcab8..1cabcdb 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/README.md
++++ b/Marlin/example_configurations/delta/kossel_xl/README.md
+@@ -1,20 +1,20 @@
+ # Configuration for Kossel k800 XL
+-This example configuration ist for a Kossel XL with a printable bed diameter of 280mm and a height of 385mm. It also has the auto bed leveling probe (with a endstop switch) and the heat bed activated. 
++This example configuration is for a Kossel XL with a printable bed diameter of 280mm and a height of 380mm. It also has the auto bed leveling probe (with an endstop switch) and the heated bed activated.
+ 
+ ## Configuration
+-You might have/want to edit at least the following settings in Configuration.h:
+-* <code>MANUAL_Z_HOME_POS<code> The hight of your printing space available, auto bed leveling makes this not as important as before
+-* <code>DELTA_PRINTABLE_RADIUS</code> The printable radius
+-* <code>DEFAULT_AXIS_STEPS_PER_UNIT</code> [http://zennmaster.com/makingstuff/reprap-101-calibrating-your-extruder-part-1-e-steps](The steps for the extruder to optimize the amount of filament flow)
++You might need (or want) to edit at least the following settings in `Configuration.h`:
++* `MANUAL_Z_HOME_POS` - The available height of your printing space. Auto Bed Leveling makes it less important to have the exact value.
++* `DELTA_PRINTABLE_RADIUS` - The printable radius is how far from the center the nozzle can reach.
++* `DEFAULT_AXIS_STEPS_PER_UNIT` - Steps-per-millimeter for the delta steppers, and for the extruder [to optimize the amount of filament flow](http://zennmaster.com/makingstuff/reprap-101-calibrating-your-extruder-part-1-e-steps).
+ 
+ ### Fine tuning
+-* Increase <code>DELTA_RADIUS</code> when the model is convex (bulge in the middle)
+-* Increase <code>DELTA_DIAGONAL_ROD</code> when the model is larger then expected
++* Increase `DELTA_RADIUS` if the model comes out convex (with a bulge in the middle)
++* Increase `DELTA_DIAGONAL_ROD` if the model comes out larger than expected
+ 
+ ### [http://reprap.org/wiki/PID_Tuning](PID Tuning)
+-* <code>DEFAULT_Kp</code> (PID tuning for the hotend)
+-* <code>DEFAULT_Ki</code> (PID tuning for the hotend)
+-* <code>DEFAULT_Kd</code> (PID tuning for the hotend)
++* `DEFAULT_Kp` - The proportional term
++* `DEFAULT_Ki` - The integral term
++* `DEFAULT_Kd` - The derivative term
+ 
+ ### PSU Options
+ * The power supply is configured to 2 (to use a relay to switch 12V on and off)
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 251c251..864d229 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -38,139 +38,140 @@
+ 
+ // 片仮名表示定義
+ #define WELCOME_MSG                         MACHINE_NAME " ready."
+-#define MSG_SD_INSERTED                     "\xb6\xb0\xc4\xde\x20\xbf\xb3\xc6\xad\xb3\xbb\xda\xcf\xbc\xc0" // "Card inserted"
+-#define MSG_SD_REMOVED                      "\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                 // "Card removed"
+-#define MSG_MAIN                            "\xd2\xb2\xdd"                                                 // "Main"
+-#define MSG_AUTOSTART                       "\xbc\xde\xc4\xde\xb3\xb6\xb2\xbc"                             // "Autostart"
+-#define MSG_DISABLE_STEPPERS                "\xd3\xb0\xc0\xb0\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"         // "Disable steppers"
+-#define MSG_AUTO_HOME                       "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "Auto home"
+-#define MSG_LEVEL_BED_HOMING                "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "\xda\xcd\xde\xd8\xdd\xb8\xde\xb6\xb2\xbc"                     //"Click to Begin"
+-#define MSG_LEVEL_BED_DONE                  "\xda\xcd\xde\xd8\xdd\xb8\xde\xb6\xdd\xd8\xae\xb3"             //"Leveling Done!"
+-#define MSG_LEVEL_BED_CANCEL                "\xc4\xd8\xd4\xd2"                                             //"Cancel"
+-#define MSG_SET_HOME_OFFSETS                "\xb7\xbc\xde\xad\xdd\xb5\xcc\xbe\xaf\xc4\xbe\xaf\xc3\xb2"     // "Set home offsets"
+-#define MSG_HOME_OFFSETS_APPLIED            "\xb5\xcc\xbe\xaf\xc4\x20\xc3\xb7\xd6\xb3\xbb\xda\xcf\xbc\xc0" //"Offsets applied"
+-#define MSG_SET_ORIGIN                      "\xb7\xbc\xde\xad\xdd\xbe\xaf\xc4"                             // "Set origin"
+-#define MSG_PREHEAT_PLA                     "PLA \xd6\xc8\xc2"                                             // "Preheat PLA"
++#define MSG_SD_INSERTED                     "\xb6\xb0\xc4\xde\x20\xbf\xb3\xc6\xad\xb3\xbb\xda\xcf\xbc\xc0" // "ｶｰﾄﾞ ｿｳﾆｭｳｻﾚﾏｼﾀ" ("Card inserted")
++#define MSG_SD_REMOVED                      "\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                 // "ｶｰﾄﾞｶﾞｱﾘﾏｾﾝ" ("Card removed")
++#define MSG_LCD_ENDSTOPS                    "Endstops"                                                     // Max length 8 characters
++#define MSG_MAIN                            "\xd2\xb2\xdd"                                                 // "ﾒｲﾝ" ("Main")
++#define MSG_AUTOSTART                       "\xbc\xde\xc4\xde\xb3\xb6\xb2\xbc"                             // "ｼﾞﾄﾞｳｶｲｼ" ("Autostart")
++#define MSG_DISABLE_STEPPERS                "\xd3\xb0\xc0\xb0\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"         // "ﾓｰﾀｰﾃﾞﾝｹﾞﾝ ｵﾌ" ("Disable steppers")
++#define MSG_AUTO_HOME                       "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "ｹﾞﾝﾃﾝﾆｲﾄﾞｳ" ("Auto home")
++#define MSG_LEVEL_BED_HOMING                "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "ｹﾞﾝﾃﾝﾆｲﾄﾞｳ" ("Homing XYZ")
++#define MSG_LEVEL_BED_WAITING               "\xda\xcd\xde\xd8\xdd\xb8\xde\xb6\xb2\xbc"                     // "ﾚﾍﾞﾘﾝｸﾞｶｲｼ" ("Click to Begin")
++#define MSG_LEVEL_BED_DONE                  "\xda\xcd\xde\xd8\xdd\xb8\xde\xb6\xdd\xd8\xae\xb3"             // "ﾚﾍﾞﾘﾝｸﾞｶﾝﾘｮｳ" ("Leveling Done!")
++#define MSG_LEVEL_BED_CANCEL                "\xc4\xd8\xd4\xd2"                                             // "ﾄﾘﾔﾒ" ("Cancel")
++#define MSG_SET_HOME_OFFSETS                "\xb7\xbc\xde\xad\xdd\xb5\xcc\xbe\xaf\xc4\xbe\xaf\xc3\xb2"     // "ｷｼﾞｭﾝｵﾌｾｯﾄｾｯﾃｲ" ("Set home offsets")
++#define MSG_HOME_OFFSETS_APPLIED            "\xb5\xcc\xbe\xaf\xc4\x20\xc3\xb7\xd6\xb3\xbb\xda\xcf\xbc\xc0" // "ｵﾌｾｯﾄ ﾃｷﾖｳｻﾚﾏｼﾀ" ("Offsets applied")
++#define MSG_SET_ORIGIN                      "\xb7\xbc\xde\xad\xdd\xbe\xaf\xc4"                             // "ｷｼﾞｭﾝｾｯﾄ" ("Set origin")
++#define MSG_PREHEAT_PLA                     "PLA \xd6\xc8\xc2"                                             // "PLA ﾖﾈﾂ" ("Preheat PLA")
+ #define MSG_PREHEAT_PLA_N                   MSG_PREHEAT_PLA " "
+-#define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " \xbd\xcd\xde\xc3"                            // " All"
+-#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " \xcd\xde\xaf\xc4\xde"                        // "Bed"
+-#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " \xbe\xaf\xc3\xb2"                            // "conf"
+-#define MSG_PREHEAT_ABS                     "ABS \xd6\xc8\xc2"                                             // "Preheat ABS"
++#define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " \xbd\xcd\xde\xc3"                            // " ｽﾍﾞﾃ" (" All")
++#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " \xcd\xde\xaf\xc4\xde"                        // " ﾍﾞｯﾄﾞ" (" Bed")
++#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " \xbe\xaf\xc3\xb2"                            // " ｾｯﾃｲ" (" conf")
++#define MSG_PREHEAT_ABS                     "ABS \xd6\xc8\xc2"                                             // "ABS ﾖﾈﾂ" ("Preheat ABS")
+ #define MSG_PREHEAT_ABS_N                   MSG_PREHEAT_ABS " "
+-#define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " \xbd\xcd\xde\xc3"                            // " All"
+-#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " \xcd\xde\xaf\xc4\xde"                        // "Bed"
+-#define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " \xbe\xaf\xc3\xb2"                            // "conf"
+-#define MSG_COOLDOWN                        "\xb6\xc8\xc2\xc3\xb2\xbc"                                     // "Cooldown"
+-#define MSG_SWITCH_PS_ON                    "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xdd"                         // "Switch power on"
+-#define MSG_SWITCH_PS_OFF                   "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"                         // "Switch power off"
+-#define MSG_EXTRUDE                         "\xb5\xbc\xc0\xde\xbc"                                         // "Extrude"
+-#define MSG_RETRACT                         "\xcb\xb7\xba\xd0\xbe\xaf\xc3\xb2"                             // "Retract"
+-#define MSG_MOVE_AXIS                       "\xbc\xde\xb8\xb2\xc4\xde\xb3"                                 // "Move axis"
+-#define MSG_LEVEL_BED                       "\xcd\xde\xaf\xc4\xde\xda\xcd\xde\xd8\xdd\xb8\xde"             // "Level bed"
+-#define MSG_MOVE_X                          "X\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move X"
+-#define MSG_MOVE_Y                          "Y\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move Y"
+-#define MSG_MOVE_Z                          "Z\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move Z"
+-#define MSG_MOVE_E                          "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0"                         // "Extruder"
+-#define MSG_MOVE_01MM                       "0.1mm \xb2\xc4\xde\xb3"                                       // "Move 0.1mm"
+-#define MSG_MOVE_1MM                        "  1mm \xb2\xc4\xde\xb3"                                       // "Move 1mm"
+-#define MSG_MOVE_10MM                       " 10mm \xb2\xc4\xde\xb3"                                       // "Move 10mm"
+-#define MSG_SPEED                           "\xbd\xcb\xdf\xb0\xc4\xde"                                     // "Speed"
+-#define MSG_BED_Z                           "Z\xb5\xcc\xbe\xaf\xc4"                                        // "Bed Z"
+-#define MSG_NOZZLE                          "\xc9\xbd\xde\xd9"                                             // "Nozzle"
+-#define MSG_BED                             "\xcd\xde\xaf\xc4\xde"                                         // "Bed"
+-#define MSG_FAN_SPEED                       "\xcc\xa7\xdd\xbf\xb8\xc4\xde"                                 // "Fan speed"
+-#define MSG_FLOW                            "\xb5\xb8\xd8\xd8\xae\xb3"                                     // "Flow"
+-#define MSG_CONTROL                         "\xba\xdd\xc4\xdb\xb0\xd9"                                     // "Control"
+-#define MSG_MIN                             LCD_STR_THERMOMETER " \xbb\xb2\xc3\xb2"                        // " Min"
+-#define MSG_MAX                             LCD_STR_THERMOMETER " \xbb\xb2\xba\xb3"                        // " Max"
+-#define MSG_FACTOR                          LCD_STR_THERMOMETER " \xcc\xa7\xb8\xc0\xb0"                    // " Fact"
+-#define MSG_AUTOTEMP                        "\xbc\xde\xc4\xde\xb3\xb5\xdd\xc4\xde"                         // "Autotemp"
+-#define MSG_ON                              "\xb5\xdd "                                                    // "On "
+-#define MSG_OFF                             "\xb5\xcc "                                                    // "Off"
++#define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " \xbd\xcd\xde\xc3"                            // " ｽﾍﾞﾃ" (" All")
++#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " \xcd\xde\xaf\xc4\xde"                        // " ﾍﾞｯﾄﾞ" (" Bed")
++#define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " \xbe\xaf\xc3\xb2"                            // " ｾｯﾃｲ" (" conf")
++#define MSG_COOLDOWN                        "\xb6\xc8\xc2\xc3\xb2\xbc"                                     // "ｶﾈﾂﾃｲｼ" ("Cooldown")
++#define MSG_SWITCH_PS_ON                    "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xdd"                         // "ﾃﾞﾝｹﾞﾝ ｵﾝ" ("Switch power on")
++#define MSG_SWITCH_PS_OFF                   "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"                         // "ﾃﾞﾝｹﾞﾝ ｵﾌ" ("Switch power off")
++#define MSG_EXTRUDE                         "\xb5\xbc\xc0\xde\xbc"                                         // "ｵｼﾀﾞｼ" ("Extrude")
++#define MSG_RETRACT                         "\xcb\xb7\xba\xd0\xbe\xaf\xc3\xb2"                             // "ﾋｷｺﾐｾｯﾃｲ" ("Retract")
++#define MSG_MOVE_AXIS                       "\xbc\xde\xb8\xb2\xc4\xde\xb3"                                 // "ｼﾞｸｲﾄﾞｳ" ("Move axis")
++#define MSG_LEVEL_BED                       "\xcd\xde\xaf\xc4\xde\xda\xcd\xde\xd8\xdd\xb8\xde"             // "ﾍﾞｯﾄﾞﾚﾍﾞﾘﾝｸﾞ" ("Level bed")
++#define MSG_MOVE_X                          "X\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Xｼﾞｸ ｲﾄﾞｳ" ("Move X")
++#define MSG_MOVE_Y                          "Y\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Yｼﾞｸ ｲﾄﾞｳ" ("Move Y")
++#define MSG_MOVE_Z                          "Z\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Zｼﾞｸ ｲﾄﾞｳ" ("Move Z")
++#define MSG_MOVE_E                          "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0"                         // "ｴｸｽﾄﾙｰﾀﾞｰ" ("Extruder")
++#define MSG_MOVE_01MM                       "0.1mm \xb2\xc4\xde\xb3"                                       // "0.1mm ｲﾄﾞｳ" ("Move 0.1mm")
++#define MSG_MOVE_1MM                        "  1mm \xb2\xc4\xde\xb3"                                       // "  1mm ｲﾄﾞｳ" ("Move 1mm")
++#define MSG_MOVE_10MM                       " 10mm \xb2\xc4\xde\xb3"                                       // " 10mm ｲﾄﾞｳ" ("Move 10mm")
++#define MSG_SPEED                           "\xbd\xcb\xdf\xb0\xc4\xde"                                     // "ｽﾋﾟｰﾄﾞ" ("Speed")
++#define MSG_BED_Z                           "Z\xb5\xcc\xbe\xaf\xc4"                                        // "Zｵﾌｾｯﾄ" ("Bed Z")
++#define MSG_NOZZLE                          "\xc9\xbd\xde\xd9"                                             // "ﾉｽﾞﾙ" ("Nozzle")
++#define MSG_BED                             "\xcd\xde\xaf\xc4\xde"                                         // "ﾍﾞｯﾄﾞ" ("Bed")
++#define MSG_FAN_SPEED                       "\xcc\xa7\xdd\xbf\xb8\xc4\xde"                                 // "ﾌｧﾝｿｸﾄﾞ" ("Fan speed")
++#define MSG_FLOW                            "\xb5\xb8\xd8\xd8\xae\xb3"                                     // "ｵｸﾘﾘｮｳ" ("Flow")
++#define MSG_CONTROL                         "\xba\xdd\xc4\xdb\xb0\xd9"                                     // "ｺﾝﾄﾛｰﾙ" ("Control")
++#define MSG_MIN                             LCD_STR_THERMOMETER " \xbb\xb2\xc3\xb2"                        // " ｻｲﾃｲ" (" Min")
++#define MSG_MAX                             LCD_STR_THERMOMETER " \xbb\xb2\xba\xb3"                        // " ｻｲｺｳ" (" Max")
++#define MSG_FACTOR                          LCD_STR_THERMOMETER " \xcc\xa7\xb8\xc0\xb0"                    // " ﾌｧｸﾀｰ" (" Fact")
++#define MSG_AUTOTEMP                        "\xbc\xde\xc4\xde\xb3\xb5\xdd\xc4\xde"                         // "ｼﾞﾄﾞｳｵﾝﾄﾞ" ("Autotemp")
++#define MSG_ON                              "\xb5\xdd "                                                    // "ｵﾝ " ("On ")
++#define MSG_OFF                             "\xb5\xcc "                                                    // "ｵﾌ " ("Off")
+ #define MSG_PID_P                           "PID-P"
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+-#define MSG_ACC                             "\xb6\xbf\xb8\xc4\xde mm/s^2"                                  // "Accel"
+-#define MSG_VXY_JERK                        "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                      // "Vxy-jerk"
+-#define MSG_VZ_JERK                         "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                       // "Vz-jerk"
+-#define MSG_VE_JERK                         "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\x20\xd4\xb8\xc4\xde"     // "Ve-jerk"
+-#define MSG_VMAX                            "\xbb\xb2\xc0\xde\xb2\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4 "        // "Vmax "
+-#define MSG_X                               "X"                                                            // "x"
+-#define MSG_Y                               "Y"                                                            // "y"
+-#define MSG_Z                               "Z"                                                            // "z"
+-#define MSG_E                               "E"                                                            // "e"
+-#define MSG_VMIN                            "\xbb\xb2\xbc\xae\xb3\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4"         // "Vmin"
+-#define MSG_VTRAV_MIN                       "\xbb\xb2\xbc\xae\xb3\xc4\xd7\xcd\xde\xd9\xda\xb0\xc4"         // "VTrav min"
+-#define MSG_AMAX                            "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                    // "Amax "
+-#define MSG_A_RETRACT                       "\xcb\xb7\xba\xd0\xb6\xbf\xb8\xc4\xde"                         // "A-retract"
+-#define MSG_A_TRAVEL                        "\xc4\xd7\xcd\xde\xd9\xb6\xbf\xb8\xc4\xde"                     // "A-travel"
++#define MSG_ACC                             "\xb6\xbf\xb8\xc4\xde mm/s2"                                   // "ｶｿｸﾄﾞ mm/s2" ("Accel")
++#define MSG_VXY_JERK                        "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                      // "XYｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vxy-jerk")
++#define MSG_VZ_JERK                         "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                       // "Zｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vz-jerk")
++#define MSG_VE_JERK                         "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\x20\xd4\xb8\xc4\xde"     // "ｴｸｽﾄﾙｰﾀﾞｰ ﾔｸﾄﾞ" ("Ve-jerk")
++#define MSG_VMAX                            "\xbb\xb2\xc0\xde\xb2\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4 "        // "ｻｲﾀﾞｲﾌｨｰﾄﾞﾚｰﾄ " ("Vmax ")
++#define MSG_X                               "X"                                                            // "X" ("x")
++#define MSG_Y                               "Y"                                                            // "Y" ("y")
++#define MSG_Z                               "Z"                                                            // "Z" ("z")
++#define MSG_E                               "E"                                                            // "E" ("e")
++#define MSG_VMIN                            "\xbb\xb2\xbc\xae\xb3\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4"         // "ｻｲｼｮｳﾌｨｰﾄﾞﾚｰﾄ" ("Vmin")
++#define MSG_VTRAV_MIN                       "\xbb\xb2\xbc\xae\xb3\xc4\xd7\xcd\xde\xd9\xda\xb0\xc4"         // "ｻｲｼｮｳﾄﾗﾍﾞﾙﾚｰﾄ" ("VTrav min")
++#define MSG_AMAX                            "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                    // "ｻｲﾀﾞｲｶｿｸﾄﾞ" ("Amax ")
++#define MSG_A_RETRACT                       "\xcb\xb7\xba\xd0\xb6\xbf\xb8\xc4\xde"                         // "ﾋｷｺﾐｶｿｸﾄﾞ" ("A-retract")
++#define MSG_A_TRAVEL                        "\xc4\xd7\xcd\xde\xd9\xb6\xbf\xb8\xc4\xde"                     // "ﾄﾗﾍﾞﾙｶｿｸﾄﾞ" ("A-travel")
+ #define MSG_XSTEPS                          "Xsteps/mm"
+ #define MSG_YSTEPS                          "Ysteps/mm"
+ #define MSG_ZSTEPS                          "Zsteps/mm"
+ #define MSG_ESTEPS                          "Esteps/mm"
+-#define MSG_TEMPERATURE                     "\xb5\xdd\xc4\xde"                                              // "Temperature"
+-#define MSG_MOTION                          "\xb3\xba\xde\xb7\xbe\xaf\xc3\xb2"                              // "Motion"
+-#define MSG_VOLUMETRIC                      "\xcc\xa8\xd7\xd2\xdd\xc4"                                      // "Filament"
++#define MSG_TEMPERATURE                     "\xb5\xdd\xc4\xde"                                              // "ｵﾝﾄﾞ" ("Temperature")
++#define MSG_MOTION                          "\xb3\xba\xde\xb7\xbe\xaf\xc3\xb2"                              // "ｳｺﾞｷｾｯﾃｲ" ("Motion")
++#define MSG_VOLUMETRIC                      "\xcc\xa8\xd7\xd2\xdd\xc4"                                      // "ﾌｨﾗﾒﾝﾄ" ("Filament")
+ #define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+-#define MSG_FILAMENT_DIAM                   "\xcc\xa8\xd7\xd2\xdd\xc4\xc1\xae\xaf\xb9\xb2"                  // "Fil. Dia."
+-#define MSG_CONTRAST                        "LCD\xba\xdd\xc4\xd7\xbd\xc4"                                   // "LCD contrast"
+-#define MSG_STORE_EPROM                     "\xd2\xd3\xd8\xcd\xb6\xb8\xc9\xb3"                              // "Store memory"
+-#define MSG_LOAD_EPROM                      "\xd2\xd3\xd8\xb6\xd7\xd6\xd0\xba\xd0"                          // "Load memory"
+-#define MSG_RESTORE_FAILSAFE                "\xbe\xaf\xc3\xb2\xd8\xbe\xaf\xc4"                              // "Restore failsafe"
+-#define MSG_REFRESH                         "\xd8\xcc\xda\xaf\xbc\xad"                                      // "Refresh"
+-#define MSG_WATCH                           "\xb2\xdd\xcc\xab"                                              // "Info screen"
+-#define MSG_PREPARE                         "\xbc\xde\xad\xdd\xcb\xde\xbe\xaf\xc3\xb2"                      // "Prepare"
+-#define MSG_TUNE                            "\xc1\xae\xb3\xbe\xb2"                                          // "Tune"
+-#define MSG_PAUSE_PRINT                     "\xb2\xc1\xbc\xde\xc3\xb2\xbc"                                  // "Pause print"
+-#define MSG_RESUME_PRINT                    "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "Resume print"
+-#define MSG_STOP_PRINT                      "\xcc\xdf\xd8\xdd\xc4\xc3\xb2\xbc"                              // "Stop print"
+-#define MSG_CARD_MENU                       "SD\xb6\xb0\xc4\xde\xb6\xd7\xcc\xdf\xd8\xdd\xc4"                // "Print from SD"
+-#define MSG_NO_CARD                         "SD\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                // "No SD card"
+-#define MSG_DWELL                           "\xbd\xd8\xb0\xcc\xdf"                                          // "Sleep..."
+-#define MSG_USERWAIT                        "\xbc\xca\xde\xd7\xb8\xb5\xcf\xc1\xb8\xc0\xde\xbb\xb2"          // "Wait for user..."
+-#define MSG_RESUMING                        "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "Resuming print"
+-#define MSG_PRINT_ABORTED                   "\xcc\xdf\xd8\xdd\xc4\xc1\xad\xb3\xbc\xbb\xda\xcf\xbc\xc0"      // "Print aborted"
+-#define MSG_NO_MOVE                         "\xb3\xba\xde\xb7\xcf\xbe\xdd"                                  // "No move."
+-#define MSG_KILLED                          "\xcb\xbc\xde\xae\xb3\xc3\xb2\xbc"                              // "KILLED. "
+-#define MSG_STOPPED                         "\xc3\xb2\xbc\xbc\xcf\xbc\xc0"                                  // "STOPPED. "
+-#define MSG_CONTROL_RETRACT                 "\xcb\xb7\xba\xd0\xd8\xae\xb3 mm"                               // "Retract mm"
+-#define MSG_CONTROL_RETRACT_SWAP            "\xcb\xb7\xba\xd0\xd8\xae\xb3S mm"                              // "Swap Re.mm"
+-#define MSG_CONTROL_RETRACTF                "\xcb\xb7\xba\xd0\xda\xb0\xc4 mm/s"                             // "Retract  V"
+-#define MSG_CONTROL_RETRACT_ZLIFT           "\xc9\xbd\xde\xd9\xc0\xb2\xcb mm"                               // "Hop mm"
+-#define MSG_CONTROL_RETRACT_RECOVER         "\xd8\xb6\xca\xde\xb0 +mm"                                      // "UnRet +mm"
+-#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "\xd8\xb6\xca\xde\xb0S +mm"                                     // "S UnRet+mm"
+-#define MSG_CONTROL_RETRACT_RECOVERF        "\xd8\xb6\xca\xde\xb0\xda\xb0\xc4 mm/s"                         // "UnRet  V"
+-#define MSG_AUTORETRACT                     "\xbc\xde\xc4\xde\xb3\xcb\xb7\xba\xd0"                             // "AutoRetr."
+-#define MSG_FILAMENTCHANGE                  "\xcc\xa8\xd7\xd2\xdd\xc4\xba\xb3\xb6\xdd"                      // "Change filament"
+-#define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                    // "Init. SD card"
+-#define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                            // "Change SD card"
+-#define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2" // "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "\xb9\xde\xdd\xc3\xdd\xcaXY\xb2\xc4\xde\xb3\xba\xdeZ"           // "Home X/Y before Z"
+-#define MSG_ZPROBE_ZOFFSET                  "Z\xb5\xcc\xbe\xaf\xc4"                                         // "Z Offset"
+-#define MSG_BABYSTEP_X                      "X\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep X"
+-#define MSG_BABYSTEP_Y                      "Y\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep Y"
+-#define MSG_BABYSTEP_Z                      "Z\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep Z"
+-#define MSG_ENDSTOP_ABORT                   "\xb4\xdd\xc4\xde\xbd\xc4\xaf\xcc\xdf\x20\xbb\xc4\xde\xb3"      // "Endstop abort"
+-#define MSG_HEATING_FAILED_LCD              "\xb6\xc8\xc2\xbc\xaf\xca\xde\xb2"                              // "Heating failed"
+-#define MSG_ERR_REDUNDANT_TEMP              "\xb4\xd7\xb0:\xbc\xde\xae\xb3\xc1\xae\xb3\xbb\xb0\xd0\xbd\xc0\xb0\xb7\xc9\xb3" // "Err: REDUNDANT TEMP"
+-#define MSG_THERMAL_RUNAWAY                 "\xc8\xc2\xce\xde\xb3\xbf\xb3"                                                  // "THERMAL RUNAWAY"
+-#define MSG_ERR_MAXTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6"                         // "Err: MAXTEMP"
+-#define MSG_ERR_MINTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"                             // "Err: MINTEMP"
+-#define MSG_ERR_MAXTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6" // "Err: MAXTEMP BED"
+-#define MSG_ERR_MINTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"     // "Err: MINTEMP BED"
+-#define MSG_END_HOUR                        "\xbc\xde\xb6\xdd"                                              // "hours"
+-#define MSG_END_MINUTE                      "\xcc\xdd"                                                      // "minutes"
+-#define MSG_HEATING                         "\xb6\xc8\xc2\xc1\xad\xb3"                                      // "Heating..."
+-#define MSG_HEATING_COMPLETE                "\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"                              // "Heating done."
+-#define MSG_BED_HEATING                     "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xc1\xad\xb3"              // "Bed Heating."
+-#define MSG_BED_DONE                        "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"      // "Bed done."
++#define MSG_FILAMENT_DIAM                   "\xcc\xa8\xd7\xd2\xdd\xc4\xc1\xae\xaf\xb9\xb2"                  // "ﾌｨﾗﾒﾝﾄﾁｮｯｹｲ" ("Fil. Dia.")
++#define MSG_CONTRAST                        "LCD\xba\xdd\xc4\xd7\xbd\xc4"                                   // "LCDｺﾝﾄﾗｽﾄ" ("LCD contrast")
++#define MSG_STORE_EPROM                     "\xd2\xd3\xd8\xcd\xb6\xb8\xc9\xb3"                              // "ﾒﾓﾘﾍｶｸﾉｳ" ("Store memory")
++#define MSG_LOAD_EPROM                      "\xd2\xd3\xd8\xb6\xd7\xd6\xd0\xba\xd0"                          // "ﾒﾓﾘｶﾗﾖﾐｺﾐ" ("Load memory")
++#define MSG_RESTORE_FAILSAFE                "\xbe\xaf\xc3\xb2\xd8\xbe\xaf\xc4"                              // "ｾｯﾃｲﾘｾｯﾄ" ("Restore failsafe")
++#define MSG_REFRESH                         "\xd8\xcc\xda\xaf\xbc\xad"                                      // "ﾘﾌﾚｯｼｭ" ("Refresh")
++#define MSG_WATCH                           "\xb2\xdd\xcc\xab"                                              // "ｲﾝﾌｫ" ("Info screen")
++#define MSG_PREPARE                         "\xbc\xde\xad\xdd\xcb\xde\xbe\xaf\xc3\xb2"                      // "ｼﾞｭﾝﾋﾞｾｯﾃｲ" ("Prepare")
++#define MSG_TUNE                            "\xc1\xae\xb3\xbe\xb2"                                          // "ﾁｮｳｾｲ" ("Tune")
++#define MSG_PAUSE_PRINT                     "\xb2\xc1\xbc\xde\xc3\xb2\xbc"                                  // "ｲﾁｼﾞﾃｲｼ" ("Pause print")
++#define MSG_RESUME_PRINT                    "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "ﾌﾟﾘﾝﾄｻｲｶｲ" ("Resume print")
++#define MSG_STOP_PRINT                      "\xcc\xdf\xd8\xdd\xc4\xc3\xb2\xbc"                              // "ﾌﾟﾘﾝﾄﾃｲｼ" ("Stop print")
++#define MSG_CARD_MENU                       "SD\xb6\xb0\xc4\xde\xb6\xd7\xcc\xdf\xd8\xdd\xc4"                // "SDｶｰﾄﾞｶﾗﾌﾟﾘﾝﾄ" ("Print from SD")
++#define MSG_NO_CARD                         "SD\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                // "SDｶｰﾄﾞｶﾞｱﾘﾏｾﾝ" ("No SD card")
++#define MSG_DWELL                           "\xbd\xd8\xb0\xcc\xdf"                                          // "ｽﾘｰﾌﾟ" ("Sleep...")
++#define MSG_USERWAIT                        "\xbc\xca\xde\xd7\xb8\xb5\xcf\xc1\xb8\xc0\xde\xbb\xb2"          // "ｼﾊﾞﾗｸｵﾏﾁｸﾀﾞｻｲ" ("Wait for user...")
++#define MSG_RESUMING                        "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "ﾌﾟﾘﾝﾄｻｲｶｲ" ("Resuming print")
++#define MSG_PRINT_ABORTED                   "\xcc\xdf\xd8\xdd\xc4\xc1\xad\xb3\xbc\xbb\xda\xcf\xbc\xc0"      // "ﾌﾟﾘﾝﾄﾁｭｳｼｻﾚﾏｼﾀ" ("Print aborted")
++#define MSG_NO_MOVE                         "\xb3\xba\xde\xb7\xcf\xbe\xdd"                                  // "ｳｺﾞｷﾏｾﾝ" ("No move.")
++#define MSG_KILLED                          "\xcb\xbc\xde\xae\xb3\xc3\xb2\xbc"                              // "ﾋｼﾞｮｳﾃｲｼ" ("KILLED. ")
++#define MSG_STOPPED                         "\xc3\xb2\xbc\xbc\xcf\xbc\xc0"                                  // "ﾃｲｼｼﾏｼﾀ" ("STOPPED. ")
++#define MSG_CONTROL_RETRACT                 "\xcb\xb7\xba\xd0\xd8\xae\xb3 mm"                               // "ﾋｷｺﾐﾘｮｳ mm" ("Retract mm")
++#define MSG_CONTROL_RETRACT_SWAP            "\xcb\xb7\xba\xd0\xd8\xae\xb3S mm"                              // "ﾋｷｺﾐﾘｮｳS mm" ("Swap Re.mm")
++#define MSG_CONTROL_RETRACTF                "\xcb\xb7\xba\xd0\xda\xb0\xc4 mm/s"                             // "ﾋｷｺﾐﾚｰﾄ mm/s" ("Retract  V")
++#define MSG_CONTROL_RETRACT_ZLIFT           "\xc9\xbd\xde\xd9\xc0\xb2\xcb mm"                               // "ﾉｽﾞﾙﾀｲﾋ mm" ("Hop mm")
++#define MSG_CONTROL_RETRACT_RECOVER         "\xd8\xb6\xca\xde\xb0 +mm"                                      // "ﾘｶﾊﾞｰ +mm" ("UnRet +mm")
++#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "\xd8\xb6\xca\xde\xb0S +mm"                                     // "ﾘｶﾊﾞｰS +mm" ("S UnRet+mm")
++#define MSG_CONTROL_RETRACT_RECOVERF        "\xd8\xb6\xca\xde\xb0\xda\xb0\xc4 mm/s"                         // "ﾘｶﾊﾞｰﾚｰﾄ mm/s" ("UnRet  V")
++#define MSG_AUTORETRACT                     "\xbc\xde\xc4\xde\xb3\xcb\xb7\xba\xd0"                          // "ｼﾞﾄﾞｳﾋｷｺﾐ" ("AutoRetr.")
++#define MSG_FILAMENTCHANGE                  "\xcc\xa8\xd7\xd2\xdd\xc4\xba\xb3\xb6\xdd"                      // "ﾌｨﾗﾒﾝﾄｺｳｶﾝ" ("Change filament")
++#define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                    // "SDｶｰﾄﾞｻｲﾖﾐｺﾐ" ("Init. SD card")
++#define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                            // "SDｶｰﾄﾞｺｳｶﾝ" ("Change SD card")
++#define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2" // "Zﾌﾟﾛｰﾌﾞ ﾍﾞｯﾄﾞｶﾞｲ" ("Z probe out. bed")
++#define MSG_YX_UNHOMED                      "\xb9\xde\xdd\xc3\xdd\xcaXY\xb2\xc4\xde\xb3\xba\xdeZ"           // "ｹﾞﾝﾃﾝﾊXYｲﾄﾞｳｺﾞZ" ("Home X/Y before Z")
++#define MSG_ZPROBE_ZOFFSET                  "Z\xb5\xcc\xbe\xaf\xc4"                                         // "Zｵﾌｾｯﾄ" ("Z Offset")
++#define MSG_BABYSTEP_X                      "X\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Xｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep X")
++#define MSG_BABYSTEP_Y                      "Y\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Yｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep Y")
++#define MSG_BABYSTEP_Z                      "Z\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Zｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep Z")
++#define MSG_ENDSTOP_ABORT                   "\xb4\xdd\xc4\xde\xbd\xc4\xaf\xcc\xdf\x20\xbb\xc4\xde\xb3"      // "ｴﾝﾄﾞｽﾄｯﾌﾟ ｻﾄﾞｳ" ("Endstop abort")
++#define MSG_HEATING_FAILED_LCD              "\xb6\xc8\xc2\xbc\xaf\xca\xde\xb2"                              // "ｶﾈﾂｼｯﾊﾞｲ" ("Heating failed")
++#define MSG_ERR_REDUNDANT_TEMP              "\xb4\xd7\xb0:\xbc\xde\xae\xb3\xc1\xae\xb3\xbb\xb0\xd0\xbd\xc0\xb0\xb7\xc9\xb3" // "ｴﾗｰ:ｼﾞｮｳﾁｮｳｻｰﾐｽﾀｰｷﾉｳ" ("Err: REDUNDANT TEMP")
++#define MSG_THERMAL_RUNAWAY                 "\xc8\xc2\xce\xde\xb3\xbf\xb3"                                                  // "ﾈﾂﾎﾞｳｿｳ" ("THERMAL RUNAWAY")
++#define MSG_ERR_MAXTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6"                         // "ｴﾗｰ:ｻｲｺｳｵﾝﾁｮｳｶ" ("Err: MAXTEMP")
++#define MSG_ERR_MINTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"                             // "ｴﾗｰ:ｻｲﾃｲｵﾝﾐﾏﾝ" ("Err: MINTEMP")
++#define MSG_ERR_MAXTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6" // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲｺｳｵﾝﾁｮｳｶ" ("Err: MAXTEMP BED")
++#define MSG_ERR_MINTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"     // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲﾃｲｵﾝﾐﾏﾝ" ("Err: MINTEMP BED")
++#define MSG_END_HOUR                        "\xbc\xde\xb6\xdd"                                              // "ｼﾞｶﾝ" ("hours")
++#define MSG_END_MINUTE                      "\xcc\xdd"                                                      // "ﾌﾝ" ("minutes")
++#define MSG_HEATING                         "\xb6\xc8\xc2\xc1\xad\xb3"                                      // "ｶﾈﾂﾁｭｳ" ("Heating...")
++#define MSG_HEATING_COMPLETE                "\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"                              // "ｶﾈﾂｶﾝﾘｮｳ" ("Heating done.")
++#define MSG_BED_HEATING                     "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xc1\xad\xb3"              // "ﾍﾞｯﾄﾞ ｶﾈﾂﾁｭｳ" ("Bed Heating.")
++#define MSG_BED_DONE                        "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"      // "ﾍﾞｯﾄﾞ ｶﾈﾂｶﾝﾘｮｳ" ("Bed done.")
+ 
+-#define MSG_DELTA_CALIBRATE                 "\xc3\xde\xd9\xc0\x20\xba\xb3\xbe\xb2"                          // "Delta Calibration"
+-#define MSG_DELTA_CALIBRATE_X               "X\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate X"
+-#define MSG_DELTA_CALIBRATE_Y               "Y\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate Y"
+-#define MSG_DELTA_CALIBRATE_Z               "Z\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate Z"
+-#define MSG_DELTA_CALIBRATE_CENTER          "\xc1\xad\xb3\xbc\xdd\x20\xba\xb3\xbe\xb2"                      // "Calibrate Center"
++#define MSG_DELTA_CALIBRATE                 "\xc3\xde\xd9\xc0\x20\xba\xb3\xbe\xb2"                          // "ﾃﾞﾙﾀ ｺｳｾｲ" ("Delta Calibration")
++#define MSG_DELTA_CALIBRATE_X               "X\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Xｼﾞｸ ｺｳｾｲ" ("Calibrate X")
++#define MSG_DELTA_CALIBRATE_Y               "Y\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Yｼﾞｸ ｺｳｾｲ" ("Calibrate Y")
++#define MSG_DELTA_CALIBRATE_Z               "Z\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Zｼﾞｸ ｺｳｾｲ" ("Calibrate Z")
++#define MSG_DELTA_CALIBRATE_CENTER          "\xc1\xad\xb3\xbc\xdd\x20\xba\xb3\xbe\xb2"                      // "ﾁｭｳｼﾝ ｺｳｾｲ" ("Calibrate Center")
+ 
+ #endif // LANGUAGE_KANA_H
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 7c1953c..633db9a 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -36,35 +36,35 @@
+ //#define SIMULATE_ROMFONT
+ #define DISPLAY_CHARSET_ISO10646_KANA
+ 
+-// This is very crude replacement of the codes used in language_kana.h from somebody who really does not know what he is doing.
+-// Just to show the potential benefit of unicode.
++// This just to show the potential benefit of unicode.
+ // This translation can be improved by using the full charset of unicode codeblock U+30A0 to U+30FF.
+ 
+ // 片仮名表示定義
+ #define WELCOME_MSG                         MACHINE_NAME " ready."
+ #define MSG_SD_INSERTED                     "カード ソウニュウサレマシタ"        // "Card inserted"
+ #define MSG_SD_REMOVED                      "カードガアリマセン"               // "Card removed"
++#define MSG_LCD_ENDSTOPS                    "エンドストップ"                  // "Endstops" // Max length 8 characters
+ #define MSG_MAIN                            "メイン"                       // "Main"
+ #define MSG_AUTOSTART                       "ジドウカイシ"                   // "Autostart"
+ #define MSG_DISABLE_STEPPERS                "モーターデンゲン オフ"            // "Disable steppers"
+ #define MSG_AUTO_HOME                       "ゲンテンニイドウ"                // "Auto home"
+ #define MSG_LEVEL_BED_HOMING                "ゲンテンニイドウ"                // "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "レベリングカイシ"                //"Click to Begin"
+-#define MSG_LEVEL_BED_DONE                  "レベリングカンリョウ"              //"Leveling Done!"
+-#define MSG_LEVEL_BED_CANCEL                "トリヤメ"                      //"Cancel"
++#define MSG_LEVEL_BED_WAITING               "レベリングカイシ"                // "Click to Begin"
++#define MSG_LEVEL_BED_DONE                  "レベリングカンリョウ"              // "Leveling Done!"
++#define MSG_LEVEL_BED_CANCEL                "トリヤメ"                      // "Cancel"
+ #define MSG_SET_HOME_OFFSETS                "キジュンオフセットセッテイ"         // "Set home offsets"
+-#define MSG_HOME_OFFSETS_APPLIED            "オフセット テキヨウサレマシタ"       //"Offsets applied"
++#define MSG_HOME_OFFSETS_APPLIED            "オフセット テキヨウサレマシタ"       // "Offsets applied"
+ #define MSG_SET_ORIGIN                      "キジュンセット"                 // "Set origin"
+ #define MSG_PREHEAT_PLA                     "PLA ヨネツ"                   // "Preheat PLA"
+ #define MSG_PREHEAT_PLA_N                   MSG_PREHEAT_PLA " "
+ #define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " スベテ"     // " All"
+-#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " ベッド"     // "Bed"
+-#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " セッテイ"    // "conf"
++#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " ベッド"     // " Bed"
++#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " セッテイ"    // " conf"
+ #define MSG_PREHEAT_ABS                     "ABS ヨネツ"                  // "Preheat ABS"
+ #define MSG_PREHEAT_ABS_N                   MSG_PREHEAT_ABS " "
+ #define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " スベテ"     // " All"
+-#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " ベッド"     // "Bed"
+-#define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " セッテイ"    // "conf"
++#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " ベッド"     // " Bed"
++#define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " セッテイ"    // " conf"
+ #define MSG_COOLDOWN                        "カネツテイシ"                  // "Cooldown"
+ #define MSG_SWITCH_PS_ON                    "デンゲン オン"                 // "Switch power on"
+ #define MSG_SWITCH_PS_OFF                   "デンゲン オフ"                 // "Switch power off"
+@@ -96,7 +96,7 @@
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+-#define MSG_ACC                             "カソクド mm/s^2"              // "Accel"
++#define MSG_ACC                             "カソクド mm/s2"               // "Accel"
+ #define MSG_VXY_JERK                        "XYジク ヤクド mm/s"            // "Vxy-jerk"
+ #define MSG_VZ_JERK                         "Zジク ヤクド mm/s"             // "Vz-jerk"
+ #define MSG_VE_JERK                         "エクストルーダー ヤクド"          // "Ve-jerk"
+

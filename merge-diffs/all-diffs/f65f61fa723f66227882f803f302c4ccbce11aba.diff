@@ -1,0 +1,364 @@
+commit f65f61fa723f66227882f803f302c4ccbce11aba (from e0a42d3f9afeea6f3e78782c8c744926fef6de77)
+Merge: e0a42d3 7717e1c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 22 22:40:52 2015 -0700
+
+    Merge pull request #1672 from thinkyhead/fix_probeaction
+    
+    Fix mangled probe_pt calls
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index c892cd9..63f9063 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -417,12 +417,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index cdf9e5c..10aa47f 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1370,12 +1370,11 @@ static void retract_z_probe() {
+ 
+ }
+ 
+-enum ProbeAction
+-{
+-    ProbeStay             = 0,
+-    ProbeEngage           = (1 << 0),
+-    ProbeRetract          = (1 << 1),
+-    ProbeEngageAndRetract = (ProbeEngage | ProbeRetract),
++enum ProbeAction {
++  ProbeStay             = 0,
++  ProbeEngage           = BIT(0),
++  ProbeRetract          = BIT(1),
++  ProbeEngageAndRetract = (ProbeEngage | ProbeRetract)
+ };
+ 
+ /// Probe bed height at position (x,y), returns the measured z value
+@@ -2178,7 +2177,7 @@ inline void gcode_G28() {
+     #ifdef AUTO_BED_LEVELING_GRID
+ 
+     #ifndef DELTA
+-      bool topo_flag = verbose_level > 2 || code_seen('T') || code_seen('t');
++      bool do_topography_map = verbose_level > 2 || code_seen('T') || code_seen('t');
+     #endif
+ 
+       if (verbose_level > 0)
+@@ -2239,9 +2238,10 @@ inline void gcode_G28() {
+ 
+     st_synchronize();
+ 
+-  #ifdef DELTA
+-    reset_bed_level();
+-  #else
++    #ifdef DELTA
++      reset_bed_level();
++    #else
++
+     // make sure the bed_level_rotation_matrix is identity or the planner will get it incorectly
+     //vector_3 corrected_position = plan_get_position_mm();
+     //corrected_position.debug("position before G29");
+@@ -2282,42 +2282,36 @@ inline void gcode_G28() {
+       delta_grid_spacing[1] = yGridSpacing;
+ 
+       float z_offset = Z_PROBE_OFFSET_FROM_EXTRUDER;
+-      if (code_seen(axis_codes[Z_AXIS])) {
+-        z_offset += code_value();
+-      }
++      if (code_seen(axis_codes[Z_AXIS])) z_offset += code_value();
+     #endif
+ 
+       int probePointCounter = 0;
+       bool zig = true;
+ 
+-      for (int yCount=0; yCount < auto_bed_leveling_grid_points; yCount++)
+-      {
++      for (int yCount = 0; yCount < auto_bed_leveling_grid_points; yCount++) {
+         double yProbe = front_probe_bed_position + yGridSpacing * yCount;
+         int xStart, xStop, xInc;
+ 
+-        if (zig)
+-        {
++        if (zig) {
+           xStart = 0;
+           xStop = auto_bed_leveling_grid_points;
+           xInc = 1;
+           zig = false;
+         }
+-        else
+-        {
++        else {
+           xStart = auto_bed_leveling_grid_points - 1;
+           xStop = -1;
+           xInc = -1;
+           zig = true;
+         }
+ 
+-      #ifndef DELTA
+-        // If topo_flag is set then don't zig-zag. Just scan in one direction.
+-        // This gets the probe points in more readable order.
+-        if (!topo_flag) zig = !zig;
+-      #endif
++        #ifndef DELTA
++          // If do_topography_map is set then don't zig-zag. Just scan in one direction.
++          // This gets the probe points in more readable order.
++          if (!do_topography_map) zig = !zig;
++        #endif
+ 
+-        for (int xCount=xStart; xCount != xStop; xCount += xInc)
+-        {
++        for (int xCount = xStart; xCount != xStop; xCount += xInc) {
+           double xProbe = left_probe_bed_position + xGridSpacing * xCount;
+ 
+           // raise extruder
+@@ -2384,49 +2378,31 @@ inline void gcode_G28() {
+         }
+       }
+ 
+-      if (topo_flag) {
+-
+-        int xx, yy;
++      // Show the Topography map if enabled
++      if (do_topography_map) {
+ 
+         SERIAL_PROTOCOLPGM(" \nBed Height Topography: \n");
+-        #if TOPO_ORIGIN == OriginFrontLeft
+-          SERIAL_PROTOCOLPGM("+-----------+\n");
+-          SERIAL_PROTOCOLPGM("|...Back....|\n");
+-          SERIAL_PROTOCOLPGM("|Left..Right|\n");
+-          SERIAL_PROTOCOLPGM("|...Front...|\n");
+-          SERIAL_PROTOCOLPGM("+-----------+\n");
+-          for (yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--)
+-        #else
+-          for (yy = 0; yy < auto_bed_leveling_grid_points; yy++)
+-        #endif
+-          {
+-            #if TOPO_ORIGIN == OriginBackRight
+-              for (xx = 0; xx < auto_bed_leveling_grid_points; xx++)
+-            #else
+-              for (xx = auto_bed_leveling_grid_points - 1; xx >= 0; xx--)
+-            #endif
+-              {
+-                int ind =
+-                  #if TOPO_ORIGIN == OriginBackRight || TOPO_ORIGIN == OriginFrontLeft
+-                    yy * auto_bed_leveling_grid_points + xx
+-                  #elif TOPO_ORIGIN == OriginBackLeft
+-                    xx * auto_bed_leveling_grid_points + yy
+-                  #elif TOPO_ORIGIN == OriginFrontRight
+-                    abl2 - xx * auto_bed_leveling_grid_points - yy - 1
+-                  #endif
+-                ;
+-                float diff = eqnBVector[ind] - mean;
+-                if (diff >= 0.0)
+-                  SERIAL_PROTOCOLPGM(" +");   // Include + for column alignment
+-                else
+-                  SERIAL_PROTOCOLPGM(" ");
+-                SERIAL_PROTOCOL_F(diff, 5);
+-              } // xx
+-              SERIAL_EOL;
+-          } // yy
++        SERIAL_PROTOCOLPGM("+-----------+\n");
++        SERIAL_PROTOCOLPGM("|...Back....|\n");
++        SERIAL_PROTOCOLPGM("|Left..Right|\n");
++        SERIAL_PROTOCOLPGM("|...Front...|\n");
++        SERIAL_PROTOCOLPGM("+-----------+\n");
++
++        for (int yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--) {
++          for (int xx = auto_bed_leveling_grid_points - 1; xx >= 0; xx--) {
++            int ind = yy * auto_bed_leveling_grid_points + xx;
++            float diff = eqnBVector[ind] - mean;
++            if (diff >= 0.0)
++              SERIAL_PROTOCOLPGM(" +");   // Include + for column alignment
++            else
++              SERIAL_PROTOCOLPGM(" ");
++            SERIAL_PROTOCOL_F(diff, 5);
++          } // xx
+           SERIAL_EOL;
++        } // yy
++        SERIAL_EOL;
+ 
+-      } //topo_flag
++      } //do_topography_map
+ 
+ 
+       set_bed_level_equation_lsq(plane_equation_coefficients);
+@@ -2448,9 +2424,9 @@ inline void gcode_G28() {
+         z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, ProbeRetract, verbose_level);
+       }
+       else {
+-        z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING, verbose_level=verbose_level);
+-        z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, verbose_level=verbose_level);
+-        z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, verbose_level=verbose_level);
++        z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING, ProbeEngageAndRetract, verbose_level);
++        z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, ProbeEngageAndRetract, verbose_level);
++        z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, ProbeEngageAndRetract, verbose_level);
+       }
+       clean_up_after_endstop_move();
+       set_bed_level_equation_3pts(z_at_pt_1, z_at_pt_2, z_at_pt_3);
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index 57ec74f..fe1e6bd 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -440,12 +440,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 17da679..973fb63 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -386,12 +386,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+   // Note: this feature occupies 10'206 byte
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // set the rectangle in which to probe
++home_offset    // set the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define BACK_PROBE_BED_POSITION 180
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index 9766961..42dcd38 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -386,12 +386,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+   // Note: this feature occupies 10'206 byte
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // set the rectangle in which to probe
++home_offset    // set the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define BACK_PROBE_BED_POSITION 180
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 3245546..484729c 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -410,12 +410,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index b1c63eb..3b178c6 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -415,12 +415,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 6c12c2f..e6b2730 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -439,12 +439,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 8d348ba..26d34dc 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -409,12 +409,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index cb61ca1..104b51e 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -407,12 +407,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index bf4e279..e3f5922 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -409,12 +409,6 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   #ifdef AUTO_BED_LEVELING_GRID
+ 
+-    // Use one of these defines to specify the origin
+-    // for a topographical map to be printed for your bed.
+-    enum { OriginBackLeft, OriginFrontLeft, OriginBackRight, OriginFrontRight };
+-    #define TOPO_ORIGIN OriginFrontLeft
+-
+-    // The edges of the rectangle in which to probe
+     #define LEFT_PROBE_BED_POSITION 15
+     #define RIGHT_PROBE_BED_POSITION 170
+     #define FRONT_PROBE_BED_POSITION 20
+

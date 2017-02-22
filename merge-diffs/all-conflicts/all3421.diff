@@ -1,0 +1,249 @@
+commit 373f3ecab3ea9cb18d83d1899e7ff33cd515b0eb (from e36d31a3b7b699324d38d4b6d60d9e8ec638c114)
+Merge: e36d31a 9e7b505
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Jun 9 00:51:58 2013 +0200
+
+    Merge branch 'deltabot' of https://github.com/jcrocholl/Marlin into deltabot
+    
+    Conflicts:
+    	Marlin/Configuration.h
+    	Marlin/Marlin_main.cpp
+    	Marlin/pins.h
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 2c1b854..0ad5639 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -63,6 +63,43 @@
+ 
+ #define POWER_SUPPLY 1
+ 
++
++//===========================================================================
++//============================== Delta Settings =============================
++//===========================================================================
++// Enable DELTA kinematics
++#define DELTA
++
++// Make delta curves from many straight lines (linear interpolation).
++// This is a trade-off between visible corners (not enough segments)
++// and processor overload (too many expensive sqrt calls).
++#define DELTA_SEGMENTS_PER_SECOND 200
++
++// Center-to-center distance of the holes in the diagonal push rods.
++#define DELTA_DIAGONAL_ROD 250.0 // mm
++
++// Horizontal offset from middle of printer to smooth rod center.
++#define DELTA_SMOOTH_ROD_OFFSET 175.0 // mm
++
++// Horizontal offset of the universal joints on the end effector.
++#define DELTA_EFFECTOR_OFFSET 33.0 // mm
++
++// Horizontal offset of the universal joints on the carriages.
++#define DELTA_CARRIAGE_OFFSET 18.0 // mm
++
++// Effective horizontal distance bridged by diagonal push rods.
++#define DELTA_RADIUS (DELTA_SMOOTH_ROD_OFFSET-DELTA_EFFECTOR_OFFSET-DELTA_CARRIAGE_OFFSET)
++
++// Effective X/Y positions of the three vertical towers.
++#define SIN_60 0.8660254037844386
++#define COS_60 0.5
++#define DELTA_TOWER1_X -SIN_60*DELTA_RADIUS // front left tower
++#define DELTA_TOWER1_Y -COS_60*DELTA_RADIUS
++#define DELTA_TOWER2_X SIN_60*DELTA_RADIUS // front right tower
++#define DELTA_TOWER2_Y -COS_60*DELTA_RADIUS
++#define DELTA_TOWER3_X 0.0 // back middle tower
++#define DELTA_TOWER3_Y DELTA_RADIUS
++
+ //===========================================================================
+ //=============================Thermal Settings  ============================
+ //===========================================================================
+@@ -128,8 +165,8 @@
+ // PID settings:
+ // Comment the following line to disable PID and enable bang-bang.
+ #define PIDTEMP
+-#define BANG_MAX 256 // limits current to nozzle while in bang-bang mode; 256=full current
+-#define PID_MAX 256 // limits current to nozzle while PID is active (see PID_FUNCTIONAL_RANGE below); 256=full current
++#define BANG_MAX 255 // limits current to nozzle while in bang-bang mode; 255=full current
++#define PID_MAX 255 // limits current to nozzle while PID is active (see PID_FUNCTIONAL_RANGE below); 255=full current
+ #ifdef PIDTEMP
+   //#define PID_DEBUG // Sends debug data to the serial port.
+   //#define PID_OPENLOOP 1 // Puts PID in open loop. M104/M140 sets the output power from 0 to PID_MAX
+@@ -172,9 +209,9 @@
+ 
+ // This sets the max power delived to the bed, and replaces the HEATER_BED_DUTY_CYCLE_DIVIDER option.
+ // all forms of bed control obey this (PID, bang-bang, bang-bang with hysteresis)
+-// setting this to anything other than 256 enables a form of PWM to the bed just like HEATER_BED_DUTY_CYCLE_DIVIDER did,
++// setting this to anything other than 255 enables a form of PWM to the bed just like HEATER_BED_DUTY_CYCLE_DIVIDER did,
+ // so you shouldn't use it unless you are OK with PWM on your bed.  (see the comment on enabling PIDTEMPBED)
+-#define MAX_BED_POWER 256 // limits duty cycle to bed; 256=full current
++#define MAX_BED_POWER 255 // limits duty cycle to bed; 255=full current
+ 
+ #ifdef PIDTEMPBED
+ //120v 250W silicone heater into 4mm borosilicate (MendelMax 1.5+)
+@@ -282,9 +319,11 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define BED_CENTER_AT_0_0  // If defined, the center of the bed is at (X=0, Y=0)
+ 
+ //Manual homing switch locations:
++// For deltabots this means top and center of the cartesian print volume.
+ #define MANUAL_X_HOME_POS 0
+ #define MANUAL_Y_HOME_POS 0
+ #define MANUAL_Z_HOME_POS 0
++//#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
+ 
+ //// MOVEMENT SETTINGS
+ #define NUM_AXIS 4 // The axis order in all axis related arrays is X, Y, Z, E
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 2e87d7b..2906b46 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -157,6 +157,9 @@ void FlushSerialRequestResend();
+ void ClearToSend();
+ 
+ void get_coordinates();
++#ifdef DELTA
++void calculate_delta(float cartesian[3]);
++#endif
+ void prepare_move();
+ void kill();
+ void Stop();
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index f2bcb9a..b7ccf26 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -198,6 +198,9 @@ int EtoPPressure=0;
+ //===========================================================================
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ static float destination[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
++#ifdef DELTA
++static float delta[3] = {0.0, 0.0, 0.0};
++#endif
+ static float offset[3] = {0.0, 0.0, 0.0};
+ static bool home_all_axis = true;
+ static float feedrate = 1500.0, next_feedrate, saved_feedrate;
+@@ -836,6 +839,10 @@ void process_commands()
+         feedrate = 0.0;
+         st_synchronize();
+         endstops_hit_on_purpose();
++
++        current_position[X_AXIS] = destination[X_AXIS];
++        current_position[Y_AXIS] = destination[Y_AXIS];
++        current_position[Z_AXIS] = destination[Z_AXIS];
+       }
+       #endif
+ 
+@@ -847,14 +854,14 @@ void process_commands()
+       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
+         HOMEAXIS(Y);
+       }
+-
++      
+       #if Z_HOME_DIR < 0                      // If homing towards BED do Z last
+       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+         HOMEAXIS(Z);
+       }
+       #endif
+-
+-      if(code_seen(axis_codes[X_AXIS]))
++      
++      if(code_seen(axis_codes[X_AXIS])) 
+       {
+         if(code_value_long() != 0) {
+           current_position[X_AXIS]=code_value()+add_homeing[0];
+@@ -872,8 +879,12 @@ void process_commands()
+           current_position[Z_AXIS]=code_value()+add_homeing[2];
+         }
+       }
+-      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-
++      #ifdef DELTA
++        calculate_delta(current_position);
++        plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
++      #else
++        plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++      #endif
+       #ifdef ENDSTOPS_ONLY_FOR_HOMING
+         enable_endstops(false);
+       #endif
+@@ -2051,11 +2062,64 @@ void clamp_to_software_endstops(float target[3])
+   }
+ }
+ 
++#ifdef DELTA
++void calculate_delta(float cartesian[3])
++{
++  delta[X_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
++                       - sq(DELTA_TOWER1_X-cartesian[X_AXIS])
++                       - sq(DELTA_TOWER1_Y-cartesian[Y_AXIS])
++                       ) + cartesian[Z_AXIS];
++  delta[Y_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
++                       - sq(DELTA_TOWER2_X-cartesian[X_AXIS])
++                       - sq(DELTA_TOWER2_Y-cartesian[Y_AXIS])
++                       ) + cartesian[Z_AXIS];
++  delta[Z_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
++                       - sq(DELTA_TOWER3_X-cartesian[X_AXIS])
++                       - sq(DELTA_TOWER3_Y-cartesian[Y_AXIS])
++                       ) + cartesian[Z_AXIS];
++  /*
++  SERIAL_ECHOPGM("cartesian x="); SERIAL_ECHO(cartesian[X_AXIS]);
++  SERIAL_ECHOPGM(" y="); SERIAL_ECHO(cartesian[Y_AXIS]);
++  SERIAL_ECHOPGM(" z="); SERIAL_ECHOLN(cartesian[Z_AXIS]);
++
++  SERIAL_ECHOPGM("delta x="); SERIAL_ECHO(delta[X_AXIS]);
++  SERIAL_ECHOPGM(" y="); SERIAL_ECHO(delta[Y_AXIS]);
++  SERIAL_ECHOPGM(" z="); SERIAL_ECHOLN(delta[Z_AXIS]);
++  */
++}
++#endif
++
+ void prepare_move()
+ {
+   clamp_to_software_endstops(destination);
+ 
+   previous_millis_cmd = millis();
++#ifdef DELTA
++  float difference[NUM_AXIS];
++  for (int8_t i=0; i < NUM_AXIS; i++) {
++    difference[i] = destination[i] - current_position[i];
++  }
++  float cartesian_mm = sqrt(sq(difference[X_AXIS]) +
++                            sq(difference[Y_AXIS]) +
++                            sq(difference[Z_AXIS]));
++  if (cartesian_mm < 0.000001) { cartesian_mm = abs(difference[E_AXIS]); }
++  if (cartesian_mm < 0.000001) { return; }
++  float seconds = 6000 * cartesian_mm / feedrate / feedmultiply;
++  int steps = max(1, int(DELTA_SEGMENTS_PER_SECOND * seconds));
++  // SERIAL_ECHOPGM("mm="); SERIAL_ECHO(cartesian_mm);
++  // SERIAL_ECHOPGM(" seconds="); SERIAL_ECHO(seconds);
++  // SERIAL_ECHOPGM(" steps="); SERIAL_ECHOLN(steps);
++  for (int s = 1; s <= steps; s++) {
++    float fraction = float(s) / float(steps);
++    for(int8_t i=0; i < NUM_AXIS; i++) {
++      destination[i] = current_position[i] + difference[i] * fraction;
++    }
++    calculate_delta(destination);
++    plan_buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS],
++                     destination[E_AXIS], feedrate*feedmultiply/60/100.0,
++                     active_extruder);
++  }
++#else
+   // Do not use feedmultiply for E or Z only moves
+   if( (current_position[X_AXIS] == destination [X_AXIS]) && (current_position[Y_AXIS] == destination [Y_AXIS])) {
+       plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+@@ -2063,6 +2127,7 @@ void prepare_move()
+   else {
+     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate*feedmultiply/60/100.0, active_extruder);
+   }
++#endif
+   for(int8_t i=0; i < NUM_AXIS; i++) {
+     current_position[i] = destination[i];
+   }
+@@ -2305,4 +2370,5 @@ bool setTargetedHotend(int code){
+     }
+   }
+   return false;
+-}
+\ No newline at end of file
++}
++
+

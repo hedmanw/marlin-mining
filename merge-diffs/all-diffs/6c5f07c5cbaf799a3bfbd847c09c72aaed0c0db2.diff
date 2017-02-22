@@ -1,0 +1,205 @@
+commit 6c5f07c5cbaf799a3bfbd847c09c72aaed0c0db2 (from 3d014922285d2ab361342d58a057967e2966c42f)
+Merge: 3d01492 b0f198c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 4 14:41:43 2015 -0700
+
+    Merge pull request #1813 from thinkyhead/fixup_probing
+    
+    Fix bad thermal runaway trigger
+
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 1e3c2b6..28e1afb 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -76,15 +76,14 @@ unsigned char soft_pwm_bed;
+ #define HAS_HEATER_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0)
+ #define HAS_BED_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_BED_PERIOD) && THERMAL_RUNAWAY_PROTECTION_BED_PERIOD > 0 && TEMP_SENSOR_BED != 0)
+ #if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
+-  enum TRState { TRInactive, TRFirstHeating, TRStable };
+-  static bool thermal_runaway = false;
++  enum TRState { TRReset, TRInactive, TRFirstHeating, TRStable, TRRunaway };
+   void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
+   #if HAS_HEATER_THERMAL_PROTECTION
+-    static TRState thermal_runaway_state_machine[4] = { TRInactive, TRInactive, TRInactive, TRInactive };
++    static TRState thermal_runaway_state_machine[4] = { TRReset, TRReset, TRReset, TRReset };
+     static unsigned long thermal_runaway_timer[4]; // = {0,0,0,0};
+   #endif
+   #if HAS_BED_THERMAL_PROTECTION
+-    static TRState thermal_runaway_bed_state_machine = TRInactive;
++    static TRState thermal_runaway_bed_state_machine = TRReset;
+     static unsigned long thermal_runaway_bed_timer;
+   #endif
+ #endif
+@@ -1007,7 +1006,7 @@ void setWatch() {
+ 
+   void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc) {
+ 
+-    static int tr_target_temperature[EXTRUDERS+1];
++    static float tr_target_temperature[EXTRUDERS+1] = { 0.0 };
+ 
+     /*
+         SERIAL_ECHO_START;
+@@ -1023,20 +1022,23 @@ void setWatch() {
+         SERIAL_ECHOPGM(target_temperature);
+         SERIAL_EOL;
+     */
+-    if (target_temperature == 0 || thermal_runaway) {
+-      *state = TRInactive;
+-      *timer = 0;
+-      return;
+-    }
+ 
+     int heater_index = heater_id >= 0 ? heater_id : EXTRUDERS;
+ 
++    // If the target temperature changes, restart
++    if (tr_target_temperature[heater_index] != target_temperature)
++      *state = TRReset;
++
+     switch (*state) {
++      case TRReset:
++        *timer = 0;
++        *state = TRInactive;
++        break;
+       // Inactive state waits for a target temperature to be set
+       case TRInactive:
+         if (target_temperature > 0) {
+-          *state = TRFirstHeating;
+           tr_target_temperature[heater_index] = target_temperature;
++          *state = TRFirstHeating;
+         }
+         break;
+       // When first heating, wait for the temperature to be reached then go to Stable state
+@@ -1045,31 +1047,24 @@ void setWatch() {
+         break;
+       // While the temperature is stable watch for a bad temperature
+       case TRStable:
+-      {
+-        // If the target temperature changes, restart
+-        if (tr_target_temperature[heater_index] != target_temperature) {
+-          *state = TRInactive;
+-          break;
+-        }
+-
+         // If the temperature is over the target (-hysteresis) restart the timer
+-        if (temperature >= tr_target_temperature[heater_index] - hysteresis_degc) *timer = millis();
+-
+-        // If the timer goes too long without a reset, trigger shutdown
+-        else if (millis() > *timer + period_seconds * 1000UL) {
+-          SERIAL_ERROR_START;
+-          SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
+-          if (heater_id < 0) SERIAL_ERRORLNPGM("bed"); else SERIAL_ERRORLN(heater_id);
+-          LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY);
+-          thermal_runaway = true;
+-          for (;;) {
+-            disable_heater();
+-            disable_all_steppers();
+-            manage_heater();
+-            lcd_update();
+-          }
++        if (temperature >= tr_target_temperature[heater_index] - hysteresis_degc)
++          *timer = millis();
++          // If the timer goes too long without a reset, trigger shutdown
++        else if (millis() > *timer + period_seconds * 1000UL)
++          *state = TRRunaway;
++        break;
++      case TRRunaway:
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
++        if (heater_id < 0) SERIAL_ERRORLNPGM("bed"); else SERIAL_ERRORLN(heater_id);
++        LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY);
++        disable_heater();
++        disable_all_steppers();
++        for (;;) {
++          manage_heater();
++          lcd_update();
+         }
+-      } break;
+     }
+   }
+ 
+
+commit 6c5f07c5cbaf799a3bfbd847c09c72aaed0c0db2 (from b0f198c153774aed21807e8464429b5231933249)
+Merge: 3d01492 b0f198c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 4 14:41:43 2015 -0700
+
+    Merge pull request #1813 from thinkyhead/fixup_probing
+    
+    Fix bad thermal runaway trigger
+
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 48daddb..3fe7afd 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -43,14 +43,12 @@
+ #define PROTOCOL_VERSION "1.0"
+ 
+ #if MB(ULTIMAKER)|| MB(ULTIMAKER_OLD)|| MB(ULTIMAIN_2)
+-  #undef FIRMWARE_URL
+   #define MACHINE_NAME "Ultimaker"
+   #define FIRMWARE_URL "http://firmware.ultimaker.com"
+ #elif MB(RUMBA)
+   #define MACHINE_NAME "Rumba"
+ #elif MB(3DRAG)
+   #define MACHINE_NAME "3Drag"
+-  #undef FIRMWARE_URL
+   #define FIRMWARE_URL "http://3dprint.elettronicain.it/"
+ #elif MB(K8200)
+   #define MACHINE_NAME "K8200"
+@@ -58,15 +56,12 @@
+   #define MACHINE_NAME "Makibox"
+ #elif MB(SAV_MKI)
+   #define MACHINE_NAME "SAV MkI"
+-  #undef FIRMWARE_URL
+   #define FIRMWARE_URL "https://github.com/fmalpartida/Marlin/tree/SAV-MkI-config"
+ #elif MB(WITBOX)
+   #define MACHINE_NAME "WITBOX"
+-  #undef FIRMWARE_URL
+   #define FIRMWARE_URL "http://www.bq.com/gb/downloads-witbox.html"
+ #elif MB(HEPHESTOS)
+   #define MACHINE_NAME "HEPHESTOS"
+-  #undef FIRMWARE_URL
+   #define FIRMWARE_URL "http://www.bq.com/gb/downloads-prusa-i3-hephestos.html"
+ #elif MB(BRAINWAVE_PRO)
+   #define MACHINE_NAME "Kossel Pro"
+diff --git a/Marlin/pins_AZTEEG_X3_PRO.h b/Marlin/pins_AZTEEG_X3_PRO.h
+index 0cdc716..d76874a 100644
+--- a/Marlin/pins_AZTEEG_X3_PRO.h
++++ b/Marlin/pins_AZTEEG_X3_PRO.h
+@@ -34,7 +34,12 @@
+   #define Z_MAX_PIN          18
+  #endif
+ //
+-
++ #ifdef Z_PROBE_ENDSTOP
++//#undef Z_MIN_PIN
++//#define Z_MIN_PIN        15
++  #define Z_PROBE_PIN      19
++ #endif
++//
+ #define E2_STEP_PIN        23
+ #define E2_DIR_PIN         25
+ #define E2_ENABLE_PIN      40
+diff --git a/README.md b/README.md
+index 8d06c08..d2ff347 100644
+--- a/README.md
++++ b/README.md
+@@ -31,14 +31,14 @@ We are actively looking for testers. So please try the current development versi
+ 
+ ## Contact
+ 
+-__IRC:__ #marlin-firmware @freenode ([WebChat Client](https://webchat.freenode.net/?channels=marlin-firmware))
++__Google Hangout:__ <a href="https://plus.google.com/hangouts/_/g2wp5duzb2y6ahikg6tmwao3kua" target="_blank">Hagnout</a>
+ 
+ ## Credits
+ 
+ The current Marlin dev team consists of:
+ 
+- - Erik van der Zalm ([@ErikZalm](https://github.com/ErikZalm))
+- - [@daid](https://github.com/daid)
++ - Scott Lahteine [@thinkyhead]
++ - 
+ 
+ Sprinters lead developers are Kliment and caru.
+ Grbl's lead developer is Simen Svale Skogsrud.
+

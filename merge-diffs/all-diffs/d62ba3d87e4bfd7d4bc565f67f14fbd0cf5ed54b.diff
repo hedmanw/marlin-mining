@@ -1,0 +1,111 @@
+commit d62ba3d87e4bfd7d4bc565f67f14fbd0cf5ed54b (from 02f466e6331c15ac502b24f0d79ef661eae9ec24)
+Merge: 02f466e af32a7d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Mar 24 04:41:42 2016 -0700
+
+    Merge pull request #3222 from thinkyhead/rc_persist_endstop_enabling
+    
+    M120/M121 also set endstops non-homing state
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index bb5ab23..27f16b9 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1475,14 +1475,12 @@ static void setup_for_endstop_move() {
+   inline void raise_z_after_probing() { do_blocking_move_to_z(current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); }
+ 
+   static void clean_up_after_endstop_move() {
+-    #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (marlin_debug_flags & DEBUG_LEVELING) {
+-          SERIAL_ECHOLNPGM("clean_up_after_endstop_move > ENDSTOPS_ONLY_FOR_HOMING > enable_endstops(false)");
+-        }
+-      #endif
+-      enable_endstops(false);
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (marlin_debug_flags & DEBUG_LEVELING) {
++        SERIAL_ECHOLNPGM("clean_up_after_endstop_move > ENDSTOPS_ONLY_FOR_HOMING > endstops_not_homing()");
++      }
+     #endif
++    endstops_not_homing();
+     feedrate = saved_feedrate;
+     feedrate_multiplier = saved_feedrate_multiplier;
+     refresh_cmd_timeout();
+@@ -4585,14 +4583,14 @@ inline void gcode_M119() {
+ }
+ 
+ /**
+- * M120: Enable endstops
++ * M120: Enable endstops and set non-homing endstop state to "enabled"
+  */
+-inline void gcode_M120() { enable_endstops(true); }
++inline void gcode_M120() { enable_endstops_globally(true); }
+ 
+ /**
+- * M121: Disable endstops
++ * M121: Disable endstops and set non-homing endstop state to "disabled"
+  */
+-inline void gcode_M121() { enable_endstops(false); }
++inline void gcode_M121() { enable_endstops_globally(false); }
+ 
+ #if ENABLED(BLINKM)
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4c5f16e..069c7f2 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -99,6 +99,13 @@ static volatile char endstop_hit_bits = 0; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_
+ #endif
+ 
+ static bool check_endstops = true;
++static bool check_endstops_global =
++  #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
++    false
++  #else
++    true
++  #endif
++;
+ 
+ volatile long count_position[NUM_AXIS] = { 0 }; // Positions of stepper motors, in step units
+ volatile signed char count_direction[NUM_AXIS] = { 1 };
+@@ -252,9 +259,13 @@ volatile signed char count_direction[NUM_AXIS] = { 1 };
+ #define ENABLE_STEPPER_DRIVER_INTERRUPT()  SBI(TIMSK1, OCIE1A)
+ #define DISABLE_STEPPER_DRIVER_INTERRUPT() CBI(TIMSK1, OCIE1A)
+ 
+-void endstops_hit_on_purpose() {
+-  endstop_hit_bits = 0;
+-}
++void enable_endstops(bool check) { check_endstops = check; }
++
++void enable_endstops_globally(bool check) { check_endstops_global = check_endstops = check; }
++
++void endstops_not_homing() { check_endstops = check_endstops_global; }
++
++void endstops_hit_on_purpose() { endstop_hit_bits = 0; }
+ 
+ void checkHitEndstops() {
+   if (endstop_hit_bits) {
+@@ -293,8 +304,6 @@ void checkHitEndstops() {
+   }
+ }
+ 
+-void enable_endstops(bool check) { check_endstops = check; }
+-
+ // Check endstops - Called from ISR!
+ inline void update_endstops() {
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index a582ae1..60c1c8f 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -54,6 +54,9 @@ void endstops_hit_on_purpose(); //avoid creation of the message, i.e. after homi
+ 
+ void enable_endstops(bool check); // Enable/disable endstop checking
+ 
++void enable_endstops_globally(bool check);
++void endstops_not_homing();
++
+ void checkStepperErrors(); //Print errors detected by the stepper
+ 
+ void finishAndDisableSteppers();
+

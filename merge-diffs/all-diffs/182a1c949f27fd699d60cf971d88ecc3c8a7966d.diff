@@ -1,0 +1,1307 @@
+commit 182a1c949f27fd699d60cf971d88ecc3c8a7966d (from c69f213ae8999c1fbb4e364c2c6e5431d90be65b)
+Merge: c69f213 312caef
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Tue Dec 6 03:23:43 2016 -0600
+
+    Merge post-release patch from 'RCBugFix' into RC
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 5565afb..8377b2f 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 9e6c09c..8ca8a1f 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2437,6 +2437,102 @@ static void clean_up_after_endstop_or_probe_move() {
+     SERIAL_EOL;
+   }
+ 
++  #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++    #define ABL_GRID_POINTS_VIRT_X (ABL_GRID_POINTS_X - 1) * (BILINEAR_SUBDIVISIONS) + 1
++    #define ABL_GRID_POINTS_VIRT_Y (ABL_GRID_POINTS_Y - 1) * (BILINEAR_SUBDIVISIONS) + 1
++    float bed_level_grid_virt[ABL_GRID_POINTS_VIRT_X][ABL_GRID_POINTS_VIRT_Y];
++    float bed_level_grid_virt_temp[ABL_GRID_POINTS_X + 2][ABL_GRID_POINTS_Y + 2]; //temporary for calculation (maybe dynamical?)
++    int bilinear_grid_spacing_virt[2] = { 0 };
++
++    static void bed_level_virt_print() {
++      SERIAL_ECHOLNPGM("Subdivided with CATMULL ROM Leveling Grid:");
++      for (uint8_t x = 0; x < ABL_GRID_POINTS_VIRT_X; x++) {
++        SERIAL_PROTOCOLPGM("       ");
++        if (x < 10) SERIAL_PROTOCOLCHAR(' ');
++        SERIAL_PROTOCOL((int)x);
++      }
++      SERIAL_EOL;
++      for (uint8_t y = 0; y < ABL_GRID_POINTS_VIRT_Y; y++) {
++        if (y < 10) SERIAL_PROTOCOLCHAR(' ');
++        SERIAL_PROTOCOL((int)y);
++        for (uint8_t x = 0; x < ABL_GRID_POINTS_VIRT_X; x++) {
++          SERIAL_PROTOCOLCHAR(' ');
++          float offset = bed_level_grid_virt[x][y];
++          if (offset < 999.0) {
++            if (offset > 0) SERIAL_CHAR('+');
++            SERIAL_PROTOCOL_F(offset, 5);
++          }
++          else
++            SERIAL_PROTOCOLPGM(" ====");
++        }
++        SERIAL_EOL;
++      }
++      SERIAL_EOL;
++    }
++    #define LINEAR_EXTRAPOLATION(E, I) (E * 2 - I)
++    static void bed_level_virt_prepare() {
++      for (uint8_t y = 1; y <= ABL_GRID_POINTS_Y; y++) {
++
++        for (uint8_t x = 1; x <= ABL_GRID_POINTS_X; x++)
++          bed_level_grid_virt_temp[x][y] = bed_level_grid[x - 1][y - 1];
++
++        bed_level_grid_virt_temp[0][y] = LINEAR_EXTRAPOLATION(
++          bed_level_grid_virt_temp[1][y],
++          bed_level_grid_virt_temp[2][y]
++        );
++
++        bed_level_grid_virt_temp[(ABL_GRID_POINTS_X + 2) - 1][y] =
++          LINEAR_EXTRAPOLATION(
++            bed_level_grid_virt_temp[(ABL_GRID_POINTS_X + 2) - 2][y],
++            bed_level_grid_virt_temp[(ABL_GRID_POINTS_X + 2) - 3][y]
++          );
++      }
++      for (uint8_t x = 0; x < ABL_GRID_POINTS_X + 2; x++) {
++        bed_level_grid_virt_temp[x][0] = LINEAR_EXTRAPOLATION(
++          bed_level_grid_virt_temp[x][1],
++          bed_level_grid_virt_temp[x][2]
++        );
++        bed_level_grid_virt_temp[x][(ABL_GRID_POINTS_Y + 2) - 1] =
++          LINEAR_EXTRAPOLATION(
++            bed_level_grid_virt_temp[x][(ABL_GRID_POINTS_Y + 2) - 2],
++            bed_level_grid_virt_temp[x][(ABL_GRID_POINTS_Y + 2) - 3]
++          );
++      }
++    }
++    static float bed_level_virt_cmr(const float p[4], const uint8_t i, const float t) {
++      return (
++          p[i-1] * -t * sq(1 - t)
++        + p[i]   * (2 - 5 * sq(t) + 3 * t * sq(t))
++        + p[i+1] * t * (1 + 4 * t - 3 * sq(t))
++        - p[i+2] * sq(t) * (1 - t)
++      ) * 0.5;
++    }
++    static float bed_level_virt_2cmr(const uint8_t x, const uint8_t y, const float &tx, const float &ty) {
++      float row[4], column[4];
++      for (uint8_t i = 0; i < 4; i++) {
++        for (uint8_t j = 0; j < 4; j++) // can be memcopy or through memory access
++          column[j] = bed_level_grid_virt_temp[i + x - 1][j + y - 1];
++        row[i] = bed_level_virt_cmr(column, 1, ty);
++      }
++      return bed_level_virt_cmr(row, 1, tx);
++    }
++    static void bed_level_virt_interpolate() {
++      for (uint8_t y = 0; y < ABL_GRID_POINTS_Y; y++)
++        for (uint8_t x = 0; x < ABL_GRID_POINTS_X; x++)
++          for (uint8_t ty = 0; ty < BILINEAR_SUBDIVISIONS; ty++)
++            for (uint8_t tx = 0; tx < BILINEAR_SUBDIVISIONS; tx++) {
++              if ((ty && y == ABL_GRID_POINTS_Y - 1) || (tx && x == ABL_GRID_POINTS_X - 1))
++                continue;
++              bed_level_grid_virt[x * (BILINEAR_SUBDIVISIONS) + tx][y * (BILINEAR_SUBDIVISIONS) + ty] =
++                bed_level_virt_2cmr(
++                  x + 1,
++                  y + 1,
++                  (float)tx / (BILINEAR_SUBDIVISIONS),
++                  (float)ty / (BILINEAR_SUBDIVISIONS)
++                );
++            }
++    }
++  #endif // ABL_BILINEAR_SUBDIVISION
+ #endif // AUTO_BED_LEVELING_BILINEAR
+ 
+ 
+@@ -3922,6 +4018,10 @@ inline void gcode_G28() {
+           || front_probe_bed_position != bilinear_start[Y_AXIS]
+         ) {
+           reset_bed_level();
++          #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++            bilinear_grid_spacing_virt[X_AXIS] = xGridSpacing / (BILINEAR_SUBDIVISIONS);
++            bilinear_grid_spacing_virt[Y_AXIS] = yGridSpacing / (BILINEAR_SUBDIVISIONS);
++          #endif
+           bilinear_grid_spacing[X_AXIS] = xGridSpacing;
+           bilinear_grid_spacing[Y_AXIS] = yGridSpacing;
+           bilinear_start[X_AXIS] = RAW_X_POSITION(left_probe_bed_position);
+@@ -4092,6 +4192,12 @@ inline void gcode_G28() {
+       if (!dryrun) extrapolate_unprobed_bed_level();
+       print_bed_level();
+ 
++      #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++        bed_level_virt_prepare();
++        bed_level_virt_interpolate();
++        bed_level_virt_print();
++      #endif
++
+     #elif ENABLED(AUTO_BED_LEVELING_LINEAR)
+ 
+       // For LINEAR leveling calculate matrix, print reports, correct the position
+@@ -8631,6 +8737,18 @@ void ok_to_send() {
+ 
+ #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
+ 
++  #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++    #define ABL_BG_SPACING(A) bilinear_grid_spacing_virt[A]
++    #define ABL_BG_POINTS_X   ABL_GRID_POINTS_VIRT_X
++    #define ABL_BG_POINTS_Y   ABL_GRID_POINTS_VIRT_Y
++    #define ABL_BG_GRID(X,Y)  bed_level_grid_virt[X][Y]
++  #else
++    #define ABL_BG_SPACING(A) bilinear_grid_spacing[A]
++    #define ABL_BG_POINTS_X   ABL_GRID_POINTS_X
++    #define ABL_BG_POINTS_Y   ABL_GRID_POINTS_Y
++    #define ABL_BG_GRID(X,Y)  bed_level_grid[X][Y]
++  #endif
++
+   // Get the Z adjustment for non-linear bed leveling
+   float bilinear_z_offset(float cartesian[XYZ]) {
+ 
+@@ -8639,14 +8757,14 @@ void ok_to_send() {
+                 y = RAW_Y_POSITION(cartesian[Y_AXIS]) - bilinear_start[Y_AXIS];
+ 
+     // Convert to grid box units
+-    float ratio_x = x / bilinear_grid_spacing[X_AXIS],
+-          ratio_y = y / bilinear_grid_spacing[Y_AXIS];
++    float ratio_x = x / ABL_BG_SPACING(X_AXIS),
++          ratio_y = y / ABL_BG_SPACING(Y_AXIS);
+ 
+     // Whole units for the grid line indices. Constrained within bounds.
+-    const int gridx = constrain(floor(ratio_x), 0, ABL_GRID_POINTS_X - 1),
+-              gridy = constrain(floor(ratio_y), 0, ABL_GRID_POINTS_Y - 1),
+-              nextx = min(gridx + 1, ABL_GRID_POINTS_X - 1),
+-              nexty = min(gridy + 1, ABL_GRID_POINTS_Y - 1);
++    const int gridx = constrain(floor(ratio_x), 0, ABL_BG_POINTS_X - 1),
++              gridy = constrain(floor(ratio_y), 0, ABL_BG_POINTS_Y - 1),
++              nextx = min(gridx + 1, ABL_BG_POINTS_X - 1),
++              nexty = min(gridy + 1, ABL_BG_POINTS_Y - 1);
+ 
+     // Subtract whole to get the ratio within the grid box
+     ratio_x -= gridx; ratio_y -= gridy;
+@@ -8655,10 +8773,10 @@ void ok_to_send() {
+     NOLESS(ratio_x, 0); NOLESS(ratio_y, 0);
+ 
+     // Z at the box corners
+-    const float z1 = bed_level_grid[gridx][gridy],  // left-front
+-                z2 = bed_level_grid[gridx][nexty],  // left-back
+-                z3 = bed_level_grid[nextx][gridy],  // right-front
+-                z4 = bed_level_grid[nextx][nexty],  // right-back
++    const float z1 = ABL_BG_GRID(gridx, gridy),  // left-front
++                z2 = ABL_BG_GRID(gridx, nexty),  // left-back
++                z3 = ABL_BG_GRID(nextx, gridy),  // right-front
++                z4 = ABL_BG_GRID(nextx, nexty),  // right-back
+ 
+                 // Bilinear interpolate
+                 L = z1 + (z2 - z1) * ratio_y,   // Linear interp. LF -> LB
+@@ -9006,7 +9124,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_BILINEAR) && !IS_KINEMATIC
+ 
+-  #define CELL_INDEX(A,V) ((RAW_##A##_POSITION(V) - bilinear_start[A##_AXIS]) / bilinear_grid_spacing[A##_AXIS])
++  #define CELL_INDEX(A,V) ((RAW_##A##_POSITION(V) - bilinear_start[A##_AXIS]) / ABL_BG_SPACING(A##_AXIS))
+ 
+   /**
+    * Prepare a bilinear-leveled linear move on Cartesian,
+@@ -9017,10 +9135,10 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+         cy1 = CELL_INDEX(Y, current_position[Y_AXIS]),
+         cx2 = CELL_INDEX(X, destination[X_AXIS]),
+         cy2 = CELL_INDEX(Y, destination[Y_AXIS]);
+-    cx1 = constrain(cx1, 0, ABL_GRID_POINTS_X - 2);
+-    cy1 = constrain(cy1, 0, ABL_GRID_POINTS_Y - 2);
+-    cx2 = constrain(cx2, 0, ABL_GRID_POINTS_X - 2);
+-    cy2 = constrain(cy2, 0, ABL_GRID_POINTS_Y - 2);
++    cx1 = constrain(cx1, 0, ABL_BG_POINTS_X - 2);
++    cy1 = constrain(cy1, 0, ABL_BG_POINTS_Y - 2);
++    cx2 = constrain(cx2, 0, ABL_BG_POINTS_X - 2);
++    cy2 = constrain(cy2, 0, ABL_BG_POINTS_Y - 2);
+ 
+     if (cx1 == cx2 && cy1 == cy2) {
+       // Start and end on same mesh square
+@@ -9037,14 +9155,14 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+     int8_t gcx = max(cx1, cx2), gcy = max(cy1, cy2);
+     if (cx2 != cx1 && TEST(x_splits, gcx)) {
+       memcpy(end, destination, sizeof(end));
+-      destination[X_AXIS] = LOGICAL_X_POSITION(bilinear_start[X_AXIS] + bilinear_grid_spacing[X_AXIS] * gcx);
++      destination[X_AXIS] = LOGICAL_X_POSITION(bilinear_start[X_AXIS] + ABL_BG_SPACING(X_AXIS) * gcx);
+       normalized_dist = (destination[X_AXIS] - current_position[X_AXIS]) / (end[X_AXIS] - current_position[X_AXIS]);
+       destination[Y_AXIS] = LINE_SEGMENT_END(Y);
+       CBI(x_splits, gcx);
+     }
+     else if (cy2 != cy1 && TEST(y_splits, gcy)) {
+       memcpy(end, destination, sizeof(end));
+-      destination[Y_AXIS] = LOGICAL_Y_POSITION(bilinear_start[Y_AXIS] + bilinear_grid_spacing[Y_AXIS] * gcy);
++      destination[Y_AXIS] = LOGICAL_Y_POSITION(bilinear_start[Y_AXIS] + ABL_BG_SPACING(Y_AXIS) * gcy);
+       normalized_dist = (destination[Y_AXIS] - current_position[Y_AXIS]) / (end[Y_AXIS] - current_position[Y_AXIS]);
+       destination[X_AXIS] = LINE_SEGMENT_END(X);
+       CBI(y_splits, gcy);
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index e8ac50a..f129fcc 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -95,8 +95,6 @@
+ #define BOARD_BAM_DICE_DUE      402  // 2PrintBeta BAM&DICE Due with STK drivers
+ #define BOARD_BQ_ZUM_MEGA_3D    503  // bq ZUM Mega 3D
+ 
+-#define BOARD_99                99   // This is in pins.h but...?
+-
+ #define MB(board) (MOTHERBOARD==BOARD_##board)
+ 
+ #endif //__BOARDS_H
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 64b7199..8fb5ee8 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 75f7a24..9345e63 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -803,10 +803,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index ebfaff5..61ab691 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -803,10 +803,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 6d36ab0..fb7edb6 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -812,10 +812,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 9b506b6..96a6a8b 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -814,10 +814,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 60b70eb..4be8696 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -849,10 +849,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 079b49e..70a7a25 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 1390337..6bdbf79 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 5ffb184..3d7ef9a 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 4371793..3668cfe 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -819,10 +819,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 596add3..a87eb95 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -835,10 +835,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index fb8ffc8..2128f39 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -841,10 +841,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index b09f8a7..5d3012c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -812,10 +812,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index d6fe487..31d8e8b 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -820,10 +820,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index a078b82..0cd7ef3 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -917,10 +917,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 583f18c..dcc8955 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -911,10 +911,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 266c202..0ae6155 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -914,10 +914,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index f223c8f..1687cc5 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -913,10 +913,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 699740c..44f70fd 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -917,10 +917,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index f568733..5a410d0 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -823,10 +823,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index efa64e7..2c6aae0 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -816,10 +816,22 @@
+   //#define PROBE_Y_FIRST
+ 
+   #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++
+     // Gradually reduce leveling correction until a set height is reached,
+     // at which point movement will be level to the machine's XY plane.
+     // The height can be set with M420 Z<height>
+     #define ENABLE_LEVELING_FADE_HEIGHT
++
++    // 
++    // Experimental Subdivision of the grid by Catmull-Rom method.
++    // Synthesizes intermediate points to produce a more detailed mesh.
++    // 
++    //#define ABL_BILINEAR_SUBDIVISION
++    #if ENABLED(ABL_BILINEAR_SUBDIVISION)
++      // Number of subdivisions between probe points
++      #define BILINEAR_SUBDIVISIONS 3
++    #endif
++
+   #endif
+ 
+ #elif ENABLED(AUTO_BED_LEVELING_3POINT)
+diff --git a/Marlin/language_hr.h b/Marlin/language_hr.h
+index 3bf88de..4d3c287 100644
+--- a/Marlin/language_hr.h
++++ b/Marlin/language_hr.h
+@@ -185,51 +185,54 @@
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+ #define MSG_LIGHTS_ON                       "Upali osvjetljenje"
+ #define MSG_LIGHTS_OFF                      "Ugasi osvjetljenje"
++
+ #if LCD_WIDTH >= 20
+-    #define MSG_INFO_PRINT_COUNT              "Broj printova"
+-    #define MSG_INFO_COMPLETED_PRINTS         "Završeni"
+-    #define MSG_INFO_PRINT_TIME               "Ukupno vrijeme printanja"
+-    #define MSG_INFO_PRINT_LONGEST            "Trajanje najdužeg printa"
+-    #define MSG_INFO_PRINT_FILAMENT           "Extrudirano ukupno"
++  #define MSG_INFO_PRINT_COUNT              "Broj printova"
++  #define MSG_INFO_COMPLETED_PRINTS         "Završeni"
++  #define MSG_INFO_PRINT_TIME               "Ukupno vrijeme printanja"
++  #define MSG_INFO_PRINT_LONGEST            "Trajanje najdužeg printa"
++  #define MSG_INFO_PRINT_FILAMENT           "Extrudirano ukupno"
+ #else
+-    #define MSG_INFO_PRINT_COUNT              "Printovi"
+-    #define MSG_INFO_COMPLETED_PRINTS         "Završeni"
+-    #define MSG_INFO_PRINT_TIME               "Ukupno"
+-    #define MSG_INFO_PRINT_LONGEST            "Najduži"
+-    #define MSG_INFO_PRINT_FILAMENT           "Extrudirano"
++  #define MSG_INFO_PRINT_COUNT              "Printovi"
++  #define MSG_INFO_COMPLETED_PRINTS         "Završeni"
++  #define MSG_INFO_PRINT_TIME               "Ukupno"
++  #define MSG_INFO_PRINT_LONGEST            "Najduži"
++  #define MSG_INFO_PRINT_FILAMENT           "Extrudirano"
+ #endif
+-  #define MSG_INFO_MIN_TEMP                   "Min Temp"
+-  #define MSG_INFO_MAX_TEMP                   "Max Temp"
+-  #define MSG_INFO_PSU                        "Napajanje"
+-  #define MSG_DRIVE_STRENGTH                  "Drive Strength"
+-  #define MSG_DAC_PERCENT                     "Driver %"
+-  #define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Write"
+-  #define MSG_FILAMENT_CHANGE_HEADER          "CHANGE FILAMENT"
+-  #define MSG_FILAMENT_CHANGE_OPTION_HEADER   "CHANGE OPTIONS:"
+-  #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extrudiraj više"
+-  #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Nastavi print"
++
++#define MSG_INFO_MIN_TEMP                   "Min Temp"
++#define MSG_INFO_MAX_TEMP                   "Max Temp"
++#define MSG_INFO_PSU                        "Napajanje"
++#define MSG_DRIVE_STRENGTH                  "Drive Strength"
++#define MSG_DAC_PERCENT                     "Driver %"
++#define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Write"
++#define MSG_FILAMENT_CHANGE_HEADER          "CHANGE FILAMENT"
++#define MSG_FILAMENT_CHANGE_OPTION_HEADER   "CHANGE OPTIONS:"
++#define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extrudiraj više"
++#define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Nastavi print"
++
+ #if LCD_HEIGHT >= 4
+-    #define MSG_FILAMENT_CHANGE_INIT_1          "Čekaj početak"
+-    #define MSG_FILAMENT_CHANGE_INIT_2          "filamenta"
+-    #define MSG_FILAMENT_CHANGE_INIT_3          "promijeni"
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Čekaj"
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament unload"
+-    #define MSG_FILAMENT_CHANGE_INSERT_1        "Umetni filament"
+-    #define MSG_FILAMENT_CHANGE_INSERT_2        "i pritisni tipku"
+-    #define MSG_FILAMENT_CHANGE_INSERT_3        "za nastavak..."
+-    #define MSG_FILAMENT_CHANGE_LOAD_1          "Pričekaj"
+-    #define MSG_FILAMENT_CHANGE_LOAD_2          "filament load"
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Pričekaj"
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrude"
+-    #define MSG_FILAMENT_CHANGE_RESUME_1        "Wait for print"
+-    #define MSG_FILAMENT_CHANGE_RESUME_2        "to resume"
++  #define MSG_FILAMENT_CHANGE_INIT_1          "Čekaj početak"
++  #define MSG_FILAMENT_CHANGE_INIT_2          "filamenta"
++  #define MSG_FILAMENT_CHANGE_INIT_3          "promijeni"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Čekaj"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament unload"
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Umetni filament"
++  #define MSG_FILAMENT_CHANGE_INSERT_2        "i pritisni tipku"
++  #define MSG_FILAMENT_CHANGE_INSERT_3        "za nastavak..."
++  #define MSG_FILAMENT_CHANGE_LOAD_1          "Pričekaj"
++  #define MSG_FILAMENT_CHANGE_LOAD_2          "filament load"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Pričekaj"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrude"
++  #define MSG_FILAMENT_CHANGE_RESUME_1        "Wait for print"
++  #define MSG_FILAMENT_CHANGE_RESUME_2        "to resume"
+ #else // LCD_HEIGHT < 4
+-    #define MSG_FILAMENT_CHANGE_INIT_1          "Pričekaj..."
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Ejecting..."
+-    #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert and Click"
+-    #define MSG_FILAMENT_CHANGE_LOAD_1          "Loading..."
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extrudiranje..."
+-    #define MSG_FILAMENT_CHANGE_RESUME_1        "Nastavljam..."
+-  #endif
++  #define MSG_FILAMENT_CHANGE_INIT_1          "Pričekaj..."
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Ejecting..."
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert and Click"
++  #define MSG_FILAMENT_CHANGE_LOAD_1          "Loading..."
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extrudiranje..."
++  #define MSG_FILAMENT_CHANGE_RESUME_1        "Nastavljam..."
+ #endif // LCD_HEIGHT < 4
++
+ #endif // LANGUAGE_HR_H
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 68aaf65..272519b 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -166,8 +166,6 @@
+   #include "pins_MEGACONTROLLER.h"
+ #elif MB(BQ_ZUM_MEGA_3D)
+   #include "pins_BQ_ZUM_MEGA_3D.h"
+-#elif MB(99)
+-  #include "pins_99.h"
+ #elif MB(AJ4P)
+   #include "pins_AJ4P.h"
+ #elif MB(MKS_13)
+diff --git a/Marlin/pins_99.h b/Marlin/pins_99.h
+deleted file mode 100644
+index ba86bf5..0000000
+--- a/Marlin/pins_99.h
++++ /dev/null
+@@ -1,71 +0,0 @@
+-/**
+- * Marlin 3D Printer Firmware
+- * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+- *
+- * Based on Sprinter and grbl.
+- * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+- *
+- * This program is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+- *
+- */
+-
+-/**
+- * Board 99 pin assignments
+- */
+-
+-#define BOARD_NAME          "99 Unknown"
+-
+-//
+-// Limit Switches
+-//
+-#define X_STOP_PIN         16
+-#define Y_STOP_PIN         67
+-#define Z_STOP_PIN         59
+-
+-//
+-// Steppers
+-//
+-#define X_STEP_PIN          2
+-#define X_DIR_PIN           3
+-#define X_ENABLE_PIN       -1
+-
+-#define Y_STEP_PIN          5
+-#define Y_DIR_PIN           6
+-#define Y_ENABLE_PIN       -1
+-
+-#define Z_STEP_PIN         62
+-#define Z_DIR_PIN          63
+-#define Z_ENABLE_PIN       -1
+-
+-#define E0_STEP_PIN        65
+-#define E0_DIR_PIN         66
+-#define E0_ENABLE_PIN      -1
+-
+-//
+-// Temperature Sensors
+-//
+-#define TEMP_0_PIN          6   // Analog Input
+-#define TEMP_BED_PIN       10   // Analog Input
+-
+-//
+-// Heaters / Fans
+-//
+-#define HEATER_0_PIN       13
+-#define HEATER_BED_PIN      4
+-
+-//
+-// Misc. Functions
+-//
+-#define SDSS               53
+-#define PS_ON_PIN           9
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2aa5055..dda4418 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -64,6 +64,9 @@ void lcd_status_screen();
+ millis_t next_lcd_update_ms;
+ 
+ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to draw, decrements after every draw. Set to 2 in LCD routines so the LCD gets at least 1 full redraw (first redraw is partial)
++#if ENABLED(DOGLCD)
++  bool drawing_screen = false;
++#endif
+ 
+ #if ENABLED(DAC_STEPPER_CURRENT)
+   #include "stepper_dac.h" //was dac_mcp4728.h MarlinMain uses stepper dac for the m-codes
+@@ -413,6 +416,9 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+       #endif
+       lcdDrawUpdate = LCDVIEW_CALL_REDRAW_NEXT;
+       screen_changed = true;
++      #if ENABLED(DOGLCD)
++        drawing_screen = false;
++      #endif
+     }
+   }
+ 
+@@ -2832,6 +2838,9 @@ void lcd_update() {
+ 
+           encoderPosition += (encoderDiff * encoderMultiplier) / ENCODER_PULSES_PER_STEP;
+           encoderDiff = 0;
++          #if ENABLED(DOGLCD)
++            drawing_screen = false;  // refresh the complete screen for a encoder change (different menu-item/value)
++          #endif
+         }
+         return_to_status_ms = ms + LCD_TIMEOUT_TO_STATUS;
+         lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+@@ -2864,20 +2873,28 @@ void lcd_update() {
+ 
+     if (LCD_HANDLER_CONDITION) {
+ 
+-      if (lcdDrawUpdate) {
+-
+-        switch (lcdDrawUpdate) {
+-          case LCDVIEW_CALL_NO_REDRAW:
+-            lcdDrawUpdate = LCDVIEW_NONE;
+-            break;
+-          case LCDVIEW_CLEAR_CALL_REDRAW: // set by handlers, then altered after (rarely occurs here)
+-          case LCDVIEW_CALL_REDRAW_NEXT:  // set by handlers, then altered after (never occurs here?)
+-            lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+-          case LCDVIEW_REDRAW_NOW:        // set above, or by a handler through LCDVIEW_CALL_REDRAW_NEXT
+-          case LCDVIEW_NONE:
+-            break;
+-        } // switch
+-
++      #if ENABLED(DOGLCD)
++        if (lcdDrawUpdate || drawing_screen)
++      #else
++        if (lcdDrawUpdate)
++      #endif
++      {
++        #if ENABLED(DOGLCD)
++          if (!drawing_screen)
++        #endif
++          {
++            switch (lcdDrawUpdate) {
++              case LCDVIEW_CALL_NO_REDRAW:
++                lcdDrawUpdate = LCDVIEW_NONE;
++                break;
++              case LCDVIEW_CLEAR_CALL_REDRAW: // set by handlers, then altered after (rarely occurs here)
++              case LCDVIEW_CALL_REDRAW_NEXT:  // set by handlers, then altered after (never occurs here?)
++                lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
++              case LCDVIEW_REDRAW_NOW:        // set above, or by a handler through LCDVIEW_CALL_REDRAW_NEXT
++              case LCDVIEW_NONE:
++                break;
++            } // switch
++          }
+         #if ENABLED(ULTIPANEL)
+           #define CURRENTSCREEN() (*currentScreen)(), lcd_clicked = false
+         #else
+@@ -2885,17 +2902,13 @@ void lcd_update() {
+         #endif
+ 
+         #if ENABLED(DOGLCD)  // Changes due to different driver architecture of the DOGM display
+-          static int8_t dot_color = 0;
+-          dot_color = 1 - dot_color;
+-          u8g.firstPage();
+-          do {
+-            lcd_setFont(FONT_MENU);
+-            u8g.setPrintPos(125, 0);
+-            u8g.setColorIndex(dot_color); // Set color for the alive dot
+-            u8g.drawPixel(127, 63); // draw alive dot
+-            u8g.setColorIndex(1); // black on white
+-            CURRENTSCREEN();
+-          } while (u8g.nextPage());
++          if (!drawing_screen) {
++            u8g.firstPage();
++            drawing_screen = 1;
++          }
++          lcd_setFont(FONT_MENU);
++          CURRENTSCREEN();
++          if (drawing_screen && (drawing_screen = u8g.nextPage())) return;
+         #else
+           CURRENTSCREEN();
+         #endif
+@@ -2911,22 +2924,25 @@ void lcd_update() {
+ 
+       #endif // ULTIPANEL
+ 
+-      switch (lcdDrawUpdate) {
+-        case LCDVIEW_CLEAR_CALL_REDRAW:
+-          lcd_implementation_clear();
+-        case LCDVIEW_CALL_REDRAW_NEXT:
+-          lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+-          break;
+-        case LCDVIEW_REDRAW_NOW:
+-          lcdDrawUpdate = LCDVIEW_NONE;
+-          break;
+-        case LCDVIEW_NONE:
+-          break;
+-      } // switch
+-
++      #if ENABLED(DOGLCD)
++        if (!drawing_screen)
++      #endif
++        {
++          switch (lcdDrawUpdate) {
++            case LCDVIEW_CLEAR_CALL_REDRAW:
++              lcd_implementation_clear();
++            case LCDVIEW_CALL_REDRAW_NEXT:
++              lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
++              break;
++            case LCDVIEW_REDRAW_NOW:
++              lcdDrawUpdate = LCDVIEW_NONE;
++              break;
++            case LCDVIEW_NONE:
++              break;
++          } // switch
++        }
+     } // LCD_HANDLER_CONDITION
+-
+-  }
++  } // ELAPSED(ms, next_lcd_update_ms)
+ }
+ 
+ void set_utf_strlen(char* s, uint8_t n) {
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index 46a5225..f8ffe74 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -145,7 +145,7 @@
+ #elif ENABLED(U8GLIB_ST7920)
+   //U8GLIB_ST7920_128X64_4X u8g(LCD_PINS_D4, LCD_PINS_ENABLE, LCD_PINS_RS); // Original u8glib device. 2 stripes
+                                                                             // No 4 stripe device available from u8glib.
+-  //U8GLIB_ST7920_128X64 u8g(LCD_PINS_D4, LCD_PINS_ENABLE, LCD_PINS_RS);    // Original u8glib device. 8 stripes
++  //U8GLIB_ST7920_128X64_1X u8g(LCD_PINS_D4, LCD_PINS_ENABLE, LCD_PINS_RS);    // Original u8glib device. 8 stripes
+   U8GLIB_ST7920_128X64_RRD u8g(0); // Number of stripes can be adjusted in ultralcd_st7920_u8glib_rrd.h with PAGE_HEIGHT
+ #elif ENABLED(CARTESIO_UI)
+   // The CartesioUI display
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index 1dc3936..66e1f17 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -32,8 +32,8 @@
+ #define ST7920_CS_PIN   LCD_PINS_RS
+ 
+ //#define PAGE_HEIGHT 8   //128 byte framebuffer
+-//#define PAGE_HEIGHT 16  //256 byte framebuffer
+-#define PAGE_HEIGHT 32  //512 byte framebuffer
++#define PAGE_HEIGHT 16  //256 byte framebuffer
++//#define PAGE_HEIGHT 32  //512 byte framebuffer
+ 
+ #define LCD_PIXEL_WIDTH 128
+ #define LCD_PIXEL_HEIGHT 64
+
+commit 182a1c949f27fd699d60cf971d88ecc3c8a7966d (from 312caef472901b63624b9066bc578956e879661f)
+Merge: c69f213 312caef
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Tue Dec 6 03:23:43 2016 -0600
+
+    Merge post-release patch from 'RCBugFix' into RC
+
+diff --git a/Marlin/Version.h b/Marlin/Version.h
+index 5aa7922..12966e6 100644
+--- a/Marlin/Version.h
++++ b/Marlin/Version.h
+@@ -35,7 +35,7 @@
+   /**
+    * Marlin release version identifier
+    */
+-  #define SHORT_BUILD_VERSION "1.1.0-RCBugFix"
++  #define SHORT_BUILD_VERSION "1.1.0-RC8"
+ 
+   /**
+    * Verbose version identifier which should contain a reference to the location
+@@ -48,7 +48,7 @@
+    * here we define this default string as the date where the latest release
+    * version was tagged.
+    */
+-  #define STRING_DISTRIBUTION_DATE "2016-07-26 12:00"
++  #define STRING_DISTRIBUTION_DATE "2016-12-06 12:00"
+ 
+   /**
+    * Required minimum Configuration.h and Configuration_adv.h file versions.
+diff --git a/README.md b/README.md
+index 112b0ea..f407ad3 100644
+--- a/README.md
++++ b/README.md
+@@ -1,14 +1,11 @@
+ # Marlin 3D Printer Firmware
+ 
+-[![Build Status](https://travis-ci.org/MarlinFirmware/Marlin.svg?branch=RCBugFix)](https://travis-ci.org/MarlinFirmware/Marlin)
+-[![Coverity Scan Build Status](https://scan.coverity.com/projects/2224/badge.svg)](https://scan.coverity.com/projects/2224)
+-
+ <img align="top" width=175 src="buildroot/share/pixmaps/logo/marlin-250.png" />
+ 
+ Additional documentation can be found at [The Marlin Documentation Project](https://www.marlinfw.org/).
+ Please test this firmware and inform us if it misbehaves in any way, volunteers are standing by!
+ 
+-## Release Candidate -- Marlin 1.1.0-RCBugFix - 26 July 2016
++## Release Candidate -- Marlin 1.1.0-RC8 - 6 Dec 2016
+ 
+ __Not for production use – use with caution!__
+ 
+@@ -17,9 +14,28 @@ You can download earlier versions of Marlin on the [Releases page](https://githu
+ The latest Release Candidate lives in the ["RC" branch](https://github.com/MarlinFirmware/Marlin/tree/RC). Bugs that we find in the current Release Candidate are patched in the ["RCBugFix" branch](https://github.com/MarlinFirmware/Marlin/tree/RCBugFix), so during beta testing this is where you can always find the latest code on its way towards release.
+ 
+ ## Recent Changes
+-- RCBugFix
+-
+-- RC7 - 26 Jul 2016
++- RC8 - 06 Dec 2016
++  - Major performance improvement for Graphical LCDs
++  - Simplified probe configuration
++  - Enable Auto Bed Leveling by type
++  - Reduce serial communication errors
++  - Make Bilinear (Mesh) Grid Leveling available for non-delta
++  - Support for Trinamic TMC2130 SilentStepStick SPI-based drivers
++  - Add `M211` to Enable/Disable Software Endstops
++  - Add `M355` to turn the case light on/off and set brightness
++  - Improved I2C class with full master/slave support
++  - Add `G38.2` `G38.3` command option for CNC style probing
++  - Add `MINIMUM_STEPPER_PULSE` option to adjust step pulse duration
++  - Add `R` parameter support for `G2`/`G3`
++  - Add `M43` optional command (`PINS_DEBUGGING`)
++  - Remove SCARA axis scaling
++  - Improved sanity checking of configuration
++  - Improved support for PlatformIO and command-line build
++  - Usable `DELTA_CALIBRATION_MENU`
++  - Support for Printrbot Rev.F
++  - New and updated languages
++
++- RC7 - 31 Jul 2016
+   - Add Print Job Timer and Print Counter (`PRINTCOUNTER`)
+   - New `M600` Filament Change (`FILAMENT_CHANGE_FEATURE`)
+   - New `G12` Nozzle Clean (`NOZZLE_CLEAN_FEATURE`)
+@@ -85,7 +101,14 @@ Proposed patches should be submitted as a Pull Request against the [RCBugFix](ht
+ - Do submit questions and concerns. The "naive" question is often the one we forget to ask.
+ - Follow the proper coding style. Pull requests with styling errors will be delayed. See our [Coding Standards](https://github.com/MarlinFirmware/Marlin/wiki/DNE-Coding-Standards) page for more information.
+ 
+-### [RepRap.org Wiki Page](http://reprap.org/wiki/Marlin)
++## Current Status: Testing
++
++Please test this firmware and inform us if it misbehaves in any way. Volunteers are standing by!
++
++[![Coverity Scan Build Status](https://scan.coverity.com/projects/2224/badge.svg)](https://scan.coverity.com/projects/2224)
++[![Travis Build Status](https://travis-ci.org/MarlinFirmware/MarlinDev.svg)](https://travis-ci.org/MarlinFirmware/MarlinDev)
++
++##### [RepRap.org Wiki Page](http://reprap.org/wiki/Marlin)
+ 
+ ## Credits
+ 
+@@ -115,3 +138,5 @@ More features have been added by:
+ Marlin is published under the [GPL license](/LICENSE) because we believe in open development. The GPL comes with both rights and obligations. Whether you use Marlin firmware as the driver for your open or closed-source product, you must keep Marlin open, and you must provide your compatible Marlin source code to end users upon request. The most straightforward way to comply with the Marlin license is to make a fork of Marlin on Github, perform your modifications, and direct users to your modified fork.
+ 
+ While we can't prevent the use of this code in products (3D printers, CNC, etc.) that are closed source or crippled by a patent, we would prefer that you choose another firmware or, better yet, make your own.
++
++[![Flattr this git repo](http://api.flattr.com/button/flattr-badge-large.png)](https://flattr.com/submit/auto?user_id=ErikZalm&url=https://github.com/MarlinFirmware/Marlin&title=Marlin&language=&tags=github&category=software)
+

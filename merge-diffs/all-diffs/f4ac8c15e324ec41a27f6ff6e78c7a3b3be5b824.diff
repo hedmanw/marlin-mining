@@ -1,0 +1,151 @@
+commit f4ac8c15e324ec41a27f6ff6e78c7a3b3be5b824 (from 1f15f0df5f0bdaa789cc0a6f637a45318c0b960c)
+Merge: 1f15f0d b7b5b50
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Aug 8 23:02:42 2016 -0700
+
+    Merge pull request #4573 from thinkyhead/rc_mintemp_bed_later
+    
+    Throw MINTEMP BED error only if heating
+
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 13a70bb..3bcfe39 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -517,17 +517,25 @@ void Temperature::_temp_error(int e, const char* serial_msg, const char* lcd_msg
+   #endif
+ }
+ 
+-void Temperature::max_temp_error(uint8_t e) {
+-  #if HOTENDS == 1
+-    UNUSED(e);
++void Temperature::max_temp_error(int8_t e) {
++  #if HAS_TEMP_BED
++    _temp_error(e, PSTR(MSG_T_MAXTEMP), e >= 0 ? PSTR(MSG_ERR_MAXTEMP) : PSTR(MSG_ERR_MAXTEMP_BED));
++  #else
++    _temp_error(HOTEND_INDEX, PSTR(MSG_T_MAXTEMP), PSTR(MSG_ERR_MAXTEMP));
++    #if HOTENDS == 1
++      UNUSED(e);
++    #endif
+   #endif
+-  _temp_error(HOTEND_INDEX, PSTR(MSG_T_MAXTEMP), PSTR(MSG_ERR_MAXTEMP));
+ }
+-void Temperature::min_temp_error(uint8_t e) {
+-  #if HOTENDS == 1
+-    UNUSED(e);
++void Temperature::min_temp_error(int8_t e) {
++  #if HAS_TEMP_BED
++    _temp_error(e, PSTR(MSG_T_MINTEMP), e >= 0 ? PSTR(MSG_ERR_MINTEMP) : PSTR(MSG_ERR_MINTEMP_BED));
++  #else
++    _temp_error(HOTEND_INDEX, PSTR(MSG_T_MINTEMP), PSTR(MSG_ERR_MINTEMP));
++    #if HOTENDS == 1
++      UNUSED(e);
++    #endif
+   #endif
+-  _temp_error(HOTEND_INDEX, PSTR(MSG_T_MINTEMP), PSTR(MSG_ERR_MINTEMP));
+ }
+ 
+ float Temperature::get_pid_output(int e) {
+@@ -675,9 +683,8 @@ void Temperature::manage_heater() {
+   updateTemperaturesFromRawValues(); // also resets the watchdog
+ 
+   #if ENABLED(HEATER_0_USES_MAX6675)
+-    float ct = current_temperature[0];
+-    if (ct > min(HEATER_0_MAXTEMP, 1023)) max_temp_error(0);
+-    if (ct < max(HEATER_0_MINTEMP, 0.01)) min_temp_error(0);
++    if (current_temperature[0] > min(HEATER_0_MAXTEMP, 1023)) max_temp_error(0);
++    if (current_temperature[0] < max(HEATER_0_MINTEMP, 0.01)) min_temp_error(0);
+   #endif
+ 
+   #if (ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0) || (ENABLED(THERMAL_PROTECTION_BED) && WATCH_BED_TEMP_PERIOD > 0) || DISABLED(PIDTEMPBED) || HAS_AUTO_FAN
+@@ -1815,8 +1822,8 @@ void Temperature::isr() {
+       #else
+         #define GEBED >=
+       #endif
+-      if (current_temperature_bed_raw GEBED bed_maxttemp_raw) _temp_error(-1, PSTR(MSG_T_MAXTEMP), PSTR(MSG_ERR_MAXTEMP_BED));
+-      if (bed_minttemp_raw GEBED current_temperature_bed_raw) _temp_error(-1, PSTR(MSG_T_MINTEMP), PSTR(MSG_ERR_MINTEMP_BED));
++      if (current_temperature_bed_raw GEBED bed_maxttemp_raw) max_temp_error(-1);
++      if (bed_minttemp_raw GEBED current_temperature_bed_raw && target_temperature_bed > 0.0f) min_temp_error(-1);
+     #endif
+ 
+   } // temp_count >= OVERSAMPLENR
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index ffb47a5..a66014a 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -437,8 +437,8 @@ class Temperature {
+     #endif
+ 
+     static void _temp_error(int e, const char* serial_msg, const char* lcd_msg);
+-    static void min_temp_error(uint8_t e);
+-    static void max_temp_error(uint8_t e);
++    static void min_temp_error(int8_t e);
++    static void max_temp_error(int8_t e);
+ 
+     #if ENABLED(THERMAL_PROTECTION_HOTENDS) || HAS_THERMALLY_PROTECTED_BED
+ 
+
+commit f4ac8c15e324ec41a27f6ff6e78c7a3b3be5b824 (from b7b5b50a84714780857c1dc3c85a7e7bcfc9732c)
+Merge: 1f15f0d b7b5b50
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Aug 8 23:02:42 2016 -0700
+
+    Merge pull request #4573 from thinkyhead/rc_mintemp_bed_later
+    
+    Throw MINTEMP BED error only if heating
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1c2d540..995f6d8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -8671,7 +8671,7 @@ void kill(const char* lcd_msg) {
+     UNUSED(lcd_msg);
+   #endif
+ 
+-  for (int i = 5; i--;) delay(100); // Wait a short time
++  delay(500); // Wait a short time
+ 
+   cli(); // Stop interrupts
+   thermalManager.disable_all_heaters();
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index c8b9a8d..cc8625e 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -744,6 +744,6 @@
+ /**
+  * emergency-command parser
+  */
+-#if ENABLED(EMERGENCY_PARSER) && ENABLED(USBCON)
++#if ENABLED(EMERGENCY_PARSER) && defined(USBCON)
+   #error "EMERGENCY_PARSER does not work on boards with AT90USB processors (USBCON)."
+ #endif
+diff --git a/Marlin/duration_t.h b/Marlin/duration_t.h
+index 25ea9bb..60e02a4 100644
+--- a/Marlin/duration_t.h
++++ b/Marlin/duration_t.h
+@@ -145,7 +145,7 @@ struct duration_t {
+    *  1193046:59
+    */
+   void toDigital(char *buffer) const {
+-    int h = this->hour() % 24,
++    int h = this->hour(),
+         m = this->minute() % 60;
+ 
+     sprintf_P(buffer, PSTR("%02i:%02i"), h, m);
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 391c84b..d7bc245 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1261,9 +1261,9 @@ void kill_screen(const char* lcd_msg) {
+   #if ENABLED(DELTA_CALIBRATION_MENU)
+ 
+     static void _goto_tower_pos(const float &a) {
+-      char cmd[20];
+-      sprintf_P(cmd, PSTR("G1 X%i Y%i"), int(-(DELTA_PRINTABLE_RADIUS) * sin(a)), int((DELTA_PRINTABLE_RADIUS) * cos(a)));
+-      enqueue_and_echo_commands_P(PSTR("G1 F8000 Z4\nG1 F4000"));
++      char cmd[26];
++      sprintf_P(cmd, PSTR("G1 F4000 X%i Y%i"), int(-(DELTA_PRINTABLE_RADIUS) * sin(a)), int((DELTA_PRINTABLE_RADIUS) * cos(a)));
++      enqueue_and_echo_commands_P(PSTR("G1 F8000 Z4"));
+       enqueue_and_echo_command(cmd);
+     }
+ 
+

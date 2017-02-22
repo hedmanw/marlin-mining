@@ -1,0 +1,906 @@
+commit 4c7af484f8a87bd6f602eb0eed5aec0c3f2ae99c (from c747becec1935cfc15d12fc695892ed2fb8fbda4)
+Merge: c747bec 84e4eda
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 3 20:06:56 2015 -0700
+
+    Merge pull request #1787 from thinkyhead/fixup_tr
+    
+    Fix: thermal_runaway_protection triggered by target temperature increase
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 1f295a6..363a5e5 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -179,6 +179,9 @@ void manage_inactivity(bool ignore_stepper_queue=false);
+   #define disable_e3() /* nothing */
+ #endif
+ 
++void enable_all_steppers();
++void disable_all_steppers();
++
+ enum AxisEnum {X_AXIS=0, Y_AXIS=1, A_AXIS=0, B_AXIS=1, Z_AXIS=2, E_AXIS=3, X_HEAD=4, Y_HEAD=5};
+ //X_HEAD and Y_HEAD is used for systems that don't have a 1:1 relationship between X_AXIS and X Head movement, like CoreXY bots.
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 46256b4..bc6ea3c 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -110,6 +110,7 @@
+ //        Call gcode file : "M32 P !filename#" and return to caller file after finishing (similar to #include).
+ //        The '#' is necessary when calling from within sd files, as it stops buffer prereading
+ // M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
++// M48  - Measure Z_Probe repeatability. M48 [n # of points] [X position] [Y position] [V_erboseness #] [E_ngage Probe] [L # of legs of travel]
+ // M80  - Turn on Power Supply
+ // M81  - Turn off Power Supply
+ // M82  - Set E codes absolute (default)
+@@ -2569,13 +2570,7 @@ inline void gcode_G92() {
+  */
+ inline void gcode_M17() {
+   LCD_MESSAGEPGM(MSG_NO_MOVE);
+-  enable_x();
+-  enable_y();
+-  enable_z();
+-  enable_e0();
+-  enable_e1();
+-  enable_e2();
+-  enable_e3();
++  enable_all_steppers();
+ }
+ 
+ #ifdef SDSUPPORT
+@@ -3055,26 +3050,29 @@ inline void gcode_M104() {
+ inline void gcode_M105() {
+   if (setTargetedHotend(105)) return;
+ 
+-  #if HAS_TEMP_0
+-    SERIAL_PROTOCOLPGM("ok T:");
+-    SERIAL_PROTOCOL_F(degHotend(tmp_extruder),1);
+-    SERIAL_PROTOCOLPGM(" /");
+-    SERIAL_PROTOCOL_F(degTargetHotend(tmp_extruder),1);
++  #if HAS_TEMP_0 || HAS_TEMP_BED
++    SERIAL_PROTOCOLPGM("ok");
++    #if HAS_TEMP_0
++      SERIAL_PROTOCOLPGM(" T:");
++      SERIAL_PROTOCOL_F(degHotend(tmp_extruder), 1);
++      SERIAL_PROTOCOLPGM(" /");
++      SERIAL_PROTOCOL_F(degTargetHotend(tmp_extruder), 1);
++    #endif
+     #if HAS_TEMP_BED
+       SERIAL_PROTOCOLPGM(" B:");
+-      SERIAL_PROTOCOL_F(degBed(),1);
++      SERIAL_PROTOCOL_F(degBed(), 1);
+       SERIAL_PROTOCOLPGM(" /");
+-      SERIAL_PROTOCOL_F(degTargetBed(),1);
+-    #endif // HAS_TEMP_BED
+-    for (int8_t cur_extruder = 0; cur_extruder < EXTRUDERS; ++cur_extruder) {
++      SERIAL_PROTOCOL_F(degTargetBed(), 1);
++    #endif
++    for (int8_t e = 0; e < EXTRUDERS; ++e) {
+       SERIAL_PROTOCOLPGM(" T");
+-      SERIAL_PROTOCOL(cur_extruder);
++      SERIAL_PROTOCOL(e);
+       SERIAL_PROTOCOLPGM(":");
+-      SERIAL_PROTOCOL_F(degHotend(cur_extruder),1);
++      SERIAL_PROTOCOL_F(degHotend(e), 1);
+       SERIAL_PROTOCOLPGM(" /");
+-      SERIAL_PROTOCOL_F(degTargetHotend(cur_extruder),1);
++      SERIAL_PROTOCOL_F(degTargetHotend(e), 1);
+     }
+-  #else // !HAS_TEMP_0
++  #else // !HAS_TEMP_0 && !HAS_TEMP_BED
+     SERIAL_ERROR_START;
+     SERIAL_ERRORLNPGM(MSG_ERR_NO_THERMISTORS);
+   #endif
+@@ -3112,7 +3110,7 @@ inline void gcode_M105() {
+     }
+   #endif
+ 
+-  SERIAL_PROTOCOLLN("");
++  SERIAL_EOL;
+ }
+ 
+ #if HAS_FAN
+@@ -3127,7 +3125,7 @@ inline void gcode_M105() {
+    */
+   inline void gcode_M107() { fanSpeed = 0; }
+ 
+-#endif //FAN_PIN
++#endif // HAS_FAN
+ 
+ /**
+  * M109: Wait for extruder(s) to reach temperature
+@@ -3185,10 +3183,10 @@ inline void gcode_M109() {
+             SERIAL_PROTOCOLLN( timetemp );
+           }
+           else {
+-            SERIAL_PROTOCOLLN( "?" );
++            SERIAL_PROTOCOLLNPGM("?");
+           }
+         #else
+-          SERIAL_PROTOCOLLN("");
++          SERIAL_EOL;
+         #endif
+         timetemp = millis();
+       }
+@@ -3240,7 +3238,7 @@ inline void gcode_M109() {
+         SERIAL_PROTOCOL((int)active_extruder);
+         SERIAL_PROTOCOLPGM(" B:");
+         SERIAL_PROTOCOL_F(degBed(), 1);
+-        SERIAL_PROTOCOLLN("");
++        SERIAL_EOL;
+       }
+       manage_heater();
+       manage_inactivity();
+@@ -3441,27 +3439,26 @@ inline void gcode_M114() {
+   SERIAL_PROTOCOLPGM(" Z:");
+   SERIAL_PROTOCOL(float(st_get_position(Z_AXIS))/axis_steps_per_unit[Z_AXIS]);
+ 
+-  SERIAL_PROTOCOLLN("");
++  SERIAL_EOL;
+ 
+   #ifdef SCARA
+     SERIAL_PROTOCOLPGM("SCARA Theta:");
+     SERIAL_PROTOCOL(delta[X_AXIS]);
+     SERIAL_PROTOCOLPGM("   Psi+Theta:");
+     SERIAL_PROTOCOL(delta[Y_AXIS]);
+-    SERIAL_PROTOCOLLN("");
++    SERIAL_EOL;
+     
+     SERIAL_PROTOCOLPGM("SCARA Cal - Theta:");
+     SERIAL_PROTOCOL(delta[X_AXIS]+home_offset[X_AXIS]);
+     SERIAL_PROTOCOLPGM("   Psi+Theta (90):");
+     SERIAL_PROTOCOL(delta[Y_AXIS]-delta[X_AXIS]-90+home_offset[Y_AXIS]);
+-    SERIAL_PROTOCOLLN("");
++    SERIAL_EOL;
+     
+     SERIAL_PROTOCOLPGM("SCARA step Cal - Theta:");
+     SERIAL_PROTOCOL(delta[X_AXIS]/90*axis_steps_per_unit[X_AXIS]);
+     SERIAL_PROTOCOLPGM("   Psi+Theta:");
+     SERIAL_PROTOCOL((delta[Y_AXIS]-delta[X_AXIS])/90*axis_steps_per_unit[Y_AXIS]);
+-    SERIAL_PROTOCOLLN("");
+-    SERIAL_PROTOCOLLN("");
++    SERIAL_EOL; SERIAL_EOL;
+   #endif
+ }
+ 
+@@ -3907,7 +3904,7 @@ inline void gcode_M226() {
+       SERIAL_PROTOCOL(servo_index);
+       SERIAL_PROTOCOL(": ");
+       SERIAL_PROTOCOL(servos[servo_index].read());
+-      SERIAL_PROTOCOLLN("");
++      SERIAL_EOL;
+     }
+   }
+ 
+@@ -3975,7 +3972,7 @@ inline void gcode_M226() {
+         //Kc does not have scaling applied above, or in resetting defaults
+         SERIAL_PROTOCOL(PID_PARAM(Kc, e));
+       #endif
+-      SERIAL_PROTOCOLLN("");    
++      SERIAL_EOL;    
+     }
+     else {
+       SERIAL_ECHO_START;
+@@ -4000,7 +3997,7 @@ inline void gcode_M226() {
+     SERIAL_PROTOCOL(unscalePID_i(bedKi));
+     SERIAL_PROTOCOL(" d:");
+     SERIAL_PROTOCOL(unscalePID_d(bedKd));
+-    SERIAL_PROTOCOLLN("");
++    SERIAL_EOL;
+   }
+ 
+ #endif // PIDTEMPBED
+@@ -4050,7 +4047,7 @@ inline void gcode_M226() {
+     if (code_seen('C')) lcd_setcontrast(code_value_long() & 0x3F);
+     SERIAL_PROTOCOLPGM("lcd contrast value: ");
+     SERIAL_PROTOCOL(lcd_contrast);
+-    SERIAL_PROTOCOLLN("");
++    SERIAL_EOL;
+   }
+ 
+ #endif // DOGLCD
+@@ -4323,7 +4320,7 @@ inline void gcode_M503() {
+         zprobe_zoffset = -value; // compare w/ line 278 of ConfigurationStore.cpp
+         SERIAL_ECHO_START;
+         SERIAL_ECHOLNPGM(MSG_ZPROBE_ZOFFSET " " MSG_OK);
+-        SERIAL_PROTOCOLLN("");
++        SERIAL_EOL;
+       }
+       else {
+         SERIAL_ECHO_START;
+@@ -4332,14 +4329,14 @@ inline void gcode_M503() {
+         SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MIN);
+         SERIAL_ECHOPGM(MSG_Z_MAX);
+         SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MAX);
+-        SERIAL_PROTOCOLLN("");
++        SERIAL_EOL;
+       }
+     }
+     else {
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLNPGM(MSG_ZPROBE_ZOFFSET " : ");
+       SERIAL_ECHO(-zprobe_zoffset);
+-      SERIAL_PROTOCOLLN("");
++      SERIAL_EOL;
+     }
+   }
+ 
+@@ -5693,7 +5690,17 @@ void handle_status_leds(void) {
+ }
+ #endif
+ 
+-void disable_all_axes() {
++void enable_all_steppers() {
++  enable_x();
++  enable_y();
++  enable_z();
++  enable_e0();
++  enable_e1();
++  enable_e2();
++  enable_e3();
++}
++
++void disable_all_steppers() {
+   disable_x();
+   disable_y();
+   disable_z();
+@@ -5721,7 +5728,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+   if (stepper_inactive_time && ms > previous_millis_cmd + stepper_inactive_time
+       && !ignore_stepper_queue && !blocks_queued())
+-    disable_all_axes();
++    disable_all_steppers();
+ 
+   #ifdef CHDK //Check if pin should be set to LOW after M240 set it to HIGH
+     if (chdkActive && ms > chdkHigh + CHDK_DELAY) {
+@@ -5809,7 +5816,7 @@ void kill()
+   cli(); // Stop interrupts
+   disable_heater();
+ 
+-  disable_all_axes();
++  disable_all_steppers();
+ 
+   #if HAS_POWER_SWITCH
+     pinMode(PS_ON_PIN, INPUT);
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index d7d33c1..8d8d2e3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -614,7 +614,7 @@ float junction_deviation = 0.1;
+         #if EXTRUDERS > 1
+           case 1:
+             enable_e1();
+-            g_uc_extruder_last_move[1] = BLOCK_BUFFER_SIZE*2;
++            g_uc_extruder_last_move[1] = BLOCK_BUFFER_SIZE * 2;
+             if (g_uc_extruder_last_move[0] == 0) disable_e0();
+             #if EXTRUDERS > 2
+               if (g_uc_extruder_last_move[2] == 0) disable_e2();
+@@ -626,7 +626,7 @@ float junction_deviation = 0.1;
+           #if EXTRUDERS > 2
+             case 2:
+               enable_e2();
+-              g_uc_extruder_last_move[2] = BLOCK_BUFFER_SIZE*2;
++              g_uc_extruder_last_move[2] = BLOCK_BUFFER_SIZE * 2;
+               if (g_uc_extruder_last_move[0] == 0) disable_e0();
+               if (g_uc_extruder_last_move[1] == 0) disable_e1();
+               #if EXTRUDERS > 3
+@@ -636,7 +636,7 @@ float junction_deviation = 0.1;
+             #if EXTRUDERS > 3
+               case 3:
+                 enable_e3();
+-                g_uc_extruder_last_move[3] = BLOCK_BUFFER_SIZE*2;
++                g_uc_extruder_last_move[3] = BLOCK_BUFFER_SIZE * 2;
+                 if (g_uc_extruder_last_move[0] == 0) disable_e0();
+                 if (g_uc_extruder_last_move[1] == 0) disable_e1();
+                 if (g_uc_extruder_last_move[2] == 0) disable_e2();
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 6f12bc9..ba4a4e9 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -1127,13 +1127,7 @@ long st_get_position(uint8_t axis) {
+ 
+ void finishAndDisableSteppers() {
+   st_synchronize();
+-  disable_x();
+-  disable_y();
+-  disable_z();
+-  disable_e0();
+-  disable_e1();
+-  disable_e2();
+-  disable_e3();
++  disable_all_steppers();
+ }
+ 
+ void quickStop() {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index b59ff29..c0e427a 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1,5 +1,5 @@
+ /*
+-  temperature.c - temperature control
++  temperature.cpp - temperature control
+   Part of Marlin
+   
+  Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+@@ -16,18 +16,7 @@
+  
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+- */
+-
+-/*
+- This firmware is a mashup between Sprinter and grbl.
+-  (https://github.com/kliment/Sprinter)
+-  (https://github.com/simen/grbl/tree)
+- 
+- It has preliminary support for Matthew Roberts advance algorithm 
+-    http://reprap.org/pipermail/reprap-dev/2011-May/003323.html
+-
+- */
+-
++*/
+ 
+ #include "Marlin.h"
+ #include "ultralcd.h"
+@@ -87,14 +76,15 @@ unsigned char soft_pwm_bed;
+ #define HAS_HEATER_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0)
+ #define HAS_BED_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_BED_PERIOD) && THERMAL_RUNAWAY_PROTECTION_BED_PERIOD > 0 && TEMP_SENSOR_BED != 0)
+ #if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
++  enum TRState { TRInactive, TRFirstHeating, TRStable };
+   static bool thermal_runaway = false;
+-  void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
++  void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
+   #if HAS_HEATER_THERMAL_PROTECTION
+-    static int thermal_runaway_state_machine[4]; // = {0,0,0,0};
++    static TRState thermal_runaway_state_machine[4] = { TRInactive, TRInactive, TRInactive, TRInactive };
+     static unsigned long thermal_runaway_timer[4]; // = {0,0,0,0};
+   #endif
+   #if HAS_BED_THERMAL_PROTECTION
+-    static int thermal_runaway_bed_state_machine;
++    static TRState thermal_runaway_bed_state_machine = { TRInactive, TRInactive, TRInactive, TRInactive };
+     static unsigned long thermal_runaway_bed_timer;
+   #endif
+ #endif
+@@ -238,7 +228,7 @@ void PID_autotune(float temp, int extruder, int ncycles)
+     soft_pwm[extruder] = bias = d = PID_MAX / 2;
+ 
+   // PID Tuning loop
+-  for(;;) {
++  for (;;) {
+ 
+     unsigned long ms = millis();
+ 
+@@ -609,7 +599,7 @@ void manage_heater() {
+   // Loop through all extruders
+   for (int e = 0; e < EXTRUDERS; e++) {
+ 
+-    #if defined (THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++    #if HAS_HEATER_THERMAL_PROTECTION
+       thermal_runaway_protection(&thermal_runaway_state_machine[e], &thermal_runaway_timer[e], current_temperature[e], target_temperature[e], e, THERMAL_RUNAWAY_PROTECTION_PERIOD, THERMAL_RUNAWAY_PROTECTION_HYSTERESIS);
+     #endif
+ 
+@@ -637,7 +627,7 @@ void manage_heater() {
+         disable_heater();
+         _temp_error(0, PSTR(MSG_EXTRUDER_SWITCHED_OFF), PSTR(MSG_ERR_REDUNDANT_TEMP));
+       }
+-    #endif //TEMP_SENSOR_1_AS_REDUNDANT
++    #endif // TEMP_SENSOR_1_AS_REDUNDANT
+ 
+   } // Extruders Loop
+ 
+@@ -656,7 +646,7 @@ void manage_heater() {
+   #if TEMP_SENSOR_BED != 0
+   
+     #if HAS_BED_THERMAL_PROTECTION
+-      thermal_runaway_protection(&thermal_runaway_bed_state_machine, &thermal_runaway_bed_timer, current_temperature_bed, target_temperature_bed, 9, THERMAL_RUNAWAY_PROTECTION_BED_PERIOD, THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS);
++      thermal_runaway_protection(&thermal_runaway_bed_state_machine, &thermal_runaway_bed_timer, current_temperature_bed, target_temperature_bed, -1, THERMAL_RUNAWAY_PROTECTION_BED_PERIOD, THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS);
+     #endif
+ 
+     #ifdef PIDTEMPBED
+@@ -1014,69 +1004,76 @@ void setWatch() {
+ }
+ 
+ #if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
+-void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc)
+-{
+-/*
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHO("Thermal Thermal Runaway Running. Heater ID:");
+-      SERIAL_ECHO(heater_id);
+-      SERIAL_ECHO(" ;  State:");
+-      SERIAL_ECHO(*state);
+-      SERIAL_ECHO(" ;  Timer:");
+-      SERIAL_ECHO(*timer);
+-      SERIAL_ECHO(" ;  Temperature:");
+-      SERIAL_ECHO(temperature);
+-      SERIAL_ECHO(" ;  Target Temp:");
+-      SERIAL_ECHO(target_temperature);
+-      SERIAL_ECHOLN("");    
+-*/
+-  if ((target_temperature == 0) || thermal_runaway)
+-  {
+-    *state = 0;
+-    *timer = 0;
+-    return;
+-  }
+-  switch (*state)
+-  {
+-    case 0: // "Heater Inactive" state
+-      if (target_temperature > 0) *state = 1;
+-      break;
+-    case 1: // "First Heating" state
+-      if (temperature >= target_temperature) *state = 2;
+-      break;
+-    case 2: // "Temperature Stable" state
+-    {
+-      unsigned long ms = millis();
+-      if (temperature >= (target_temperature - hysteresis_degc))
+-      {
+-        *timer = ms;
+-      } 
+-      else if ( (ms - *timer) > ((unsigned long) period_seconds) * 1000)
++
++  void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc) {
++
++    static int tr_target_temperature[EXTRUDERS+1];
++
++    /*
++        SERIAL_ECHO_START;
++        SERIAL_ECHOPGM("Thermal Thermal Runaway Running. Heater ID: ");
++        if (heater_id < 0) SERIAL_ECHOPGM("bed"); else SERIAL_ECHOPGM(heater_id);
++        SERIAL_ECHOPGM(" ;  State:");
++        SERIAL_ECHOPGM(*state);
++        SERIAL_ECHOPGM(" ;  Timer:");
++        SERIAL_ECHOPGM(*timer);
++        SERIAL_ECHOPGM(" ;  Temperature:");
++        SERIAL_ECHOPGM(temperature);
++        SERIAL_ECHOPGM(" ;  Target Temp:");
++        SERIAL_ECHOPGM(target_temperature);
++        SERIAL_EOL;
++    */
++    if (target_temperature == 0 || thermal_runaway) {
++      *state = TRInactive;
++      *timer = 0;
++      return;
++    }
++
++    int heater_index = heater_id >= 0 ? heater_id : EXTRUDERS;
++
++    switch (*state) {
++      // Inactive state waits for a target temperature to be set
++      case TRInactive:
++        if (target_temperature > 0) {
++          *state = TRFirstHeating;
++          tr_target_temperature[heater_index] = target_temperature;
++        }
++        break;
++      // When first heating, wait for the temperature to be reached then go to Stable state
++      case TRFirstHeating:
++        if (temperature >= tr_target_temperature[heater_index]) *state = TRStable;
++        break;
++      // While the temperature is stable watch for a bad temperature
++      case TRStable:
+       {
+-        SERIAL_ERROR_START;
+-        SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
+-        SERIAL_ERRORLN((int)heater_id);
+-        LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY); // translatable
+-        thermal_runaway = true;
+-        while(1)
+-        {
+-          disable_heater();
+-          disable_x();
+-          disable_y();
+-          disable_z();
+-          disable_e0();
+-          disable_e1();
+-          disable_e2();
+-          disable_e3();
+-          manage_heater();
+-          lcd_update();
++        // If the target temperature changes, restart
++        if (tr_target_temperature[heater_index] != target_temperature) {
++          *state = TRInactive;
++          break;
+         }
+-      }
+-    } break;
++
++        // If the temperature is over the target (-hysteresis) restart the timer
++        if (temperature >= tr_target_temperature[heater_index] - hysteresis_degc) *timer = millis();
++
++        // If the timer goes too long without a reset, trigger shutdown
++        else if (millis() > *timer + period_seconds * 1000UL) {
++          SERIAL_ERROR_START;
++          SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
++          if (heater_id < 0) SERIAL_ERRORLNPGM("bed"); else SERIAL_ERRORLN(heater_id);
++          LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY);
++          thermal_runaway = true;
++          for (;;) {
++            disable_heater();
++            disable_all_steppers();
++            manage_heater();
++            lcd_update();
++          }
++        }
++      } break;
++    }
+   }
+-}
+-#endif //THERMAL_RUNAWAY_PROTECTION_PERIOD
+ 
++#endif // HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
+ 
+ void disable_heater() {
+   for (int i=0; i<EXTRUDERS; i++) setTargetHotend(0, i);
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 15bd7fd..847c41b 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -18,8 +18,8 @@
+   along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
+-#ifndef temperature_h
+-#define temperature_h 
++#ifndef TEMPERATURE_H
++#define TEMPERATURE_H 
+ 
+ #include "Marlin.h"
+ #include "planner.h"
+@@ -105,40 +105,27 @@ FORCE_INLINE bool isHeatingBed() { return target_temperature_bed > current_tempe
+ FORCE_INLINE bool isCoolingHotend(uint8_t extruder) { return target_temperature[extruder] < current_temperature[extruder]; }
+ FORCE_INLINE bool isCoolingBed() { return target_temperature_bed < current_temperature_bed; }
+ 
+-#define degHotend0() degHotend(0)
+-#define degTargetHotend0() degTargetHotend(0)
+-#define setTargetHotend0(_celsius) setTargetHotend((_celsius), 0)
+-#define isHeatingHotend0() isHeatingHotend(0)
+-#define isCoolingHotend0() isCoolingHotend(0)
++#define HOTEND_ROUTINES(NR) \
++  FORCE_INLINE float degHotend##NR() { return degHotend(NR); } \
++  FORCE_INLINE float degTargetHotend##NR() { return degTargetHotend(NR); } \
++  FORCE_INLINE void setTargetHotend##NR(const float c) { setTargetHotend(c, NR); } \
++  FORCE_INLINE bool isHeatingHotend##NR() { return isHeatingHotend(NR); } \
++  FORCE_INLINE bool isCoolingHotend##NR() { return isCoolingHotend(NR); }
++HOTEND_ROUTINES(0);
+ #if EXTRUDERS > 1
+-  #define degHotend1() degHotend(1)
+-  #define degTargetHotend1() degTargetHotend(1)
+-  #define setTargetHotend1(_celsius) setTargetHotend((_celsius), 1)
+-  #define isHeatingHotend1() isHeatingHotend(1)
+-  #define isCoolingHotend1() isCoolingHotend(1)
++  HOTEND_ROUTINES(1);
+ #else
+-  #define setTargetHotend1(_celsius) do{}while(0)
++  #define setTargetHotend1(c) do{}while(0)
+ #endif
+ #if EXTRUDERS > 2
+-  #define degHotend2() degHotend(2)
+-  #define degTargetHotend2() degTargetHotend(2)
+-  #define setTargetHotend2(_celsius) setTargetHotend((_celsius), 2)
+-  #define isHeatingHotend2() isHeatingHotend(2)
+-  #define isCoolingHotend2() isCoolingHotend(2)
++  HOTEND_ROUTINES(2);
+ #else
+-  #define setTargetHotend2(_celsius) do{}while(0)
++  #define setTargetHotend2(c) do{}while(0)
+ #endif
+ #if EXTRUDERS > 3
+-  #define degHotend3() degHotend(3)
+-  #define degTargetHotend3() degTargetHotend(3)
+-  #define setTargetHotend3(_celsius) setTargetHotend((_celsius), 3)
+-  #define isHeatingHotend3() isHeatingHotend(3)
+-  #define isCoolingHotend3() isCoolingHotend(3)
++  HOTEND_ROUTINES(3);
+ #else
+-  #define setTargetHotend3(_celsius) do{}while(0)
+-#endif
+-#if EXTRUDERS > 4
+-  #error Invalid number of extruders
++  #define setTargetHotend3(c) do{}while(0)
+ #endif
+ 
+ int getHeaterPower(int heater);
+@@ -161,5 +148,4 @@ FORCE_INLINE void autotempShutdown() {
+   #endif
+ }
+ 
+-
+-#endif
++#endif // TEMPERATURE_H
+
+commit 4c7af484f8a87bd6f602eb0eed5aec0c3f2ae99c (from 84e4edaea76546c250750b275cd586c1d165464f)
+Merge: c747bec 84e4eda
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 3 20:06:56 2015 -0700
+
+    Merge pull request #1787 from thinkyhead/fixup_tr
+    
+    Fix: thermal_runaway_protection triggered by target temperature increase
+
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index f82e83f..56de816 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -3,7 +3,21 @@
+  *
+  * Configuration and EEPROM storage
+  *
+- * V16 EEPROM Layout:
++ * IMPORTANT:  Whenever there are changes made to the variables stored in EEPROM
++ * in the functions below, also increment the version number. This makes sure that
++ * the default values are used whenever there is a change to the data, to prevent
++ * wrong data being written to the variables.
++ *
++ * ALSO: Variables in the Store and Retrieve sections must be in the same order.
++ *       If a feature is disabled, some data must still be written that, when read,
++ *       either sets a Sane Default, or results in No Change to the existing value.
++ *
++ */
++
++#define EEPROM_VERSION "V19"
++
++/**
++ * V19 EEPROM Layout:
+  *
+  *  ver
+  *  axis_steps_per_unit (x4)
+@@ -47,6 +61,9 @@
+  *  Kp[2], Ki[2], Kd[2], Kc[2]
+  *  Kp[3], Ki[3], Kd[3], Kc[3]
+  *
++ * PIDTEMPBED:
++ *  bedKp, bedKi, bedKd
++ *
+  * DOGLCD:
+  *  lcd_contrast
+  *
+@@ -111,15 +128,6 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size) {
+ 
+ #define EEPROM_OFFSET 100
+ 
+-
+-// IMPORTANT:  Whenever there are changes made to the variables stored in EEPROM
+-// in the functions below, also increment the version number. This makes sure that
+-// the default values are used whenever there is a change to the data, to prevent
+-// wrong data being written to the variables.
+-// ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-
+-#define EEPROM_VERSION "V18"
+-
+ #ifdef EEPROM_SETTINGS
+ 
+ void Config_StoreSettings()  {
+@@ -194,7 +202,6 @@ void Config_StoreSettings()  {
+   EEPROM_WRITE_VAR(i, absPreheatHPBTemp);
+   EEPROM_WRITE_VAR(i, absPreheatFanSpeed);
+ 
+-
+   for (int e = 0; e < 4; e++) {
+ 
+     #ifdef PIDTEMP
+@@ -209,12 +216,10 @@ void Config_StoreSettings()  {
+           EEPROM_WRITE_VAR(i, dummy);
+         #endif
+       }
+-      else {
+-    #else // !PIDTEMP
+-      {
++      else
+     #endif // !PIDTEMP
+-
+-        dummy = DUMMY_PID_VALUE;
++      {
++        dummy = DUMMY_PID_VALUE; // When read, will not change the existing value
+         EEPROM_WRITE_VAR(i, dummy);
+         dummy = 0.0f;
+         for (int q = 3; q--;) EEPROM_WRITE_VAR(i, dummy);
+@@ -222,6 +227,14 @@ void Config_StoreSettings()  {
+ 
+   } // Extruders Loop
+ 
++  #ifndef PIDTEMPBED
++    float bedKp = DUMMY_PID_VALUE, bedKi = DUMMY_PID_VALUE, bedKd = DUMMY_PID_VALUE;
++  #endif
++
++  EEPROM_WRITE_VAR(i, bedKp);
++  EEPROM_WRITE_VAR(i, bedKi);
++  EEPROM_WRITE_VAR(i, bedKd);
++
+   #ifndef DOGLCD
+     int lcd_contrast = 32;
+   #endif
+@@ -364,7 +377,7 @@ void Config_RetrieveSettings() {
+ 
+     #ifdef PIDTEMP
+       for (int e = 0; e < 4; e++) { // 4 = max extruders currently supported by Marlin
+-        EEPROM_READ_VAR(i, dummy);
++        EEPROM_READ_VAR(i, dummy); // Kp
+         if (e < EXTRUDERS && dummy != DUMMY_PID_VALUE) {
+           // do not need to scale PID values as the values in EEPROM are already scaled
+           PID_PARAM(Kp, e) = dummy;
+@@ -385,6 +398,20 @@ void Config_RetrieveSettings() {
+       for (int q=16; q--;) EEPROM_READ_VAR(i, dummy);  // 4x Kp, Ki, Kd, Kc
+     #endif // !PIDTEMP
+ 
++    #ifndef PIDTEMPBED
++      float bedKp, bedKi, bedKd;
++    #endif
++
++    EEPROM_READ_VAR(i, dummy); // bedKp
++    if (dummy != DUMMY_PID_VALUE) {
++      bedKp = dummy;
++      EEPROM_READ_VAR(i, bedKi);
++      EEPROM_READ_VAR(i, bedKd);
++    }
++    else {
++      for (int q=2; q--;) EEPROM_READ_VAR(i, dummy); // bedKi, bedKd
++    }
++
+     #ifndef DOGLCD
+       int lcd_contrast;
+     #endif
+@@ -517,6 +544,12 @@ void Config_ResetDefault() {
+     updatePID();
+   #endif // PIDTEMP
+ 
++  #ifdef PIDTEMPBED
++    bedKp = DEFAULT_bedKp;
++    bedKi = scalePID_i(DEFAULT_bedKi);
++    bedKd = scalePID_d(DEFAULT_bedKd);
++  #endif
++
+   #ifdef FWRETRACT
+     autoretract_enabled = false;
+     retract_length = RETRACT_LENGTH;
+@@ -660,17 +693,28 @@ void Config_PrintSettings(bool forReplay) {
+     SERIAL_EOL;  
+   #endif // DELTA
+ 
+-  #ifdef PIDTEMP
++  #if defined(PIDTEMP) || defined(PIDTEMPBED)
+     SERIAL_ECHO_START;
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("PID settings:");
+       SERIAL_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("   M301 P", PID_PARAM(Kp, 0)); // for compatibility with hosts, only echos values for E0
+-    SERIAL_ECHOPAIR(" I", unscalePID_i(PID_PARAM(Ki, 0)));
+-    SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, 0)));
+-    SERIAL_EOL;
+-  #endif // PIDTEMP
++    #if defined(PIDTEMP) && defined(PIDTEMPBED)
++      SERIAL_EOL;
++    #endif
++    #ifdef PIDTEMP
++      SERIAL_ECHOPAIR("  M301 P", PID_PARAM(Kp, 0)); // for compatibility with hosts, only echos values for E0
++      SERIAL_ECHOPAIR(" I", unscalePID_i(PID_PARAM(Ki, 0)));
++      SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, 0)));
++      SERIAL_EOL;
++    #endif
++    #ifdef PIDTEMPBED
++      SERIAL_ECHOPAIR("  M304 P", bedKp); // for compatibility with hosts, only echos values for E0
++      SERIAL_ECHOPAIR(" I", unscalePID_i(bedKi));
++      SERIAL_ECHOPAIR(" D", unscalePID_d(bedKd));
++      SERIAL_EOL;
++    #endif
++  #endif
+ 
+   #ifdef FWRETRACT
+ 
+@@ -679,7 +723,7 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Retract: S=Length (mm) F:Speed (mm/m) Z: ZLift (mm)");
+       SERIAL_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("   M207 S", retract_length);
++    SERIAL_ECHOPAIR("  M207 S", retract_length);
+     SERIAL_ECHOPAIR(" F", retract_feedrate*60);
+     SERIAL_ECHOPAIR(" Z", retract_zlift);
+     SERIAL_EOL;
+@@ -688,7 +732,7 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Recover: S=Extra length (mm) F:Speed (mm/m)");
+       SERIAL_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("   M208 S", retract_recover_length);
++    SERIAL_ECHOPAIR("  M208 S", retract_recover_length);
+     SERIAL_ECHOPAIR(" F", retract_recover_feedrate*60);
+     SERIAL_EOL;
+     SERIAL_ECHO_START;
+@@ -696,7 +740,7 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Auto-Retract: S=0 to disable, 1 to interpret extrude-only moves as retracts or recoveries");
+       SERIAL_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("   M209 S", (unsigned long)(autoretract_enabled ? 1 : 0));
++    SERIAL_ECHOPAIR("  M209 S", (unsigned long)(autoretract_enabled ? 1 : 0));
+     SERIAL_EOL;
+ 
+     #if EXTRUDERS > 1
+@@ -720,20 +764,20 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Filament settings:");
+       SERIAL_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("   M200 D", filament_size[0]);
++    SERIAL_ECHOPAIR("  M200 D", filament_size[0]);
+     SERIAL_EOL;
+ 
+     #if EXTRUDERS > 1
+       SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("   M200 T1 D", filament_size[1]);
++      SERIAL_ECHOPAIR("  M200 T1 D", filament_size[1]);
+       SERIAL_EOL;
+       #if EXTRUDERS > 2
+         SERIAL_ECHO_START;
+-        SERIAL_ECHOPAIR("   M200 T2 D", filament_size[2]);
++        SERIAL_ECHOPAIR("  M200 T2 D", filament_size[2]);
+         SERIAL_EOL;
+         #if EXTRUDERS > 3
+           SERIAL_ECHO_START;
+-          SERIAL_ECHOPAIR("   M200 T3 D", filament_size[3]);
++          SERIAL_ECHOPAIR("  M200 T3 D", filament_size[3]);
+           SERIAL_EOL;
+         #endif
+       #endif
+@@ -752,7 +796,7 @@ void Config_PrintSettings(bool forReplay) {
+         SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
+         SERIAL_ECHO_START;
+       }
+-      SERIAL_ECHOPAIR("   M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
++      SERIAL_ECHOPAIR("  M", (unsigned long)CUSTOM_M_CODE_SET_Z_PROBE_OFFSET);
+       SERIAL_ECHOPAIR(" Z", -zprobe_zoffset);
+     #else
+       if (!forReplay) {
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 0690e4e..847c41b 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -72,11 +72,11 @@ extern float current_temperature_bed;
+   float unscalePID_d(float d);
+ 
+ #endif
++
+ #ifdef PIDTEMPBED
+   extern float bedKp,bedKi,bedKd;
+ #endif
+   
+-  
+ #ifdef BABYSTEPPING
+   extern volatile int babystepsTodo[3];
+ #endif
+diff --git a/README.md b/README.md
+index 2ecb9d8..8d06c08 100644
+--- a/README.md
++++ b/README.md
+@@ -18,8 +18,8 @@
+ ## Quick Information
+ 
+ This is a firmware for reprap single-processor electronics setups.
+-It also works on the Ultimaker PCB. It supports printing from SD card+Folders, and look-ahead trajectory planning.
+-This firmware is a mashup between [Sprinter](https://github.com/kliment/Sprinter), [grbl](https://github.com/simen/grbl) and many original parts.
++It also works on the Ultimaker PCB. It supports printing from SD card+Folders and look-ahead trajectory planning.
++This firmware is a mashup between [Sprinter](https://github.com/kliment/Sprinter), [grbl](https://github.com/simen/grbl), and many original parts.
+ 
+ ## Current Status: Bug Fixing
+ 
+@@ -31,7 +31,7 @@ We are actively looking for testers. So please try the current development versi
+ 
+ ## Contact
+ 
+-__IRC:__ #marlin-firmware @freenode ([WebChat Client](https://webchat.freenode.net/?channels=marlin-firmware)
++__IRC:__ #marlin-firmware @freenode ([WebChat Client](https://webchat.freenode.net/?channels=marlin-firmware))
+ 
+ ## Credits
+ 
+@@ -41,8 +41,8 @@ The current Marlin dev team consists of:
+  - [@daid](https://github.com/daid)
+ 
+ Sprinters lead developers are Kliment and caru.
+-Grbls lead developer is Simen Svale Skogsrud.
+-Sonney Jeon (Chamnit) improved some parts of grbl
++Grbl's lead developer is Simen Svale Skogsrud.
++Sonney Jeon (Chamnit) improved some parts of grbl.
+ A fork by bkubicek for the Ultimaker was merged.
+ 
+ More features have been added by:
+

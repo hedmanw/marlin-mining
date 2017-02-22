@@ -1,0 +1,3449 @@
+commit 311627141bff077a4c5ac6e602fcf6d1c7ae22ca (from 85da81e67349ab815985b5651aecfb7943201b3c)
+Merge: 85da81e 2d9a715
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Mon Nov 28 21:36:01 2011 +0100
+
+    Merge branch 'smallopt' into Marlin_v1
+    
+    Conflicts:
+    	Marlin/temperature.h
+
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index c298c97..1099d08 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -39,7 +39,7 @@ template <class T> int EEPROM_readAnything(int &ee, T& value)
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+ #define EEPROM_VERSION "V04"  
+ 
+-inline void StoreSettings() 
++FORCE_INLINE void StoreSettings() 
+ {
+ #ifdef EEPROM_SETTINGS
+   char ver[4]= "000";
+@@ -72,7 +72,7 @@ inline void StoreSettings()
+ #endif //EEPROM_SETTINGS
+ }
+ 
+-inline void RetrieveSettings(bool def=false)
++FORCE_INLINE void RetrieveSettings(bool def=false)
+ {  // if def=true, the default values will be used
+   #ifdef EEPROM_SETTINGS
+     int i=EEPROM_OFFSET;
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 57f403d..464d7eb 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -10,6 +10,8 @@
+ #include "Configuration.h"
+ #include "MarlinSerial.h"
+ 
++
++#define  FORCE_INLINE __attribute__((always_inline)) inline
+ //#define SERIAL_ECHO(x) Serial << "echo: " << x;
+ //#define SERIAL_ECHOLN(x) Serial << "echo: "<<x<<endl;
+ //#define SERIAL_ERROR(x) Serial << "Error: " << x;
+@@ -43,7 +45,7 @@ const char echomagic[] PROGMEM ="echo:";
+ 
+ //things to write to serial from Programmemory. saves 400 to 2k of RAM.
+ #define SerialprintPGM(x) serialprintPGM(PSTR(x))
+-inline void serialprintPGM(const char *str)
++FORCE_INLINE void serialprintPGM(const char *str)
+ {
+   char ch=pgm_read_byte(str);
+   while(ch)
+@@ -112,5 +114,6 @@ void prepare_arc_move(char isclockwise);
+ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern float current_position[NUM_AXIS] ;
++extern float add_homeing[3];
+ 
+ #endif
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 4c1535b..e7102ea 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -94,6 +94,7 @@
+ // M92  - Set axis_steps_per_unit - same syntax as G92
+ // M114 - Output current position to serial port 
+ // M115	- Capabilities string
++// M117 - display message
+ // M119 - Output Endstop status to serial port
+ // M140 - Set bed target temp
+ // M190 - Wait for bed current temp to reach target temp.
+@@ -103,6 +104,7 @@
+ // M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+ // M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
+ // M205 -  advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk
++// M206 - set additional homeing offset
+ // M220 - set speed factor override percentage S:factor in percent
+ // M301 - Set PID parameters P I and D
+ // M400 - Finish all moves
+@@ -130,7 +132,7 @@ volatile int feedmultiply=100; //100->1 200->2
+ int saved_feedmultiply;
+ volatile bool feedmultiplychanged=false;
+ float current_position[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
+-
++float add_homeing[3]={0,0,0};
+ 
+ //===========================================================================
+ //=============================private variables=============================
+@@ -528,19 +530,23 @@ inline void process_commands()
+       }
+       feedrate = 0.0;
+       home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+-
++      
+       if((home_all_axis) || (code_seen(axis_codes[X_AXIS]))) 
+       {
+         HOMEAXIS(X);
++	current_position[0]=code_value()+add_homeing[0];
+       }
+ 
+       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
+        HOMEAXIS(Y);
++       current_position[1]=code_value()+add_homeing[1];
+       }
+ 
+       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+         HOMEAXIS(Z);
++	current_position[2]=code_value()+add_homeing[2];
+       }       
++      
+       feedrate = saved_feedrate;
+       feedmultiply = saved_feedmultiply;
+       previous_millis_cmd = millis();
+@@ -557,7 +563,7 @@ inline void process_commands()
+         st_synchronize();
+       for(int8_t i=0; i < NUM_AXIS; i++) {
+         if(code_seen(axis_codes[i])) { 
+-           current_position[i] = code_value();  
++           current_position[i] = code_value()+add_homeing[i];  
+            if(i == E_AXIS) {
+              plan_set_e_position(current_position[E_AXIS]);
+            }
+@@ -869,6 +875,9 @@ inline void process_commands()
+     case 115: // M115
+       SerialprintPGM("FIRMWARE_NAME:Marlin; Sprinter/grbl mashup for gen6 FIRMWARE_URL:http://www.mendel-parts.com PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1");
+       break;
++    case 117: // M117 display message
++      LCD_MESSAGE(cmdbuffer[bufindr]+5);
++      break;
+     case 114: // M114
+       SERIAL_PROTOCOLPGM("X:");
+       SERIAL_PROTOCOL(current_position[X_AXIS]);
+@@ -949,6 +958,12 @@ inline void process_commands()
+       if(code_seen('Z')) max_z_jerk = code_value() ;
+     }
+     break;
++    case 206: // M206 additional homeing offset
++      for(int8_t i=0; i < 3; i++) 
++      {
++        if(code_seen(axis_codes[i])) add_homeing[i] = code_value();
++      }
++      break;
+     case 220: // M220 S<factor in percent>- set speed factor override percentage
+     {
+       if(code_seen('S')) 
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 4530e4e..c8ef9db 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -32,11 +32,11 @@ public:
+   void chdir(const char * relpath);
+   void updir();
+ 
+-  inline bool eof() { return sdpos>=filesize ;};
+-  inline int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
+-  inline void setIndex(long index) {sdpos = index;file.seekSet(index);};
+-  inline uint8_t percentDone(){if(!sdprinting) return 0; if(filesize) return sdpos*100/filesize; else return 0;};
+-  inline char* getWorkDirName(){workDir.getFilename(filename);return filename;};
++  FORCE_INLINE bool eof() { return sdpos>=filesize ;};
++  FORCE_INLINE int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
++  FORCE_INLINE void setIndex(long index) {sdpos = index;file.seekSet(index);};
++  FORCE_INLINE uint8_t percentDone(){if(!sdprinting) return 0; if(filesize) return sdpos*100/filesize; else return 0;};
++  FORCE_INLINE char* getWorkDirName(){workDir.getFilename(filename);return filename;};
+ 
+ public:
+   bool saving;
+@@ -69,31 +69,31 @@ private:
+ class CardReader
+ {
+ public:
+-  inline CardReader(){};
++  FORCE_INLINE CardReader(){};
+   
+-  inline static void initsd(){};
+-  inline static void write_command(char *buf){};
++  FORCE_INLINE static void initsd(){};
++  FORCE_INLINE static void write_command(char *buf){};
+   
+-  inline static void checkautostart(bool x) {}; 
++  FORCE_INLINE static void checkautostart(bool x) {}; 
+   
+-  inline static void openFile(char* name,bool read){};
+-  inline static void closefile() {};
+-  inline static void release(){};
+-  inline static void startFileprint(){};
+-  inline static void startFilewrite(char *name){};
+-  inline static void pauseSDPrint(){};
+-  inline static void getStatus(){};
++  FORCE_INLINE static void openFile(char* name,bool read){};
++  FORCE_INLINE static void closefile() {};
++  FORCE_INLINE static void release(){};
++  FORCE_INLINE static void startFileprint(){};
++  FORCE_INLINE static void startFilewrite(char *name){};
++  FORCE_INLINE static void pauseSDPrint(){};
++  FORCE_INLINE static void getStatus(){};
+   
+-  inline static void selectFile(char* name){};
+-  inline static void getfilename(const uint8_t nr){};
+-  inline static uint8_t getnrfilenames(){return 0;};
++  FORCE_INLINE static void selectFile(char* name){};
++  FORCE_INLINE static void getfilename(const uint8_t nr){};
++  FORCE_INLINE static uint8_t getnrfilenames(){return 0;};
+   
+ 
+-  inline static void ls() {};
+-  inline static bool eof() {return true;};
+-  inline static char get() {return 0;};
+-  inline static void setIndex(){};
+-  inline uint8_t percentDone(){return 0;};
++  FORCE_INLINE static void ls() {};
++  FORCE_INLINE static bool eof() {return true;};
++  FORCE_INLINE static char get() {return 0;};
++  FORCE_INLINE static void setIndex(){};
++  FORCE_INLINE uint8_t percentDone(){return 0;};
+ };
+ #endif //SDSUPPORT
+ #endif
+\ No newline at end of file
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4728698..f26ae10 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -95,13 +95,17 @@ static float previous_nominal_speed; // Nominal speed of previous path line segm
+     bool autotemp_enabled=false;
+ #endif
+ 
++    
++//===========================================================================
++//=================semi-private variables, used in inline  functions    =====
++//===========================================================================
++block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
++volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
++volatile unsigned char block_buffer_tail;           // Index of the block to process now
+ 
+ //===========================================================================
+ //=============================private variables ============================
+ //===========================================================================
+-static block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
+-static volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
+-static volatile unsigned char block_buffer_tail;           // Index of the block to process now
+ 
+ // Used for the frequency limit
+ static unsigned char old_direction_bits = 0;               // Old direction bits. Used for speed calculations
+@@ -130,7 +134,8 @@ static int8_t prev_block_index(int8_t block_index) {
+ 
+ // Calculates the distance (not time) it takes to accelerate from initial_rate to target_rate using the 
+ // given acceleration:
+-inline float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration) {
++FORCE_INLINE float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration)
++{
+   if (acceleration!=0) {
+   return((target_rate*target_rate-initial_rate*initial_rate)/
+          (2.0*acceleration));
+@@ -145,7 +150,8 @@ inline float estimate_acceleration_distance(float initial_rate, float target_rat
+ // a total travel of distance. This can be used to compute the intersection point between acceleration and
+ // deceleration in the cases where the trapezoid has no plateau (i.e. never reaches maximum speed)
+ 
+-inline float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) {
++FORCE_INLINE float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) 
++{
+  if (acceleration!=0) {
+   return((2.0*acceleration*distance-initial_rate*initial_rate+final_rate*final_rate)/
+          (4.0*acceleration) );
+@@ -209,7 +215,7 @@ void calculate_trapezoid_for_block(block_t *block, float entry_factor, float exi
+ 
+ // Calculates the maximum allowable speed at this point when you must be able to reach target_velocity using the 
+ // acceleration within the allotted distance.
+-inline float max_allowable_speed(float acceleration, float target_velocity, float distance) {
++FORCE_INLINE float max_allowable_speed(float acceleration, float target_velocity, float distance) {
+   return  sqrt(target_velocity*target_velocity-2*acceleration*distance);
+ }
+ 
+@@ -366,20 +372,7 @@ void plan_init() {
+ }
+ 
+ 
+-void plan_discard_current_block() {
+-  if (block_buffer_head != block_buffer_tail) {
+-    block_buffer_tail = (block_buffer_tail + 1) & (BLOCK_BUFFER_SIZE - 1);  
+-  }
+-}
+ 
+-block_t *plan_get_current_block() {
+-  if (block_buffer_head == block_buffer_tail) { 
+-    return(NULL); 
+-  }
+-  block_t *block = &block_buffer[block_buffer_tail];
+-  block->busy = true;
+-  return(block);
+-}
+ 
+ #ifdef AUTOTEMP
+ void getHighESpeed()
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 8ef8fec..741c6f9 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -25,6 +25,7 @@
+ #define planner_h
+ 
+ #include "Configuration.h"
++#include "Marlin.h"
+ 
+ // This struct is used when buffering the setup for each linear movement "nominal" values are as specified in 
+ // the source g-code and may never actually be reached if acceleration management is active.
+@@ -72,12 +73,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+ void plan_set_position(const float &x, const float &y, const float &z, const float &e);
+ void plan_set_e_position(const float &e);
+ 
+-// Called when the current block is no longer needed. Discards the block and makes the memory
+-// availible for new blocks.
+-void plan_discard_current_block();
+ 
+-// Gets the current block. Returns NULL if buffer empty
+-block_t *plan_get_current_block();
+ 
+ void check_axes_activity();
+ uint8_t movesplanned(); //return the nr of buffered moves
+@@ -103,4 +99,30 @@ extern uint8_t active_extruder;
+     extern float autotemp_factor;
+ #endif
+ 
++    
++/////semi-private stuff
++#include <WProgram.h>
++
++extern block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
++extern volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
++extern volatile unsigned char block_buffer_tail; 
++// Called when the current block is no longer needed. Discards the block and makes the memory
++// availible for new blocks.    
++FORCE_INLINE void plan_discard_current_block()  
++{
++  if (block_buffer_head != block_buffer_tail) {
++    block_buffer_tail = (block_buffer_tail + 1) & (BLOCK_BUFFER_SIZE - 1);  
++  }
++}
++
++// Gets the current block. Returns NULL if buffer empty
++FORCE_INLINE block_t *plan_get_current_block() 
++{
++  if (block_buffer_head == block_buffer_tail) { 
++    return(NULL); 
++  }
++  block_t *block = &block_buffer[block_buffer_tail];
++  block->busy = true;
++  return(block);
++}
+ #endif
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 34c7153..fcc0ace 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -212,7 +212,7 @@ void st_wake_up() {
+   ENABLE_STEPPER_DRIVER_INTERRUPT();  
+ }
+ 
+-inline unsigned short calc_timer(unsigned short step_rate) {
++FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+   unsigned short timer;
+   if(step_rate > MAX_STEP_FREQUENCY) step_rate = MAX_STEP_FREQUENCY;
+   
+@@ -249,7 +249,7 @@ inline unsigned short calc_timer(unsigned short step_rate) {
+ 
+ // Initializes the trapezoid generator from the current block. Called whenever a new 
+ // block begins.
+-inline void trapezoid_generator_reset() {
++FORCE_INLINE void trapezoid_generator_reset() {
+   #ifdef ADVANCE
+     advance = current_block->initial_advance;
+     final_advance = current_block->final_advance;
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index e832eb6..3f38c81 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -59,16 +59,16 @@ extern float Kp,Ki,Kd,Kc;
+ //inline so that there is no performance decrease.
+ //deg=degreeCelsius
+ 
+-inline float degHotend0(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);};
+-inline float degHotend1(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);};
+-inline float degBed() {  return analog2tempBed(current_raw[TEMPSENSOR_BED]);};
++FORCE_INLINE float degHotend0(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);};
++FORCE_INLINE float degHotend1(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);};
++FORCE_INLINE float degBed() {  return analog2tempBed(current_raw[TEMPSENSOR_BED]);};
+ inline float degHotend(uint8_t extruder){  
+   if(extruder == 0) return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);
+   if(extruder == 1) return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);
+ };
+ 
+-inline float degTargetHotend0() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);};
+-inline float degTargetHotend1() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);};
++FORCE_INLINE float degTargetHotend0() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);};
++FORCE_INLINE float degTargetHotend1() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);};
+ inline float degTargetHotend(uint8_t extruder){  
+   if(extruder == 0) return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);
+   if(extruder == 1) return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);
+@@ -76,30 +76,30 @@ inline float degTargetHotend(uint8_t extruder){
+ 
+ inline float degTargetBed() {   return analog2tempBed(target_raw[TEMPSENSOR_BED]);};
+ 
+-inline void setTargetHotend0(const float &celsius) 
++FORCE_INLINE void setTargetHotend0(const float &celsius) 
+ {  
+   target_raw[TEMPSENSOR_HOTEND_0]=temp2analog(celsius);
+   #ifdef PIDTEMP
+     pid_setpoint = celsius;
+   #endif //PIDTEMP
+ };
+-inline void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
++FORCE_INLINE void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
+ inline float setTargetHotend(const float &celcius, uint8_t extruder){  
+   if(extruder == 0) setTargetHotend0(celcius);
+   if(extruder == 1) setTargetHotend1(celcius);
+ };
+ inline void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSOR_BED     ]=temp2analogBed(celsius);};
+ 
+-inline bool isHeatingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
+-inline bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
++FORCE_INLINE bool isHeatingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
++FORCE_INLINE bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
+ inline float isHeatingHotend(uint8_t extruder){  
+   if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];
+ };
+ inline bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
+ 
+-inline bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
+-inline bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
++FORCE_INLINE bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
++FORCE_INLINE bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
+ inline float isCoolingHotend(uint8_t extruder){  
+   if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 85a8df7..887dc04 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -79,7 +79,7 @@
+     bool tune;
+     
+   private:
+-    inline void updateActiveLines(const uint8_t &maxlines,volatile int &encoderpos)
++    FORCE_INLINE void updateActiveLines(const uint8_t &maxlines,volatile int &encoderpos)
+     {
+       if(linechanging) return; // an item is changint its value, do not switch lines hence
+       lastlineoffset=lineoffset; 
+@@ -119,7 +119,7 @@
+       } 
+     }
+     
+-    inline void clearIfNecessary()
++    FORCE_INLINE void clearIfNecessary()
+     {
+       if(lastlineoffset!=lineoffset ||force_lcd_update)
+       {
+@@ -143,7 +143,7 @@
+   #define LCD_STATUS
+   #define LCD_MESSAGE(x)
+   #define LCD_MESSAGEPGM(x)
+-  inline void lcd_status() {};
++  FORCE_INLINE void lcd_status() {};
+ #endif
+   
+ #ifndef ULTIPANEL  
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index a90a6c6..a4bb640 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -660,7 +660,12 @@ void MainMenu::showTune()
+ //   
+ 
+ enum {
+-  ItemCT_exit, ItemCT_nozzle, ItemCT_fan,
++  ItemCT_exit,ItemCT_nozzle,
++#ifdef AUTOTEMP
++  ItemCT_autotempactive,
++  ItemCT_autotempmin,ItemCT_autotempmax,ItemCT_autotempfact,
++#endif
++  ItemCT_fan,
+   ItemCT_PID_P,ItemCT_PID_I,ItemCT_PID_D,ItemCT_PID_C
+ };
+ 
+@@ -708,7 +713,128 @@ void MainMenu::showControlTemp()
+           }
+         }
+       }break;
+-      
++      #ifdef AUTOTEMP
++      case ItemCT_autotempmin:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Min:");
++          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_max);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>260) encoderpos=260;
++            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++          }
++        }
++      }break;  
++      case ItemCT_autotempmax:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Max:");
++          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_max);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>260) encoderpos=260;
++            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++          }
++        }
++      }break;  
++      case ItemCT_autotempfact:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Fact:");
++          lcd.setCursor(13,line);lcd.print(ftostr32(autotemp_factor));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_factor*100);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>99) encoderpos=99;
++            lcd.setCursor(13,line);lcd.print(ftostr32(encoderpos/100.));
++          }
++        }
++      }break;
++      case ItemCT_autotempactive:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" Autotemp:");
++          lcd.setCursor(13,line);
++	  if(autotemp_enabled)
++	    lcdprintPGM("On");
++	  else
++	    lcdprintPGM("Off");
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            autotemp_enabled=!autotemp_enabled;
++            BLOCK;
++          }
++        }
++      }break;  
++      #endif //autotemp
+       case ItemCT_fan:
+       {
+         if(force_lcd_update)
+@@ -1620,6 +1746,19 @@ char *ftostr31(const float &x)
+   return conv;
+ }
+ 
++char *ftostr32(const float &x)
++{
++  int xx=x*100;
++  conv[0]=(xx>=0)?'+':'-';
++  xx=abs(xx);
++  conv[1]=(xx/100)%10+'0';
++  conv[2]='.';
++  conv[3]=(xx/10)%10+'0';
++  conv[4]=(xx)%10+'0';
++  conv[6]=0;
++  return conv;
++}
++
+ char *itostr31(const int &xx)
+ {
+   conv[0]=(xx>=0)?'+':'-';
+diff --git a/Marlin/watchdog.h b/Marlin/watchdog.h
+index 44ee9de..1d41488 100644
+--- a/Marlin/watchdog.h
++++ b/Marlin/watchdog.h
+@@ -9,8 +9,8 @@
+   void wd_reset();
+ 
+ #else
+-  inline void wd_init() {};
+-  inline void wd_reset() {};
++  FORCE_INLINE void wd_init() {};
++  FORCE_INLINE void wd_reset() {};
+ #endif
+ 
+ #endif
+
+commit 311627141bff077a4c5ac6e602fcf6d1c7ae22ca (from 2d9a7156555e0cdd969b44cc7c4d3c8a18875cfe)
+Merge: 85da81e 2d9a715
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Mon Nov 28 21:36:01 2011 +0100
+
+    Merge branch 'smallopt' into Marlin_v1
+    
+    Conflicts:
+    	Marlin/temperature.h
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 7bd94f6..558044e 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -8,6 +8,7 @@
+ //#define BAUDRATE 115200
+ //#define BAUDRATE 230400
+ 
++#define EXTRUDERS 1
+ 
+ // Frequency limit
+ // See nophead's blog for more info
+@@ -231,7 +232,7 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ 
+ // minimum time in microseconds that a movement needs to take if the buffer is emptied.   Increase this number if you see blobs while printing high speed & high detail.  It will slowdown on the detailed stuff.
+ #define DEFAULT_MINSEGMENTTIME        20000   // Obsolete delete this
+-#define DEFAULT_XYJERK                30.0    // (mm/sec)
++#define DEFAULT_XYJERK                20.0    // (mm/sec)
+ #define DEFAULT_ZJERK                 0.4     // (mm/sec)
+ 
+ 
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index 08b344a..1099d08 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -4,6 +4,7 @@
+ #include "Marlin.h"
+ #include "planner.h"
+ #include "temperature.h"
++
+ #include <EEPROM.h>
+ 
+ template <class T> int EEPROM_writeAnything(int &ee, const T& value)
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 69a0cf3..464d7eb 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -3,10 +3,12 @@
+ 
+ // Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
+ // Licence: GPL
++#define  HardwareSerial_h // trick to disable the standard HWserial
+ #include <WProgram.h>
+ #include "fastio.h"
+ #include <avr/pgmspace.h>
+ #include "Configuration.h"
++#include "MarlinSerial.h"
+ 
+ 
+ #define  FORCE_INLINE __attribute__((always_inline)) inline
+@@ -19,10 +21,10 @@
+ 
+ 
+ 
+-#define SERIAL_PROTOCOL(x) Serial.print(x);
++#define SERIAL_PROTOCOL(x) MSerial.print(x);
+ #define SERIAL_PROTOCOLPGM(x) serialprintPGM(PSTR(x));
+-#define SERIAL_PROTOCOLLN(x) {Serial.print(x);Serial.write('\n');}
+-#define SERIAL_PROTOCOLLNPGM(x) {serialprintPGM(PSTR(x));Serial.write('\n');}
++#define SERIAL_PROTOCOLLN(x) {MSerial.print(x);MSerial.write('\n');}
++#define SERIAL_PROTOCOLLNPGM(x) {serialprintPGM(PSTR(x));MSerial.write('\n');}
+ 
+ const char errormagic[] PROGMEM ="Error:";
+ const char echomagic[] PROGMEM ="echo:";
+@@ -48,7 +50,7 @@ FORCE_INLINE void serialprintPGM(const char *str)
+   char ch=pgm_read_byte(str);
+   while(ch)
+   {
+-    Serial.write(ch);
++    MSerial.write(ch);
+     ch=pgm_read_byte(++str);
+   }
+ }
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 6a07cf9..e7102ea 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -176,6 +176,7 @@ static unsigned long stepper_inactive_time = 0;
+ static unsigned long starttime=0;
+ static unsigned long stoptime=0;
+ 
++static uint8_t tmp_extruder;
+ 
+ 
+ //===========================================================================
+@@ -201,13 +202,6 @@ extern "C"{
+   }
+ }
+ 
+-
+-
+-
+-
+-
+-
+-
+ //adds an command to the main command buffer
+ //thats really done in a non-safe way.
+ //needs overworking someday
+@@ -228,7 +222,7 @@ void enquecommand(const char *cmd)
+ 
+ void setup()
+ { 
+-  Serial.begin(BAUDRATE);
++  MSerial.begin(BAUDRATE);
+   SERIAL_ECHO_START;
+   SERIAL_ECHOLNPGM(VERSION_STRING);
+   SERIAL_PROTOCOLLNPGM("start");
+@@ -291,15 +285,14 @@ void loop()
+   manage_heater();
+   manage_inactivity(1);
+   checkHitEndstops();
+-  checkStepperErrors();
+   LCD_STATUS;
+ }
+ 
+ 
+ inline void get_command() 
+ { 
+-  while( Serial.available() > 0  && buflen < BUFSIZE) {
+-    serial_char = Serial.read();
++  while( MSerial.available() > 0  && buflen < BUFSIZE) {
++    serial_char = MSerial.read();
+     if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) ) 
+     {
+       if(!serial_count) return; //if empty line
+@@ -647,7 +640,6 @@ inline void process_commands()
+       //processed in write to file routine above
+       //card,saving = false;
+       break;
+-      
+     #endif //SDSUPPORT
+ 
+     case 30: //M30 take time since the start of the SD print or an M109 command
+@@ -690,19 +682,36 @@ inline void process_commands()
+       }
+      break;
+     case 104: // M104
+-      if (code_seen('S')) setTargetHotend0(code_value());
++      tmp_extruder = active_extruder;
++      if(code_seen('T')) {
++        tmp_extruder = code_value();
++        if(tmp_extruder >= EXTRUDERS) {
++          SERIAL_ECHO_START;
++          SERIAL_ECHO("M104 Invalid extruder ");
++          SERIAL_ECHOLN(tmp_extruder);
++          break;
++        }
++      }
++      if (code_seen('S')) setTargetHotend(code_value(), tmp_extruder);
+       setWatch();
+       break;
+     case 140: // M140 set bed temp
+       if (code_seen('S')) setTargetBed(code_value());
+       break;
+     case 105 : // M105
+-      //SERIAL_ECHOLN(freeMemory());
+-       //test watchdog:
+-       //delay(20000);
+-      #if (TEMP_0_PIN > -1) || defined (HEATER_USES_AD595)
++      tmp_extruder = active_extruder;
++      if(code_seen('T')) {
++        tmp_extruder = code_value();
++        if(tmp_extruder >= EXTRUDERS) {
++          SERIAL_ECHO_START;
++          SERIAL_ECHO("M105 Invalid extruder ");
++          SERIAL_ECHOLN(tmp_extruder);
++          break;
++        }
++      }
++      #if (TEMP_0_PIN > -1) || (TEMP_2_PIN > -1)
+         SERIAL_PROTOCOLPGM("ok T:");
+-        SERIAL_PROTOCOL( degHotend0()); 
++        SERIAL_PROTOCOL( degHotend(tmp_extruder)); 
+         #if TEMP_1_PIN > -1 
+           SERIAL_PROTOCOLPGM(" B:");  
+           SERIAL_PROTOCOL(degBed());
+@@ -721,41 +730,51 @@ inline void process_commands()
+       break;
+     case 109: 
+     {// M109 - Wait for extruder heater to reach target.
+-        LCD_MESSAGEPGM("Heating...");   
+-        #ifdef AUTOTEMP
+-          autotemp_enabled=false;
+-        #endif
+-        if (code_seen('S')) setTargetHotend0(code_value());
+-        #ifdef AUTOTEMP
+-          if (code_seen('S')) autotemp_min=code_value();
+-          if (code_seen('T')) autotemp_max=code_value();
+-          if (code_seen('F')) 
+-          {
+-            autotemp_factor=code_value();
+-            autotemp_enabled=true;
+-          }
+-        #endif
+-        
+-        setWatch();
+-        codenum = millis(); 
+-
+-        /* See if we are heating up or cooling down */
+-        bool target_direction = isHeatingHotend0(); // true if heating, false if cooling
+-
+-        #ifdef TEMP_RESIDENCY_TIME
+-          long residencyStart;
+-          residencyStart = -1;
+-          /* continue to loop until we have reached the target temp   
+-            _and_ until TEMP_RESIDENCY_TIME hasn't passed since we reached it */
+-          while((target_direction ? (isHeatingHotend0()) : (isCoolingHotend0())) ||
+-                  (residencyStart > -1 && (millis() - residencyStart) < TEMP_RESIDENCY_TIME*1000) ) {
+-        #else
+-          while ( target_direction ? (isHeatingHotend0()) : (isCoolingHotend0()&&(CooldownNoWait==false)) ) {
+-        #endif //TEMP_RESIDENCY_TIME
++      tmp_extruder = active_extruder;
++      if(code_seen('T')) {
++        tmp_extruder = code_value();
++        if(tmp_extruder >= EXTRUDERS) {
++          SERIAL_ECHO_START;
++          SERIAL_ECHO("M109 Invalid extruder ");
++          SERIAL_ECHOLN(tmp_extruder);
++          break;
++        }
++      }
++      LCD_MESSAGEPGM("Heating...");   
++      #ifdef AUTOTEMP
++        autotemp_enabled=false;
++      #endif
++      if (code_seen('S')) setTargetHotend(code_value(), tmp_extruder);
++      #ifdef AUTOTEMP
++        if (code_seen('S')) autotemp_min=code_value();
++        if (code_seen('G')) autotemp_max=code_value();
++        if (code_seen('F')) 
++        {
++          autotemp_factor=code_value();
++          autotemp_enabled=true;
++        }
++      #endif
++      
++      setWatch();
++      codenum = millis(); 
++
++      /* See if we are heating up or cooling down */
++      bool target_direction = isHeatingHotend(tmp_extruder); // true if heating, false if cooling
++
++      #ifdef TEMP_RESIDENCY_TIME
++        long residencyStart;
++        residencyStart = -1;
++        /* continue to loop until we have reached the target temp   
++          _and_ until TEMP_RESIDENCY_TIME hasn't passed since we reached it */
++        while((target_direction ? (isHeatingHotend(tmp_extruder)) : (isCoolingHotend(tmp_extruder))) ||
++                (residencyStart > -1 && (millis() - residencyStart) < TEMP_RESIDENCY_TIME*1000) ) {
++      #else
++        while ( target_direction ? (isHeatingHotend(tmp_extruder)) : (isCoolingHotend(tmp_extruder)&&(CooldownNoWait==false)) ) {
++      #endif //TEMP_RESIDENCY_TIME
+         if( (millis() - codenum) > 1000 ) 
+         { //Print Temp Reading every 1 second while heating up/cooling down
+           SERIAL_PROTOCOLPGM("T:");
+-          SERIAL_PROTOCOLLN( degHotend0() ); 
++          SERIAL_PROTOCOLLN( degHotend(tmp_extruder) ); 
+           codenum = millis();
+         }
+         manage_heater();
+@@ -763,9 +782,9 @@ inline void process_commands()
+         #ifdef TEMP_RESIDENCY_TIME
+             /* start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+               or when current temp falls outside the hysteresis after target temp was reached */
+-          if ((residencyStart == -1 &&  target_direction && !isHeatingHotend0()) ||
+-              (residencyStart == -1 && !target_direction && !isCoolingHotend0()) ||
+-              (residencyStart > -1 && labs(degHotend0() - degTargetHotend0()) > TEMP_HYSTERESIS) ) 
++          if ((residencyStart == -1 &&  target_direction && !isHeatingHotend(tmp_extruder)) ||
++              (residencyStart == -1 && !target_direction && !isCoolingHotend(tmp_extruder)) ||
++              (residencyStart > -1 && labs(degHotend(tmp_extruder) - degTargetHotend(tmp_extruder)) > TEMP_HYSTERESIS) ) 
+           {
+             residencyStart = millis();
+           }
+@@ -958,8 +977,6 @@ inline void process_commands()
+     #ifdef PIDTEMP
+     case 301: // M301
+       {
+-        
+-       
+         if(code_seen('P')) Kp = code_value();
+         if(code_seen('I')) Ki = code_value()*PID_dT;
+         if(code_seen('D')) Kd = code_value()/PID_dT;
+@@ -1004,6 +1021,18 @@ inline void process_commands()
+ 
+     }
+   }
++  else if(code_seen('T')) {
++    tmp_extruder = code_value();
++    if(tmp_extruder >= EXTRUDERS) {
++      SERIAL_ECHO_START;
++      SERIAL_ECHO("T");
++      SERIAL_ECHO(tmp_extruder);
++      SERIAL_ECHOLN("Invalid extruder");
++    }
++    else {
++      active_extruder = tmp_extruder;
++    }
++  }
+   else
+   {
+     SERIAL_ECHO_START;
+@@ -1018,7 +1047,7 @@ inline void process_commands()
+ void FlushSerialRequestResend()
+ {
+   //char cmdbuffer[bufindr][100]="Resend:";
+-  Serial.flush();
++  MSerial.flush();
+   SERIAL_PROTOCOLPGM("Resend:");
+   SERIAL_PROTOCOLLN(gcode_LastN + 1);
+   ClearToSend();
+@@ -1067,7 +1096,7 @@ void prepare_move()
+     if (destination[Z_AXIS] > Z_MAX_LENGTH) destination[Z_AXIS] = Z_MAX_LENGTH;
+   }
+ 
+-  plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate*feedmultiply/60/100.0);
++  plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate*feedmultiply/60/100.0, active_extruder);
+   for(int8_t i=0; i < NUM_AXIS; i++) {
+     current_position[i] = destination[i];
+   }
+@@ -1077,7 +1106,7 @@ void prepare_arc_move(char isclockwise) {
+   float r = hypot(offset[X_AXIS], offset[Y_AXIS]); // Compute arc radius for mc_arc
+ 
+   // Trace the arc
+-  mc_arc(current_position, destination, offset, X_AXIS, Y_AXIS, Z_AXIS, feedrate*feedmultiply/60/100.0, r, isclockwise);
++  mc_arc(current_position, destination, offset, X_AXIS, Y_AXIS, Z_AXIS, feedrate*feedmultiply/60/100.0, r, isclockwise, active_extruder);
+   
+   // As far as the parser is concerned, the position is now == target. In reality the
+   // motion control system might still be processing the action and the real tool position
+@@ -1087,10 +1116,6 @@ void prepare_arc_move(char isclockwise) {
+   }
+ }
+ 
+-
+-
+-
+-
+ void manage_inactivity(byte debug) 
+ { 
+   if( (millis()-previous_millis_cmd) >  max_inactive_time ) 
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+new file mode 100644
+index 0000000..6cf47ea
+--- /dev/null
++++ b/Marlin/MarlinSerial.cpp
+@@ -0,0 +1,338 @@
++/*
++  HardwareSerial.cpp - Hardware serial library for Wiring
++  Copyright (c) 2006 Nicholas Zambetti.  All right reserved.
++
++  This library is free software; you can redistribute it and/or
++  modify it under the terms of the GNU Lesser General Public
++  License as published by the Free Software Foundation; either
++  version 2.1 of the License, or (at your option) any later version.
++
++  This library is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++  Lesser General Public License for more details.
++
++  You should have received a copy of the GNU Lesser General Public
++  License along with this library; if not, write to the Free Software
++  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++  
++  Modified 23 November 2006 by David A. Mellis
++  Modified 28 September 2010 by Mark Sproul
++*/
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <inttypes.h>
++#include "wiring.h"
++#include "wiring_private.h"
++
++// this next line disables the entire HardwareSerial.cpp, 
++// this is so I can support Attiny series and any other chip without a uart
++#if defined(UBRRH) || defined(UBRR0H) || defined(UBRR1H) || defined(UBRR2H) || defined(UBRR3H)
++
++#include "MarlinSerial.h"
++
++
++
++
++#if defined(UBRRH) || defined(UBRR0H)
++  ring_buffer rx_buffer  =  { { 0 }, 0, 0 };
++#endif
++
++
++inline void store_char(unsigned char c)
++{
++  int i = (unsigned int)(rx_buffer.head + 1) % RX_BUFFER_SIZE;
++
++  // if we should be storing the received character into the location
++  // just before the tail (meaning that the head would advance to the
++  // current location of the tail), we're about to overflow the buffer
++  // and so we don't write the character or advance the head.
++  if (i != rx_buffer.tail) {
++    rx_buffer.buffer[rx_buffer.head] = c;
++    rx_buffer.head = i;
++  }
++}
++
++
++//#elif defined(SIG_USART_RECV)
++#if defined(USART0_RX_vect)
++  // fixed by Mark Sproul this is on the 644/644p
++  //SIGNAL(SIG_USART_RECV)
++  SIGNAL(USART0_RX_vect)
++  {
++  #if defined(UDR0)
++    unsigned char c  =  UDR0;
++  #elif defined(UDR)
++    unsigned char c  =  UDR;  //  atmega8, atmega32
++  #else
++    #error UDR not defined
++  #endif
++    store_char(c);
++  }
++#endif
++
++// Constructors ////////////////////////////////////////////////////////////////
++
++MarlinSerial::MarlinSerial()
++{
++
++}
++
++// Public Methods //////////////////////////////////////////////////////////////
++
++void MarlinSerial::begin(long baud)
++{
++  uint16_t baud_setting;
++  bool useU2X0 = true;
++
++#if F_CPU == 16000000UL
++  // hardcoded exception for compatibility with the bootloader shipped
++  // with the Duemilanove and previous boards and the firmware on the 8U2
++  // on the Uno and Mega 2560.
++  if (baud == 57600) {
++    useU2X0 = false;
++  }
++#endif
++  
++  if (useU2X0) {
++    UCSR0A = 1 << U2X0;
++    baud_setting = (F_CPU / 4 / baud - 1) / 2;
++  } else {
++    UCSR0A = 0;
++    baud_setting = (F_CPU / 8 / baud - 1) / 2;
++  }
++
++  // assign the baud_setting, a.k.a. ubbr (USART Baud Rate Register)
++  UBRR0H = baud_setting >> 8;
++  UBRR0L = baud_setting;
++
++  sbi(UCSR0B, RXEN0);
++  sbi(UCSR0B, TXEN0);
++  sbi(UCSR0B, RXCIE0);
++}
++
++void MarlinSerial::end()
++{
++  cbi(UCSR0B, RXEN0);
++  cbi(UCSR0B, TXEN0);
++  cbi(UCSR0B, RXCIE0);  
++}
++
++
++
++int MarlinSerial::peek(void)
++{
++  if (rx_buffer.head == rx_buffer.tail) {
++    return -1;
++  } else {
++    return rx_buffer.buffer[rx_buffer.tail];
++  }
++}
++
++int MarlinSerial::read(void)
++{
++  // if the head isn't ahead of the tail, we don't have any characters
++  if (rx_buffer.head == rx_buffer.tail) {
++    return -1;
++  } else {
++    unsigned char c = rx_buffer.buffer[rx_buffer.tail];
++    rx_buffer.tail = (unsigned int)(rx_buffer.tail + 1) % RX_BUFFER_SIZE;
++    return c;
++  }
++}
++
++void MarlinSerial::flush()
++{
++  // don't reverse this or there may be problems if the RX interrupt
++  // occurs after reading the value of rx_buffer_head but before writing
++  // the value to rx_buffer_tail; the previous value of rx_buffer_head
++  // may be written to rx_buffer_tail, making it appear as if the buffer
++  // don't reverse this or there may be problems if the RX interrupt
++  // occurs after reading the value of rx_buffer_head but before writing
++  // the value to rx_buffer_tail; the previous value of rx_buffer_head
++  // may be written to rx_buffer_tail, making it appear as if the buffer
++  // were full, not empty.
++  rx_buffer.head = rx_buffer.tail;
++}
++
++
++
++
++/// imports from print.h
++
++
++
++
++void MarlinSerial::print(char c, int base)
++{
++  print((long) c, base);
++}
++
++void MarlinSerial::print(unsigned char b, int base)
++{
++  print((unsigned long) b, base);
++}
++
++void MarlinSerial::print(int n, int base)
++{
++  print((long) n, base);
++}
++
++void MarlinSerial::print(unsigned int n, int base)
++{
++  print((unsigned long) n, base);
++}
++
++void MarlinSerial::print(long n, int base)
++{
++  if (base == 0) {
++    write(n);
++  } else if (base == 10) {
++    if (n < 0) {
++      print('-');
++      n = -n;
++    }
++    printNumber(n, 10);
++  } else {
++    printNumber(n, base);
++  }
++}
++
++void MarlinSerial::print(unsigned long n, int base)
++{
++  if (base == 0) write(n);
++  else printNumber(n, base);
++}
++
++void MarlinSerial::print(double n, int digits)
++{
++  printFloat(n, digits);
++}
++
++void MarlinSerial::println(void)
++{
++  print('\r');
++  print('\n');  
++}
++
++void MarlinSerial::println(const String &s)
++{
++  print(s);
++  println();
++}
++
++void MarlinSerial::println(const char c[])
++{
++  print(c);
++  println();
++}
++
++void MarlinSerial::println(char c, int base)
++{
++  print(c, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned char b, int base)
++{
++  print(b, base);
++  println();
++}
++
++void MarlinSerial::println(int n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned int n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(long n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned long n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(double n, int digits)
++{
++  print(n, digits);
++  println();
++}
++
++// Private Methods /////////////////////////////////////////////////////////////
++
++void MarlinSerial::printNumber(unsigned long n, uint8_t base)
++{
++  unsigned char buf[8 * sizeof(long)]; // Assumes 8-bit chars. 
++  unsigned long i = 0;
++
++  if (n == 0) {
++    print('0');
++    return;
++  } 
++
++  while (n > 0) {
++    buf[i++] = n % base;
++    n /= base;
++  }
++
++  for (; i > 0; i--)
++    print((char) (buf[i - 1] < 10 ?
++      '0' + buf[i - 1] :
++      'A' + buf[i - 1] - 10));
++}
++
++void MarlinSerial::printFloat(double number, uint8_t digits) 
++{ 
++  // Handle negative numbers
++  if (number < 0.0)
++  {
++     print('-');
++     number = -number;
++  }
++
++  // Round correctly so that print(1.999, 2) prints as "2.00"
++  double rounding = 0.5;
++  for (uint8_t i=0; i<digits; ++i)
++    rounding /= 10.0;
++  
++  number += rounding;
++
++  // Extract the integer part of the number and print it
++  unsigned long int_part = (unsigned long)number;
++  double remainder = number - (double)int_part;
++  print(int_part);
++
++  // Print the decimal point, but only if there are digits beyond
++  if (digits > 0)
++    print("."); 
++
++  // Extract digits from the remainder one at a time
++  while (digits-- > 0)
++  {
++    remainder *= 10.0;
++    int toPrint = int(remainder);
++    print(toPrint);
++    remainder -= toPrint; 
++  } 
++}
++
++// Preinstantiate Objects //////////////////////////////////////////////////////
++
++MarlinSerial MSerial;
++
++
++#endif // whole file
++
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+new file mode 100644
+index 0000000..9ff0791
+--- /dev/null
++++ b/Marlin/MarlinSerial.h
+@@ -0,0 +1,145 @@
++/*
++  HardwareSerial.h - Hardware serial library for Wiring
++  Copyright (c) 2006 Nicholas Zambetti.  All right reserved.
++
++  This library is free software; you can redistribute it and/or
++  modify it under the terms of the GNU Lesser General Public
++  License as published by the Free Software Foundation; either
++  version 2.1 of the License, or (at your option) any later version.
++
++  This library is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++  Lesser General Public License for more details.
++
++  You should have received a copy of the GNU Lesser General Public
++  License along with this library; if not, write to the Free Software
++  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++  Modified 28 September 2010 by Mark Sproul
++*/
++
++#ifndef MarlinSerial_h
++#define MarlinSerial_h
++
++#include <inttypes.h>
++#include <Stream.h>
++
++
++// Define constants and variables for buffering incoming serial data.  We're
++// using a ring buffer (I think), in which rx_buffer_head is the index of the
++// location to which to write the next incoming character and rx_buffer_tail
++// is the index of the location from which to read.
++#define RX_BUFFER_SIZE 128
++
++
++struct ring_buffer
++{
++  unsigned char buffer[RX_BUFFER_SIZE];
++  int head;
++  int tail;
++};
++
++#if defined(UBRRH) || defined(UBRR0H)
++  extern ring_buffer rx_buffer;
++#endif
++
++class MarlinSerial //: public Stream
++{
++
++  public:
++    MarlinSerial();
++    void begin(long);
++    void end();
++    int peek(void);
++    int read(void);
++    void flush(void);
++    
++    inline int available(void)
++    {
++      return (unsigned int)(RX_BUFFER_SIZE + rx_buffer.head - rx_buffer.tail) % RX_BUFFER_SIZE;
++    }
++    
++    inline void write(uint8_t c)
++    {
++      while (!((UCSR0A) & (1 << UDRE0)))
++        ;
++
++      UDR0 = c;
++    }
++    
++    
++    inline void checkRx(void)
++    {
++      if((UCSR0A & (1<<RXC0)) != 0) {
++        unsigned char c  =  UDR0;
++        int i = (unsigned int)(rx_buffer.head + 1) % RX_BUFFER_SIZE;
++
++        // if we should be storing the received character into the location
++        // just before the tail (meaning that the head would advance to the
++        // current location of the tail), we're about to overflow the buffer
++        // and so we don't write the character or advance the head.
++        if (i != rx_buffer.tail) {
++          rx_buffer.buffer[rx_buffer.head] = c;
++          rx_buffer.head = i;
++        }
++      }
++    }
++    
++    
++    private:
++    void printNumber(unsigned long, uint8_t);
++    void printFloat(double, uint8_t);
++    
++    
++  public:
++    
++    inline void write(const char *str)
++    {
++      while (*str)
++        write(*str++);
++    }
++
++
++    inline void write(const uint8_t *buffer, size_t size)
++    {
++      while (size--)
++        write(*buffer++);
++    }
++
++    inline void print(const String &s)
++    {
++      for (int i = 0; i < s.length(); i++) {
++        write(s[i]);
++      }
++    }
++    
++    inline void print(const char *str)
++    {
++      write(str);
++    }
++    void print(char, int = BYTE);
++    void print(unsigned char, int = BYTE);
++    void print(int, int = DEC);
++    void print(unsigned int, int = DEC);
++    void print(long, int = DEC);
++    void print(unsigned long, int = DEC);
++    void print(double, int = 2);
++
++    void println(const String &s);
++    void println(const char[]);
++    void println(char, int = BYTE);
++    void println(unsigned char, int = BYTE);
++    void println(int, int = DEC);
++    void println(unsigned int, int = DEC);
++    void println(long, int = DEC);
++    void println(unsigned long, int = DEC);
++    void println(double, int = 2);
++    void println(void);
++};
++
++#if defined(UBRRH) || defined(UBRR0H)
++  extern MarlinSerial MSerial;
++#endif
++
++#endif
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index ab060c1..4ca641e 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -1,642 +1,643 @@
+-/* Arduino Sd2Card Library
+- * Copyright (C) 2009 by William Greiman
+- *
+- * This file is part of the Arduino Sd2Card Library
+- *
+- * This Library is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This Library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with the Arduino Sd2Card Library.  If not, see
+- * <http://www.gnu.org/licenses/>.
+- */
+-#if ARDUINO < 100
+-#include <WProgram.h>
+-#else  // ARDUINO
+-#include <Arduino.h>
+-#endif  // ARDUINO
+-#include "Sd2Card.h"
+-//------------------------------------------------------------------------------
+-#ifndef SOFTWARE_SPI
+-// functions for hardware SPI
+-//------------------------------------------------------------------------------
+-// make sure SPCR rate is in expected bits
+-#if (SPR0 != 0 || SPR1 != 1)
+-#error unexpected SPCR bits
+-#endif
+-/**
+- * Initialize hardware SPI
+- * Set SCK rate to F_CPU/pow(2, 1 + spiRate) for spiRate [0,6]
+- */
+-static void spiInit(uint8_t spiRate) {
+-  // See avr processor documentation
+-  SPCR = (1 << SPE) | (1 << MSTR) | (spiRate >> 1);
+-  SPSR = spiRate & 1 || spiRate == 6 ? 0 : 1 << SPI2X;
+-}
+-//------------------------------------------------------------------------------
+-/** SPI receive a byte */
+-static uint8_t spiRec() {
+-  SPDR = 0XFF;
+-  while (!(SPSR & (1 << SPIF)));
+-  return SPDR;
+-}
+-//------------------------------------------------------------------------------
+-/** SPI read data - only one call so force inline */
+-static inline __attribute__((always_inline))
+-  void spiRead(uint8_t* buf, uint16_t nbyte) {
+-  if (nbyte-- == 0) return;
+-  SPDR = 0XFF;
+-  for (uint16_t i = 0; i < nbyte; i++) {
+-    while (!(SPSR & (1 << SPIF)));
+-    buf[i] = SPDR;
+-    SPDR = 0XFF;
+-  }
+-  while (!(SPSR & (1 << SPIF)));
+-  buf[nbyte] = SPDR;
+-}
+-//------------------------------------------------------------------------------
+-/** SPI send a byte */
+-static void spiSend(uint8_t b) {
+-  SPDR = b;
+-  while (!(SPSR & (1 << SPIF)));
+-}
+-//------------------------------------------------------------------------------
+-/** SPI send block - only one call so force inline */
+-static inline __attribute__((always_inline))
+-  void spiSendBlock(uint8_t token, const uint8_t* buf) {
+-  SPDR = token;
+-  for (uint16_t i = 0; i < 512; i += 2) {
+-    while (!(SPSR & (1 << SPIF)));
+-    SPDR = buf[i];
+-    while (!(SPSR & (1 << SPIF)));
+-    SPDR = buf[i + 1];
+-  }
+-  while (!(SPSR & (1 << SPIF)));
+-}
+-//------------------------------------------------------------------------------
+-#else  // SOFTWARE_SPI
+-//------------------------------------------------------------------------------
+-/** nop to tune soft SPI timing */
+-#define nop asm volatile ("nop\n\t")
+-//------------------------------------------------------------------------------
+-/** Soft SPI receive byte */
+-static uint8_t spiRec() {
+-  uint8_t data = 0;
+-  // no interrupts during byte receive - about 8 us
+-  cli();
+-  // output pin high - like sending 0XFF
+-  fastDigitalWrite(SPI_MOSI_PIN, HIGH);
+-
+-  for (uint8_t i = 0; i < 8; i++) {
+-    fastDigitalWrite(SPI_SCK_PIN, HIGH);
+-
+-    // adjust so SCK is nice
+-    nop;
+-    nop;
+-
+-    data <<= 1;
+-
+-    if (fastDigitalRead(SPI_MISO_PIN)) data |= 1;
+-
+-    fastDigitalWrite(SPI_SCK_PIN, LOW);
+-  }
+-  // enable interrupts
+-  sei();
+-  return data;
+-}
+-//------------------------------------------------------------------------------
+-/** Soft SPI read data */
+-static void spiRead(uint8_t* buf, uint16_t nbyte) {
+-  for (uint16_t i = 0; i < nbyte; i++) {
+-    buf[i] = spiRec();
+-  }
+-}
+-//------------------------------------------------------------------------------
+-/** Soft SPI send byte */
+-static void spiSend(uint8_t data) {
+-  // no interrupts during byte send - about 8 us
+-  cli();
+-  for (uint8_t i = 0; i < 8; i++) {
+-    fastDigitalWrite(SPI_SCK_PIN, LOW);
+-
+-    fastDigitalWrite(SPI_MOSI_PIN, data & 0X80);
+-
+-    data <<= 1;
+-
+-    fastDigitalWrite(SPI_SCK_PIN, HIGH);
+-  }
+-  // hold SCK high for a few ns
+-  nop;
+-  nop;
+-  nop;
+-  nop;
+-
+-  fastDigitalWrite(SPI_SCK_PIN, LOW);
+-  // enable interrupts
+-  sei();
+-}
+-//------------------------------------------------------------------------------
+-/** Soft SPI send block */
+-  void spiSendBlock(uint8_t token, const uint8_t* buf) {
+-  spiSend(token);
+-  for (uint16_t i = 0; i < 512; i++) {
+-    spiSend(buf[i]);
+-  }
+-}
+-#endif  // SOFTWARE_SPI
+-//------------------------------------------------------------------------------
+-// send command and return error code.  Return zero for OK
+-uint8_t Sd2Card::cardCommand(uint8_t cmd, uint32_t arg) {
+-  // select card
+-  chipSelectLow();
+-
+-  // wait up to 300 ms if busy
+-  waitNotBusy(300);
+-
+-  // send command
+-  spiSend(cmd | 0x40);
+-
+-  // send argument
+-  for (int8_t s = 24; s >= 0; s -= 8) spiSend(arg >> s);
+-
+-  // send CRC
+-  uint8_t crc = 0XFF;
+-  if (cmd == CMD0) crc = 0X95;  // correct crc for CMD0 with arg 0
+-  if (cmd == CMD8) crc = 0X87;  // correct crc for CMD8 with arg 0X1AA
+-  spiSend(crc);
+-
+-  // skip stuff byte for stop read
+-  if (cmd == CMD12) spiRec();
+-
+-  // wait for response
+-  for (uint8_t i = 0; ((status_ = spiRec()) & 0X80) && i != 0XFF; i++);
+-  return status_;
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Determine the size of an SD flash memory card.
+- *
+- * \return The number of 512 byte data blocks in the card
+- *         or zero if an error occurs.
+- */
+-uint32_t Sd2Card::cardSize() {
+-  csd_t csd;
+-  if (!readCSD(&csd)) return 0;
+-  if (csd.v1.csd_ver == 0) {
+-    uint8_t read_bl_len = csd.v1.read_bl_len;
+-    uint16_t c_size = (csd.v1.c_size_high << 10)
+-                      | (csd.v1.c_size_mid << 2) | csd.v1.c_size_low;
+-    uint8_t c_size_mult = (csd.v1.c_size_mult_high << 1)
+-                          | csd.v1.c_size_mult_low;
+-    return (uint32_t)(c_size + 1) << (c_size_mult + read_bl_len - 7);
+-  } else if (csd.v2.csd_ver == 1) {
+-    uint32_t c_size = ((uint32_t)csd.v2.c_size_high << 16)
+-                      | (csd.v2.c_size_mid << 8) | csd.v2.c_size_low;
+-    return (c_size + 1) << 10;
+-  } else {
+-    error(SD_CARD_ERROR_BAD_CSD);
+-    return 0;
+-  }
+-}
+-//------------------------------------------------------------------------------
+-void Sd2Card::chipSelectHigh() {
+-  digitalWrite(chipSelectPin_, HIGH);
+-}
+-//------------------------------------------------------------------------------
+-void Sd2Card::chipSelectLow() {
+-#ifndef SOFTWARE_SPI
+-  spiInit(spiRate_);
+-#endif  // SOFTWARE_SPI
+-  digitalWrite(chipSelectPin_, LOW);
+-}
+-//------------------------------------------------------------------------------
+-/** Erase a range of blocks.
+- *
+- * \param[in] firstBlock The address of the first block in the range.
+- * \param[in] lastBlock The address of the last block in the range.
+- *
+- * \note This function requests the SD card to do a flash erase for a
+- * range of blocks.  The data on the card after an erase operation is
+- * either 0 or 1, depends on the card vendor.  The card must support
+- * single block erase.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::erase(uint32_t firstBlock, uint32_t lastBlock) {
+-  csd_t csd;
+-  if (!readCSD(&csd)) goto fail;
+-  // check for single block erase
+-  if (!csd.v1.erase_blk_en) {
+-    // erase size mask
+-    uint8_t m = (csd.v1.sector_size_high << 1) | csd.v1.sector_size_low;
+-    if ((firstBlock & m) != 0 || ((lastBlock + 1) & m) != 0) {
+-      // error card can't erase specified area
+-      error(SD_CARD_ERROR_ERASE_SINGLE_BLOCK);
+-      goto fail;
+-    }
+-  }
+-  if (type_ != SD_CARD_TYPE_SDHC) {
+-    firstBlock <<= 9;
+-    lastBlock <<= 9;
+-  }
+-  if (cardCommand(CMD32, firstBlock)
+-    || cardCommand(CMD33, lastBlock)
+-    || cardCommand(CMD38, 0)) {
+-      error(SD_CARD_ERROR_ERASE);
+-      goto fail;
+-  }
+-  if (!waitNotBusy(SD_ERASE_TIMEOUT)) {
+-    error(SD_CARD_ERROR_ERASE_TIMEOUT);
+-    goto fail;
+-  }
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Determine if card supports single block erase.
+- *
+- * \return The value one, true, is returned if single block erase is supported.
+- * The value zero, false, is returned if single block erase is not supported.
+- */
+-bool Sd2Card::eraseSingleBlockEnable() {
+-  csd_t csd;
+-  return readCSD(&csd) ? csd.v1.erase_blk_en : false;
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Initialize an SD flash memory card.
+- *
+- * \param[in] sckRateID SPI clock rate selector. See setSckRate().
+- * \param[in] chipSelectPin SD chip select pin number.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.  The reason for failure
+- * can be determined by calling errorCode() and errorData().
+- */
+-bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+-  errorCode_ = type_ = 0;
+-  chipSelectPin_ = chipSelectPin;
+-  // 16-bit init start time allows over a minute
+-  uint16_t t0 = (uint16_t)millis();
+-  uint32_t arg;
+-
+-  // set pin modes
+-  pinMode(chipSelectPin_, OUTPUT);
+-  chipSelectHigh();
+-  pinMode(SPI_MISO_PIN, INPUT);
+-  pinMode(SPI_MOSI_PIN, OUTPUT);
+-  pinMode(SPI_SCK_PIN, OUTPUT);
+-
+-#ifndef SOFTWARE_SPI
+-  // SS must be in output mode even it is not chip select
+-  pinMode(SS_PIN, OUTPUT);
+-  // set SS high - may be chip select for another SPI device
+-#if SET_SPI_SS_HIGH
+-  digitalWrite(SS_PIN, HIGH);
+-#endif  // SET_SPI_SS_HIGH
+-  // set SCK rate for initialization commands
+-  spiRate_ = SPI_SD_INIT_RATE;
+-  spiInit(spiRate_);
+-#endif  // SOFTWARE_SPI
+-
+-  // must supply min of 74 clock cycles with CS high.
+-  for (uint8_t i = 0; i < 10; i++) spiSend(0XFF);
+-
+-  // command to go idle in SPI mode
+-  while ((status_ = cardCommand(CMD0, 0)) != R1_IDLE_STATE) {
+-    if (((uint16_t)millis() - t0) > SD_INIT_TIMEOUT) {
+-      error(SD_CARD_ERROR_CMD0);
+-      goto fail;
+-    }
+-  }
+-  // check SD version
+-  if ((cardCommand(CMD8, 0x1AA) & R1_ILLEGAL_COMMAND)) {
+-    type(SD_CARD_TYPE_SD1);
+-  } else {
+-    // only need last byte of r7 response
+-    for (uint8_t i = 0; i < 4; i++) status_ = spiRec();
+-    if (status_ != 0XAA) {
+-      error(SD_CARD_ERROR_CMD8);
+-      goto fail;
+-    }
+-    type(SD_CARD_TYPE_SD2);
+-  }
+-  // initialize card and send host supports SDHC if SD2
+-  arg = type() == SD_CARD_TYPE_SD2 ? 0X40000000 : 0;
+-
+-  while ((status_ = cardAcmd(ACMD41, arg)) != R1_READY_STATE) {
+-    // check for timeout
+-    if (((uint16_t)millis() - t0) > SD_INIT_TIMEOUT) {
+-      error(SD_CARD_ERROR_ACMD41);
+-      goto fail;
+-    }
+-  }
+-  // if SD2 read OCR register to check for SDHC card
+-  if (type() == SD_CARD_TYPE_SD2) {
+-    if (cardCommand(CMD58, 0)) {
+-      error(SD_CARD_ERROR_CMD58);
+-      goto fail;
+-    }
+-    if ((spiRec() & 0XC0) == 0XC0) type(SD_CARD_TYPE_SDHC);
+-    // discard rest of ocr - contains allowed voltage range
+-    for (uint8_t i = 0; i < 3; i++) spiRec();
+-  }
+-  chipSelectHigh();
+-
+-#ifndef SOFTWARE_SPI
+-  return setSckRate(sckRateID);
+-#else  // SOFTWARE_SPI
+-  return true;
+-#endif  // SOFTWARE_SPI
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Read a 512 byte block from an SD card.
+- *
+- * \param[in] blockNumber Logical block to be read.
+- * \param[out] dst Pointer to the location that will receive the data.
+-
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::readBlock(uint32_t blockNumber, uint8_t* dst) {
+-  // use address if not SDHC card
+-  if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-  if (cardCommand(CMD17, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD17);
+-    goto fail;
+-  }
+-  return readData(dst, 512);
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Read one data block in a multiple block read sequence
+- *
+- * \param[in] dst Pointer to the location for the data to be read.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::readData(uint8_t *dst) {
+-  chipSelectLow();
+-  return readData(dst, 512);
+-}
+-//------------------------------------------------------------------------------
+-bool Sd2Card::readData(uint8_t* dst, uint16_t count) {
+-  // wait for start block token
+-  uint16_t t0 = millis();
+-  while ((status_ = spiRec()) == 0XFF) {
+-    if (((uint16_t)millis() - t0) > SD_READ_TIMEOUT) {
+-      error(SD_CARD_ERROR_READ_TIMEOUT);
+-      goto fail;
+-    }
+-  }
+-  if (status_ != DATA_START_BLOCK) {
+-    error(SD_CARD_ERROR_READ);
+-    goto fail;
+-  }
+-  // transfer data
+-  spiRead(dst, count);
+-
+-  // discard CRC
+-  spiRec();
+-  spiRec();
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** read CID or CSR register */
+-bool Sd2Card::readRegister(uint8_t cmd, void* buf) {
+-  uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
+-  if (cardCommand(cmd, 0)) {
+-    error(SD_CARD_ERROR_READ_REG);
+-    goto fail;
+-  }
+-  return readData(dst, 16);
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Start a read multiple blocks sequence.
+- *
+- * \param[in] blockNumber Address of first block in sequence.
+- *
+- * \note This function is used with readData() and readStop() for optimized
+- * multiple block reads.  SPI chipSelect must be low for the entire sequence.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::readStart(uint32_t blockNumber) {
+-  if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-  if (cardCommand(CMD18, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD18);
+-    goto fail;
+-  }
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** End a read multiple blocks sequence.
+- *
+-* \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::readStop() {
+-  chipSelectLow();
+-  if (cardCommand(CMD12, 0)) {
+-    error(SD_CARD_ERROR_CMD12);
+-    goto fail;
+-  }
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Set the SPI clock rate.
+- *
+- * \param[in] sckRateID A value in the range [0, 6].
+- *
+- * The SPI clock will be set to F_CPU/pow(2, 1 + sckRateID). The maximum
+- * SPI rate is F_CPU/2 for \a sckRateID = 0 and the minimum rate is F_CPU/128
+- * for \a scsRateID = 6.
+- *
+- * \return The value one, true, is returned for success and the value zero,
+- * false, is returned for an invalid value of \a sckRateID.
+- */
+-bool Sd2Card::setSckRate(uint8_t sckRateID) {
+-  if (sckRateID > 6) {
+-    error(SD_CARD_ERROR_SCK_RATE);
+-    return false;
+-  }
+-  spiRate_ = sckRateID;
+-  return true;
+-}
+-//------------------------------------------------------------------------------
+-// wait for card to go not busy
+-bool Sd2Card::waitNotBusy(uint16_t timeoutMillis) {
+-  uint16_t t0 = millis();
+-  while (spiRec() != 0XFF) {
+-    if (((uint16_t)millis() - t0) >= timeoutMillis) goto fail;
+-  }
+-  return true;
+-
+- fail:
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Writes a 512 byte block to an SD card.
+- *
+- * \param[in] blockNumber Logical block to be written.
+- * \param[in] src Pointer to the location of the data to be written.
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::writeBlock(uint32_t blockNumber, const uint8_t* src) {
+-  // use address if not SDHC card
+-  if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-  if (cardCommand(CMD24, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD24);
+-    goto fail;
+-  }
+-  if (!writeData(DATA_START_BLOCK, src)) goto fail;
+-
+-  // wait for flash programming to complete
+-  if (!waitNotBusy(SD_WRITE_TIMEOUT)) {
+-    error(SD_CARD_ERROR_WRITE_TIMEOUT);
+-    goto fail;
+-  }
+-  // response is r2 so get and check two bytes for nonzero
+-  if (cardCommand(CMD13, 0) || spiRec()) {
+-    error(SD_CARD_ERROR_WRITE_PROGRAMMING);
+-    goto fail;
+-  }
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Write one data block in a multiple block write sequence
+- * \param[in] src Pointer to the location of the data to be written.
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::writeData(const uint8_t* src) {
+-  chipSelectLow();
+-  // wait for previous write to finish
+-  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
+-  if (!writeData(WRITE_MULTIPLE_TOKEN, src)) goto fail;
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  error(SD_CARD_ERROR_WRITE_MULTIPLE);
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-// send one block of data for write block or write multiple blocks
+-bool Sd2Card::writeData(uint8_t token, const uint8_t* src) {
+-  spiSendBlock(token, src);
+-
+-  spiSend(0xff);  // dummy crc
+-  spiSend(0xff);  // dummy crc
+-
+-  status_ = spiRec();
+-  if ((status_ & DATA_RES_MASK) != DATA_RES_ACCEPTED) {
+-    error(SD_CARD_ERROR_WRITE);
+-    goto fail;
+-  }
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Start a write multiple blocks sequence.
+- *
+- * \param[in] blockNumber Address of first block in sequence.
+- * \param[in] eraseCount The number of blocks to be pre-erased.
+- *
+- * \note This function is used with writeData() and writeStop()
+- * for optimized multiple block writes.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::writeStart(uint32_t blockNumber, uint32_t eraseCount) {
+-  // send pre-erase count
+-  if (cardAcmd(ACMD23, eraseCount)) {
+-    error(SD_CARD_ERROR_ACMD23);
+-    goto fail;
+-  }
+-  // use address if not SDHC card
+-  if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-  if (cardCommand(CMD25, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD25);
+-    goto fail;
+-  }
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  chipSelectHigh();
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** End a write multiple blocks sequence.
+- *
+-* \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool Sd2Card::writeStop() {
+-  chipSelectLow();
+-  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
+-  spiSend(STOP_TRAN_TOKEN);
+-  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
+-  chipSelectHigh();
+-  return true;
+-
+- fail:
+-  error(SD_CARD_ERROR_STOP_TRAN);
+-  chipSelectHigh();
+-  return false;
++/* Arduino Sd2Card Library
++ * Copyright (C) 2009 by William Greiman
++ *
++ * This file is part of the Arduino Sd2Card Library
++ *
++ * This Library is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This Library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with the Arduino Sd2Card Library.  If not, see
++ * <http://www.gnu.org/licenses/>.
++ */
++#if ARDUINO < 100
++#define  HardwareSerial_h // trick to disable the standard HWserial
++#include <WProgram.h>
++#else  // ARDUINO
++#include <Arduino.h>
++#endif  // ARDUINO
++#include "Sd2Card.h"
++//------------------------------------------------------------------------------
++#ifndef SOFTWARE_SPI
++// functions for hardware SPI
++//------------------------------------------------------------------------------
++// make sure SPCR rate is in expected bits
++#if (SPR0 != 0 || SPR1 != 1)
++#error unexpected SPCR bits
++#endif
++/**
++ * Initialize hardware SPI
++ * Set SCK rate to F_CPU/pow(2, 1 + spiRate) for spiRate [0,6]
++ */
++static void spiInit(uint8_t spiRate) {
++  // See avr processor documentation
++  SPCR = (1 << SPE) | (1 << MSTR) | (spiRate >> 1);
++  SPSR = spiRate & 1 || spiRate == 6 ? 0 : 1 << SPI2X;
++}
++//------------------------------------------------------------------------------
++/** SPI receive a byte */
++static uint8_t spiRec() {
++  SPDR = 0XFF;
++  while (!(SPSR & (1 << SPIF)));
++  return SPDR;
++}
++//------------------------------------------------------------------------------
++/** SPI read data - only one call so force inline */
++static inline __attribute__((always_inline))
++  void spiRead(uint8_t* buf, uint16_t nbyte) {
++  if (nbyte-- == 0) return;
++  SPDR = 0XFF;
++  for (uint16_t i = 0; i < nbyte; i++) {
++    while (!(SPSR & (1 << SPIF)));
++    buf[i] = SPDR;
++    SPDR = 0XFF;
++  }
++  while (!(SPSR & (1 << SPIF)));
++  buf[nbyte] = SPDR;
++}
++//------------------------------------------------------------------------------
++/** SPI send a byte */
++static void spiSend(uint8_t b) {
++  SPDR = b;
++  while (!(SPSR & (1 << SPIF)));
++}
++//------------------------------------------------------------------------------
++/** SPI send block - only one call so force inline */
++static inline __attribute__((always_inline))
++  void spiSendBlock(uint8_t token, const uint8_t* buf) {
++  SPDR = token;
++  for (uint16_t i = 0; i < 512; i += 2) {
++    while (!(SPSR & (1 << SPIF)));
++    SPDR = buf[i];
++    while (!(SPSR & (1 << SPIF)));
++    SPDR = buf[i + 1];
++  }
++  while (!(SPSR & (1 << SPIF)));
++}
++//------------------------------------------------------------------------------
++#else  // SOFTWARE_SPI
++//------------------------------------------------------------------------------
++/** nop to tune soft SPI timing */
++#define nop asm volatile ("nop\n\t")
++//------------------------------------------------------------------------------
++/** Soft SPI receive byte */
++static uint8_t spiRec() {
++  uint8_t data = 0;
++  // no interrupts during byte receive - about 8 us
++  cli();
++  // output pin high - like sending 0XFF
++  fastDigitalWrite(SPI_MOSI_PIN, HIGH);
++
++  for (uint8_t i = 0; i < 8; i++) {
++    fastDigitalWrite(SPI_SCK_PIN, HIGH);
++
++    // adjust so SCK is nice
++    nop;
++    nop;
++
++    data <<= 1;
++
++    if (fastDigitalRead(SPI_MISO_PIN)) data |= 1;
++
++    fastDigitalWrite(SPI_SCK_PIN, LOW);
++  }
++  // enable interrupts
++  sei();
++  return data;
++}
++//------------------------------------------------------------------------------
++/** Soft SPI read data */
++static void spiRead(uint8_t* buf, uint16_t nbyte) {
++  for (uint16_t i = 0; i < nbyte; i++) {
++    buf[i] = spiRec();
++  }
++}
++//------------------------------------------------------------------------------
++/** Soft SPI send byte */
++static void spiSend(uint8_t data) {
++  // no interrupts during byte send - about 8 us
++  cli();
++  for (uint8_t i = 0; i < 8; i++) {
++    fastDigitalWrite(SPI_SCK_PIN, LOW);
++
++    fastDigitalWrite(SPI_MOSI_PIN, data & 0X80);
++
++    data <<= 1;
++
++    fastDigitalWrite(SPI_SCK_PIN, HIGH);
++  }
++  // hold SCK high for a few ns
++  nop;
++  nop;
++  nop;
++  nop;
++
++  fastDigitalWrite(SPI_SCK_PIN, LOW);
++  // enable interrupts
++  sei();
++}
++//------------------------------------------------------------------------------
++/** Soft SPI send block */
++  void spiSendBlock(uint8_t token, const uint8_t* buf) {
++  spiSend(token);
++  for (uint16_t i = 0; i < 512; i++) {
++    spiSend(buf[i]);
++  }
++}
++#endif  // SOFTWARE_SPI
++//------------------------------------------------------------------------------
++// send command and return error code.  Return zero for OK
++uint8_t Sd2Card::cardCommand(uint8_t cmd, uint32_t arg) {
++  // select card
++  chipSelectLow();
++
++  // wait up to 300 ms if busy
++  waitNotBusy(300);
++
++  // send command
++  spiSend(cmd | 0x40);
++
++  // send argument
++  for (int8_t s = 24; s >= 0; s -= 8) spiSend(arg >> s);
++
++  // send CRC
++  uint8_t crc = 0XFF;
++  if (cmd == CMD0) crc = 0X95;  // correct crc for CMD0 with arg 0
++  if (cmd == CMD8) crc = 0X87;  // correct crc for CMD8 with arg 0X1AA
++  spiSend(crc);
++
++  // skip stuff byte for stop read
++  if (cmd == CMD12) spiRec();
++
++  // wait for response
++  for (uint8_t i = 0; ((status_ = spiRec()) & 0X80) && i != 0XFF; i++);
++  return status_;
++}
++//------------------------------------------------------------------------------
++/**
++ * Determine the size of an SD flash memory card.
++ *
++ * \return The number of 512 byte data blocks in the card
++ *         or zero if an error occurs.
++ */
++uint32_t Sd2Card::cardSize() {
++  csd_t csd;
++  if (!readCSD(&csd)) return 0;
++  if (csd.v1.csd_ver == 0) {
++    uint8_t read_bl_len = csd.v1.read_bl_len;
++    uint16_t c_size = (csd.v1.c_size_high << 10)
++                      | (csd.v1.c_size_mid << 2) | csd.v1.c_size_low;
++    uint8_t c_size_mult = (csd.v1.c_size_mult_high << 1)
++                          | csd.v1.c_size_mult_low;
++    return (uint32_t)(c_size + 1) << (c_size_mult + read_bl_len - 7);
++  } else if (csd.v2.csd_ver == 1) {
++    uint32_t c_size = ((uint32_t)csd.v2.c_size_high << 16)
++                      | (csd.v2.c_size_mid << 8) | csd.v2.c_size_low;
++    return (c_size + 1) << 10;
++  } else {
++    error(SD_CARD_ERROR_BAD_CSD);
++    return 0;
++  }
++}
++//------------------------------------------------------------------------------
++void Sd2Card::chipSelectHigh() {
++  digitalWrite(chipSelectPin_, HIGH);
++}
++//------------------------------------------------------------------------------
++void Sd2Card::chipSelectLow() {
++#ifndef SOFTWARE_SPI
++  spiInit(spiRate_);
++#endif  // SOFTWARE_SPI
++  digitalWrite(chipSelectPin_, LOW);
++}
++//------------------------------------------------------------------------------
++/** Erase a range of blocks.
++ *
++ * \param[in] firstBlock The address of the first block in the range.
++ * \param[in] lastBlock The address of the last block in the range.
++ *
++ * \note This function requests the SD card to do a flash erase for a
++ * range of blocks.  The data on the card after an erase operation is
++ * either 0 or 1, depends on the card vendor.  The card must support
++ * single block erase.
++ *
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::erase(uint32_t firstBlock, uint32_t lastBlock) {
++  csd_t csd;
++  if (!readCSD(&csd)) goto fail;
++  // check for single block erase
++  if (!csd.v1.erase_blk_en) {
++    // erase size mask
++    uint8_t m = (csd.v1.sector_size_high << 1) | csd.v1.sector_size_low;
++    if ((firstBlock & m) != 0 || ((lastBlock + 1) & m) != 0) {
++      // error card can't erase specified area
++      error(SD_CARD_ERROR_ERASE_SINGLE_BLOCK);
++      goto fail;
++    }
++  }
++  if (type_ != SD_CARD_TYPE_SDHC) {
++    firstBlock <<= 9;
++    lastBlock <<= 9;
++  }
++  if (cardCommand(CMD32, firstBlock)
++    || cardCommand(CMD33, lastBlock)
++    || cardCommand(CMD38, 0)) {
++      error(SD_CARD_ERROR_ERASE);
++      goto fail;
++  }
++  if (!waitNotBusy(SD_ERASE_TIMEOUT)) {
++    error(SD_CARD_ERROR_ERASE_TIMEOUT);
++    goto fail;
++  }
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** Determine if card supports single block erase.
++ *
++ * \return The value one, true, is returned if single block erase is supported.
++ * The value zero, false, is returned if single block erase is not supported.
++ */
++bool Sd2Card::eraseSingleBlockEnable() {
++  csd_t csd;
++  return readCSD(&csd) ? csd.v1.erase_blk_en : false;
++}
++//------------------------------------------------------------------------------
++/**
++ * Initialize an SD flash memory card.
++ *
++ * \param[in] sckRateID SPI clock rate selector. See setSckRate().
++ * \param[in] chipSelectPin SD chip select pin number.
++ *
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.  The reason for failure
++ * can be determined by calling errorCode() and errorData().
++ */
++bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
++  errorCode_ = type_ = 0;
++  chipSelectPin_ = chipSelectPin;
++  // 16-bit init start time allows over a minute
++  uint16_t t0 = (uint16_t)millis();
++  uint32_t arg;
++
++  // set pin modes
++  pinMode(chipSelectPin_, OUTPUT);
++  chipSelectHigh();
++  pinMode(SPI_MISO_PIN, INPUT);
++  pinMode(SPI_MOSI_PIN, OUTPUT);
++  pinMode(SPI_SCK_PIN, OUTPUT);
++
++#ifndef SOFTWARE_SPI
++  // SS must be in output mode even it is not chip select
++  pinMode(SS_PIN, OUTPUT);
++  // set SS high - may be chip select for another SPI device
++#if SET_SPI_SS_HIGH
++  digitalWrite(SS_PIN, HIGH);
++#endif  // SET_SPI_SS_HIGH
++  // set SCK rate for initialization commands
++  spiRate_ = SPI_SD_INIT_RATE;
++  spiInit(spiRate_);
++#endif  // SOFTWARE_SPI
++
++  // must supply min of 74 clock cycles with CS high.
++  for (uint8_t i = 0; i < 10; i++) spiSend(0XFF);
++
++  // command to go idle in SPI mode
++  while ((status_ = cardCommand(CMD0, 0)) != R1_IDLE_STATE) {
++    if (((uint16_t)millis() - t0) > SD_INIT_TIMEOUT) {
++      error(SD_CARD_ERROR_CMD0);
++      goto fail;
++    }
++  }
++  // check SD version
++  if ((cardCommand(CMD8, 0x1AA) & R1_ILLEGAL_COMMAND)) {
++    type(SD_CARD_TYPE_SD1);
++  } else {
++    // only need last byte of r7 response
++    for (uint8_t i = 0; i < 4; i++) status_ = spiRec();
++    if (status_ != 0XAA) {
++      error(SD_CARD_ERROR_CMD8);
++      goto fail;
++    }
++    type(SD_CARD_TYPE_SD2);
++  }
++  // initialize card and send host supports SDHC if SD2
++  arg = type() == SD_CARD_TYPE_SD2 ? 0X40000000 : 0;
++
++  while ((status_ = cardAcmd(ACMD41, arg)) != R1_READY_STATE) {
++    // check for timeout
++    if (((uint16_t)millis() - t0) > SD_INIT_TIMEOUT) {
++      error(SD_CARD_ERROR_ACMD41);
++      goto fail;
++    }
++  }
++  // if SD2 read OCR register to check for SDHC card
++  if (type() == SD_CARD_TYPE_SD2) {
++    if (cardCommand(CMD58, 0)) {
++      error(SD_CARD_ERROR_CMD58);
++      goto fail;
++    }
++    if ((spiRec() & 0XC0) == 0XC0) type(SD_CARD_TYPE_SDHC);
++    // discard rest of ocr - contains allowed voltage range
++    for (uint8_t i = 0; i < 3; i++) spiRec();
++  }
++  chipSelectHigh();
++
++#ifndef SOFTWARE_SPI
++  return setSckRate(sckRateID);
++#else  // SOFTWARE_SPI
++  return true;
++#endif  // SOFTWARE_SPI
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/**
++ * Read a 512 byte block from an SD card.
++ *
++ * \param[in] blockNumber Logical block to be read.
++ * \param[out] dst Pointer to the location that will receive the data.
++
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::readBlock(uint32_t blockNumber, uint8_t* dst) {
++  // use address if not SDHC card
++  if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
++  if (cardCommand(CMD17, blockNumber)) {
++    error(SD_CARD_ERROR_CMD17);
++    goto fail;
++  }
++  return readData(dst, 512);
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** Read one data block in a multiple block read sequence
++ *
++ * \param[in] dst Pointer to the location for the data to be read.
++ *
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::readData(uint8_t *dst) {
++  chipSelectLow();
++  return readData(dst, 512);
++}
++//------------------------------------------------------------------------------
++bool Sd2Card::readData(uint8_t* dst, uint16_t count) {
++  // wait for start block token
++  uint16_t t0 = millis();
++  while ((status_ = spiRec()) == 0XFF) {
++    if (((uint16_t)millis() - t0) > SD_READ_TIMEOUT) {
++      error(SD_CARD_ERROR_READ_TIMEOUT);
++      goto fail;
++    }
++  }
++  if (status_ != DATA_START_BLOCK) {
++    error(SD_CARD_ERROR_READ);
++    goto fail;
++  }
++  // transfer data
++  spiRead(dst, count);
++
++  // discard CRC
++  spiRec();
++  spiRec();
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** read CID or CSR register */
++bool Sd2Card::readRegister(uint8_t cmd, void* buf) {
++  uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
++  if (cardCommand(cmd, 0)) {
++    error(SD_CARD_ERROR_READ_REG);
++    goto fail;
++  }
++  return readData(dst, 16);
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** Start a read multiple blocks sequence.
++ *
++ * \param[in] blockNumber Address of first block in sequence.
++ *
++ * \note This function is used with readData() and readStop() for optimized
++ * multiple block reads.  SPI chipSelect must be low for the entire sequence.
++ *
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::readStart(uint32_t blockNumber) {
++  if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
++  if (cardCommand(CMD18, blockNumber)) {
++    error(SD_CARD_ERROR_CMD18);
++    goto fail;
++  }
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** End a read multiple blocks sequence.
++ *
++* \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::readStop() {
++  chipSelectLow();
++  if (cardCommand(CMD12, 0)) {
++    error(SD_CARD_ERROR_CMD12);
++    goto fail;
++  }
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/**
++ * Set the SPI clock rate.
++ *
++ * \param[in] sckRateID A value in the range [0, 6].
++ *
++ * The SPI clock will be set to F_CPU/pow(2, 1 + sckRateID). The maximum
++ * SPI rate is F_CPU/2 for \a sckRateID = 0 and the minimum rate is F_CPU/128
++ * for \a scsRateID = 6.
++ *
++ * \return The value one, true, is returned for success and the value zero,
++ * false, is returned for an invalid value of \a sckRateID.
++ */
++bool Sd2Card::setSckRate(uint8_t sckRateID) {
++  if (sckRateID > 6) {
++    error(SD_CARD_ERROR_SCK_RATE);
++    return false;
++  }
++  spiRate_ = sckRateID;
++  return true;
++}
++//------------------------------------------------------------------------------
++// wait for card to go not busy
++bool Sd2Card::waitNotBusy(uint16_t timeoutMillis) {
++  uint16_t t0 = millis();
++  while (spiRec() != 0XFF) {
++    if (((uint16_t)millis() - t0) >= timeoutMillis) goto fail;
++  }
++  return true;
++
++ fail:
++  return false;
++}
++//------------------------------------------------------------------------------
++/**
++ * Writes a 512 byte block to an SD card.
++ *
++ * \param[in] blockNumber Logical block to be written.
++ * \param[in] src Pointer to the location of the data to be written.
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::writeBlock(uint32_t blockNumber, const uint8_t* src) {
++  // use address if not SDHC card
++  if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
++  if (cardCommand(CMD24, blockNumber)) {
++    error(SD_CARD_ERROR_CMD24);
++    goto fail;
++  }
++  if (!writeData(DATA_START_BLOCK, src)) goto fail;
++
++  // wait for flash programming to complete
++  if (!waitNotBusy(SD_WRITE_TIMEOUT)) {
++    error(SD_CARD_ERROR_WRITE_TIMEOUT);
++    goto fail;
++  }
++  // response is r2 so get and check two bytes for nonzero
++  if (cardCommand(CMD13, 0) || spiRec()) {
++    error(SD_CARD_ERROR_WRITE_PROGRAMMING);
++    goto fail;
++  }
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** Write one data block in a multiple block write sequence
++ * \param[in] src Pointer to the location of the data to be written.
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::writeData(const uint8_t* src) {
++  chipSelectLow();
++  // wait for previous write to finish
++  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
++  if (!writeData(WRITE_MULTIPLE_TOKEN, src)) goto fail;
++  chipSelectHigh();
++  return true;
++
++ fail:
++  error(SD_CARD_ERROR_WRITE_MULTIPLE);
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++// send one block of data for write block or write multiple blocks
++bool Sd2Card::writeData(uint8_t token, const uint8_t* src) {
++  spiSendBlock(token, src);
++
++  spiSend(0xff);  // dummy crc
++  spiSend(0xff);  // dummy crc
++
++  status_ = spiRec();
++  if ((status_ & DATA_RES_MASK) != DATA_RES_ACCEPTED) {
++    error(SD_CARD_ERROR_WRITE);
++    goto fail;
++  }
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** Start a write multiple blocks sequence.
++ *
++ * \param[in] blockNumber Address of first block in sequence.
++ * \param[in] eraseCount The number of blocks to be pre-erased.
++ *
++ * \note This function is used with writeData() and writeStop()
++ * for optimized multiple block writes.
++ *
++ * \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::writeStart(uint32_t blockNumber, uint32_t eraseCount) {
++  // send pre-erase count
++  if (cardAcmd(ACMD23, eraseCount)) {
++    error(SD_CARD_ERROR_ACMD23);
++    goto fail;
++  }
++  // use address if not SDHC card
++  if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
++  if (cardCommand(CMD25, blockNumber)) {
++    error(SD_CARD_ERROR_CMD25);
++    goto fail;
++  }
++  chipSelectHigh();
++  return true;
++
++ fail:
++  chipSelectHigh();
++  return false;
++}
++//------------------------------------------------------------------------------
++/** End a write multiple blocks sequence.
++ *
++* \return The value one, true, is returned for success and
++ * the value zero, false, is returned for failure.
++ */
++bool Sd2Card::writeStop() {
++  chipSelectLow();
++  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
++  spiSend(STOP_TRAN_TOKEN);
++  if (!waitNotBusy(SD_WRITE_TIMEOUT)) goto fail;
++  chipSelectHigh();
++  return true;
++
++ fail:
++  error(SD_CARD_ERROR_STOP_TRAN);
++  chipSelectHigh();
++  return false;
+ }
+diff --git a/Marlin/SdBaseFile.cpp b/Marlin/SdBaseFile.cpp
+index dda44ec..d33b1e0 100644
+--- a/Marlin/SdBaseFile.cpp
++++ b/Marlin/SdBaseFile.cpp
+@@ -17,6 +17,8 @@
+  * along with the Arduino SdFat Library.  If not, see
+  * <http://www.gnu.org/licenses/>.
+  */
++
++#define SERIAL MSerial
+ #include "SdBaseFile.h"
+ //------------------------------------------------------------------------------
+ // pointer to cwd directory
+@@ -294,20 +296,7 @@ void SdBaseFile::getpos(fpos_t* pos) {
+   pos->position = curPosition_;
+   pos->cluster = curCluster_;
+ }
+-//------------------------------------------------------------------------------
+-/** List directory contents to Serial.
+- *
+- * \param[in] flags The inclusive OR of
+- *
+- * LS_DATE - %Print file modification date
+- *
+- * LS_SIZE - %Print file size.
+- *
+- * LS_R - Recursive list of subdirectories.
+- */
+-void SdBaseFile::ls(uint8_t flags) {
+-  ls(&Serial, flags, 0);
+-}
++
+ //------------------------------------------------------------------------------
+ /** List directory contents.
+  *
+@@ -324,14 +313,14 @@ void SdBaseFile::ls(uint8_t flags) {
+  * \param[in] indent Amount of space before file name. Used for recursive
+  * list to indicate subdirectory level.
+  */
+-void SdBaseFile::ls(Print* pr, uint8_t flags, uint8_t indent) {
++void SdBaseFile::ls(uint8_t flags, uint8_t indent) {
+   rewind();
+   int8_t status;
+-  while ((status = lsPrintNext(pr, flags, indent))) {
++  while ((status = lsPrintNext( flags, indent))) {
+     if (status > 1 && (flags & LS_R)) {
+       uint16_t index = curPosition()/32 - 1;
+       SdBaseFile s;
+-      if (s.open(this, index, O_READ)) s.ls(pr, flags, indent + 2);
++      if (s.open(this, index, O_READ)) s.ls( flags, indent + 2);
+       seekSet(32 * (index + 1));
+     }
+   }
+@@ -339,7 +328,7 @@ void SdBaseFile::ls(Print* pr, uint8_t flags, uint8_t indent) {
+ //------------------------------------------------------------------------------
+ // saves 32 bytes on stack for ls recursion
+ // return 0 - EOF, 1 - normal file, or 2 - directory
+-int8_t SdBaseFile::lsPrintNext(Print *pr, uint8_t flags, uint8_t indent) {
++int8_t SdBaseFile::lsPrintNext( uint8_t flags, uint8_t indent) {
+   dir_t dir;
+   uint8_t w = 0;
+ 
+@@ -352,38 +341,38 @@ int8_t SdBaseFile::lsPrintNext(Print *pr, uint8_t flags, uint8_t indent) {
+       && DIR_IS_FILE_OR_SUBDIR(&dir)) break;
+   }
+   // indent for dir level
+-  for (uint8_t i = 0; i < indent; i++) pr->write(' ');
++  for (uint8_t i = 0; i < indent; i++) MSerial.write(' ');
+ 
+   // print name
+   for (uint8_t i = 0; i < 11; i++) {
+     if (dir.name[i] == ' ')continue;
+     if (i == 8) {
+-      pr->write('.');
++      MSerial.write('.');
+       w++;
+     }
+-    pr->write(dir.name[i]);
++    MSerial.write(dir.name[i]);
+     w++;
+   }
+   if (DIR_IS_SUBDIR(&dir)) {
+-    pr->write('/');
++    MSerial.write('/');
+     w++;
+   }
+   if (flags & (LS_DATE | LS_SIZE)) {
+-    while (w++ < 14) pr->write(' ');
++    while (w++ < 14) MSerial.write(' ');
+   }
+   // print modify date/time if requested
+   if (flags & LS_DATE) {
+-    pr->write(' ');
+-    printFatDate(pr, dir.lastWriteDate);
+-    pr->write(' ');
+-    printFatTime(pr, dir.lastWriteTime);
++    MSerial.write(' ');
++    printFatDate( dir.lastWriteDate);
++    MSerial.write(' ');
++    printFatTime( dir.lastWriteTime);
+   }
+   // print size if requested
+   if (!DIR_IS_SUBDIR(&dir) && (flags & LS_SIZE)) {
+-    pr->write(' ');
+-    pr->print(dir.fileSize);
++    MSerial.write(' ');
++    MSerial.print(dir.fileSize);
+   }
+-  pr->println();
++  MSerial.println();
+   return DIR_IS_FILE(&dir) ? 1 : 2;
+ }
+ //------------------------------------------------------------------------------
+@@ -940,17 +929,7 @@ int SdBaseFile::peek() {
+   if (c >= 0) setpos(&pos);
+   return c;
+ }
+-//------------------------------------------------------------------------------
+-/** %Print the name field of a directory entry in 8.3 format to Serial.
+- *
+- * \param[in] dir The directory structure containing the name.
+- * \param[in] width Blank fill name if length is less than \a width.
+- * \param[in] printSlash Print '/' after directory names if true.
+- */
+-void SdBaseFile::printDirName(const dir_t& dir,
+-  uint8_t width, bool printSlash) {
+-  printDirName(&Serial, dir, width, printSlash);
+-}
++
+ //------------------------------------------------------------------------------
+ /** %Print the name field of a directory entry in 8.3 format.
+  * \param[in] pr Print stream for output.
+@@ -958,32 +937,32 @@ void SdBaseFile::printDirName(const dir_t& dir,
+  * \param[in] width Blank fill name if length is less than \a width.
+  * \param[in] printSlash Print '/' after directory names if true.
+  */
+-void SdBaseFile::printDirName(Print* pr, const dir_t& dir,
++void SdBaseFile::printDirName(const dir_t& dir,
+   uint8_t width, bool printSlash) {
+   uint8_t w = 0;
+   for (uint8_t i = 0; i < 11; i++) {
+     if (dir.name[i] == ' ')continue;
+     if (i == 8) {
+-      pr->write('.');
++      MSerial.write('.');
+       w++;
+     }
+-    pr->write(dir.name[i]);
++    MSerial.write(dir.name[i]);
+     w++;
+   }
+   if (DIR_IS_SUBDIR(&dir) && printSlash) {
+-    pr->write('/');
++    MSerial.write('/');
+     w++;
+   }
+   while (w < width) {
+-    pr->write(' ');
++    MSerial.write(' ');
+     w++;
+   }
+ }
+ //------------------------------------------------------------------------------
+ // print uint8_t with width 2
+-static void print2u(Print* pr, uint8_t v) {
+-  if (v < 10) pr->write('0');
+-  pr->print(v, DEC);
++static void print2u( uint8_t v) {
++  if (v < 10) MSerial.write('0');
++  MSerial.print(v, DEC);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a directory date field to Serial.
+@@ -992,9 +971,7 @@ static void print2u(Print* pr, uint8_t v) {
+  *
+  * \param[in] fatDate The date field from a directory entry.
+  */
+-void SdBaseFile::printFatDate(uint16_t fatDate) {
+-  printFatDate(&Serial, fatDate);
+-}
++
+ //------------------------------------------------------------------------------
+ /** %Print a directory date field.
+  *
+@@ -1003,23 +980,14 @@ void SdBaseFile::printFatDate(uint16_t fatDate) {
+  * \param[in] pr Print stream for output.
+  * \param[in] fatDate The date field from a directory entry.
+  */
+-void SdBaseFile::printFatDate(Print* pr, uint16_t fatDate) {
+-  pr->print(FAT_YEAR(fatDate));
+-  pr->write('-');
+-  print2u(pr, FAT_MONTH(fatDate));
+-  pr->write('-');
+-  print2u(pr, FAT_DAY(fatDate));
+-}
+-//------------------------------------------------------------------------------
+-/** %Print a directory time field to Serial.
+- *
+- * Format is hh:mm:ss.
+- *
+- * \param[in] fatTime The time field from a directory entry.
+- */
+-void SdBaseFile::printFatTime(uint16_t fatTime) {
+-  printFatTime(&Serial, fatTime);
++void SdBaseFile::printFatDate(uint16_t fatDate) {
++  MSerial.print(FAT_YEAR(fatDate));
++  MSerial.write('-');
++  print2u( FAT_MONTH(fatDate));
++  MSerial.write('-');
++  print2u( FAT_DAY(fatDate));
+ }
++
+ //------------------------------------------------------------------------------
+ /** %Print a directory time field.
+  *
+@@ -1028,12 +996,12 @@ void SdBaseFile::printFatTime(uint16_t fatTime) {
+  * \param[in] pr Print stream for output.
+  * \param[in] fatTime The time field from a directory entry.
+  */
+-void SdBaseFile::printFatTime(Print* pr, uint16_t fatTime) {
+-  print2u(pr, FAT_HOUR(fatTime));
+-  pr->write(':');
+-  print2u(pr, FAT_MINUTE(fatTime));
+-  pr->write(':');
+-  print2u(pr, FAT_SECOND(fatTime));
++void SdBaseFile::printFatTime( uint16_t fatTime) {
++  print2u( FAT_HOUR(fatTime));
++  MSerial.write(':');
++  print2u( FAT_MINUTE(fatTime));
++  MSerial.write(':');
++  print2u( FAT_SECOND(fatTime));
+ }
+ //------------------------------------------------------------------------------
+ /** Print a file's name to Serial
+@@ -1044,7 +1012,7 @@ void SdBaseFile::printFatTime(Print* pr, uint16_t fatTime) {
+ bool SdBaseFile::printName() {
+   char name[13];
+   if (!getFilename(name)) return false;
+-  Serial.print(name);
++  MSerial.print(name);
+   return true;
+ }
+ //------------------------------------------------------------------------------
+diff --git a/Marlin/SdBaseFile.h b/Marlin/SdBaseFile.h
+index 9363401..e184acd 100644
+--- a/Marlin/SdBaseFile.h
++++ b/Marlin/SdBaseFile.h
+@@ -25,7 +25,9 @@
+  */
+ #include <avr/pgmspace.h>
+ #if ARDUINO < 100
++#define  HardwareSerial_h // trick to disable the standard HWserial
+ #include <WProgram.h>
++#include "MarlinSerial.h"
+ #else  // ARDUINO
+ #include <Arduino.h>
+ #endif  // ARDUINO
+@@ -268,8 +270,7 @@ class SdBaseFile {
+   bool isRoot() const {
+     return type_ == FAT_FILE_TYPE_ROOT_FIXED || type_ == FAT_FILE_TYPE_ROOT32;
+   }
+-  void ls(Print* pr, uint8_t flags = 0, uint8_t indent = 0);
+-  void ls(uint8_t flags = 0);
++  void ls( uint8_t flags = 0, uint8_t indent = 0);
+   bool mkdir(SdBaseFile* dir, const char* path, bool pFlag = true);
+   // alias for backward compactability
+   bool makeDir(SdBaseFile* dir, const char* path) {
+@@ -282,9 +283,7 @@ class SdBaseFile {
+   bool openRoot(SdVolume* vol);
+   int peek();
+   static void printFatDate(uint16_t fatDate);
+-  static void printFatDate(Print* pr, uint16_t fatDate);
+-  static void printFatTime(uint16_t fatTime);
+-  static void printFatTime(Print* pr, uint16_t fatTime);
++  static void printFatTime( uint16_t fatTime);
+   bool printName();
+   int16_t read();
+   int16_t read(void* buf, uint16_t nbyte);
+@@ -357,7 +356,7 @@ class SdBaseFile {
+   bool addCluster();
+   bool addDirCluster();
+   dir_t* cacheDirEntry(uint8_t action);
+-  int8_t lsPrintNext(Print *pr, uint8_t flags, uint8_t indent);
++  int8_t lsPrintNext( uint8_t flags, uint8_t indent);
+   static bool make83Name(const char* str, uint8_t* name, const char** ptr);
+   bool mkdir(SdBaseFile* parent, const uint8_t dname[11]);
+   bool open(SdBaseFile* dirFile, const uint8_t dname[11], uint8_t oflag);
+@@ -365,9 +364,7 @@ class SdBaseFile {
+   dir_t* readDirCache();
+ //------------------------------------------------------------------------------
+ // to be deleted
+-  static void printDirName(const dir_t& dir,
+-    uint8_t width, bool printSlash);
+-  static void printDirName(Print* pr, const dir_t& dir,
++  static void printDirName( const dir_t& dir,
+     uint8_t width, bool printSlash);
+ //------------------------------------------------------------------------------
+ // Deprecated functions  - suppress cpplint warnings with NOLINT comment
+diff --git a/Marlin/SdFatUtil.cpp b/Marlin/SdFatUtil.cpp
+index 1870980..0bf86f2 100644
+--- a/Marlin/SdFatUtil.cpp
++++ b/Marlin/SdFatUtil.cpp
+@@ -43,8 +43,8 @@ int SdFatUtil::FreeRam() {
+  * \param[in] pr Print object for output.
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+-void SdFatUtil::print_P(Print* pr, PGM_P str) {
+-  for (uint8_t c; (c = pgm_read_byte(str)); str++) pr->write(c);
++void SdFatUtil::print_P( PGM_P str) {
++  for (uint8_t c; (c = pgm_read_byte(str)); str++) MSerial.write(c);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory followed by a CR/LF.
+@@ -52,9 +52,9 @@ void SdFatUtil::print_P(Print* pr, PGM_P str) {
+  * \param[in] pr Print object for output.
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+-void SdFatUtil::println_P(Print* pr, PGM_P str) {
+-  print_P(pr, str);
+-  pr->println();
++void SdFatUtil::println_P( PGM_P str) {
++  print_P( str);
++  MSerial.println();
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory to Serial.
+@@ -62,7 +62,7 @@ void SdFatUtil::println_P(Print* pr, PGM_P str) {
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+ void SdFatUtil::SerialPrint_P(PGM_P str) {
+-  print_P(&Serial, str);
++  print_P(str);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory to Serial followed by a CR/LF.
+@@ -70,5 +70,5 @@ void SdFatUtil::SerialPrint_P(PGM_P str) {
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+ void SdFatUtil::SerialPrintln_P(PGM_P str) {
+-  println_P(&Serial, str);
++  println_P( str);
+ }
+diff --git a/Marlin/SdFatUtil.h b/Marlin/SdFatUtil.h
+index b4112aa..6e3cb49 100644
+--- a/Marlin/SdFatUtil.h
++++ b/Marlin/SdFatUtil.h
+@@ -25,7 +25,9 @@
+  */
+ #include <avr/pgmspace.h>
+ #if ARDUINO < 100
++#define  HardwareSerial_h // trick to disable the standard HWserial
+ #include <WProgram.h>
++#include "MarlinSerial.h"
+ #else  // ARDUINO
+ #include <Arduino.h>
+ #endif  // ARDUINO
+@@ -36,8 +38,8 @@
+ 
+ namespace SdFatUtil {
+   int FreeRam();
+-  void print_P(Print* pr, PGM_P str);
+-  void println_P(Print* pr, PGM_P str);
++  void print_P( PGM_P str);
++  void println_P( PGM_P str);
+   void SerialPrint_P(PGM_P str);
+   void SerialPrintln_P(PGM_P str);
+ }
+diff --git a/Marlin/motion_control.cpp b/Marlin/motion_control.cpp
+index ff3f8c2..8ecc1a0 100644
+--- a/Marlin/motion_control.cpp
++++ b/Marlin/motion_control.cpp
+@@ -27,7 +27,7 @@
+ // The arc is approximated by generating a huge number of tiny, linear segments. The length of each 
+ // segment is configured in settings.mm_per_arc_segment.  
+ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8_t axis_1, 
+-  uint8_t axis_linear, float feed_rate, float radius, uint8_t isclockwise)
++  uint8_t axis_linear, float feed_rate, float radius, uint8_t isclockwise, uint8_t extruder)
+ {      
+   //   int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
+   //   plan_set_acceleration_manager_enabled(false); // disable acceleration management for the duration of the arc
+@@ -123,11 +123,11 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+     arc_target[axis_1] = center_axis1 + r_axis1;
+     arc_target[axis_linear] += linear_per_segment;
+     arc_target[E_AXIS] += extruder_per_segment;
+-    plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate);
++    plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate, extruder);
+     
+   }
+   // Ensure last segment arrives at target location.
+-  plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], feed_rate);
++  plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], feed_rate, extruder);
+ 
+   //   plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+ }
+diff --git a/Marlin/motion_control.h b/Marlin/motion_control.h
+index 9bcff4b..ca50f80 100644
+--- a/Marlin/motion_control.h
++++ b/Marlin/motion_control.h
+@@ -27,6 +27,6 @@
+ // the direction of helical travel, radius == circle radius, isclockwise boolean. Used
+ // for vector transformation direction.
+ void mc_arc(float *position, float *target, float *offset, unsigned char axis_0, unsigned char axis_1,
+-  unsigned char axis_linear, float feed_rate, float radius, unsigned char isclockwise);
++  unsigned char axis_linear, float feed_rate, float radius, unsigned char isclockwise, uint8_t extruder);
+   
+ #endif
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 2c2ba3f..f26ae10 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -81,6 +81,8 @@ float max_z_jerk;
+ float mintravelfeedrate;
+ unsigned long axis_steps_per_sqr_second[NUM_AXIS];
+ 
++uint8_t active_extruder = 0;
++
+ // The current position of the tool in absolute steps
+ long position[4];   //rescaled from extern when axis_steps_per_unit are changed by gcode
+ static float previous_speed[4]; // Speed of previous path line segment
+@@ -442,7 +444,7 @@ float junction_deviation = 0.1;
+ // Add a new linear movement to the buffer. steps_x, _y and _z is the absolute position in 
+ // mm. Microseconds specify how many microseconds the move should take to perform. To aid acceleration
+ // calculation the caller must also provide the physical length of the line in millimeters.
+-void plan_buffer_line(const float &x, const float &y, const float &z, const float &e,  float feed_rate)
++void plan_buffer_line(const float &x, const float &y, const float &z, const float &e,  float feed_rate, const uint8_t &extruder)
+ {
+   // Calculate the buffer head after we push this byte
+   int next_buffer_head = next_block_index(block_buffer_head);
+@@ -518,12 +520,12 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   else {
+     	if(feed_rate<minimumfeedrate) feed_rate=minimumfeedrate;
+   } 
+-  
++
+ #ifdef SLOWDOWN
+   // slow down when de buffer starts to empty, rather than wait at the corner for a buffer refill
+   int moves_queued=(block_buffer_head-block_buffer_tail + BLOCK_BUFFER_SIZE) & (BLOCK_BUFFER_SIZE - 1);
+   
+-  if(moves_queued < (BLOCK_BUFFER_SIZE * 0.5)) feed_rate = feed_rate*moves_queued / (BLOCK_BUFFER_SIZE * 0.5); 
++  if(moves_queued < (BLOCK_BUFFER_SIZE * 0.5) && moves_queued > 1) feed_rate = feed_rate*moves_queued / (BLOCK_BUFFER_SIZE * 0.5); 
+ #endif
+ 
+ /*
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index e17580d..741c6f9 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -67,7 +67,7 @@ void plan_init();
+ 
+ // Add a new linear movement to the buffer. x, y and z is the signed, absolute target position in 
+ // millimaters. Feed rate specifies the speed of the motion.
+-void plan_buffer_line(const float &x, const float &y, const float &z, const float &e, float feed_rate);
++void plan_buffer_line(const float &x, const float &y, const float &z, const float &e, float feed_rate, const uint8_t &extruder);
+ 
+ // Set position. Used for G92 instructions.
+ void plan_set_position(const float &x, const float &y, const float &z, const float &e);
+@@ -90,6 +90,7 @@ extern float max_z_jerk;
+ extern float mintravelfeedrate;
+ extern unsigned long axis_steps_per_sqr_second[NUM_AXIS];
+ 
++extern uint8_t active_extruder;
+ 
+ #ifdef AUTOTEMP
+     extern bool autotemp_enabled;
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 03ea11b..fcc0ace 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -52,7 +52,7 @@ static long counter_x,       // Counter variables for the bresenham line tracer
+             counter_y, 
+             counter_z,       
+             counter_e;
+-static unsigned long step_events_completed; // The number of step events executed in the current block
++volatile static unsigned long step_events_completed; // The number of step events executed in the current block
+ #ifdef ADVANCE
+   static long advance_rate, advance, final_advance = 0;
+   static short old_advance = 0;
+@@ -63,6 +63,7 @@ static long acceleration_time, deceleration_time;
+ //static unsigned long accelerate_until, decelerate_after, acceleration_rate, initial_rate, final_rate, nominal_rate;
+ static unsigned short acc_step_rate; // needed for deccelaration start point
+ static char step_loops;
++static unsigned short OCR1A_nominal;
+ 
+ volatile long endstops_trigsteps[3]={0,0,0};
+ volatile long endstops_stepsTotal,endstops_stepsDone;
+@@ -77,10 +78,6 @@ static bool old_y_max_endstop=false;
+ static bool old_z_min_endstop=false;
+ static bool old_z_max_endstop=false;
+ 
+-static bool busy_error=false;
+-unsigned short OCR1A_error=12345;
+-unsigned short OCR1A_nominal;
+-
+ volatile long count_position[NUM_AXIS] = { 0, 0, 0, 0};
+ volatile char count_direction[NUM_AXIS] = { 1, 1, 1, 1};
+ 
+@@ -164,15 +161,6 @@ asm volatile ( \
+ #define ENABLE_STEPPER_DRIVER_INTERRUPT()  TIMSK1 |= (1<<OCIE1A)
+ #define DISABLE_STEPPER_DRIVER_INTERRUPT() TIMSK1 &= ~(1<<OCIE1A)
+ 
+-void checkStepperErrors()
+-{
+-  if(busy_error) {
+-    SERIAL_ERROR_START
+-    SERIAL_ERROR(OCR1A_error);
+-    SERIAL_ERRORLNPGM(" ISR overtaking itself.");
+-    busy_error = false;
+-  }
+-}
+ 
+ void checkHitEndstops()
+ {
+@@ -255,7 +243,7 @@ FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+     timer = (unsigned short)pgm_read_word_near(table_address);
+     timer -= (((unsigned short)pgm_read_word_near(table_address+2) * (unsigned char)(step_rate & 0x0007))>>3);
+   }
+-  if(timer < 100) { timer = 100; Serial.print("Steprate to high : "); Serial.println(step_rate); }//(20kHz this should never happen)
++  if(timer < 100) { timer = 100; MSerial.print("Steprate to high : "); MSerial.println(step_rate); }//(20kHz this should never happen)
+   return timer;
+ }
+ 
+@@ -277,17 +265,7 @@ FORCE_INLINE void trapezoid_generator_reset() {
+ // "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.  
+ // It pops blocks from the block_buffer and executes them by pulsing the stepper pins appropriately. 
+ ISR(TIMER1_COMPA_vect)
+-{        
+-  if(busy){ 
+-    OCR1A_error = OCR1A;
+-    busy_error = true;
+-    OCR1A = 30000;
+-    return; 
+-  } // The busy-flag is used to avoid reentering this interrupt
+-
+-  busy = true;
+-  sei(); // Re enable interrupts (normally disabled while inside an interrupt handler)
+-
++{    
+   // If there is no current block, attempt to pop one from the buffer
+   if (current_block == NULL) {
+     // Anything in the buffer?
+@@ -304,7 +282,7 @@ ISR(TIMER1_COMPA_vect)
+ //      #endif
+     } 
+     else {
+-//      DISABLE_STEPPER_DRIVER_INTERRUPT();
++        OCR1A=2000; // 1kHz.
+     }    
+   } 
+ 
+@@ -404,8 +382,8 @@ ISR(TIMER1_COMPA_vect)
+         count_direction[E_AXIS]=-1;
+       }
+     #endif //!ADVANCE
+-
+     for(int8_t i=0; i < step_loops; i++) { // Take multiple steps per interrupt (For high speed moves) 
++    MSerial.checkRx();
+     /*
+       counter_e += current_block->steps_e;
+       if (counter_e > 0) {
+@@ -470,6 +448,7 @@ ISR(TIMER1_COMPA_vect)
+     unsigned short timer;
+     unsigned short step_rate;
+     if (step_events_completed <= current_block->accelerate_until) {
++      
+       MultiU24X24toH16(acc_step_rate, acceleration_time, current_block->acceleration_rate);
+       acc_step_rate += current_block->initial_rate;
+       
+@@ -519,8 +498,6 @@ ISR(TIMER1_COMPA_vect)
+       plan_discard_current_block();
+     }   
+   } 
+-  cli(); // disable interrupts
+-  busy=false;
+ }
+ 
+ #ifdef ADVANCE
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 04353b5..77aa648 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -464,6 +464,8 @@ ISR(TIMER0_COMPB_vect)
+       #if (TEMP_0_PIN > -1)
+         #if TEMP_0_PIN > 7
+           ADCSRB = 1<<MUX5;
++        #else
++          ADCSRB = 0;
+         #endif
+         ADMUX = ((1 << REFS0) | (TEMP_0_PIN & 0x07));
+         ADCSRA |= 1<<ADSC; // Start conversion
+@@ -483,6 +485,8 @@ ISR(TIMER0_COMPB_vect)
+       #if (TEMP_1_PIN > -1)
+         #if TEMP_1_PIN > 7
+           ADCSRB = 1<<MUX5;
++        #else
++          ADCSRB = 0;
+         #endif
+         ADMUX = ((1 << REFS0) | (TEMP_1_PIN & 0x07));
+         ADCSRA |= 1<<ADSC; // Start conversion
+@@ -502,6 +506,8 @@ ISR(TIMER0_COMPB_vect)
+       #if (TEMP_2_PIN > -1)
+         #if TEMP_2_PIN > 7
+           ADCSRB = 1<<MUX5;
++        #else
++          ADCSRB = 0;
+         #endif
+         ADMUX = ((1 << REFS0) | (TEMP_2_PIN & 0x07));
+         ADCSRA |= 1<<ADSC; // Start conversion
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 9057c1c..3f38c81 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -62,10 +62,19 @@ extern float Kp,Ki,Kd,Kc;
+ FORCE_INLINE float degHotend0(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);};
+ FORCE_INLINE float degHotend1(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);};
+ FORCE_INLINE float degBed() {  return analog2tempBed(current_raw[TEMPSENSOR_BED]);};
++inline float degHotend(uint8_t extruder){  
++  if(extruder == 0) return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);
++  if(extruder == 1) return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);
++};
+ 
+ FORCE_INLINE float degTargetHotend0() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);};
+ FORCE_INLINE float degTargetHotend1() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);};
+-FORCE_INLINE float degTargetBed() {   return analog2tempBed(target_raw[TEMPSENSOR_BED]);};
++inline float degTargetHotend(uint8_t extruder){  
++  if(extruder == 0) return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);
++  if(extruder == 1) return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);
++};
++
++inline float degTargetBed() {   return analog2tempBed(target_raw[TEMPSENSOR_BED]);};
+ 
+ FORCE_INLINE void setTargetHotend0(const float &celsius) 
+ {  
+@@ -75,15 +84,27 @@ FORCE_INLINE void setTargetHotend0(const float &celsius)
+   #endif //PIDTEMP
+ };
+ FORCE_INLINE void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
+-FORCE_INLINE void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSOR_BED     ]=temp2analogBed(celsius);};
++inline float setTargetHotend(const float &celcius, uint8_t extruder){  
++  if(extruder == 0) setTargetHotend0(celcius);
++  if(extruder == 1) setTargetHotend1(celcius);
++};
++inline void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSOR_BED     ]=temp2analogBed(celsius);};
+ 
+ FORCE_INLINE bool isHeatingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
+ FORCE_INLINE bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
+-FORCE_INLINE bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
++inline float isHeatingHotend(uint8_t extruder){  
++  if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];
++  if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];
++};
++inline bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
+ 
+ FORCE_INLINE bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
+ FORCE_INLINE bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
+-FORCE_INLINE bool isCoolingBed() {return target_raw[TEMPSENSOR_BED] < current_raw[TEMPSENSOR_BED];};
++inline float isCoolingHotend(uint8_t extruder){  
++  if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];
++  if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];
++};
++inline bool isCoolingBed() {return target_raw[TEMPSENSOR_BED] < current_raw[TEMPSENSOR_BED];};
+ 
+ void disable_heater();
+ void setWatch();
+

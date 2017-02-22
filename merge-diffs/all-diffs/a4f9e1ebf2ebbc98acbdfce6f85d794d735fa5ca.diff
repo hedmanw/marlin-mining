@@ -1,0 +1,3573 @@
+commit a4f9e1ebf2ebbc98acbdfce6f85d794d735fa5ca (from 2873d67b17dd0400813d3e6ded940a1d083d70fe)
+Merge: 2873d67 a7e40b2
+Author: Bracken Dawson <abdawson@gmail.com>
+Date:   Fri Oct 26 22:20:35 2012 +0100
+
+    Merge git://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index f01af41..1d2bb29 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -30,6 +30,7 @@
+ // Ultimaker = 7
+ // Teensylu = 8
+ // Gen3+ =9
++// Megatronics =70
+ 
+ #ifndef MOTHERBOARD
+ #define MOTHERBOARD 7
+@@ -98,7 +99,7 @@
+ #define PID_MAX 255 // limits current to nozzle; 255=full current
+ #ifdef PIDTEMP
+   //#define PID_DEBUG // Sends debug data to the serial port. 
+-  //#define PID_OPENLOOP 1 // Puts PID in open loop. M104 sets the output power in %
++  //#define PID_OPENLOOP 1 // Puts PID in open loop. M104/M140 sets the output power from 0 to PID_MAX
+   #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
+   #define K1 0.95 //smoothing factor withing the PID
+   #define PID_dT ((16.0 * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the
+@@ -120,6 +121,44 @@
+ //    #define  DEFAULT_Kd 440
+ #endif // PIDTEMP
+ 
++// Bed Temperature Control
++// Select PID or bang-bang with PIDTEMPBED.  If bang-bang, BED_LIMIT_SWITCHING will enable hysteresis
++//
++// uncomment this to enable PID on the bed.   It uses the same ferquency PWM as the extruder. 
++// If your PID_dT above is the default, and correct for your hardware/configuration, that means 7.689Hz,
++// which is fine for driving a square wave into a resistive load and does not significantly impact you FET heating.
++// This also works fine on a Fotek SSR-10DA Solid State Relay into a 250W heater. 
++// If your configuration is significantly different than this and you don't understand the issues involved, you proabaly 
++// shouldn't use bed PID until someone else verifies your hardware works.
++// If this is enabled, find your own PID constants below.
++//#define PIDTEMPBED
++//
++//#define BED_LIMIT_SWITCHING
++
++// This sets the max power delived to the bed, and replaces the HEATER_BED_DUTY_CYCLE_DIVIDER option.
++// all forms of bed control obey this (PID, bang-bang, bang-bang with hysteresis)
++// setting this to anything other than 255 enables a form of PWM to the bed just like HEATER_BED_DUTY_CYCLE_DIVIDER did,
++// so you shouldn't use it unless you are OK with PWM on your bed.  (see the comment on enabling PIDTEMPBED)
++#define MAX_BED_POWER 255 // limits duty cycle to bed; 255=full current
++
++#ifdef PIDTEMPBED
++//120v 250W silicone heater into 4mm borosilicate (MendelMax 1.5+)
++//from FOPDT model - kp=.39 Tp=405 Tdead=66, Tc set to 79.2, argressive factor of .15 (vs .1, 1, 10)
++    #define  DEFAULT_bedKp 10.00
++    #define  DEFAULT_bedKi .023
++    #define  DEFAULT_bedKd 305.4
++
++//120v 250W silicone heater into 4mm borosilicate (MendelMax 1.5+)
++//from pidautotune
++//    #define  DEFAULT_bedKp 97.1
++//    #define  DEFAULT_bedKi 1.41
++//    #define  DEFAULT_bedKd 1675.16
++
++// FIND YOUR OWN: "M303 E-1 C8 S90" to run autotune on the bed at 90 degreesC for 8 cycles.
++#endif // PIDTEMPBED
++
++
++
+ //this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+ //can be software-disabled for whatever purposes by
+ #define PREVENT_DANGEROUS_EXTRUDE
+@@ -203,10 +242,14 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ #define Y_MAX_LENGTH (Y_MAX_POS - Y_MIN_POS)
+ #define Z_MAX_LENGTH (Z_MAX_POS - Z_MIN_POS)
+ 
+-// The position of the homing switches. Use MAX_LENGTH * -0.5 if the center should be 0, 0, 0
+-#define X_HOME_POS 0
+-#define Y_HOME_POS 0
+-#define Z_HOME_POS 0
++// The position of the homing switches
++//#define MANUAL_HOME_POSITIONS  // If defined, manualy programed locations will be used
++//#define BED_CENTER_AT_0_0  // If defined the center of the bed is defined as (0,0)
++
++//Manual homing switch locations:
++#define MANUAL_X_HOME_POS 0
++#define MANUAL_Y_HOME_POS 0
++#define MANUAL_Z_HOME_POS 0
+ 
+ //// MOVEMENT SETTINGS
+ #define NUM_AXIS 4 // The axis order in all axis related arrays is X, Y, Z, E
+@@ -285,6 +328,9 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ // Data from: http://www.doc-diy.net/photo/rc-1_hacked/
+ // #define PHOTOGRAPH_PIN     23
+ 
++// SF send wrong arc g-codes when using Arc Point as fillet procedure
++//#define SF_ARC_FIX
++
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 0182c93..ecdc833 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -5,13 +5,10 @@
+ //=============================Thermal Settings  ============================
+ //===========================================================================
+ 
+-// Select one of these only to define how the bed temp is read.
+-//
+-//#define BED_LIMIT_SWITCHING
+ #ifdef BED_LIMIT_SWITCHING
+   #define BED_HYSTERESIS 2 //only disable heating if T>target+BED_HYSTERESIS and enable heating if T>target-BED_HYSTERESIS
+ #endif
+-#define BED_CHECK_INTERVAL 5000 //ms
++#define BED_CHECK_INTERVAL 5000 //ms between checks in bang-bang control
+ 
+ //// Heating sanity check:
+ // This waits for the watchperiod in milliseconds whenever an M104 or M109 increases the target temperature
+@@ -76,6 +73,54 @@
+ 
+ #define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
+ 
++
++//// AUTOSET LOCATIONS OF LIMIT SWITCHES
++//// Added by ZetaPhoenix 09-15-2012
++#ifdef MANUAL_HOME_POSITION  //Use manual limit switch locations
++  #define X_HOME_POS MANUAL_X_HOME_POS
++  #define Y_HOME_POS MANUAL_Y_HOME_POS
++  #define Z_HOME_POS MANUAL_Z_HOME_POS
++#else //Set min/max homing switch positions based upon homing direction and min/max travel limits
++  //X axis
++  #if X_HOME_DIR == -1
++    #ifdef BED_CENTER_AT_0_0
++      #define X_HOME_POS X_MAX_LENGTH * -0.5
++    #else
++      #define X_HOME_POS X_MIN_POS
++    #endif //BED_CENTER_AT_0_0
++  #else    
++    #ifdef BED_CENTER_AT_0_0
++      #define X_HOME_POS X_MAX_LENGTH * 0.5
++    #else
++      #define X_HOME_POS X_MAX_POS
++    #endif //BED_CENTER_AT_0_0
++  #endif //X_HOME_DIR == -1
++  
++  //Y axis
++  #if Y_HOME_DIR == -1
++    #ifdef BED_CENTER_AT_0_0
++      #define Y_HOME_POS Y_MAX_LENGTH * -0.5
++    #else
++      #define Y_HOME_POS Y_MIN_POS
++    #endif //BED_CENTER_AT_0_0
++  #else    
++    #ifdef BED_CENTER_AT_0_0
++      #define Y_HOME_POS Y_MAX_LENGTH * 0.5
++    #else
++      #define Y_HOME_POS Y_MAX_POS
++    #endif //BED_CENTER_AT_0_0
++  #endif //Y_HOME_DIR == -1
++  
++  // Z axis
++  #if Z_HOME_DIR == -1 //BED_CENTER_AT_0_0 not used
++    #define Z_HOME_POS Z_MIN_POS
++  #else    
++    #define Z_HOME_POS Z_MAX_POS
++  #endif //Z_HOME_DIR == -1
++#endif //End auto min/max positions
++//END AUTOSET LOCATIONS OF LIMIT SWITCHES -ZP
++
++
+ //#define Z_LATE_ENABLE // Enable Z the last moment. Needed if your Z driver overheats.
+ 
+ // A single Z stepper driver is usually used to drive 2 stepper motors.
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index 2ddd2b7..12674ef 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -6,7 +6,13 @@
+ #include "temperature.h"
+ //#include <EEPROM.h>
+ 
++int plaPreheatHotendTemp;
++int plaPreheatHPBTemp;
++int plaPreheatFanSpeed;
+ 
++int absPreheatHotendTemp;
++int absPreheatHPBTemp;
++int absPreheatFanSpeed;
+ 
+ template <class T> int EEPROM_writeAnything(int &ee, const T& value)
+ {
+@@ -38,7 +44,7 @@ template <class T> int EEPROM_readAnything(int &ee, T& value)
+ // the default values are used whenever there is a change to the data, to prevent
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V06"
++#define EEPROM_VERSION "V07"
+ 
+ inline void EEPROM_StoreSettings() 
+ {
+@@ -58,6 +64,12 @@ inline void EEPROM_StoreSettings()
+   EEPROM_writeAnything(i,max_z_jerk);
+   EEPROM_writeAnything(i,max_e_jerk);
+   EEPROM_writeAnything(i,add_homeing);
++  EEPROM_writeAnything(i,plaPreheatHotendTemp);
++  EEPROM_writeAnything(i,plaPreheatHPBTemp);
++  EEPROM_writeAnything(i,plaPreheatFanSpeed);
++  EEPROM_writeAnything(i,absPreheatHotendTemp);
++  EEPROM_writeAnything(i,absPreheatHPBTemp);
++  EEPROM_writeAnything(i,absPreheatFanSpeed);
+   #ifdef PIDTEMP
+     EEPROM_writeAnything(i,Kp);
+     EEPROM_writeAnything(i,Ki);
+@@ -162,6 +174,12 @@ inline void EEPROM_RetrieveSettings(bool def=false)
+       EEPROM_readAnything(i,max_z_jerk);
+       EEPROM_readAnything(i,max_e_jerk);
+       EEPROM_readAnything(i,add_homeing);
++	  EEPROM_readAnything(i,plaPreheatHotendTemp);
++	  EEPROM_readAnything(i,plaPreheatHPBTemp);
++	  EEPROM_readAnything(i,plaPreheatFanSpeed);
++	  EEPROM_readAnything(i,absPreheatHotendTemp);
++	  EEPROM_readAnything(i,absPreheatHPBTemp);
++	  EEPROM_readAnything(i,absPreheatFanSpeed);
+       #ifndef PIDTEMP
+         float Kp,Ki,Kd;
+       #endif
+@@ -195,6 +213,14 @@ inline void EEPROM_RetrieveSettings(bool def=false)
+       add_homeing[0] = add_homeing[1] = add_homeing[2] = 0;
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLN("Using Default settings:");
++#ifdef ULTIPANEL
++	  plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP;
++	  plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP;
++	  plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED;
++	  absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP;
++	  absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
++	  absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
++#endif
+     }
+   #ifdef EEPROM_CHITCHAT
+     EEPROM_printSettings();
+diff --git a/Marlin/LCD Menu Tree.pdf b/Marlin/LCD Menu Tree.pdf
+new file mode 100644
+index 0000000..5e29d04
+Binary files /dev/null and b/Marlin/LCD Menu Tree.pdf differ
+diff --git a/Marlin/LiquidCrystalRus.cpp b/Marlin/LiquidCrystalRus.cpp
+new file mode 100644
+index 0000000..9f3f5c0
+--- /dev/null
++++ b/Marlin/LiquidCrystalRus.cpp
+@@ -0,0 +1,390 @@
++#define __PROG_TYPES_COMPAT__
++#include "LiquidCrystalRus.h"
++
++#include <stdio.h>
++#include <string.h>
++#include <inttypes.h>
++#include <avr/pgmspace.h>
++
++#if defined(ARDUINO) && ARDUINO >= 100
++  #include "Arduino.h"
++#else
++  #include "WProgram.h"
++#endif
++
++// it is a russian alphabet translation
++// except 0401 --> 0xa2 = ╗, 0451 --> 0xb5
++const PROGMEM prog_uchar utf_recode[] = 
++       { 0x41,0xa0,0x42,0xa1,0xe0,0x45,0xa3,0xa4,0xa5,0xa6,0x4b,0xa7,0x4d,0x48,0x4f,
++         0xa8,0x50,0x43,0x54,0xa9,0xaa,0x58,0xe1,0xab,0xac,0xe2,0xad,0xae,0x62,0xaf,0xb0,0xb1,
++         0x61,0xb2,0xb3,0xb4,0xe3,0x65,0xb6,0xb7,0xb8,0xb9,0xba,0xbb,0xbc,0xbd,0x6f,
++         0xbe,0x70,0x63,0xbf,0x79,0xe4,0x78,0xe5,0xc0,0xc1,0xe6,0xc2,0xc3,0xc4,0xc5,0xc6,0xc7
++        };     
++
++// When the display powers up, it is configured as follows:
++//
++// 1. Display clear
++// 2. Function set: 
++//    DL = 1; 8-bit interface data 
++//    N = 0; 1-line display 
++//    F = 0; 5x8 dot character font 
++// 3. Display on/off control: 
++//    D = 0; Display off 
++//    C = 0; Cursor off 
++//    B = 0; Blinking off 
++// 4. Entry mode set: 
++//    I/D = 1; Increment by 1 
++//    S = 0; No shift 
++//
++// Note, however, that resetting the Arduino doesn't reset the LCD, so we
++// can't assume that its in that state when a sketch starts (and the
++// LiquidCrystal constructor is called).
++// 
++// modified 27 Jul 2011
++// by Ilya V. Danilov http://mk90.ru/
++
++
++LiquidCrystalRus::LiquidCrystalRus(uint8_t rs, uint8_t rw, uint8_t enable,
++			     uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++			     uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7)
++{
++  init(0, rs, rw, enable, d0, d1, d2, d3, d4, d5, d6, d7);
++}
++
++LiquidCrystalRus::LiquidCrystalRus(uint8_t rs, uint8_t enable,
++			     uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++			     uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7)
++{
++  init(0, rs, 255, enable, d0, d1, d2, d3, d4, d5, d6, d7);
++}
++
++LiquidCrystalRus::LiquidCrystalRus(uint8_t rs, uint8_t rw, uint8_t enable,
++			     uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3)
++{
++  init(1, rs, rw, enable, d0, d1, d2, d3, 0, 0, 0, 0);
++}
++
++LiquidCrystalRus::LiquidCrystalRus(uint8_t rs,  uint8_t enable,
++			     uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3)
++{
++  init(1, rs, 255, enable, d0, d1, d2, d3, 0, 0, 0, 0);
++}
++
++void LiquidCrystalRus::init(uint8_t fourbitmode, uint8_t rs, uint8_t rw, uint8_t enable,
++			 uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++			 uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7)
++{
++  _rs_pin = rs;
++  _rw_pin = rw;
++  _enable_pin = enable;
++  
++  _data_pins[0] = d0;
++  _data_pins[1] = d1;
++  _data_pins[2] = d2;
++  _data_pins[3] = d3; 
++  _data_pins[4] = d4;
++  _data_pins[5] = d5;
++  _data_pins[6] = d6;
++  _data_pins[7] = d7; 
++
++  pinMode(_rs_pin, OUTPUT);
++  // we can save 1 pin by not using RW. Indicate by passing 255 instead of pin#
++  if (_rw_pin != 255) { 
++    pinMode(_rw_pin, OUTPUT);
++  }
++  pinMode(_enable_pin, OUTPUT);
++  
++  if (fourbitmode)
++    _displayfunction = LCD_4BITMODE | LCD_1LINE | LCD_5x8DOTS;
++  else 
++    _displayfunction = LCD_8BITMODE | LCD_1LINE | LCD_5x8DOTS;
++  
++  begin(16, 1);  
++}
++
++void LiquidCrystalRus::begin(uint8_t cols, uint8_t lines, uint8_t dotsize) {
++  if (lines > 1) {
++    _displayfunction |= LCD_2LINE;
++  }
++  _numlines = lines;
++  _currline = 0;
++
++  // for some 1 line displays you can select a 10 pixel high font
++  if ((dotsize != 0) && (lines == 1)) {
++    _displayfunction |= LCD_5x10DOTS;
++  }
++
++  // SEE PAGE 45/46 FOR INITIALIZATION SPECIFICATION!
++  // according to datasheet, we need at least 40ms after power rises above 2.7V
++  // before sending commands. Arduino can turn on way befer 4.5V so we'll wait 50
++  delayMicroseconds(50000); 
++  // Now we pull both RS and R/W low to begin commands
++  digitalWrite(_rs_pin, LOW);
++  digitalWrite(_enable_pin, LOW);
++  if (_rw_pin != 255) { 
++    digitalWrite(_rw_pin, LOW);
++  }
++  
++  //put the LCD into 4 bit or 8 bit mode
++  if (! (_displayfunction & LCD_8BITMODE)) {
++    // this is according to the hitachi HD44780 datasheet
++    // figure 24, pg 46
++
++    // we start in 8bit mode, try to set 4 bit mode
++    writeNbits(0x03,4);
++    delayMicroseconds(4500); // wait min 4.1ms
++
++    // second try
++    writeNbits(0x03,4);
++    delayMicroseconds(4500); // wait min 4.1ms
++    
++    // third go!
++    writeNbits(0x03,4); 
++    delayMicroseconds(150);
++
++    // finally, set to 8-bit interface
++    writeNbits(0x02,4); 
++  } else {
++    // this is according to the hitachi HD44780 datasheet
++    // page 45 figure 23
++
++    // Send function set command sequence
++    command(LCD_FUNCTIONSET | _displayfunction);
++    delayMicroseconds(4500);  // wait more than 4.1ms
++
++    // second try
++    command(LCD_FUNCTIONSET | _displayfunction);
++    delayMicroseconds(150);
++
++    // third go
++    command(LCD_FUNCTIONSET | _displayfunction);
++  }
++
++  // finally, set # lines, font size, etc.
++  command(LCD_FUNCTIONSET | _displayfunction);  
++
++  // turn the display on with no cursor or blinking default
++  _displaycontrol = LCD_DISPLAYON | LCD_CURSOROFF | LCD_BLINKOFF;  
++  display();
++
++  // clear it off
++  clear();
++
++  // Initialize to default text direction (for romance languages)
++  _displaymode = LCD_ENTRYLEFT | LCD_ENTRYSHIFTDECREMENT;
++  // set the entry mode
++  command(LCD_ENTRYMODESET | _displaymode);
++
++}
++
++void LiquidCrystalRus::setDRAMModel(uint8_t model) {
++  _dram_model = model;
++}
++
++/********** high level commands, for the user! */
++void LiquidCrystalRus::clear()
++{
++  command(LCD_CLEARDISPLAY);  // clear display, set cursor position to zero
++  delayMicroseconds(2000);  // this command takes a long time!
++}
++
++void LiquidCrystalRus::home()
++{
++  command(LCD_RETURNHOME);  // set cursor position to zero
++  delayMicroseconds(2000);  // this command takes a long time!
++}
++
++void LiquidCrystalRus::setCursor(uint8_t col, uint8_t row)
++{
++  int row_offsets[] = { 0x00, 0x40, 0x14, 0x54 };
++  if ( row >= _numlines ) {
++    row = _numlines-1;    // we count rows starting w/0
++  }
++  
++  command(LCD_SETDDRAMADDR | (col + row_offsets[row]));
++}
++
++// Turn the display on/off (quickly)
++void LiquidCrystalRus::noDisplay() {
++  _displaycontrol &= ~LCD_DISPLAYON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++void LiquidCrystalRus::display() {
++  _displaycontrol |= LCD_DISPLAYON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++
++// Turns the underline cursor on/off
++void LiquidCrystalRus::noCursor() {
++  _displaycontrol &= ~LCD_CURSORON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++void LiquidCrystalRus::cursor() {
++  _displaycontrol |= LCD_CURSORON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++
++// Turn on and off the blinking cursor
++void LiquidCrystalRus::noBlink() {
++  _displaycontrol &= ~LCD_BLINKON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++void LiquidCrystalRus::blink() {
++  _displaycontrol |= LCD_BLINKON;
++  command(LCD_DISPLAYCONTROL | _displaycontrol);
++}
++
++// These commands scroll the display without changing the RAM
++void LiquidCrystalRus::scrollDisplayLeft(void) {
++  command(LCD_CURSORSHIFT | LCD_DISPLAYMOVE | LCD_MOVELEFT);
++}
++void LiquidCrystalRus::scrollDisplayRight(void) {
++  command(LCD_CURSORSHIFT | LCD_DISPLAYMOVE | LCD_MOVERIGHT);
++}
++
++// This is for text that flows Left to Right
++void LiquidCrystalRus::leftToRight(void) {
++  _displaymode |= LCD_ENTRYLEFT;
++  command(LCD_ENTRYMODESET | _displaymode);
++}
++
++// This is for text that flows Right to Left
++void LiquidCrystalRus::rightToLeft(void) {
++  _displaymode &= ~LCD_ENTRYLEFT;
++  command(LCD_ENTRYMODESET | _displaymode);
++}
++
++// This will 'right justify' text from the cursor
++void LiquidCrystalRus::autoscroll(void) {
++  _displaymode |= LCD_ENTRYSHIFTINCREMENT;
++  command(LCD_ENTRYMODESET | _displaymode);
++}
++
++// This will 'left justify' text from the cursor
++void LiquidCrystalRus::noAutoscroll(void) {
++  _displaymode &= ~LCD_ENTRYSHIFTINCREMENT;
++  command(LCD_ENTRYMODESET | _displaymode);
++}
++
++// Allows us to fill the first 8 CGRAM locations
++// with custom characters
++void LiquidCrystalRus::createChar(uint8_t location, uint8_t charmap[]) {
++  location &= 0x7; // we only have 8 locations 0-7
++  command(LCD_SETCGRAMADDR | (location << 3));
++  for (int i=0; i<8; i++) {
++    write(charmap[i]);
++  }
++}
++
++/*********** mid level commands, for sending data/cmds */
++
++inline void LiquidCrystalRus::command(uint8_t value) {
++  send(value, LOW);
++}
++
++#if defined(ARDUINO) && ARDUINO >= 100
++  size_t LiquidCrystalRus::write(uint8_t value)
++#else
++  void   LiquidCrystalRus::write(uint8_t value)
++#endif
++{
++  uint8_t out_char=value;
++
++  if (_dram_model == LCD_DRAM_WH1601) {  
++    uint8_t ac=recv(LOW) & 0x7f;
++    if (ac>7 && ac<0x14) command(LCD_SETDDRAMADDR | (0x40+ac-8));
++  }
++
++  if (value>=0x80) { // UTF-8 handling
++    if (value >= 0xc0) {
++      utf_hi_char = value - 0xd0;
++    } else {
++      value &= 0x3f;
++      if (!utf_hi_char && (value == 1)) 
++        send(0xa2,HIGH); // ╗
++      else if ((utf_hi_char == 1) && (value == 0x11)) 
++        send(0xb5,HIGH); // ╦
++      else 
++        send(pgm_read_byte_near(utf_recode + value + (utf_hi_char<<6) - 0x10), HIGH);
++    }    
++  } else send(out_char, HIGH);
++#if defined(ARDUINO) && ARDUINO >= 100
++  return 1; // assume sucess 
++#endif
++}
++
++/************ low level data pushing commands **********/
++
++// write either command or data, with automatic 4/8-bit selection
++void LiquidCrystalRus::send(uint8_t value, uint8_t mode) {
++  digitalWrite(_rs_pin, mode);
++
++  // if there is a RW pin indicated, set it low to Write
++  if (_rw_pin != 255) { 
++    digitalWrite(_rw_pin, LOW);
++  }
++  
++  if (_displayfunction & LCD_8BITMODE) {
++    writeNbits(value,8); 
++  } else {
++    writeNbits(value>>4,4);
++    writeNbits(value,4);
++  }
++}
++
++// read  data, with automatic 4/8-bit selection
++uint8_t LiquidCrystalRus::recv(uint8_t mode) {
++  uint8_t retval;
++  digitalWrite(_rs_pin, mode);
++
++  // if there is a RW pin indicated, set it low to Write
++  if (_rw_pin != 255) { 
++    digitalWrite(_rw_pin, HIGH);
++  }
++  
++  if (_displayfunction & LCD_8BITMODE) {
++    retval = readNbits(8); 
++  } else {
++    retval = readNbits(4) << 4;
++    retval |= readNbits(4);
++  }
++  return retval;
++}
++void LiquidCrystalRus::pulseEnable() {
++  digitalWrite(_enable_pin, LOW);
++  delayMicroseconds(1);    
++  digitalWrite(_enable_pin, HIGH);
++  delayMicroseconds(1);    // enable pulse must be >450ns
++  digitalWrite(_enable_pin, LOW);
++  delayMicroseconds(100);   // commands need > 37us to settle
++}
++
++void LiquidCrystalRus::writeNbits(uint8_t value, uint8_t n) {
++  for (int i = 0; i < n; i++) {
++    pinMode(_data_pins[i], OUTPUT);
++    digitalWrite(_data_pins[i], (value >> i) & 0x01);
++  }
++
++  pulseEnable();
++}
++
++uint8_t LiquidCrystalRus::readNbits(uint8_t n) {
++  uint8_t retval=0;
++  for (int i = 0; i < n; i++) {
++    pinMode(_data_pins[i], INPUT);
++  }
++
++  digitalWrite(_enable_pin, LOW);
++  delayMicroseconds(1);    
++  digitalWrite(_enable_pin, HIGH);
++  delayMicroseconds(1);    // enable pulse must be >450ns
++  
++  for (int i = 0; i < n; i++) {
++    retval |= (digitalRead(_data_pins[i]) == HIGH)?(1 << i):0;
++  }
++
++  digitalWrite(_enable_pin, LOW);
++
++  return retval;
++}
++
+diff --git a/Marlin/LiquidCrystalRus.h b/Marlin/LiquidCrystalRus.h
+new file mode 100644
+index 0000000..ad85394
+--- /dev/null
++++ b/Marlin/LiquidCrystalRus.h
+@@ -0,0 +1,129 @@
++//
++// based on LiquidCrystal library from ArduinoIDE, see http://arduino.cc
++//  modified 27 Jul 2011
++// by Ilya V. Danilov http://mk90.ru/
++// 
++
++#ifndef LiquidCrystalRus_h
++#define LiquidCrystalRus_h
++
++#include <inttypes.h>
++#include "Print.h"
++
++// commands
++#define LCD_CLEARDISPLAY 0x01
++#define LCD_RETURNHOME 0x02
++#define LCD_ENTRYMODESET 0x04
++#define LCD_DISPLAYCONTROL 0x08
++#define LCD_CURSORSHIFT 0x10
++#define LCD_FUNCTIONSET 0x20
++#define LCD_SETCGRAMADDR 0x40
++#define LCD_SETDDRAMADDR 0x80
++
++// flags for display entry mode
++#define LCD_ENTRYRIGHT 0x00
++#define LCD_ENTRYLEFT 0x02
++#define LCD_ENTRYSHIFTINCREMENT 0x01
++#define LCD_ENTRYSHIFTDECREMENT 0x00
++
++// flags for display on/off control
++#define LCD_DISPLAYON 0x04
++#define LCD_DISPLAYOFF 0x00
++#define LCD_CURSORON 0x02
++#define LCD_CURSOROFF 0x00
++#define LCD_BLINKON 0x01
++#define LCD_BLINKOFF 0x00
++
++// flags for display/cursor shift
++#define LCD_DISPLAYMOVE 0x08
++#define LCD_CURSORMOVE 0x00
++#define LCD_MOVERIGHT 0x04
++#define LCD_MOVELEFT 0x00
++
++// flags for function set
++#define LCD_8BITMODE 0x10
++#define LCD_4BITMODE 0x00
++#define LCD_2LINE 0x08
++#define LCD_1LINE 0x00
++#define LCD_5x10DOTS 0x04
++#define LCD_5x8DOTS 0x00
++
++// enum for 
++#define LCD_DRAM_Normal 0x00
++#define LCD_DRAM_WH1601 0x01
++
++
++class LiquidCrystalRus : public Print {
++public:
++  LiquidCrystalRus(uint8_t rs, uint8_t enable,
++		uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++		uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7);
++  LiquidCrystalRus(uint8_t rs, uint8_t rw, uint8_t enable,
++		uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++		uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7);
++  LiquidCrystalRus(uint8_t rs, uint8_t rw, uint8_t enable,
++		uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3);
++  LiquidCrystalRus(uint8_t rs, uint8_t enable,
++		uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3);
++
++  void init(uint8_t fourbitmode, uint8_t rs, uint8_t rw, uint8_t enable,
++	    uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3,
++	    uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7);
++    
++  void begin(uint8_t cols, uint8_t rows, uint8_t charsize = LCD_5x8DOTS);
++
++  void clear();
++  void home();
++
++  void noDisplay();
++  void display();
++  void noBlink();
++  void blink();
++  void noCursor();
++  void cursor();
++  void scrollDisplayLeft();
++  void scrollDisplayRight();
++  void leftToRight();
++  void rightToLeft();
++  void autoscroll();
++  void noAutoscroll();
++
++  void createChar(uint8_t, uint8_t[]);
++  void setCursor(uint8_t, uint8_t);
++ 
++#if defined(ARDUINO) && ARDUINO >= 100
++  virtual size_t write(uint8_t);
++  using Print::write;
++#else
++  virtual void write(uint8_t);
++#endif
++
++  void command(uint8_t);
++
++  void setDRAMModel(uint8_t);
++
++private:
++  void send(uint8_t, uint8_t);
++  void writeNbits(uint8_t, uint8_t);
++  uint8_t recv(uint8_t);
++  uint8_t readNbits(uint8_t); 
++  void pulseEnable();
++
++  uint8_t _rs_pin; // LOW: command.  HIGH: character.
++  uint8_t _rw_pin; // LOW: write to LCD.  HIGH: read from LCD.
++  uint8_t _enable_pin; // activated by a HIGH pulse.
++  uint8_t _data_pins[8];
++
++  uint8_t _displayfunction;
++  uint8_t _displaycontrol;
++  uint8_t _displaymode;
++
++  uint8_t _initialized;
++
++  uint8_t _numlines,_currline;
++
++  uint8_t _dram_model;
++  uint8_t utf_hi_char; // UTF-8 high part
++};
++
++#endif
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index 940bb16..275c9c0 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -277,6 +277,10 @@ applet/%.o: %.c Configuration.h Configuration_adv.h $(MAKEFILE)
+ 	$(Pecho) "  CC    $@"
+ 	$P $(CC) -MMD -c $(ALL_CFLAGS) $< -o $@
+ 
++applet/%.o: applet/%.cpp Configuration.h Configuration_adv.h $(MAKEFILE)
++	$(Pecho) "  CXX   $@"
++	$P $(CXX) -MMD -c $(ALL_CXXFLAGS) $< -o $@
++
+ applet/%.o: %.cpp Configuration.h Configuration_adv.h $(MAKEFILE)
+ 	$(Pecho) "  CXX   $@"
+ 	$P $(CXX) -MMD -c $(ALL_CXXFLAGS) $< -o $@
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 937fabb..5b59885 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -107,7 +107,7 @@ FORCE_INLINE void serialprintPGM(const char *str)
+ void get_command();
+ void process_commands();
+ 
+-void manage_inactivity(byte debug);
++void manage_inactivity();
+ 
+ #if X_ENABLE_PIN > -1
+   #define  enable_x() WRITE(X_ENABLE_PIN, X_ENABLE_ON)
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index f48a419..bda479e 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -115,6 +115,7 @@
+ // M301 - Set PID parameters P I and D
+ // M302 - Allow cold extrudes
+ // M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
++// M304 - Set bed PID parameters P I and D
+ // M400 - Finish all moves
+ // M500 - stores paramters in EEPROM
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).  
+@@ -202,6 +203,7 @@ bool Stopped=false;
+ //===========================================================================
+ 
+ void get_arc_coordinates();
++bool setTargetedHotend(int code);
+ 
+ void serial_echopair_P(const char *s_P, float v)
+     { serialprintPGM(s_P); SERIAL_ECHO(v); }
+@@ -245,6 +247,14 @@ void enquecommand(const char *cmd)
+   }
+ }
+ 
++void setup_killpin()
++{
++  #if( KILL_PIN>-1 )
++    pinMode(KILL_PIN,INPUT);
++    WRITE(KILL_PIN,HIGH);
++  #endif
++}
++    
+ void setup_photpin()
+ {
+   #ifdef PHOTOGRAPH_PIN
+@@ -276,7 +286,8 @@ void suicide()
+ }
+ 
+ void setup()
+-{ 
++{
++  setup_killpin(); 
+   setup_powerhold();
+   MYSERIAL.begin(BAUDRATE);
+   SERIAL_PROTOCOLLNPGM("start");
+@@ -365,7 +376,7 @@ void loop()
+   }
+   //check heater every n milliseconds
+   manage_heater();
+-  manage_inactivity(1);
++  manage_inactivity();
+   checkHitEndstops();
+   LCD_STATUS;
+ }
+@@ -653,8 +664,8 @@ void process_commands()
+       previous_millis_cmd = millis();
+       while(millis()  < codenum ){
+         manage_heater();
+-        manage_inactivity(1);
+-		LCD_STATUS;
++        manage_inactivity();
++        LCD_STATUS;
+       }
+       break;
+       #ifdef FWRETRACT  
+@@ -816,21 +827,20 @@ void process_commands()
+       
+       st_synchronize();
+       previous_millis_cmd = millis();
+-	  if (codenum > 0)
+-	  {
++      if (codenum > 0){
+         codenum += millis();  // keep track of when we started waiting
+         while(millis()  < codenum && !CLICKED){
+           manage_heater();
+-          manage_inactivity(1);
+-		  LCD_STATUS;
+-		}
++          manage_inactivity();
++          LCD_STATUS;
++        }
+       }else{
+-        while(!CLICKED) {
++        while(!CLICKED){
+           manage_heater();
+-          manage_inactivity(1);
+-		  LCD_STATUS;
+-		}
+-	  }
++          manage_inactivity();
++          LCD_STATUS;
++        }
++      }
+     }
+     break;
+ #endif
+@@ -949,15 +959,8 @@ void process_commands()
+       }
+      break;
+     case 104: // M104
+-      tmp_extruder = active_extruder;
+-      if(code_seen('T')) {
+-        tmp_extruder = code_value();
+-        if(tmp_extruder >= EXTRUDERS) {
+-          SERIAL_ECHO_START;
+-          SERIAL_ECHO(MSG_M104_INVALID_EXTRUDER);
+-          SERIAL_ECHOLN(tmp_extruder);
+-          break;
+-        }
++      if(setTargetedHotend(104)){
++        break;
+       }
+       if (code_seen('S')) setTargetHotend(code_value(), tmp_extruder);
+       setWatch();
+@@ -966,15 +969,8 @@ void process_commands()
+       if (code_seen('S')) setTargetBed(code_value());
+       break;
+     case 105 : // M105
+-      tmp_extruder = active_extruder;
+-      if(code_seen('T')) {
+-        tmp_extruder = code_value();
+-        if(tmp_extruder >= EXTRUDERS) {
+-          SERIAL_ECHO_START;
+-          SERIAL_ECHO(MSG_M105_INVALID_EXTRUDER);
+-          SERIAL_ECHOLN(tmp_extruder);
+-          break;
+-        }
++      if(setTargetedHotend(105)){
++        break;
+       }
+       #if (TEMP_0_PIN > -1)
+         SERIAL_PROTOCOLPGM("ok T:");
+@@ -991,24 +987,20 @@ void process_commands()
+         SERIAL_ERROR_START;
+         SERIAL_ERRORLNPGM(MSG_ERR_NO_THERMISTORS);
+       #endif
+-      #ifdef PIDTEMP
++
+         SERIAL_PROTOCOLPGM(" @:");
+         SERIAL_PROTOCOL(getHeaterPower(tmp_extruder));  
+-      #endif
++
++        SERIAL_PROTOCOLPGM(" B@:");
++        SERIAL_PROTOCOL(getHeaterPower(-1));  
++
+         SERIAL_PROTOCOLLN("");
+       return;
+       break;
+     case 109: 
+     {// M109 - Wait for extruder heater to reach target.
+-      tmp_extruder = active_extruder;
+-      if(code_seen('T')) {
+-        tmp_extruder = code_value();
+-        if(tmp_extruder >= EXTRUDERS) {
+-          SERIAL_ECHO_START;
+-          SERIAL_ECHO(MSG_M109_INVALID_EXTRUDER);
+-          SERIAL_ECHOLN(tmp_extruder);
+-          break;
+-        }
++      if(setTargetedHotend(109)){
++        break;
+       }
+       LCD_MESSAGEPGM(MSG_HEATING);   
+       #ifdef AUTOTEMP
+@@ -1064,7 +1056,7 @@ void process_commands()
+             codenum = millis();
+           }
+           manage_heater();
+-          manage_inactivity(1);
++          manage_inactivity();
+           LCD_STATUS;
+         #ifdef TEMP_RESIDENCY_TIME
+             /* start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+@@ -1102,7 +1094,7 @@ void process_commands()
+             codenum = millis(); 
+           }
+           manage_heater();
+-          manage_inactivity(1);
++          manage_inactivity();
+           LCD_STATUS;
+         }
+         LCD_MESSAGEPGM(MSG_BED_DONE);
+@@ -1137,7 +1129,8 @@ void process_commands()
+         st_synchronize();
+         suicide();
+       #elif (PS_ON_PIN > -1)
+-        SET_INPUT(PS_ON_PIN); //Floating
++        SET_OUTPUT(PS_ON_PIN); 
++        WRITE(PS_ON_PIN, HIGH);
+       #endif
+ 		break;
+         
+@@ -1236,31 +1229,31 @@ void process_commands()
+       enable_endstops(true) ;
+       break;
+     case 119: // M119
++    SERIAL_PROTOCOLLN(MSG_M119_REPORT);
+       #if (X_MIN_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_X_MIN);
+-        SERIAL_PROTOCOL(((READ(X_MIN_PIN)^X_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(X_MIN_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+       #if (X_MAX_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_X_MAX);
+-        SERIAL_PROTOCOL(((READ(X_MAX_PIN)^X_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(X_MAX_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+       #if (Y_MIN_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_Y_MIN);
+-        SERIAL_PROTOCOL(((READ(Y_MIN_PIN)^Y_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(Y_MIN_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+       #if (Y_MAX_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_Y_MAX);
+-        SERIAL_PROTOCOL(((READ(Y_MAX_PIN)^Y_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(Y_MAX_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+       #if (Z_MIN_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_Z_MIN);
+-        SERIAL_PROTOCOL(((READ(Z_MIN_PIN)^Z_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(Z_MIN_PIN)^Z_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+       #if (Z_MAX_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_Z_MAX);
+-        SERIAL_PROTOCOL(((READ(Z_MAX_PIN)^Z_ENDSTOPS_INVERTING)?"H ":"L "));
++        SERIAL_PROTOCOLLN(((READ(Z_MAX_PIN)^Z_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+       #endif
+-      SERIAL_PROTOCOLLN("");
+       break;
+       //TODO: update for all axis, use for loop
+     case 201: // M201
+@@ -1397,6 +1390,24 @@ void process_commands()
+       }
+       break;
+     #endif //PIDTEMP
++    #ifdef PIDTEMPBED
++    case 304: // M304
++      {
++        if(code_seen('P')) bedKp = code_value();
++        if(code_seen('I')) bedKi = code_value()*PID_dT;
++        if(code_seen('D')) bedKd = code_value()/PID_dT;
++        updatePID();
++        SERIAL_PROTOCOL(MSG_OK);
++		SERIAL_PROTOCOL(" p:");
++        SERIAL_PROTOCOL(bedKp);
++        SERIAL_PROTOCOL(" i:");
++        SERIAL_PROTOCOL(bedKi/PID_dT);
++        SERIAL_PROTOCOL(" d:");
++        SERIAL_PROTOCOL(bedKd*PID_dT);
++        SERIAL_PROTOCOLLN("");
++      }
++      break;
++    #endif //PIDTEMP
+     case 240: // M240  Triggers a camera by emulating a Canon RC-1 : http://www.doc-diy.net/photo/rc-1_hacked/
+      {
+       #ifdef PHOTOGRAPH_PIN
+@@ -1429,8 +1440,14 @@ void process_commands()
+     case 303: // M303 PID autotune
+     {
+       float temp = 150.0;
++      int e=0;
++      int c=5;
++      if (code_seen('E')) e=code_value();
++			if (e<0)
++				temp=70;
+       if (code_seen('S')) temp=code_value();
+-      PID_autotune(temp);
++      if (code_seen('C')) c=code_value();
++      PID_autotune(temp, e, c);
+     }
+     break;
+     case 400: // M400 finish all moves
+@@ -1568,7 +1585,15 @@ void get_coordinates()
+ 
+ void get_arc_coordinates()
+ {
++#ifdef SF_ARC_FIX
++   bool relative_mode_backup = relative_mode;
++   relative_mode = true;
++#endif
+    get_coordinates();
++#ifdef SF_ARC_FIX
++   relative_mode=relative_mode_backup;
++#endif
++
+    if(code_seen('I')) {
+      offset[0] = code_value();
+    } 
+@@ -1664,7 +1689,7 @@ void controllerFan()
+ }
+ #endif
+ 
+-void manage_inactivity(byte debug) 
++void manage_inactivity() 
+ { 
+   if( (millis() - previous_millis_cmd) >  max_inactive_time ) 
+     if(max_inactive_time) 
+@@ -1682,6 +1707,10 @@ void manage_inactivity(byte debug)
+       }
+     }
+   }
++  #if( KILL_PIN>-1 )
++    if( 0 == READ(KILL_PIN) )
++      kill();
++  #endif
+   #ifdef CONTROLLERFAN_PIN
+     controllerFan(); //Check if fan should be turned on to cool stepper drivers down
+   #endif
+@@ -1722,7 +1751,7 @@ void kill()
+   if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,INPUT);
+   SERIAL_ERROR_START;
+   SERIAL_ERRORLNPGM(MSG_ERR_KILLED);
+-  LCD_MESSAGEPGM(MSG_KILLED);
++  LCD_ALERTMESSAGEPGM(MSG_KILLED);
+   suicide();
+   while(1); // Wait for reset
+ }
+@@ -1809,6 +1838,28 @@ void setPwmFrequency(uint8_t pin, int val)
+ 
+   }
+ }
+-#endif
+-
++#endif //FAST_PWM_FAN
+ 
++bool setTargetedHotend(int code){
++  tmp_extruder = active_extruder;
++  if(code_seen('T')) {
++    tmp_extruder = code_value();
++    if(tmp_extruder >= EXTRUDERS) {
++      SERIAL_ECHO_START;
++      switch(code){
++        case 104:
++          SERIAL_ECHO(MSG_M104_INVALID_EXTRUDER);
++          break;
++        case 105:
++          SERIAL_ECHO(MSG_M105_INVALID_EXTRUDER);
++          break;
++        case 109:
++          SERIAL_ECHO(MSG_M109_INVALID_EXTRUDER);
++          break;
++      }
++      SERIAL_ECHOLN(tmp_extruder);
++      return true;
++    }
++  }
++  return false;
++}
+diff --git a/Marlin/Menu Plans.xlsx b/Marlin/Menu Plans.xlsx
+new file mode 100644
+index 0000000..45a58e4
+Binary files /dev/null and b/Marlin/Menu Plans.xlsx differ
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 884fa45..eb38df6 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -369,7 +369,6 @@ bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+  *
+  * \param[in] blockNumber Logical block to be read.
+  * \param[out] dst Pointer to the location that will receive the data.
+-
+  * \return The value one, true, is returned for success and
+  * the value zero, false, is returned for failure.
+  */
+@@ -639,5 +638,4 @@ bool Sd2Card::writeStop() {
+   return false;
+ }
+ 
+-
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdBaseFile.cpp b/Marlin/SdBaseFile.cpp
+index b84efc8..c4d5380 100644
+--- a/Marlin/SdBaseFile.cpp
++++ b/Marlin/SdBaseFile.cpp
+@@ -867,7 +867,7 @@ bool SdBaseFile::openParent(SdBaseFile* dir) {
+   }
+   // search for parent in '../..'
+   do {
+-    if (file.readDir(&entry) != 32) goto fail;
++    if (file.readDir(&entry, NULL) != 32) goto fail;
+     c = entry.firstClusterLow;
+     c |= (uint32_t)entry.firstClusterHigh << 16;
+   } while (c != cluster);
+@@ -1108,10 +1108,16 @@ int16_t SdBaseFile::read(void* buf, uint16_t nbyte) {
+  * readDir() called before a directory has been opened, this is not
+  * a directory file or an I/O error occurred.
+  */
+-int8_t SdBaseFile::readDir(dir_t* dir) {
++int8_t SdBaseFile::readDir(dir_t* dir, char* longFilename) {
+   int16_t n;
+   // if not a directory file or miss-positioned return an error
+   if (!isDir() || (0X1F & curPosition_)) return -1;
++  
++  //If we have a longFilename buffer, mark it as invalid. If we find a long filename it will be filled automaticly.
++  if (longFilename != NULL)
++  {
++  	longFilename[0] = '\0';
++  }
+ 
+   while (1) {
+     n = read(dir, sizeof(dir_t));
+@@ -1120,6 +1126,34 @@ int8_t SdBaseFile::readDir(dir_t* dir) {
+     if (dir->name[0] == DIR_NAME_FREE) return 0;
+     // skip empty entries and entry for .  and ..
+     if (dir->name[0] == DIR_NAME_DELETED || dir->name[0] == '.') continue;
++    //Fill the long filename if we have a long filename entry,
++	// long filename entries are stored before the actual filename.
++	if (DIR_IS_LONG_NAME(dir) && longFilename != NULL)
++    {
++    	vfat_t *VFAT = (vfat_t*)dir;
++		//Sanity check the VFAT entry. The first cluster is always set to zero. And th esequence number should be higher then 0
++    	if (VFAT->firstClusterLow == 0 && (VFAT->sequenceNumber & 0x1F) > 0 && (VFAT->sequenceNumber & 0x1F) <= MAX_VFAT_ENTRIES)
++    	{
++			//TODO: Store the filename checksum to verify if a none-long filename aware system modified the file table.
++    		n = ((VFAT->sequenceNumber & 0x1F) - 1) * 13;
++			longFilename[n+0] = VFAT->name1[0];
++			longFilename[n+1] = VFAT->name1[1];
++			longFilename[n+2] = VFAT->name1[2];
++			longFilename[n+3] = VFAT->name1[3];
++			longFilename[n+4] = VFAT->name1[4];
++			longFilename[n+5] = VFAT->name2[0];
++			longFilename[n+6] = VFAT->name2[1];
++			longFilename[n+7] = VFAT->name2[2];
++			longFilename[n+8] = VFAT->name2[3];
++			longFilename[n+9] = VFAT->name2[4];
++			longFilename[n+10] = VFAT->name2[5];
++			longFilename[n+11] = VFAT->name3[0];
++			longFilename[n+12] = VFAT->name3[1];
++			//If this VFAT entry is the last one, add a NUL terminator at the end of the string
++			if (VFAT->sequenceNumber & 0x40)
++				longFilename[n+13] = '\0';
++		}
++    }
+     // return if normal file or subdirectory
+     if (DIR_IS_FILE_OR_SUBDIR(dir)) return n;
+   }
+@@ -1788,4 +1822,4 @@ void (*SdBaseFile::oldDateTime_)(uint16_t& date, uint16_t& time) = 0;  // NOLINT
+ #endif  // ALLOW_DEPRECATED_FUNCTIONS
+ 
+ 
+-#endif
++#endif
+diff --git a/Marlin/SdBaseFile.h b/Marlin/SdBaseFile.h
+index 1bf75f6..dea299a 100644
+--- a/Marlin/SdBaseFile.h
++++ b/Marlin/SdBaseFile.h
+@@ -283,7 +283,7 @@ class SdBaseFile {
+   bool printName();
+   int16_t read();
+   int16_t read(void* buf, uint16_t nbyte);
+-  int8_t readDir(dir_t* dir);
++  int8_t readDir(dir_t* dir, char* longFilename);
+   static bool remove(SdBaseFile* dirFile, const char* path);
+   bool remove();
+   /** Set the file's current position to zero. */
+@@ -455,7 +455,7 @@ class SdBaseFile {
+    * \param[out] dir The dir_t struct that will receive the data.
+    * \return bytes read for success zero for eof or -1 for failure.
+    */
+-  int8_t readDir(dir_t& dir) {return readDir(&dir);}  // NOLINT
++  int8_t readDir(dir_t& dir, char* longFilename) {return readDir(&dir, longFilename);}  // NOLINT
+   /** \deprecated Use:
+    * static uint8_t remove(SdBaseFile* dirFile, const char* path);
+    * \param[in] dirFile The directory that contains the file.
+@@ -480,4 +480,4 @@ class SdBaseFile {
+ };
+ 
+ #endif  // SdBaseFile_h
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdFatConfig.h b/Marlin/SdFatConfig.h
+index 2a78c2a..710b1f7 100644
+--- a/Marlin/SdFatConfig.h
++++ b/Marlin/SdFatConfig.h
+@@ -108,7 +108,14 @@ uint8_t const SOFT_SPI_SCK_PIN = 13;
+  * a pure virtual function is called.
+  */
+ #define USE_CXA_PURE_VIRTUAL 1
++/**
++ * Defines for long (vfat) filenames
++ */
++/** Number of VFAT entries used. Every entry has 13 UTF-16 characters */
++#define MAX_VFAT_ENTRIES (2)
++/** Total size of the buffer used to store the long filenames */
++#define LONG_FILENAME_LENGTH (13*MAX_VFAT_ENTRIES+1)
+ #endif  // SdFatConfig_h
+ 
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdFatStructs.h b/Marlin/SdFatStructs.h
+index 7ad88d6..3867216 100644
+--- a/Marlin/SdFatStructs.h
++++ b/Marlin/SdFatStructs.h
+@@ -22,6 +22,8 @@
+ 
+ #ifndef SdFatStructs_h
+ #define SdFatStructs_h
++
++#define PACKED __attribute__((__packed__))
+ /**
+  * \file
+  * \brief FAT file structures
+@@ -95,7 +97,7 @@ struct partitionTable {
+   uint32_t firstSector;
+            /** Length of the partition, in blocks. */
+   uint32_t totalSectors;
+-};
++} PACKED;
+ /** Type name for partitionTable */
+ typedef struct partitionTable part_t;
+ //------------------------------------------------------------------------------
+@@ -119,7 +121,7 @@ struct masterBootRecord {
+   uint8_t  mbrSig0;
+            /** Second MBR signature byte. Must be 0XAA */
+   uint8_t  mbrSig1;
+-};
++} PACKED;
+ /** Type name for masterBootRecord */
+ typedef struct masterBootRecord mbr_t;
+ //------------------------------------------------------------------------------
+@@ -247,7 +249,7 @@ struct fat_boot {
+   uint8_t  bootSectorSig0;
+            /** must be 0XAA */
+   uint8_t  bootSectorSig1;
+-};
++} PACKED;
+ /** Type name for FAT Boot Sector */
+ typedef struct fat_boot fat_boot_t;
+ //------------------------------------------------------------------------------
+@@ -401,7 +403,7 @@ struct fat32_boot {
+   uint8_t  bootSectorSig0;
+            /** must be 0XAA */
+   uint8_t  bootSectorSig1;
+-};
++} PACKED;
+ /** Type name for FAT32 Boot Sector */
+ typedef struct fat32_boot fat32_boot_t;
+ //------------------------------------------------------------------------------
+@@ -441,7 +443,7 @@ struct fat32_fsinfo {
+   uint8_t  reserved2[12];
+            /** must be 0X00, 0X00, 0X55, 0XAA */
+   uint8_t  tailSignature[4];
+-};
++} PACKED;
+ /** Type name for FAT32 FSINFO Sector */
+ typedef struct fat32_fsinfo fat32_fsinfo_t;
+ //------------------------------------------------------------------------------
+@@ -539,12 +541,46 @@ struct directoryEntry {
+   uint16_t firstClusterLow;
+            /** 32-bit unsigned holding this file's size in bytes. */
+   uint32_t fileSize;
+-};
++} PACKED;
++/**
++ * \struct directoryVFATEntry
++ * \brief VFAT long filename directory entry
++ *
++ * directoryVFATEntries are found in the same list as normal directoryEntry.
++ * But have the attribute field set to DIR_ATT_LONG_NAME.
++ * 
++ * Long filenames are saved in multiple directoryVFATEntries.
++ * Each entry containing 13 UTF-16 characters.
++ */
++struct directoryVFATEntry {
++  /**
++   * Sequence number. Consists of 2 parts:
++   *  bit 6:   indicates first long filename block for the next file
++   *  bit 0-4: the position of this long filename block (first block is 1)
++   */
++  uint8_t  sequenceNumber;
++  /** First set of UTF-16 characters */
++  uint16_t name1[5];//UTF-16
++  /** attributes (at the same location as in directoryEntry), always 0x0F */
++  uint8_t  attributes;
++  /** Reserved for use by Windows NT. Always 0. */
++  uint8_t  reservedNT;
++  /** Checksum of the short 8.3 filename, can be used to checked if the file system as modified by a not-long-filename aware implementation. */
++  uint8_t  checksum;
++  /** Second set of UTF-16 characters */
++  uint16_t name2[6];//UTF-16
++  /** firstClusterLow is always zero for longFilenames */
++  uint16_t firstClusterLow;
++  /** Third set of UTF-16 characters */
++  uint16_t name3[2];//UTF-16
++} PACKED;
+ //------------------------------------------------------------------------------
+ // Definitions for directory entries
+ //
+ /** Type name for directoryEntry */
+ typedef struct directoryEntry dir_t;
++/** Type name for directoryVFATEntry */
++typedef struct directoryVFATEntry vfat_t;
+ /** escape for name[0] = 0XE5 */
+ uint8_t const DIR_NAME_0XE5 = 0X05;
+ /** name[0] value for entry that is free after being "deleted" */
+@@ -607,4 +643,4 @@ static inline uint8_t DIR_IS_FILE_OR_SUBDIR(const dir_t* dir) {
+ #endif  // SdFatStructs_h
+ 
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 222632f..47a3fd0 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -51,7 +51,7 @@ void  CardReader::lsDive(const char *prepend,SdFile parent)
+   dir_t p;
+  uint8_t cnt=0;
+  
+-  while (parent.readDir(p) > 0)
++  while (parent.readDir(p, longFilename) > 0)
+   {
+     if( DIR_IS_SUBDIR(&p) && lsAction!=LS_Count && lsAction!=LS_GetFilename) // hence LS_SerialPrint
+     {
+@@ -429,16 +429,16 @@ void CardReader::checkautostart(bool force)
+   
+   char autoname[30];
+   sprintf(autoname,"auto%i.g",lastnr);
+-  for(int8_t i=0;i<(int)strlen(autoname);i++)
++  for(int8_t i=0;i<(int8_t)strlen(autoname);i++)
+     autoname[i]=tolower(autoname[i]);
+   dir_t p;
+ 
+   root.rewind();
+   
+   bool found=false;
+-  while (root.readDir(p) > 0) 
++  while (root.readDir(p, NULL) > 0) 
+   {
+-    for(int8_t i=0;i<(int)strlen((char*)p.name);i++)
++    for(int8_t i=0;i<(int8_t)strlen((char*)p.name);i++)
+     p.name[i]=tolower(p.name[i]);
+     //Serial.print((char*)p.name);
+     //Serial.print(" ");
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 964bbe7..e5c8443 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -45,7 +45,8 @@ public:
+   bool saving;
+   bool sdprinting ;  
+   bool cardOK ;
+-  char filename[12];
++  char filename[13];
++  char longFilename[LONG_FILENAME_LENGTH];
+   bool filenameIsDir;
+   int lastnr; //last number of the autostart;
+ private:
+@@ -72,4 +73,4 @@ private:
+ #define IS_SD_PRINTING (false)
+ 
+ #endif //SDSUPPORT
+-#endif
++#endif
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 12461a6..82caee9 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -1,13 +1,20 @@
+ #ifndef LANGUAGE_H
+ #define LANGUAGE_H
+ 
++// NOTE: IF YOU CHANGE THIS FILE / MERGE THIS FILE WITH CHANGES
++//
++//   ==> ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRALCD" / "SDSUPPORT" #define IN "Configuration.h" 
++//   ==> ALSO TRY ALL AVAILABLE "LANGUAGE_CHOICE" OPTIONS
++
+ // Languages
+-// 1  Custom (For you to add your own messages)
+-// 2  English 
++// 1  English
++// 2  -
+ // 3  French	(Waiting translation)
+-// 4  German	(Waiting translation)
++// 4  German
+ // 5  Spanish
+-// 6  Etc
++// 6  Russian
++// 7  Italian
++// 8  Etc
+ 
+ #define LANGUAGE_CHOICE 1  // Pick your language from the list above
+ 
+@@ -35,8 +42,13 @@
+ 	#define MSG_DISABLE_STEPPERS " Disable Steppers"
+ 	#define MSG_AUTO_HOME " Auto Home"
+ 	#define MSG_SET_ORIGIN " Set Origin"
++	#define MSG_PREHEAT_PLA " Preheat PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS " Preheat PLA Setting"
++	#define MSG_PREHEAT_ABS " Preheat ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS " Preheat ABS Setting"
+ 	#define MSG_COOLDOWN " Cooldown"
+ 	#define MSG_EXTRUDE " Extrude"
++	#define MSG_RETRACT " Retract"
+ 	#define MSG_PREHEAT_PLA " Preheat PLA"
+ 	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+@@ -76,6 +88,7 @@
+ 	#define MSG_MAIN_WIDE " Main        \003"
+ 	#define MSG_RECTRACT_WIDE " Rectract    \x7E"
+ 	#define MSG_TEMPERATURE_WIDE " Temperature \x7E"
++	#define MSG_TEMPERATURE_RTN " Temperature  \003"
+ 	#define MSG_MOTION_WIDE " Motion      \x7E"
+ 	#define MSG_STORE_EPROM " Store memory"
+ 	#define MSG_LOAD_EPROM " Load memory"
+@@ -85,27 +98,27 @@
+ 	#define MSG_PREPARE " Prepare \x7E"
+ 	#define MSG_PREPARE_ALT " Prepare \003"
+ 	#define MSG_CONTROL_ARROW " Control \x7E"
+-	#define MSG_RETRACT_ARROW " Control \x7E"
++	#define MSG_RETRACT_ARROW " Retract \x7E"
+ 	#define MSG_TUNE " Tune    \x7E"
++	#define MSG_PAUSE_PRINT " Pause Print \x7E"
++	#define MSG_RESUME_PRINT " Resume Print \x7E"
+ 	#define MSG_STOP_PRINT " Stop Print   \x7E"
+ 	#define MSG_CARD_MENU " Card Menu    \x7E"
+ 	#define MSG_NO_CARD " No Card"
+-	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Something is wrong in the MenuStructure."
+ 	#define MSG_DWELL "Sleep..."
+ 	#define MSG_USERWAIT "Wait for user..."
+ 	#define MSG_NO_MOVE "No move."
+ 	#define MSG_PART_RELEASE "Partial Release"
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_STEPPER_RELEASED "Released."
+-  #define MSG_CONTROL_RETRACT  " Retract mm:"
+-  #define MSG_CONTROL_RETRACTF " Retract  F:"
+-  #define MSG_CONTROL_RETRACT_ZLIFT " Hop mm:"
+-  #define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
+-  #define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
+-  #define MSG_AUTORETRACT " AutoRetr.:"
++	#define MSG_CONTROL_RETRACT  " Retract mm:"
++	#define MSG_CONTROL_RETRACTF " Retract  F:"
++	#define MSG_CONTROL_RETRACT_ZLIFT " Hop mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
++	#define MSG_AUTORETRACT " AutoRetr.:"
++        #define MSG_SERIAL_ERROR_MENU_STRUCTURE "Something is wrong in the MenuStructure."
+ 
+ // Serial Console Messages
+ 
+@@ -140,17 +153,20 @@
+ 	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) "\n"
+ 	#define MSG_COUNT_X " Count X:"
+ 	#define MSG_ERR_KILLED "Printer halted. kill() called !!"
+-	#define MSG_ERR_STOPPED "Printer stopped deu to errors. Fix the error and use M999 to restart!. (Temperature is reset. Set it before restarting)"
++	#define MSG_ERR_STOPPED "Printer stopped due to errors. Fix the error and use M999 to restart!. (Temperature is reset. Set it before restarting)"
+ 	#define MSG_RESEND "Resend:"
+ 	#define MSG_UNKNOWN_COMMAND "Unknown command:\""
+ 	#define MSG_ACTIVE_EXTRUDER "Active Extruder: "
+ 	#define MSG_INVALID_EXTRUDER "Invalid extruder"
+-	#define MSG_X_MIN "x_min:"
+-	#define MSG_X_MAX "x_max:"
+-	#define MSG_Y_MIN "y_min:"
+-	#define MSG_Y_MAX "y_max:"
+-	#define MSG_Z_MIN "z_min:"
+-	#define MSG_Z_MAX "z_max:"
++	#define MSG_X_MIN "x_min: "
++	#define MSG_X_MAX "x_max: "
++	#define MSG_Y_MIN "y_min: "
++	#define MSG_Y_MAX "y_max: "
++	#define MSG_Z_MIN "z_min: "
++	#define MSG_Z_MAX "z_max: "
++	#define MSG_M119_REPORT "Reporting endstop status"
++	#define MSG_ENDSTOP_HIT "TRIGGERED"
++	#define MSG_ENDSTOP_OPEN "open"
+ 
+ 	#define MSG_SD_CANT_OPEN_SUBDIR "Cannot open subdir"
+ 	#define MSG_SD_INIT_FAIL "SD init fail"
+@@ -178,84 +194,90 @@
+ 
+ // LCD Menu Messages
+ 
+-	#define WELCOME_MSG MACHINE_NAME " Ready."
++	#define WELCOME_MSG MACHINE_NAME " Bereit."
+ 
+-	#define MSG_SD_INSERTED "Card inserted"
+-	#define MSG_SD_REMOVED "Card removed"
+-	#define MSG_MAIN " Main \003"
+-	#define MSG_AUTOSTART " Autostart"
++	#define MSG_SD_INSERTED      "SDKarte erkannt"
++	#define MSG_SD_REMOVED       "SDKarte entfernt"
++	#define MSG_MAIN             " Hauptmneü \003"
++	#define MSG_AUTOSTART        " Autostart"
+ 	#define MSG_DISABLE_STEPPERS " Stepper abschalten"
+-	#define MSG_AUTO_HOME " Auto Heim"
+-	#define MSG_SET_ORIGIN " Position setzen"
+-	#define MSG_PREHEAT_PLA " Aufheizen PLA"
+-	#define MSG_PREHEAT_ABS " Aufheizen ABS"
+-	#define MSG_COOLDOWN " Abkuehlen"
+-	#define MSG_EXTRUDE " Extrude"
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+-	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+-	#define MSG_MOVE_AXIS " Achsen verfahren   \x7E"
+-	#define MSG_SPEED " Geschw:"
+-	#define MSG_NOZZLE " \002Duese:"
+-	#define MSG_NOZZLE1 " \002Duese2:"
+-	#define MSG_NOZZLE2 " \002Duese3:"
+-	#define MSG_BED " \002Bett:"
+-	#define MSG_FAN_SPEED " Luefter geschw.:"
+-	#define MSG_FLOW " Fluss:"
+-	#define MSG_CONTROL " Kontrolle \003"
+-	#define MSG_MIN " \002 Min:"
+-	#define MSG_MAX " \002 Max:"
+-	#define MSG_FACTOR " \002 Faktor:"
+-	#define MSG_AUTOTEMP " AutoTemp:"
+-	#define MSG_ON "Ein "
+-	#define MSG_OFF "Aus "
+-	#define MSG_PID_P " PID-P: "
+-	#define MSG_PID_I " PID-I: "
+-	#define MSG_PID_D " PID-D: "
+-	#define MSG_PID_C " PID-C: "
+-	#define MSG_ACC  " Acc:"
+-	#define MSG_VXY_JERK " Vxy-jerk: "
+-	#define MSG_VMAX " Vmax "
+-	#define MSG_X "x:"
+-	#define MSG_Y "y:"
+-	#define MSG_Z "z:"
+-	#define MSG_E "e:"
+-	#define MSG_VMIN " Vmin:"
+-	#define MSG_VTRAV_MIN " VTrav min:"
+-	#define MSG_AMAX " Amax "
+-	#define MSG_A_RETRACT " A-retract:"
+-	#define MSG_XSTEPS " Xsteps/mm:"
+-	#define MSG_YSTEPS " Ysteps/mm:"
+-	#define MSG_ZSTEPS " Zsteps/mm:"
+-	#define MSG_ESTEPS " Esteps/mm:"
+-	#define MSG_MAIN_WIDE " Main        \003"
+-	#define MSG_TEMPERATURE_WIDE " Temperatur \x7E"
+-	#define MSG_MOTION_WIDE " Motion      \x7E"
+-	#define MSG_STORE_EPROM " EPROM speichern"
+-	#define MSG_LOAD_EPROM "  EPROM laden"
+-	#define MSG_RESTORE_FAILSAFE " Standard Konfig."
+-	#define MSG_REFRESH "\004Refresh"
+-	#define MSG_WATCH " Beobachten   \003"
+-	#define MSG_PREPARE " Prepare \x7E"
+-	#define MSG_PREPARE_ALT " Prepare \003"
+-	#define MSG_CONTROL_ARROW " Control \x7E"
++	#define MSG_AUTO_HOME        " Auto Nullpunkt"
++	#define MSG_SET_ORIGIN       " Setze Nullpunkt"
++	#define MSG_PREHEAT_PLA      " Vorwärmen PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS " Vorwärmen PLA Einstellungen"
++	#define MSG_PREHEAT_ABS      " Vorwärmen ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS "  Vorwärmen ABS Einstellungen"
++	#define MSG_COOLDOWN         " Abkühlen"
++	#define MSG_EXTRUDE          " Extrude"
++	#define MSG_RETRACT          " Retract"
++	#define MSG_MOVE_AXIS        " Achsen bewegen\x7E"
++	#define MSG_SPEED            " Geschw:"
++	#define MSG_NOZZLE           " \002Düse:"
++	#define MSG_NOZZLE1          " \002Düse2:"
++	#define MSG_NOZZLE2          " \002Düse3:"
++	#define MSG_BED              " \002Bett:"
++	#define MSG_FAN_SPEED        " Lüftergeschw.:"
++	#define MSG_FLOW             " Fluß:"
++	#define MSG_CONTROL          " Einstellungen \003"
++	#define MSG_MIN              " \002 Min:"
++	#define MSG_MAX              " \002 Max:"
++	#define MSG_FACTOR           " \002 Faktor:"
++	#define MSG_AUTOTEMP         " AutoTemp:"
++	#define MSG_ON               "Ein "
++	#define MSG_OFF              "Aus "
++	#define MSG_PID_P            " PID-P: "
++	#define MSG_PID_I            " PID-I: "
++	#define MSG_PID_D            " PID-D: "
++	#define MSG_PID_C            " PID-C: "
++	#define MSG_ACC              " Acc:"
++	#define MSG_VXY_JERK         " Vxy-jerk: "
++	#define MSG_VMAX             " Vmax "
++	#define MSG_X                "x:"
++	#define MSG_Y                "y:"
++	#define MSG_Z                "z:"
++	#define MSG_E                "e:"
++	#define MSG_VMIN             " Vmin:"
++	#define MSG_VTRAV_MIN        " VTrav min:"
++	#define MSG_AMAX             " Amax "
++	#define MSG_A_RETRACT        " A-Retract:"
++	#define MSG_XSTEPS           " Xsteps/mm:"
++	#define MSG_YSTEPS           " Ysteps/mm:"
++	#define MSG_ZSTEPS           " Zsteps/mm:"
++	#define MSG_ESTEPS           " Esteps/mm:"
++	#define MSG_MAIN_WIDE        " Hauptmenü     \003"
++	#define MSG_RECTRACT_WIDE    " Rectract      \x7E"
++	#define MSG_WATCH            " Beobachten    \003"
++	#define MSG_TEMPERATURE_WIDE " Temperatur    \x7E"
++        #define MSG_TEMPERATURE_RTN  " Temperatur    \003"
++	#define MSG_MOTION_WIDE      " Bewegung      \x7E"
++	#define MSG_STORE_EPROM      " EPROM speichern"
++	#define MSG_LOAD_EPROM       " EPROM laden"
++	#define MSG_RESTORE_FAILSAFE " Standardkonfig."
++	#define MSG_REFRESH          "\004Aktualisieren"
++	#define MSG_PREPARE          " Vorbereitung  \x7E"
++	#define MSG_PREPARE_ALT      " Vorbereitung  \003"
++	#define MSG_CONTROL_ARROW    " Einstellungen \x7E"
++	#define MSG_TUNE             " Justierung    \x7E"
++	#define MSG_PAUSE_PRINT      " Druck anhalten\x7E"
++	#define MSG_RESUME_PRINT     " Druck fortsetz\x7E"
++	#define MSG_STOP_PRINT       " Druck stoppen \x7E"
++	#define MSG_CARD_MENU        " SDKarten Menü \x7E"
++	#define MSG_NO_CARD          " Keine SDKarte"
++	#define MSG_DWELL            "Warten..."		
++	#define MSG_USERWAIT         "Warte auf Nutzer..."
++	#define MSG_NO_MOVE          "Kein Zug."
++	#define MSG_PART_RELEASE     "Stepper tlw frei"
++	#define MSG_KILLED           "KILLED"
++	#define MSG_STOPPED          "GESTOPPT"
++	#define MSG_STEPPER_RELEASED "Stepper frei"
++        #define MSG_CONTROL_RETRACT  " Retract mm:"
++        #define MSG_CONTROL_RETRACTF " Retract  F:"
++        #define MSG_CONTROL_RETRACT_ZLIFT " Hop mm:"
++        #define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
++        #define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
++        #define MSG_AUTORETRACT      " AutoRetr.:"
++	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Fehler in Menüstruktur."
+ 	
+-	#define MSG_TUNE " Tune    \x7E"
+-	#define MSG_STOP_PRINT " Druck stoppen   \x7E"
+-	#define MSG_CARD_MENU " SDKarten Menue    \x7E"
+-	#define MSG_NO_CARD " Keine SDKarte"
+-	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Fehler in der  Menuestruktur."
+-	#define MSG_DWELL "DWELL..."		
+-	#define MSG_NO_MOVE "No move."
+-	#define MSG_PART_RELEASE "Partial Release"
+-	#define MSG_KILLED "KILLED. "
+-	#define MSG_STOPPED "STOPPED. "
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+-	#define MSG_STEPPER_RELEASED "Released."
+-	
+-
+-
+ // Serial Console Messages
+ 
+ 	#define MSG_Enqueing "enqueing \""
+@@ -294,12 +316,15 @@
+ 	#define MSG_UNKNOWN_COMMAND "Unknown command:\""
+ 	#define MSG_ACTIVE_EXTRUDER "Active Extruder: "
+ 	#define MSG_INVALID_EXTRUDER "Invalid extruder"
+-	#define MSG_X_MIN "x_min:"
+-	#define MSG_X_MAX "x_max:"
+-	#define MSG_Y_MIN "y_min:"
+-	#define MSG_Y_MAX "y_max:"
+-	#define MSG_Z_MIN "z_min:"
+-	#define MSG_Z_MAX "z_max:"
++	#define MSG_X_MIN "x_min: "
++	#define MSG_X_MAX "x_max: "
++	#define MSG_Y_MIN "y_min: "
++	#define MSG_Y_MAX "y_max: "
++	#define MSG_Z_MIN "z_min: "
++	#define MSG_Z_MAX "z_max: "
++	#define MSG_M119_REPORT "Reporting endstop status"
++	#define MSG_ENDSTOP_HIT "TRIGGERED"
++	#define MSG_ENDSTOP_OPEN "open"
+ 
+ 	#define MSG_SD_CANT_OPEN_SUBDIR "Cannot open subdir"
+ 	#define MSG_SD_INIT_FAIL "SD init fail"
+@@ -337,14 +362,17 @@
+ #define MSG_SET_ORIGIN " Establecer Cero"
+ #define MSG_COOLDOWN " Enfriar"
+ #define MSG_EXTRUDE " Extruir"
++#define MSG_RETRACT " Retraer"
+ #define MSG_PREHEAT_PLA " Precalentar PLA"
++#define MSG_PREHEAT_PLA_SETTINGS " Ajustar temp. PLA"
+ #define MSG_PREHEAT_ABS " Precalentar ABS"
++#define MSG_PREHEAT_ABS_SETTINGS " Ajustar temp. ABS"
+ #define MSG_MOVE_AXIS " Mover Ejes      \x7E"
+ #define MSG_SPEED " Velocidad:"
+ #define MSG_NOZZLE " \002Nozzle:"
+ #define MSG_NOZZLE1 " \002Nozzle2:"
+ #define MSG_NOZZLE2 " \002Nozzle3:"
+-#define MSG_BED " \002Bed:"
++#define MSG_BED " \002Base:"
+ #define MSG_FAN_SPEED " Ventilador:"
+ #define MSG_FLOW " Flujo:"
+ #define MSG_CONTROL " Control \003"
+@@ -376,6 +404,7 @@
+ #define MSG_MAIN_WIDE " Menu Principal  \003"
+ #define MSG_RECTRACT_WIDE " Retraer         \x7E"
+ #define MSG_TEMPERATURE_WIDE " Temperatura     \x7E"
++#define MSG_TEMPERATURE_RTN  " Temperatura     \003"
+ #define MSG_MOTION_WIDE " Movimiento      \x7E"
+ #define MSG_STORE_EPROM " Guardar Memoria"
+ #define MSG_LOAD_EPROM " Cargar Memoria"
+@@ -385,20 +414,19 @@
+ #define MSG_PREPARE " Preparar \x7E"
+ #define MSG_PREPARE_ALT " Preparar \003"
+ #define MSG_CONTROL_ARROW " Control  \x7E"
+-#define MSG_RETRACT_ARROW " Control  \x7E"
++#define MSG_RETRACT_ARROW " Retraer  \x7E"
+ #define MSG_TUNE " Ajustar \x7E"
++#define MSG_PAUSE_PRINT " Pausar Impresion \x7E"
++#define MSG_RESUME_PRINT " Reanudar Impresion \x7E"
+ #define MSG_STOP_PRINT " Detener Impresion \x7E"
+ #define MSG_CARD_MENU " Menu de SD    \x7E"
+ #define MSG_NO_CARD " No hay Tarjeta SD"
+-#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Hay un error en la estructura del menu"
+ #define MSG_DWELL "Reposo..."
+ #define MSG_USERWAIT "Esperando Ordenes..."
+ #define MSG_NO_MOVE "Sin movimiento"
+ #define MSG_PART_RELEASE "Desacople Parcial"
+ #define MSG_KILLED "PARADA DE EMERGENCIA. "
+ #define MSG_STOPPED "PARADA. "
+-#define MSG_PREHEAT_PLA " Precalentar PLA"
+-#define MSG_PREHEAT_ABS " Precalentar ABS"
+ #define MSG_STEPPER_RELEASED "Desacoplada."
+ #define MSG_CONTROL_RETRACT  " Retraer mm:"
+ #define MSG_CONTROL_RETRACTF " Retraer  F:"
+@@ -406,6 +434,7 @@
+ #define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+ #define MSG_CONTROL_RETRACT_RECOVERF " DesRet F:"
+ #define MSG_AUTORETRACT " AutoRetr.:"
++#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Hay un error en la estructura del menu"
+ 
+ // Serial Console Messages
+ 
+@@ -426,15 +455,15 @@
+ #define MSG_ERR_CHECKSUM_MISMATCH "el checksum no coincide, Ultima Linea:"
+ #define MSG_ERR_NO_CHECKSUM "No se pudo hallar el Checksum con el numero de linea, Ultima Linea:"
+ #define MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM "No se hallo el Numero de Linea con el Checksum, Ultima Linea:"
+-#define MSG_FILE_PRINTED "Impresion terminado"
++#define MSG_FILE_PRINTED "Impresion terminada"
+ #define MSG_BEGIN_FILE_LIST "Comienzo de la lista de archivos"
+ #define MSG_END_FILE_LIST "Fin de la lista de archivos"
+ #define MSG_M104_INVALID_EXTRUDER "M104 Extrusor Invalido "
+ #define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalido "
+ #define MSG_ERR_NO_THERMISTORS "No hay termistores - no temp"
+ #define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalido "
+-#define MSG_HEATING "Calientando..."
+-#define MSG_HEATING_COMPLETE "Calentamiento terminado."
++#define MSG_HEATING "Calentando..."
++#define MSG_HEATING_COMPLETE "Calentamiento Hecho."
+ #define MSG_BED_HEATING "Calentando la base."
+ #define MSG_BED_DONE "Base Caliente."
+ #define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) "\n"
+@@ -445,13 +474,15 @@
+ #define MSG_UNKNOWN_COMMAND "Comando Desconocido:\""
+ #define MSG_ACTIVE_EXTRUDER "Extrusor Activo: "
+ #define MSG_INVALID_EXTRUDER "Extrusor Invalido"
+-#define MSG_X_MIN "x_min:"
+-#define MSG_X_MAX "x_max:"
+-#define MSG_Y_MIN "y_min:"
+-#define MSG_Y_MAX "y_max:"
+-#define MSG_Z_MIN "z_min:"
+-#define MSG_Z_MAX "z_max:"
+-
++#define MSG_X_MIN "x_min: "
++#define MSG_X_MAX "x_max: "
++#define MSG_Y_MIN "y_min: "
++#define MSG_Y_MAX "y_max: "
++#define MSG_Z_MIN "z_min: "
++#define MSG_M119_REPORT "Comprobando fines de carrera."
++#define MSG_ENDSTOP_HIT "PULSADO"
++#define MSG_ENDSTOP_OPEN "abierto"
++        
+ #define MSG_SD_CANT_OPEN_SUBDIR "No se pudo abrir la subcarpeta."
+ #define MSG_SD_INIT_FAIL "Fallo al iniciar la SD"
+ #define MSG_SD_VOL_INIT_FAIL "Fallo al montar el volumen"
+@@ -466,7 +497,7 @@
+ #define MSG_SD_PRINTING_BYTE "SD imprimiendo el byte "
+ #define MSG_SD_NOT_PRINTING "No se esta imprimiendo con SD"
+ #define MSG_SD_ERR_WRITE_TO_FILE "Error al escribir en el archivo"
+-#define MSG_SD_CANT_ENTER_SUBDIR "No se puede entrar en la carpeta:"
++#define MSG_SD_CANT_ENTER_SUBDIR "No se puede abrir la carpeta:"
+ 
+ #define MSG_STEPPER_TO_HIGH "Steprate demasiado alto : "
+ #define MSG_ENDSTOPS_HIT "Se ha tocado el fin de carril: "
+@@ -474,4 +505,321 @@
+ #define MSG_ERR_LONG_EXTRUDE_STOP " extrusion demasiado larga evitada"
+ 
+ #endif
++
++#if LANGUAGE_CHOICE == 6
++
++// LCD Menu Messages
++#define WELCOME_MSG MACHINE_NAME			" Готов."
++#define MSG_SD_INSERTED						"Карта вставлена"
++#define MSG_SD_REMOVED						"Карта извлечена"
++#define MSG_MAIN							" Меню              \003"
++#define MSG_AUTOSTART						" Автостарт          "
++#define MSG_DISABLE_STEPPERS				" Выключить двигатели"
++#define MSG_AUTO_HOME						" Парковка           "
++#define MSG_SET_ORIGIN						" Запомнить ноль     "
++#define MSG_PREHEAT_PLA						" Преднагрев PLA     "
++#define MSG_PREHEAT_PLA_SETTINGS			" Настр. преднагр.PLA"
++#define MSG_PREHEAT_ABS						" Преднагрев ABS     "
++#define MSG_PREHEAT_ABS_SETTINGS			" Настр. преднагр.ABS"
++#define MSG_COOLDOWN						" Охлаждение         "
++#define MSG_EXTRUDE							" Экструзия          "
++#define MSG_RETRACT							" Откат"
++#define MSG_MOVE_AXIS						" Движение по осям  \x7E"
++#define MSG_SPEED							" Скорость:"
++#define MSG_NOZZLE							" \002 Фильера:"
++#define MSG_NOZZLE1							" \002 Фильера2:"
++#define MSG_NOZZLE2							" \002 Фильера3:"
++#define MSG_BED								" \002 Кровать:"
++#define MSG_FAN_SPEED						" Куллер:"
++#define MSG_FLOW							" Поток:"
++#define MSG_CONTROL							" Настройки \003"
++#define MSG_MIN								" \002 Минимум:"
++#define MSG_MAX								" \002 Максимум:"
++#define MSG_FACTOR							" \002 Фактор:"
++#define MSG_AUTOTEMP						" Autotemp:"
++#define MSG_ON								"Вкл. "
++#define MSG_OFF								"Выкл. "
++#define MSG_PID_P							" PID-P: "
++#define MSG_PID_I							" PID-I: "
++#define MSG_PID_D							" PID-D: "
++#define MSG_PID_C							" PID-C: "
++#define MSG_ACC								" Acc:"
++#define MSG_VXY_JERK						" Vxy-jerk: "
++#define MSG_VMAX							" Vmax "
++#define MSG_X								"x:"
++#define MSG_Y								"y:"
++#define MSG_Z								"z:"
++#define MSG_E								"e:"
++#define MSG_VMIN							" Vmin:"
++#define MSG_VTRAV_MIN						" VTrav min:"
++#define MSG_AMAX							" Amax "
++#define MSG_A_RETRACT						" A-retract:"
++#define MSG_XSTEPS							" X шаг/mm:"
++#define MSG_YSTEPS							" Y шаг/mm:"
++#define MSG_ZSTEPS							" Z шаг/mm:"
++#define MSG_ESTEPS							" E шаг/mm:"
++#define MSG_MAIN_WIDE						" Меню              \003"
++#define MSG_RECTRACT_WIDE					" Откат подачи      \x7E"
++#define MSG_TEMPERATURE_WIDE				" Температура       \x7E"
++#define MSG_TEMPERATURE_RTN					" Температура       \003"
++#define MSG_MOTION_WIDE						" Скорости          \x7E"
++#define MSG_STORE_EPROM						" Сохранить настройки"
++#define MSG_LOAD_EPROM						" Загрузить настройки"
++#define MSG_RESTORE_FAILSAFE				" Сброс настроек     "
++#define MSG_REFRESH							"\004Обновить           "
++#define MSG_WATCH							" Обзор             \003"
++#define MSG_PREPARE							" Действия          \x7E"
++#define MSG_PREPARE_ALT						" Действия          \003"
++#define MSG_CONTROL_ARROW					" Настройки         \x7E"
++#define MSG_RETRACT_ARROW					" Настройки отката  \x7E"
++#define MSG_TUNE							" Tune              \x7E"
++#define MSG_PAUSE_PRINT						" Пауза печати      \x7E"
++#define MSG_RESUME_PRINT					" Продолжить печать \x7E"
++#define MSG_STOP_PRINT						" Остановить печать \x7E"
++#define MSG_CARD_MENU						" Меню карты        \x7E"
++#define MSG_NO_CARD							" Нет карты"
++#define MSG_DWELL							"Сон..."
++#define MSG_USERWAIT						"Нажмите для продолж."
++#define MSG_NO_MOVE							"Нет движения.       "
++#define MSG_PART_RELEASE					" Извлечение принта  "
++#define MSG_KILLED							"УБИТО. "
++#define MSG_STOPPED							"ОСТАНОВЛЕНО. "
++#define MSG_STEPPER_RELEASED				"Двигатели отключены."
++#define MSG_CONTROL_RETRACT					" Откат mm:"
++#define MSG_CONTROL_RETRACTF				" Откат  F:"
++#define MSG_CONTROL_RETRACT_ZLIFT			" Прыжок mm:"
++#define MSG_CONTROL_RETRACT_RECOVER			" Возврат +mm:"
++#define MSG_CONTROL_RETRACT_RECOVERF		" Возврат  F:"
++#define MSG_AUTORETRACT						" АвтоОткат:"
++#define MSG_SERIAL_ERROR_MENU_STRUCTURE		"Ошибка в структуре меню."
++
++// Serial Console Messages
++
++#define MSG_Enqueing						"Запланировано \""
++#define MSG_POWERUP							"Включение питания"
++#define MSG_EXTERNAL_RESET					" Внешний сброс"
++#define MSG_BROWNOUT_RESET					" Brown out сброс"
++#define MSG_WATCHDOG_RESET					" Watchdog сброс"
++#define MSG_SOFTWARE_RESET					" программный сброс"
++#define MSG_MARLIN							"Marlin "
++#define MSG_AUTHOR							" | Автор: "
++#define MSG_CONFIGURATION_VER				" Последнее обновление: "
++#define MSG_FREE_MEMORY						" Памяти свободно: "
++#define MSG_PLANNER_BUFFER_BYTES			"  Буффер очереди команд Bytes: "
++#define MSG_OK								"ok"
++#define MSG_FILE_SAVED						"Файл записан."
++#define MSG_ERR_LINE_NO						"Номен строки это не последняя строка+1, последняя строка:"
++#define MSG_ERR_CHECKSUM_MISMATCH			"контрольная сумма не совпадает, последняя строка:"
++#define MSG_ERR_NO_CHECKSUM					"нет контрольной суммы для строки, последняя строка:"
++#define MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM	"нет строки для контрольной суммы, последняя строка:"
++#define MSG_FILE_PRINTED					"Печать файла завершена"
++#define MSG_BEGIN_FILE_LIST					"Список файлов"
++#define MSG_END_FILE_LIST					"Конец списка файлов"
++#define MSG_M104_INVALID_EXTRUDER			"M104 ошибка экструдера "
++#define MSG_M105_INVALID_EXTRUDER			"M105 ошибка экструдера "
++#define MSG_ERR_NO_THERMISTORS				"Нет термистра - нет температуры"
++#define MSG_M109_INVALID_EXTRUDER			"M109 ошибка экструдера "
++#define MSG_HEATING							"Нагрев...  "
++#define MSG_HEATING_COMPLETE				"Наргето.    "
++#define MSG_BED_HEATING						"Нагрев стола...     "
++#define MSG_BED_DONE						"Стол нагрет.        "
++#define MSG_M115_REPORT						"FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) "\n"
++#define MSG_COUNT_X							" Count X:"
++#define MSG_ERR_KILLED						"Принтер остановлен. вызов kill() !!"
++#define MSG_ERR_STOPPED						"Ошибка принтера, останов. Устраните неисправность и используйте M999 для перезагрузки!. (Температура недоступна. Проверьте датчики)"
++#define MSG_RESEND							"Переотправка:"
++#define MSG_UNKNOWN_COMMAND					"Неизвестная команда:\""
++#define MSG_ACTIVE_EXTRUDER					"Активный экструдер: "
++#define MSG_INVALID_EXTRUDER				"Ошибка экструдера"
++#define MSG_X_MIN							"x_min:"
++#define MSG_X_MAX							"x_max:"
++#define MSG_Y_MIN							"y_min:"
++#define MSG_Y_MAX							"y_max:"
++#define MSG_Z_MIN							"z_min:"
++#define MSG_Z_MAX							"z_max:"
++
++#define MSG_SD_CANT_OPEN_SUBDIR				"Не открыть папку"
++#define MSG_SD_INIT_FAIL					"Ошибка инициализации SD"
++#define MSG_SD_VOL_INIT_FAIL				"Ошибка инициализации раздела"
++#define MSG_SD_OPENROOT_FAIL				"Не прочесть содержимое корня"
++#define MSG_SD_CARD_OK						"SD карта в порядке"
++#define MSG_SD_WORKDIR_FAIL					"не открыть рабочую папку"
++#define MSG_SD_OPEN_FILE_FAIL				"Ошибка чтения, файл: "
++#define MSG_SD_FILE_OPENED					"Файл открыт:"
++#define MSG_SD_SIZE							" Размер:"
++#define MSG_SD_FILE_SELECTED				"Файл выбран"
++#define MSG_SD_WRITE_TO_FILE				"Запись в файл: "
++#define MSG_SD_PRINTING_BYTE				"SD печать byte "
++#define MSG_SD_NOT_PRINTING					"нет SD печати"
++#define MSG_SD_ERR_WRITE_TO_FILE			"ошибка записи в файл"
++#define MSG_SD_CANT_ENTER_SUBDIR			"Не зайти в папку:"
++
++#define MSG_STEPPER_TO_HIGH					"Частота шагов очень высока : "
++#define MSG_ENDSTOPS_HIT					"концевик сработал: "
++#define MSG_ERR_COLD_EXTRUDE_STOP			" защита холодной экструзии"
++#define MSG_ERR_LONG_EXTRUDE_STOP			" защита превышения длинны экструзии"
++#define MSG_M119_REPORT						"Статус концевиков"
++#define MSG_ENDSTOP_HIT						"Срабатывание концевика"
++#define MSG_ENDSTOP_OPEN					"Концевик освобожден"
++
++#endif
++
++#if LANGUAGE_CHOICE == 7
++
++	// LCD Menu Messages
++	#define WELCOME_MSG MACHINE_NAME " Pronto."
++	#define MSG_SD_INSERTED          "SD Card inserita"
++	#define MSG_SD_REMOVED           "SD Card rimossa"
++	#define MSG_MAIN                 " Menu principale \003"
++	#define MSG_AUTOSTART            " Autostart"
++	#define MSG_DISABLE_STEPPERS     " Disabilita Motori Passo-Passo"
++	#define MSG_AUTO_HOME            " Auto Home"
++	#define MSG_SET_ORIGIN           " Imposta Origini Assi"
++	#define MSG_PREHEAT_PLA          " Preriscalda PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS " Impostazioni Preriscaldamento PLA"
++	#define MSG_PREHEAT_ABS          " Preriscalda ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS " Impostazioni Preriscaldamento ABS"
++	#define MSG_COOLDOWN             " Rafredda"
++	#define MSG_EXTRUDE              " Estrudi"
++	#define MSG_RETRACT              " Ritrai"
++	#define MSG_MOVE_AXIS            " Muovi Asse      \x7E"
++	#define MSG_SPEED                " Velcità:"
++	#define MSG_NOZZLE               " \002Ugello:"
++	#define MSG_NOZZLE1              " \002Ugello2:"
++	#define MSG_NOZZLE2              " \002Ugello3:"
++	#define MSG_BED                  " \002Piatto:"
++	#define MSG_FAN_SPEED            " Velocità Ventola:"
++	#define MSG_FLOW                 " Flusso:"
++	#define MSG_CONTROL              " Controllo \003"
++	#define MSG_MIN                  " \002 Min:"
++	#define MSG_MAX                  " \002 Max:"
++	#define MSG_FACTOR               " \002 Fact:"
++	#define MSG_AUTOTEMP             " Autotemp:"
++	#define MSG_ON                   "On "
++	#define MSG_OFF                  "Off"
++	#define MSG_PID_P                " PID-P: "
++	#define MSG_PID_I                " PID-I: "
++	#define MSG_PID_D                " PID-D: "
++	#define MSG_PID_C                " PID-C: "
++	#define MSG_ACC                  " Acc:"
++	#define MSG_VXY_JERK             " Vxy-jerk: "
++	#define MSG_VMAX                 " Vmax "
++	#define MSG_X                    "x:"
++	#define MSG_Y                    "y:"
++	#define MSG_Z                    "z:"
++	#define MSG_E                    "e:"
++	#define MSG_VMIN                 " Vmin:"
++	#define MSG_VTRAV_MIN            " VTrav min:"
++	#define MSG_AMAX                 " Amax "
++	#define MSG_A_RETRACT            " A-ritrai:"
++	#define MSG_XSTEPS               " Xpassi/mm:"
++	#define MSG_YSTEPS               " Ypassi/mm:"
++	#define MSG_ZSTEPS               " Zpassi/mm:"
++	#define MSG_ESTEPS               " Epassi/mm:"
++	#define MSG_MAIN_WIDE            " Menu Principale        \003"
++	#define MSG_RECTRACT_WIDE        " Ritrai    \x7E"
++	#define MSG_TEMPERATURE_WIDE     " Temperatura \x7E"
++	#define MSG_TEMPERATURE_RTN      " Temperatura  \003"
++	#define MSG_MOTION_WIDE          " Movimento      \x7E"
++	#define MSG_STORE_EPROM          " Salva in memoria"
++	#define MSG_LOAD_EPROM           " Carica dalla memoria"
++	#define MSG_RESTORE_FAILSAFE     " Configurazioni di default"
++	#define MSG_REFRESH              "\004Aggiorna"
++	#define MSG_WATCH                " Guarda   \003"
++	#define MSG_PREPARE              " Prepara \x7E"
++	#define MSG_PREPARE_ALT          " Prepara \003"
++	#define MSG_CONTROL_ARROW        " Controllo \x7E"
++	#define MSG_RETRACT_ARROW        " Ritrai \x7E"
++	#define MSG_TUNE                 " Tune    \x7E"
++	#define MSG_PAUSE_PRINT          " Metti in Pausa la Stampa \x7E"
++	#define MSG_RESUME_PRINT         " Riprendi Stampa \x7E"
++	#define MSG_STOP_PRINT           " Arresta Stampa   \x7E"
++	#define MSG_CARD_MENU            " Card Menu    \x7E"
++	#define MSG_NO_CARD              " No Card"
++	#define MSG_DWELL                " Sospensione..."
++	#define MSG_USERWAIT             "Attendi utente..."
++	#define MSG_NO_MOVE              "Nessun movimento."
++	#define MSG_PART_RELEASE         "Rilascio Parziale"
++	#define MSG_KILLED               "UCCISO. "
++	#define MSG_STOPPED              "ARRESTATO. "
++	#define MSG_STEPPER_RELEASED     "Rilasciato."
++	#define MSG_CONTROL_RETRACT      " Ritrai mm:"
++	#define MSG_CONTROL_RETRACTF     " Ritrai  F:"
++	#define MSG_CONTROL_RETRACT_ZLIFT " Salta mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
++	#define MSG_AUTORETRACT          " AutoRilascio.:"
++	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Qualcosa non va in MenuStructure."
++
++	// Serial Console Messages
++
++	#define MSG_Enqueing             "accodamento \""
++	#define MSG_POWERUP              "Accensione"
++	#define MSG_EXTERNAL_RESET       " Reset Esterno"
++	#define MSG_BROWNOUT_RESET       " Brown out Reset"
++	#define MSG_WATCHDOG_RESET       " Watchdog Reset"
++	#define MSG_SOFTWARE_RESET       " Software Reset"
++	#define MSG_MARLIN               "Marlin "
++	#define MSG_AUTHOR               " | Autore: "
++	#define MSG_CONFIGURATION_VER    " Ultimo Aggiornamento: "
++	#define MSG_FREE_MEMORY          " Memoria Libera: "
++	#define MSG_PLANNER_BUFFER_BYTES "  PlannerBufferBytes: "
++	#define MSG_OK                   "ok"
++	#define MSG_FILE_SAVED           "File Salvato."
++	#define MSG_ERR_LINE_NO          "Il Numero della Linea non corrisponde al Numero dell'Ultima Linea+1, Ultima Linea:"
++	#define MSG_ERR_CHECKSUM_MISMATCH "checksum non corrispondente, Ultima Linea:"
++	#define MSG_ERR_NO_CHECKSUM      "Nessun Checksum con Numero di Linea, Ultima Linea:"
++	#define MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM "Nessun Numero di Linea con Checksum, Ultima Linea:"
++	#define MSG_FILE_PRINTED         "File stampato"
++	#define MSG_BEGIN_FILE_LIST      "Inizio Lista File"
++	#define MSG_END_FILE_LIST        "Fine Lista File"
++	#define MSG_M104_INVALID_EXTRUDER "M104 Estrusore non valido "
++	#define MSG_M105_INVALID_EXTRUDER "M105 Estrusore non valido "
++	#define MSG_ERR_NO_THERMISTORS   "Nessun Termistore - nessuna temperatura"
++	#define MSG_M109_INVALID_EXTRUDER "M109 Estrusore non valido "
++	#define MSG_HEATING              "Riscaldamento..."
++	#define MSG_HEATING_COMPLETE     "Riscaldamento concluso."
++	#define MSG_BED_HEATING          "Riscaldamento Piatto."
++	#define MSG_BED_DONE             "Piatto Pronto."
++	#define MSG_M115_REPORT          "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) "\n"
++	#define MSG_COUNT_X              " Calcola X:"
++	#define MSG_ERR_KILLED           "Stampante Calda. kill() chiamata !!"
++	#define MSG_ERR_STOPPED          "Stampante fermata a causa di errori. Risolvi l'errore e usa M999 per ripartire!. (Reset temperatura. Impostala prima di ripartire)"
++	#define MSG_RESEND               "Reinviato:"
++	#define MSG_UNKNOWN_COMMAND      "Comando sconosciuto:\""
++	#define MSG_ACTIVE_EXTRUDER      "Attiva Estrusore: "
++	#define MSG_INVALID_EXTRUDER     "Estrusore non valido"
++	#define MSG_X_MIN                "x_min: "
++	#define MSG_X_MAX                "x_max: "
++	#define MSG_Y_MIN                "y_min: "
++	#define MSG_Y_MAX                "y_max: "
++	#define MSG_Z_MIN                "z_min: "
++	#define MSG_Z_MAX                "z_max: "
++	#define MSG_M119_REPORT          "Segnalazione stato degli endstop"
++	#define MSG_ENDSTOP_HIT          "INNESCATO"
++	#define MSG_ENDSTOP_OPEN         "aperto"
++
++	#define MSG_SD_CANT_OPEN_SUBDIR  "Impossibile aprire sottocartella"
++	#define MSG_SD_INIT_FAIL         "Fallita Inizializzazione SD"
++	#define MSG_SD_VOL_INIT_FAIL     "Fallito il montaggio del Volume"
++	#define MSG_SD_OPENROOT_FAIL     "Fallita l'apertura Cartella Principale"
++	#define MSG_SD_CARD_OK           "SD card ok"
++	#define MSG_SD_WORKDIR_FAIL      "Fallita l'apertura Cartella di Lavoro"
++	#define MSG_SD_OPEN_FILE_FAIL    "Fallita l'apertura del File: "
++	#define MSG_SD_FILE_OPENED       "File aperto:"
++	#define MSG_SD_SIZE              " Dimensione:"
++	#define MSG_SD_FILE_SELECTED     "File selezionato"
++	#define MSG_SD_WRITE_TO_FILE     "Scrittura su file: "
++	#define MSG_SD_PRINTING_BYTE     "Si sta scrivendo il byte su SD "
++	#define MSG_SD_NOT_PRINTING      "Non si sta scrivendo su SD"
++	#define MSG_SD_ERR_WRITE_TO_FILE "Errore nella scrittura su file"
++	#define MSG_SD_CANT_ENTER_SUBDIR "Impossibile entrare nella sottocartella:"
++
++	#define MSG_STEPPER_TO_HIGH      "Steprate troppo alto : "
++	#define MSG_ENDSTOPS_HIT         "Raggiunto il fondo carrello: "
++	#define MSG_ERR_COLD_EXTRUDE_STOP " prevenuta estrusione fredda"
++	#define MSG_ERR_LONG_EXTRUDE_STOP " prevenuta estrusione troppo lunga"
++
++#endif
++
+ #endif // ifndef LANGUAGE_H
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index a6e157e..a807f2a 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -103,6 +103,7 @@
+ #define HEATER_2_PIN -1
+ #define HEATER_BED_PIN 3
+ 
++#define KILL_PIN -1
+ 
+ #define SDPOWER -1
+ #define SDSS -1 // SCL pin of I2C header
+@@ -274,6 +275,7 @@
+ 	#define SDCARDDETECT -1 		
+     #define SUICIDE_PIN -1						//has to be defined; otherwise Power_off doesn't work
+ 	
++    #define KILL_PIN -1
+ 	//Pins for 4bit LCD Support 
+     #define LCD_PINS_RS 18 
+     #define LCD_PINS_ENABLE 17
+@@ -611,6 +613,7 @@
+     #define LED_PIN         -1    //changed @ rkoeppl 20110410
+     #define FAN_PIN         -1    //changed @ rkoeppl 20110410
+     #define PS_ON_PIN       -1    //changed @ rkoeppl 20110410
++    #define KILL_PIN        -1    //changed @ drakelive 20120830
+     //our pin for debugging.
+     
+     #define DEBUG_PIN        0
+@@ -1197,6 +1200,109 @@
+ #endif
+ 
+ 
++/****************************************************************************************
++* MegaTronics
++*
++****************************************************************************************/
++#if MOTHERBOARD == 70
++#define KNOWN_BOARD 1
++
++//////////////////FIX THIS//////////////
++
++ #ifndef __AVR_ATmega2560__
++ #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
++ #endif
++
++
++
++
++#define X_STEP_PIN         26
++#define X_DIR_PIN          28
++#define X_ENABLE_PIN       24
++#define X_MIN_PIN          41
++#define X_MAX_PIN          37   //2 //Max endstops default to disabled "-1", set to commented value to enable.
++
++#define Y_STEP_PIN         60 // A6
++#define Y_DIR_PIN          61 // A7
++#define Y_ENABLE_PIN       22
++#define Y_MIN_PIN          14
++#define Y_MAX_PIN          15   //15
++
++#define Z_STEP_PIN         54 // A0
++#define Z_DIR_PIN          55 // A1
++#define Z_ENABLE_PIN       56 // A2
++#define Z_MIN_PIN          18
++#define Z_MAX_PIN          19
++
++#define E0_STEP_PIN        31
++#define E0_DIR_PIN         32
++#define E0_ENABLE_PIN      38
++
++#define E1_STEP_PIN        34
++#define E1_DIR_PIN         36
++#define E1_ENABLE_PIN      30
++
++#define SDPOWER            -1
++#define SDSS               53
++#define LED_PIN            13
++
++
++#define FAN_PIN            7 // IO pin. Buffer needed
++#define PS_ON_PIN          12
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN       9    // EXTRUDER 1
++#define HEATER_1_PIN       8    // EXTRUDER 2 (FAN On Sprinter)
++#define HEATER_2_PIN       -1  
++
++#if TEMP_SENSOR_0 == -1 
++#define TEMP_0_PIN         8   // ANALOG NUMBERING
++#else
++#define TEMP_0_PIN         13   // ANALOG NUMBERING
++
++#endif
++
++#define TEMP_1_PIN         15   // ANALOG NUMBERING
++#define TEMP_2_PIN         -1   // ANALOG NUMBERING
++#define HEATER_BED_PIN     10   // BED
++#define TEMP_BED_PIN       14   // ANALOG NUMBERING
++
++#define BEEPER 33			// Beeper on AUX-4
++
++
++#ifdef ULTRA_LCD
++
++  #ifdef NEWPANEL
++  //arduino pin which triggers an piezzo beeper
++    
++    #define LCD_PINS_RS 16 
++    #define LCD_PINS_ENABLE 17
++    #define LCD_PINS_D4 23
++    #define LCD_PINS_D5 25 
++    #define LCD_PINS_D6 27
++    #define LCD_PINS_D7 29
++    
++    //buttons are directly attached using AUX-2
++    #define BTN_EN1 37
++    #define BTN_EN2 35
++    #define BTN_ENC 43  //the click
++    
++    #define BLEN_C 2
++    #define BLEN_B 1
++    #define BLEN_A 0
++    
++    #define SDCARDDETECT -1		// Ramps does not use this port
++    
++      //encoder rotation values
++    #define encrot0 0
++    #define encrot1 2
++    #define encrot2 3
++    #define encrot3 1
++#endif
++#endif //ULTRA_LCD
++
++#endif
++
+ #ifndef KNOWN_BOARD
+ #error Unknown MOTHERBOARD value in configuration.h
+ #endif
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 93bd822..6c47e29 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -501,7 +501,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   // Rest here until there is room in the buffer.
+   while(block_buffer_tail == next_buffer_head) { 
+     manage_heater(); 
+-    manage_inactivity(1); 
++    manage_inactivity(); 
+     LCD_STATUS;
+   }
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index a222f15..d5c8164 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -899,7 +899,7 @@ void st_synchronize()
+ {
+     while( blocks_queued()) {
+     manage_heater();
+-    manage_inactivity(1);
++    manage_inactivity();
+     LCD_STATUS;
+   }
+ }
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 7671a65..e02b7b7 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -25,7 +25,7 @@
+ 
+ #if EXTRUDERS > 2
+   #define WRITE_E_STEP(v) { if(current_block->active_extruder == 2) { WRITE(E2_STEP_PIN, v); } else { if(current_block->active_extruder == 1) { WRITE(E1_STEP_PIN, v); } else { WRITE(E0_STEP_PIN, v); }}}
+-  #define NORM_E_DIR() { if(current_block->active_extruder == 2) { WRITE(!E2_DIR_PIN, INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { WRITE(!E1_DIR_PIN, INVERT_E1_DIR); } else { WRITE(E0_DIR_PIN, !INVERT_E0_DIR); }}}
++  #define NORM_E_DIR() { if(current_block->active_extruder == 2) { WRITE(E2_DIR_PIN, !INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { WRITE(E1_DIR_PIN, !INVERT_E1_DIR); } else { WRITE(E0_DIR_PIN, !INVERT_E0_DIR); }}}
+   #define REV_E_DIR() { if(current_block->active_extruder == 2) { WRITE(E2_DIR_PIN, INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { WRITE(E1_DIR_PIN, INVERT_E1_DIR); } else { WRITE(E0_DIR_PIN, INVERT_E0_DIR); }}}
+ #elif EXTRUDERS > 1
+   #define WRITE_E_STEP(v) { if(current_block->active_extruder == 1) { WRITE(E1_STEP_PIN, v); } else { WRITE(E0_STEP_PIN, v); }}
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 7307b24..66293c7 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -57,6 +57,15 @@ int current_raw_bed = 0;
+     float Kc=DEFAULT_Kc;
+   #endif
+ #endif //PIDTEMP
++
++#ifdef PIDTEMPBED
++  // used external
++  float pid_setpoint_bed = { 0.0 };
++  
++  float bedKp=DEFAULT_bedKp;
++  float bedKi=(DEFAULT_bedKi*PID_dT);
++  float bedKd=(DEFAULT_bedKd/PID_dT);
++#endif //PIDTEMPBED
+   
+   
+ //===========================================================================
+@@ -64,9 +73,6 @@ int current_raw_bed = 0;
+ //===========================================================================
+ static volatile bool temp_meas_ready = false;
+ 
+-static unsigned long  previous_millis_bed_heater;
+-//static unsigned long previous_millis_heater;
+-
+ #ifdef PIDTEMP
+   //static cannot be external:
+   static float temp_iState[EXTRUDERS] = { 0 };
+@@ -82,7 +88,22 @@ static unsigned long  previous_millis_bed_heater;
+   // static float pid_output[EXTRUDERS];
+   static bool pid_reset[EXTRUDERS];
+ #endif //PIDTEMP
++#ifdef PIDTEMPBED
++  //static cannot be external:
++  static float temp_iState_bed = { 0 };
++  static float temp_dState_bed = { 0 };
++  static float pTerm_bed;
++  static float iTerm_bed;
++  static float dTerm_bed;
++  //int output;
++  static float pid_error_bed;
++  static float temp_iState_min_bed;
++  static float temp_iState_max_bed;
++#else //PIDTEMPBED
++	static unsigned long  previous_millis_bed_heater;
++#endif //PIDTEMPBED
+   static unsigned char soft_pwm[EXTRUDERS];
++  static unsigned char soft_pwm_bed;
+   
+ #ifdef WATCHPERIOD
+   int watch_raw[EXTRUDERS] = { -1000 }; // the first value used for all
+@@ -122,7 +143,7 @@ static unsigned long  previous_millis_bed_heater;
+ //=============================   functions      ============================
+ //===========================================================================
+ 
+-void PID_autotune(float temp)
++void PID_autotune(float temp, int extruder, int ncycles)
+ {
+   float input;
+   int cycles=0;
+@@ -134,32 +155,55 @@ void PID_autotune(float temp)
+   long t_high;
+   long t_low;
+ 
+-  long bias=PID_MAX/2;
+-  long d = PID_MAX/2;
++  long bias, d;
+   float Ku, Tu;
+   float Kp, Ki, Kd;
+   float max, min;
+-  
++
++	if ((extruder > EXTRUDERS)
++  #if (TEMP_BED_PIN <= -1)
++		||(extruder < 0)
++	#endif
++	){
++  	SERIAL_ECHOLN("PID Autotune failed. Bad extruder number.");
++  	return;
++	}
++	
+   SERIAL_ECHOLN("PID Autotune start");
+   
+   disable_heater(); // switch off all heaters.
+-  
+-  soft_pwm[0] = PID_MAX/2;
+-    
+-  for(;;) {
++
++	if (extruder<0)
++	{
++	 	soft_pwm_bed = (MAX_BED_POWER)/2;
++		bias = d = (MAX_BED_POWER)/2;
++  }
++	else
++	{
++	  soft_pwm[extruder] = (PID_MAX)/2;
++		bias = d = (PID_MAX)/2;
++  }
++
++
++
++
++ for(;;) {
+ 
+     if(temp_meas_ready == true) { // temp sample ready
+       CRITICAL_SECTION_START;
+       temp_meas_ready = false;
+       CRITICAL_SECTION_END;
+-      input = analog2temp(current_raw[0], 0);
+-      
++      input = (extruder<0)?analog2tempBed(current_raw_bed):analog2temp(current_raw[extruder], extruder);
++
+       max=max(max,input);
+       min=min(min,input);
+       if(heating == true && input > temp) {
+         if(millis() - t2 > 5000) { 
+           heating=false;
+-          soft_pwm[0] = (bias - d) >> 1;
++					if (extruder<0)
++						soft_pwm_bed = (bias - d) >> 1;
++					else
++						soft_pwm[extruder] = (bias - d) >> 1;
+           t1=millis();
+           t_high=t1 - t2;
+           max=temp;
+@@ -172,8 +216,8 @@ void PID_autotune(float temp)
+           t_low=t2 - t1;
+           if(cycles > 0) {
+             bias += (d*(t_high - t_low))/(t_low + t_high);
+-            bias = constrain(bias, 20 ,PID_MAX-20);
+-            if(bias > PID_MAX/2) d = PID_MAX - 1 - bias;
++            bias = constrain(bias, 20 ,(extruder<0?(MAX_BED_POWER):(PID_MAX))-20);
++            if(bias > (extruder<0?(MAX_BED_POWER):(PID_MAX))/2) d = (extruder<0?(MAX_BED_POWER):(PID_MAX)) - 1 - bias;
+             else d = bias;
+ 
+             SERIAL_PROTOCOLPGM(" bias: "); SERIAL_PROTOCOL(bias);
+@@ -210,7 +254,10 @@ void PID_autotune(float temp)
+               */
+             }
+           }
+-          soft_pwm[0] = (bias + d) >> 1;
++					if (extruder<0)
++						soft_pwm_bed = (bias + d) >> 1;
++					else
++						soft_pwm[extruder] = (bias + d) >> 1;
+           cycles++;
+           min=temp;
+         }
+@@ -221,17 +268,26 @@ void PID_autotune(float temp)
+       return;
+     }
+     if(millis() - temp_millis > 2000) {
+-      temp_millis = millis();
+-      SERIAL_PROTOCOLPGM("ok T:");
+-      SERIAL_PROTOCOL(degHotend(0));   
++			int p;
++			if (extruder<0){
++	      p=soft_pwm_bed;       
++	      SERIAL_PROTOCOLPGM("ok B:");
++			}else{
++	      p=soft_pwm[extruder];       
++	      SERIAL_PROTOCOLPGM("ok T:");
++			}
++			
++      SERIAL_PROTOCOL(input);   
+       SERIAL_PROTOCOLPGM(" @:");
+-      SERIAL_PROTOCOLLN(getHeaterPower(0));       
++      SERIAL_PROTOCOLLN(p);       
++
++      temp_millis = millis();
+     }
+     if(((millis() - t1) + (millis() - t2)) > (10L*60L*1000L*2L)) {
+       SERIAL_PROTOCOLLNPGM("PID Autotune failed! timeout");
+       return;
+     }
+-    if(cycles > 5) {
++    if(cycles > ncycles) {
+       SERIAL_PROTOCOLLNPGM("PID Autotune finished ! Place the Kp, Ki and Kd constants in the configuration.h");
+       return;
+     }
+@@ -246,18 +302,19 @@ void updatePID()
+      temp_iState_max[e] = PID_INTEGRAL_DRIVE_MAX / Ki;  
+   }
+ #endif
++#ifdef PIDTEMPBED
++  temp_iState_max_bed = PID_INTEGRAL_DRIVE_MAX / bedKi;  
++#endif
+ }
+   
+ int getHeaterPower(int heater) {
++	if (heater<0)
++		return soft_pwm_bed;
+   return soft_pwm[heater];
+ }
+ 
+ void manage_heater()
+ {
+-#ifdef HEATER_BED_DUTY_CYCLE_DIVIDER
+-  static int bed_needs_heating=0;
+-  static int bed_is_on=0;
+-#endif
+ 
+   #ifdef USE_WATCHDOG
+     wd_reset();
+@@ -298,12 +355,16 @@ void manage_heater()
+           temp_iState[e] += pid_error[e];
+           temp_iState[e] = constrain(temp_iState[e], temp_iState_min[e], temp_iState_max[e]);
+           iTerm[e] = Ki * temp_iState[e];
++
+           //K1 defined in Configuration.h in the PID settings
+           #define K2 (1.0-K1)
+           dTerm[e] = (Kd * (pid_input - temp_dState[e]))*K2 + (K1 * dTerm[e]);
+           temp_dState[e] = pid_input;
++
+           pid_output = constrain(pTerm[e] + iTerm[e] - dTerm[e], 0, PID_MAX);
+         }
++    #else 
++          pid_output = constrain(pid_setpoint[e], 0, PID_MAX);
+     #endif //PID_OPENLOOP
+     #ifdef PID_DEBUG
+     SERIAL_ECHOLN(" PIDDEBUG "<<e<<": Input "<<pid_input<<" Output "<<pid_output" pTerm "<<pTerm[e]<<" iTerm "<<iTerm[e]<<" dTerm "<<dTerm[e]);  
+@@ -338,42 +399,58 @@ void manage_heater()
+     }
+   #endif
+   
+-#ifdef HEATER_BED_DUTY_CYCLE_DIVIDER
+-  if (bed_needs_heating){
+-    if (bed_is_on==0)
+-        WRITE(HEATER_BED_PIN,HIGH);
+-    if (bed_is_on==1)
+-        WRITE(HEATER_BED_PIN,LOW);
+-    bed_is_on=(bed_is_on+1) % HEATER_BED_DUTY_CYCLE_DIVIDER;
+-  }
+-#endif
+ 
++		#ifndef PIDTEMPBED
+   if(millis() - previous_millis_bed_heater < BED_CHECK_INTERVAL)
+     return;
+   previous_millis_bed_heater = millis();
+-  
++    #endif
++
+   #if TEMP_BED_PIN > -1
+   
+-    #ifdef HEATER_BED_DUTY_CYCLE_DIVIDER
+-    bed_needs_heating=0;
+-    #endif
++		#ifdef PIDTEMPBED
++    pid_input = analog2tempBed(current_raw_bed);
++
++    #ifndef PID_OPENLOOP
++		  pid_error_bed = pid_setpoint_bed - pid_input;
++		  pTerm_bed = bedKp * pid_error_bed;
++		  temp_iState_bed += pid_error_bed;
++		  temp_iState_bed = constrain(temp_iState_bed, temp_iState_min_bed, temp_iState_max_bed);
++		  iTerm_bed = bedKi * temp_iState_bed;
+ 
+-    #ifndef BED_LIMIT_SWITCHING
++		  //K1 defined in Configuration.h in the PID settings
++		  #define K2 (1.0-K1)
++		  dTerm_bed= (bedKd * (pid_input - temp_dState_bed))*K2 + (K1 * dTerm_bed);
++		  temp_dState_bed = pid_input;
++
++		  pid_output = constrain(pTerm_bed + iTerm_bed - dTerm_bed, 0, MAX_BED_POWER);
++
++    #else 
++      pid_output = constrain(pid_setpoint_bed, 0, MAX_BED_POWER);
++    #endif //PID_OPENLOOP
++
++	  if((current_raw_bed > bed_minttemp) && (current_raw_bed < bed_maxttemp)) 
++	  {
++	    soft_pwm_bed = (int)pid_output >> 1;
++	  }
++	  else {
++	    soft_pwm_bed = 0;
++	  }
++
++    #elif not defined BED_LIMIT_SWITCHING
+       // Check if temperature is within the correct range
+       if((current_raw_bed > bed_minttemp) && (current_raw_bed < bed_maxttemp)) {
+         if(current_raw_bed >= target_raw_bed)
+         {
+-          WRITE(HEATER_BED_PIN,LOW);
++					soft_pwm_bed = 0;
+         }
+         else 
+         {
+-          #ifdef HEATER_BED_DUTY_CYCLE_DIVIDER
+-          bed_needs_heating=1;
+-          #endif
+-          WRITE(HEATER_BED_PIN,HIGH);
++					soft_pwm_bed = MAX_BED_POWER>>1;
+         }
+       }
+       else {
++					soft_pwm_bed = 0;
+         WRITE(HEATER_BED_PIN,LOW);
+       }
+     #else //#ifdef BED_LIMIT_SWITCHING
+@@ -381,18 +458,16 @@ void manage_heater()
+       if((current_raw_bed > bed_minttemp) && (current_raw_bed < bed_maxttemp)) {
+         if(current_raw_bed > target_bed_high_temp)
+         {
+-          WRITE(HEATER_BED_PIN,LOW);
++					soft_pwm_bed = 0;
+         }
+         else 
+           if(current_raw_bed <= target_bed_low_temp)
+         {
+-          #ifdef HEATER_BED_DUTY_CYCLE_DIVIDER
+-          bed_needs_heating=1;
+-          #endif
+-          WRITE(HEATER_BED_PIN,HIGH);
++					soft_pwm_bed = MAX_BED_POWER>>1;
+         }
+       }
+       else {
++					soft_pwm_bed = 0;
+         WRITE(HEATER_BED_PIN,LOW);
+       }
+     #endif
+@@ -568,6 +643,10 @@ void tp_init()
+     temp_iState_min[e] = 0.0;
+     temp_iState_max[e] = PID_INTEGRAL_DRIVE_MAX / Ki;
+ #endif //PIDTEMP
++#ifdef PIDTEMPBED
++    temp_iState_min_bed = 0.0;
++    temp_iState_max_bed = PID_INTEGRAL_DRIVE_MAX / bedKi;
++#endif //PIDTEMPBED
+   }
+ 
+   #if (HEATER_0_PIN > -1) 
+@@ -728,6 +807,7 @@ void disable_heater()
+ 
+   #if TEMP_BED_PIN > -1
+     target_raw_bed=0;
++    soft_pwm_bed=0;
+     #if HEATER_BED_PIN > -1  
+       WRITE(HEATER_BED_PIN,LOW);
+     #endif
+@@ -832,6 +912,7 @@ ISR(TIMER0_COMPB_vect)
+   static unsigned char soft_pwm_0;
+   static unsigned char soft_pwm_1;
+   static unsigned char soft_pwm_2;
++  static unsigned char soft_pwm_b;
+   
+   if(pwm_count == 0){
+     soft_pwm_0 = soft_pwm[0];
+@@ -844,6 +925,10 @@ ISR(TIMER0_COMPB_vect)
+     soft_pwm_2 = soft_pwm[2];
+     if(soft_pwm_2 > 0) WRITE(HEATER_2_PIN,1);
+     #endif
++    #if HEATER_BED_PIN > -1
++    soft_pwm_b = soft_pwm_bed;
++    if(soft_pwm_b > 0) WRITE(HEATER_BED_PIN,1);
++    #endif
+   }
+   if(soft_pwm_0 <= pwm_count) WRITE(HEATER_0_PIN,0);
+   #if EXTRUDERS > 1
+@@ -852,6 +937,9 @@ ISR(TIMER0_COMPB_vect)
+   #if EXTRUDERS > 2
+   if(soft_pwm_2 <= pwm_count) WRITE(HEATER_2_PIN,0);
+   #endif
++  #if HEATER_BED_PIN > -1
++  if(soft_pwm_b <= pwm_count) WRITE(HEATER_BED_PIN,0);
++  #endif
+   
+   pwm_count++;
+   pwm_count &= 0x7f;
+@@ -885,6 +973,8 @@ ISR(TIMER0_COMPB_vect)
+       #if (TEMP_BED_PIN > -1)
+         #if TEMP_BED_PIN > 7
+           ADCSRB = 1<<MUX5;
++        #else
++          ADCSRB = 0;
+         #endif
+         ADMUX = ((1 << REFS0) | (TEMP_BED_PIN & 0x07));
+         ADCSRA |= 1<<ADSC; // Start conversion
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 1848c70..ae289de 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -46,11 +46,15 @@ extern int current_raw_bed;
+   extern int target_bed_low_temp ;  
+   extern int target_bed_high_temp ;
+ #endif
+-extern float Kp,Ki,Kd,Kc;
+ 
+ #ifdef PIDTEMP
++  extern float Kp,Ki,Kd,Kc;
+   extern float pid_setpoint[EXTRUDERS];
+ #endif
++#ifdef PIDTEMPBED
++  extern float bedKp,bedKi,bedKd;
++  extern float pid_setpoint_bed;
++#endif
+   
+ // #ifdef WATCHPERIOD
+   extern int watch_raw[EXTRUDERS] ;
+@@ -88,7 +92,9 @@ FORCE_INLINE void setTargetHotend(const float &celsius, uint8_t extruder) {
+ FORCE_INLINE void setTargetBed(const float &celsius) {  
+   
+   target_raw_bed = temp2analogBed(celsius);
+-  #ifdef BED_LIMIT_SWITCHING
++	#ifdef PIDTEMPBED
++  pid_setpoint_bed = celsius;
++  #elif defined BED_LIMIT_SWITCHING
+     if(celsius>BED_HYSTERESIS)
+     {
+     target_bed_low_temp= temp2analogBed(celsius-BED_HYSTERESIS);
+@@ -163,7 +169,7 @@ FORCE_INLINE void autotempShutdown(){
+  #endif
+ }
+ 
+-void PID_autotune(float temp);
++void PID_autotune(float temp, int extruder, int ncycles);
+ 
+ #endif
+-
++
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index 6cff329..941b239 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -419,7 +419,7 @@ const short temptable_52[][2] PROGMEM = {
+ // Verified by linagee. Source: http://shop.arcol.hu/static/datasheets/thermistors.pdf
+ // Calculated using 1kohm pullup, voltage divider math, and manufacturer provided temp/resistance
+ // Advantage: More resolution and better linearity from 150C to 200C
+-const short temptable_52[][2] PROGMEM = {
++const short temptable_55[][2] PROGMEM = {
+    {1*OVERSAMPLENR, 500},
+    {76*OVERSAMPLENR, 300},
+    {87*OVERSAMPLENR, 290},
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index dc44d1c..fbc12e9 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -2,7 +2,12 @@
+ #define ULTRALCD_H
+ #include "Marlin.h"
+ #ifdef ULTRA_LCD
+-  #include <LiquidCrystal.h>
++#include "language.h"
++#if LANGUAGE_CHOICE == 6
++#include "LiquidCrystalRus.h"
++#else
++#include <LiquidCrystal.h>
++#endif
+   void lcd_status();
+   void lcd_init();
+   void lcd_status(const char* message);
+@@ -12,7 +17,11 @@
+ 
+   #define LCD_UPDATE_INTERVAL 100
+   #define STATUSTIMEOUT 15000
++#if LANGUAGE_CHOICE == 6
++  extern LiquidCrystalRus lcd;
++#else
+   extern LiquidCrystal lcd;
++#endif
+   extern volatile char buttons;  //the last checked buttons in a bit array.
+   
+   #ifdef NEWPANEL
+@@ -46,12 +55,14 @@
+     #define BLOCK {blocking[BL_MI]=millis()+blocktime;blocking[BL_ST]=millis()+blocktime;}
+     
+   #endif
++
++
+     
+   // blocking time for recognizing a new keypress of one key, ms
+   #define blocktime 500
+   #define lcdslow 5
+     
+-  enum MainStatus{Main_Status, Main_Menu, Main_Prepare,Sub_PrepareMove, Main_Control, Main_SD,Sub_TempControl,Sub_MotionControl,Sub_RetractControl};
++  enum MainStatus{Main_Status, Main_Menu, Main_Prepare,Sub_PrepareMove, Main_Control, Main_SD,Sub_TempControl,Sub_MotionControl,Sub_RetractControl, Sub_PreheatPLASettings, Sub_PreheatABSSettings};
+ 
+   class MainMenu{
+   public:
+@@ -71,6 +82,8 @@
+     void showControlRetract();
+     void showAxisMove();
+     void showSD();
++	void showPLAsettings();
++	void showABSsettings();
+     bool force_lcd_update;
+     long lastencoderpos;
+     int8_t lineoffset;
+@@ -140,12 +153,14 @@
+   #define LCD_INIT lcd_init();
+   #define LCD_MESSAGE(x) lcd_status(x);
+   #define LCD_MESSAGEPGM(x) lcd_statuspgm(MYPGM(x));
++  #define LCD_ALERTMESSAGEPGM(x) lcd_alertstatuspgm(MYPGM(x));
+   #define LCD_STATUS lcd_status()
+ #else //no lcd
+   #define LCD_INIT
+   #define LCD_STATUS
+   #define LCD_MESSAGE(x)
+   #define LCD_MESSAGEPGM(x)
++  #define LCD_ALERTMESSAGEPGM(x)
+   FORCE_INLINE void lcd_status() {};
+ 
+   #define CLICKED false
+@@ -153,6 +168,7 @@
+ #endif 
+   
+ void lcd_statuspgm(const char* message);
++void lcd_alertstatuspgm(const char* message);
+   
+ char *ftostr3(const float &x);
+ char *itostr2(const uint8_t &x);
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 9be357c..8a6b846 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -6,7 +6,11 @@
+ #include "language.h"
+ #include "temperature.h"
+ #include "EEPROMwrite.h"
++#if LANGUAGE_CHOICE == 6
++#include "LiquidCrystalRus.h"
++#else
+ #include <LiquidCrystal.h>
++#endif
+ //===========================================================================
+ //=============================imported variables============================
+ //===========================================================================
+@@ -38,7 +42,11 @@ static char messagetext[LCD_WIDTH]="";
+ //return for string conversion routines
+ static char conv[8];
+ 
++#if LANGUAGE_CHOICE == 6
++LiquidCrystalRus lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7
++#else
+ LiquidCrystal lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7 
++#endif
+ 
+ static unsigned long previous_millis_lcd=0;
+ //static long previous_millis_buttons=0;
+@@ -92,6 +100,12 @@ void lcd_statuspgm(const char* message)
+   *target=0;
+ }
+ 
++void lcd_alertstatuspgm(const char* message)
++{
++  lcd_statuspgm(message); 
++  menu.showStatus(); 
++}
++
+ FORCE_INLINE void clear()
+ {
+   lcd.clear();
+@@ -127,9 +141,36 @@ void lcd_init()
+     B10001,
+     B01110
+   };
+-  byte uplevel[8]={0x04, 0x0e, 0x1f, 0x04, 0x1c, 0x00, 0x00, 0x00};//thanks joris
+-  byte refresh[8]={0x00, 0x06, 0x19, 0x18, 0x03, 0x13, 0x0c, 0x00}; //thanks joris
+-  byte folder [8]={0x00, 0x1c, 0x1f, 0x11, 0x11, 0x1f, 0x00, 0x00}; //thanks joris
++  byte uplevel[8]={
++    B00100,
++    B01110,
++    B11111,
++    B00100,
++    B11100,
++    B00000,
++    B00000,
++    B00000
++  }; //thanks joris
++  byte refresh[8]={
++    B00000,
++    B00110,
++    B11001,
++    B11000,
++    B00011,
++    B10011,
++    B01100,
++    B00000,
++  }; //thanks joris
++  byte folder [8]={
++    B00000,
++    B11100,
++    B11111,
++    B10001,
++    B10001,
++    B11111,
++    B00000,
++    B00000
++  }; //thanks joris
+   lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+   lcd.createChar(1,Degree);
+   lcd.createChar(2,Thermometer);
+@@ -325,11 +366,11 @@ void MainMenu::showStatus()
+   {
+     encoderpos=feedmultiply;
+     clear();
+-    lcd.setCursor(0,0);lcdprintPGM("\002---/---\001 ");
++    lcd.setCursor(0,0);lcdprintPGM("\002000/000\001 ");
+     #if defined BED_USES_THERMISTOR || defined BED_USES_AD595 
+-      lcd.setCursor(10,0);lcdprintPGM("B---/---\001 ");
++      lcd.setCursor(10,0);lcdprintPGM("B000/000\001 ");
+     #elif EXTRUDERS > 1
+-      lcd.setCursor(10,0);lcdprintPGM("\002---/---\001 ");
++      lcd.setCursor(10,0);lcdprintPGM("\002000/000\001 ");
+     #endif
+   }
+     
+@@ -528,16 +569,18 @@ void MainMenu::showPrepare()
+       MENUITEM(  lcdprintPGM(MSG_SET_ORIGIN)  ,  BLOCK;enquecommand("G92 X0 Y0 Z0");beepshort(); ) ;
+       break;
+     case ItemP_preheat_pla:
+-      MENUITEM(  lcdprintPGM(MSG_PREHEAT_PLA)  ,  BLOCK;setTargetHotend0(PLA_PREHEAT_HOTEND_TEMP);setTargetBed(PLA_PREHEAT_HPB_TEMP);
++		MENUITEM(  lcdprintPGM(MSG_PREHEAT_PLA)  ,  BLOCK;setTargetHotend0(plaPreheatHotendTemp);setTargetBed(plaPreheatHPBTemp);
+       #if FAN_PIN > -1
+-        analogWrite(FAN_PIN, PLA_PREHEAT_FAN_SPEED);
++		FanSpeed = plaPreheatFanSpeed;
++        analogWrite(FAN_PIN,  FanSpeed);
+       #endif
+       beepshort(); );
+       break;
+     case ItemP_preheat_abs:
+-      MENUITEM(  lcdprintPGM(MSG_PREHEAT_ABS)  ,  BLOCK;setTargetHotend0(ABS_PREHEAT_HOTEND_TEMP);setTargetBed(ABS_PREHEAT_HPB_TEMP); 
++      MENUITEM(  lcdprintPGM(MSG_PREHEAT_ABS)  ,  BLOCK;setTargetHotend0(absPreheatHotendTemp);setTargetBed(absPreheatHPBTemp); 
+       #if FAN_PIN > -1
+-        analogWrite(FAN_PIN, ABS_PREHEAT_FAN_SPEED);
++	  	FanSpeed = absPreheatFanSpeed;
++        analogWrite(FAN_PIN,  FanSpeed);
+       #endif
+       beepshort(); );
+       break;
+@@ -787,7 +830,7 @@ void MainMenu::showTune()
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_NOZZLE);
+           lcd.setCursor(13,line);lcd.print(ftostr3(intround(degTargetHotend0())));
+-        }
++        } 
+         
+         if((activeline!=line) )
+           break;
+@@ -965,7 +1008,9 @@ enum {
+ ItemCT_bed,
+ #endif  
+   ItemCT_fan,
+-  ItemCT_PID_P,ItemCT_PID_I,ItemCT_PID_D,ItemCT_PID_C
++  ItemCT_PID_P,ItemCT_PID_I,ItemCT_PID_D,ItemCT_PID_C,
++  ItemCT_PLA_PreHeat_Setting, 
++  ItemCT_ABS_PreHeat_Setting,
+ };
+ 
+ void MainMenu::showControlTemp()
+@@ -1432,16 +1477,19 @@ void MainMenu::showControlTemp()
+       #endif
+     #endif
+       break;
++	  case ItemCT_PLA_PreHeat_Setting:
++        MENUITEM(  lcdprintPGM(MSG_PREHEAT_PLA_SETTINGS)  ,  BLOCK;status=Sub_PreheatPLASettings;beepshort(); ) ;
++	  break;
++	  case ItemCT_ABS_PreHeat_Setting:
++        MENUITEM(  lcdprintPGM(MSG_PREHEAT_ABS_SETTINGS)  ,  BLOCK;status=Sub_PreheatABSSettings;beepshort(); ) ;
++	  break;
+     default:   
+       break;
+   }
+   line++;
+  }
+- #ifdef PID_ADD_EXTRUSION_RATE
+-  updateActiveLines(ItemCT_PID_C,encoderpos);
+- #else
+-  updateActiveLines(ItemCT_PID_D,encoderpos);
+- #endif
++
++  updateActiveLines(ItemCT_ABS_PreHeat_Setting,encoderpos);
+ }
+ 
+ 
+@@ -1809,7 +1857,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_ZSTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[Z_AXIS]));
++          lcd.setCursor(11,line);lcd.print(ftostr51(axis_steps_per_unit[Z_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -1848,7 +1896,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_ESTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[E_AXIS]));
++          lcd.setCursor(11,line);lcd.print(ftostr51(axis_steps_per_unit[E_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -2297,7 +2345,15 @@ void MainMenu::showSD()
+           //Serial.print("Filenr:");Serial.println(i-2);
+           lcd.setCursor(0,line);lcdprintPGM(" ");
+           if(card.filenameIsDir) lcd.print("\005");
+-          lcd.print(card.filename);
++          if (card.longFilename[0])
++          {
++            card.longFilename[LCD_WIDTH-1] = '\0';
++            lcd.print(card.longFilename);
++          }
++          else
++          {
++            lcd.print(card.filename);
++          }
+         }
+         if((activeline==line) && CLICKED)
+         {
+@@ -2322,7 +2378,15 @@ void MainMenu::showSD()
+             enquecommand("M24");
+             beep(); 
+             status=Main_Status;
+-            lcd_status(card.filename);
++            if (card.longFilename[0])
++            {
++              card.longFilename[LCD_WIDTH-1] = '\0';
++              lcd_status(card.longFilename);
++            }
++            else
++            {
++              lcd_status(card.filename);
++            }
+           }
+         } 
+       }
+@@ -2567,6 +2631,14 @@ void MainMenu::update()
+       {
+         showSD();
+       }break;
++	  case Sub_PreheatPLASettings: 
++      {
++        showPLAsettings();
++      }break;
++	  case Sub_PreheatABSSettings: 
++      {
++        showABSsettings();
++      }break;
+   }
+   
+   if(timeoutToStatus<millis())
+@@ -2575,11 +2647,299 @@ void MainMenu::update()
+   lastencoderpos=encoderpos;
+ }
+ 
++enum {
++	ItemPLAPreHeat_Exit, 
++	ItemPLAPreHeat_set_PLA_FanSpeed, 
++	ItemPLAPreHeat_set_nozzle, 
++	ItemPLAPreHeat_set_HPB,
++	ItemPLAPreHeat_Store_Eprom
++	};
++  
++void MainMenu::showPLAsettings()
++{
++#ifdef ULTIPANEL
++ uint8_t line=0;
++ clearIfNecessary();
++ for(int8_t i=lineoffset;i<lineoffset+LCD_HEIGHT;i++)
++ {
++  switch(i)
++  {
+ 
++	case ItemPLAPreHeat_Exit:
++      MENUITEM(  lcdprintPGM(MSG_TEMPERATURE_RTN)  ,  BLOCK;status=Sub_TempControl;beepshort(); ) ;
++      break;
+ 
++    case ItemPLAPreHeat_set_PLA_FanSpeed:
++       {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_FAN_SPEED);
++          lcd.setCursor(13,line);lcd.print(ftostr3(plaPreheatFanSpeed));
++        }
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED) 
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++			  encoderpos=plaPreheatFanSpeed;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>255) encoderpos=255;
++          plaPreheatFanSpeed=encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
+ 
++    case ItemPLAPreHeat_set_nozzle:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_NOZZLE);
++          lcd.setCursor(13,line);lcd.print(ftostr3(plaPreheatHotendTemp));
++        } 
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=plaPreheatHotendTemp;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++		  plaPreheatHotendTemp = encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
+ 
++    case ItemPLAPreHeat_set_HPB:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_BED);
++          lcd.setCursor(13,line);lcd.print(ftostr3(plaPreheatHPBTemp));
++        } 
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=plaPreheatHPBTemp;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>250) encoderpos=150;
++		  plaPreheatHPBTemp = encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
++	case ItemPLAPreHeat_Store_Eprom:
++    {
++      if(force_lcd_update)
++      {
++        lcd.setCursor(0,line);lcdprintPGM(MSG_STORE_EPROM);
++      }
++      if((activeline==line) && CLICKED)
++      {
++        //enquecommand("M84");
++        beepshort();
++        BLOCK;
++        EEPROM_StoreSettings();
++      }
++    }break;
++      default:   
++      break;
++  }
++  line++;
++ }
++ updateActiveLines(ItemPLAPreHeat_Store_Eprom,encoderpos);
++#endif
++}
++
++enum {
++	ItemABSPreHeat_Exit, 
++	ItemABSPreHeat_set_FanSpeed, 
++	ItemABSPreHeat_set_nozzle, 
++	ItemABSPreHeat_set_HPB,
++	ItemABSPreHeat_Store_Eprom
++	};
++
++void MainMenu::showABSsettings()
++{
++#ifdef ULTIPANEL
++ uint8_t line=0;
++ clearIfNecessary();
++ for(int8_t i=lineoffset;i<lineoffset+LCD_HEIGHT;i++)
++ {
++  switch(i)
++  {
++
++	case ItemABSPreHeat_Exit:
++      MENUITEM(  lcdprintPGM(MSG_TEMPERATURE_RTN)  ,  BLOCK;status=Sub_TempControl;beepshort(); ) ;
++      break;
++
++    case ItemABSPreHeat_set_FanSpeed:
++       {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_FAN_SPEED);
++          lcd.setCursor(13,line);lcd.print(ftostr3(absPreheatFanSpeed));
++        }
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED) 
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++			  encoderpos=absPreheatFanSpeed;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>255) encoderpos=255;
++          absPreheatFanSpeed=encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
+ 
++    case ItemABSPreHeat_set_nozzle:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_NOZZLE);
++          lcd.setCursor(13,line);lcd.print(ftostr3(absPreheatHotendTemp));
++        } 
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=absPreheatHotendTemp;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++		  absPreheatHotendTemp = encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
++
++    case ItemABSPreHeat_set_HPB:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_BED);
++          lcd.setCursor(13,line);lcd.print(ftostr3(absPreheatHPBTemp));
++        } 
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=absPreheatHPBTemp;
++          }
++          else
++          {
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>250) encoderpos=150;
++		  absPreheatHPBTemp = encoderpos;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++      }break;
++	case ItemABSPreHeat_Store_Eprom:
++    {
++      if(force_lcd_update)
++      {
++        lcd.setCursor(0,line);lcdprintPGM(MSG_STORE_EPROM);
++      }
++      if((activeline==line) && CLICKED)
++      {
++        //enquecommand("M84");
++        beepshort();
++        BLOCK;
++        EEPROM_StoreSettings();
++      }
++    }break;
++      default:   
++      break;
++  }
++  line++;
++ }
++ updateActiveLines(ItemABSPreHeat_Store_Eprom,encoderpos);
++#endif
++}
++
++//**********************************************************************************************************
+ //  convert float to string with +123.4 format
+ char *ftostr3(const float &x)
+ {
+@@ -2619,7 +2979,7 @@ char *ftostr31(const float &x)
+ 
+ char *ftostr32(const float &x)
+ {
+-  int xx=x*100;
++  long xx=x*100;
+   conv[0]=(xx>=0)?'+':'-';
+   xx=abs(xx);
+   conv[1]=(xx/100)%10+'0';
+@@ -2664,7 +3024,7 @@ char *itostr4(const int &xx)
+ //  convert float to string with +1234.5 format
+ char *ftostr51(const float &x)
+ {
+-  int xx=x*10;
++  long xx=x*10;
+   conv[0]=(xx>=0)?'+':'-';
+   xx=abs(xx);
+   conv[1]=(xx/10000)%10+'0';
+@@ -2680,7 +3040,7 @@ char *ftostr51(const float &x)
+ //  convert float to string with +123.45 format
+ char *ftostr52(const float &x)
+ {
+-  int xx=x*100;
++  long xx=x*100;
+   conv[0]=(xx>=0)?'+':'-';
+   xx=abs(xx);
+   conv[1]=(xx/10000)%10+'0';
+
+commit a4f9e1ebf2ebbc98acbdfce6f85d794d735fa5ca (from a7e40b2903004c22cb2301f64e1d1b7a4e45c89f)
+Merge: 2873d67 a7e40b2
+Author: Bracken Dawson <abdawson@gmail.com>
+Date:   Fri Oct 26 22:20:35 2012 +0100
+
+    Merge git://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index b3d16b6..a807f2a 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -45,16 +45,11 @@
+ #endif /* 99 */
+ 
+ /****************************************************************************************
+-* Gen7 v1.1, v1.2, v1.3, v1.4 pin assignment
++* Gen7 v1.1, v1.2, v1.3 pin assignment
+ *
+ ****************************************************************************************/
+ 
+ 
+-#if MOTHERBOARD == 13
+-#define MOTHERBOARD 11
+-#define GEN7_VERSION 14 // v1.4
+-#endif
+-
+ #if MOTHERBOARD == 12
+ #define MOTHERBOARD 11
+ #define GEN7_VERSION 13 // v1.3
+@@ -122,12 +117,85 @@
+ #endif
+ #define PS_ON_PIN 15
+ 
+-#if (GEN7_VERSION < 14)
+-// Gen 1.3 and earlier supplied thermistor power via PS_ON
+-// Need to ignore the bad thermistor readings on those units
++//All these generations of Gen7 supply thermistor power
++//via PS_ON, so ignore bad thermistor readings
+ #define BOGUS_TEMPERATURE_FAILSAFE_OVERRIDE
++
++//our pin for debugging.
++#define DEBUG_PIN 0
++
++//our RS485 pins
++#define TX_ENABLE_PIN 12
++#define RX_ENABLE_PIN 13
++
++#endif
++
++/****************************************************************************************
++* Gen7 v1.4 pin assignment
++*
++****************************************************************************************/
++
++#if MOTHERBOARD == 13
++#define GEN7_VERSION 14 // v1.4
+ #endif
+ 
++#if MOTHERBOARD == 13
++#define KNOWN_BOARD
++
++#if !defined(__AVR_ATmega644P__) && !defined(__AVR_ATmega644__) && !defined(__AVR_ATmega1284P__)
++#error Oops! Make sure you have 'Gen7' selected from the 'Tools -> Boards' menu.
++
++#endif
++
++#ifndef GEN7_VERSION
++#define GEN7_VERSION 14 // v1.x
++#endif
++
++//x axis pins
++#define X_STEP_PIN 29
++#define X_DIR_PIN 28
++#define X_ENABLE_PIN 25
++#define X_MIN_PIN 0
++#define X_MAX_PIN -1
++
++//y axis pins
++#define Y_STEP_PIN 27
++#define Y_DIR_PIN 26
++#define Y_ENABLE_PIN 25
++#define Y_MIN_PIN 1
++#define Y_MAX_PIN -1
++
++//z axis pins
++#define Z_STEP_PIN 23
++#define Z_DIR_PIN 22
++#define Z_ENABLE_PIN 25
++#define Z_MIN_PIN 2
++#define Z_MAX_PIN -1
++
++//extruder pins
++#define E0_STEP_PIN 19
++#define E0_DIR_PIN 18
++#define E0_ENABLE_PIN 25
++
++#define TEMP_0_PIN 0
++#define TEMP_1_PIN -1
++#define TEMP_2_PIN -1
++#define TEMP_BED_PIN 1
++
++#define HEATER_0_PIN 4
++#define HEATER_1_PIN -1
++#define HEATER_2_PIN -1
++#define HEATER_BED_PIN 3
++
++
++#define SDPOWER -1
++#define SDSS -1 // SCL pin of I2C header
++#define LED_PIN -1
++
++#define FAN_PIN -1
++
++#define PS_ON_PIN 15
++
+ //our pin for debugging.
+ #define DEBUG_PIN 0
+ 
+

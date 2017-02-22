@@ -1,0 +1,573 @@
+commit 7b1e295f342e764731a956b94995cdfc1fbea526 (from c077316b2b9bd46c532b7209bf234a5901cf0680)
+Merge: c077316 f309549
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Thu Mar 8 21:48:06 2012 +0100
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index bdcb22a..f7a8c28 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -943,6 +943,7 @@ void process_commands()
+             codenum = millis(); 
+           }
+           manage_heater();
++          LCD_STATUS;
+         }
+         LCD_MESSAGEPGM(MSG_BED_DONE);
+         previous_millis_cmd = millis();
+
+commit 7b1e295f342e764731a956b94995cdfc1fbea526 (from f3095493b06d52a33ae77a0b8c1f92a22633261a)
+Merge: c077316 f309549
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Thu Mar 8 21:48:06 2012 +0100
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 0a5d5a2..f7a8c28 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -109,6 +109,7 @@
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).  
+ // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+ // M503 - print the current settings (from memory not from eeprom)
++// M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+ 
+ //Stepper Movement Variables
+ 
+@@ -1198,6 +1199,13 @@ void process_commands()
+       allow_cold_extrudes(true);
+     }
+     break;
++    case 303: // M303 PID autotune
++    {
++      float temp = 150.0;
++      if (code_seen('S')) temp=code_value();
++      PID_autotune(temp);
++    }
++    break;
+     case 400: // finish all moves
+     {
+       st_synchronize();
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index e1f9b84..bf0ce3e 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -734,7 +734,7 @@
+     #define encrot2 3
+     #define encrot3 1
+ 
+-    
++    #define SDCARDDETECT -1
+     //bits in the shift register that carry the buttons for:
+     // left up center down right red
+     #define BL_LE 7
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 77f9491..da945ad 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -62,7 +62,7 @@ int current_raw_bed = 0;
+ //===========================================================================
+ //=============================private variables============================
+ //===========================================================================
+-static bool temp_meas_ready = false;
++static volatile bool temp_meas_ready = false;
+ 
+ static unsigned long  previous_millis_bed_heater;
+ //static unsigned long previous_millis_heater;
+@@ -132,7 +132,94 @@ static unsigned long  previous_millis_bed_heater;
+ //===========================================================================
+ //=============================   functions      ============================
+ //===========================================================================
++
++void PID_autotune(float temp)
++{
++  float input;
++  int cycles=0;
++  bool heating = true;
++  soft_pwm[0] = 255>>1;
++
++  unsigned long temp_millis = millis();
++  unsigned long t1=temp_millis;
++  unsigned long t2=temp_millis;
++  long t_high;
++  long t_low;
++
++  long bias=127;
++  long d = 127;
++  float Ku, Tu;
++  float Kp, Ki, Kd;
++  float max, min;
+   
++  SERIAL_ECHOLN("PID Autotune start");
++
++  for(;;) {
++
++    if(temp_meas_ready == true) { // temp sample ready
++      CRITICAL_SECTION_START;
++      temp_meas_ready = false;
++      CRITICAL_SECTION_END;
++      input = analog2temp(current_raw[0], 0);
++      
++      max=max(max,input);
++      min=min(min,input);
++      if(heating == true && input > temp) {
++        if(millis() - t2 > 5000) { 
++          heating=false;
++          soft_pwm[0] = (bias - d) >> 1;
++          t1=millis();
++          t_high=t1 - t2;
++          max=temp;
++        }
++      }
++      if(heating == false && input < temp) {
++        if(millis() - t1 > 5000) {
++          heating=true;
++          t2=millis();
++          t_low=t2 - t1;
++          if(cycles > 0) {
++            bias += (d*(t_high - t_low))/(t_low + t_high);
++            bias = constrain(bias, 20 ,235);
++            if(bias > 127) d = 254 - bias;
++            else d = bias;
++
++            SERIAL_PROTOCOLPGM(" bias: "); SERIAL_PROTOCOL(bias);
++            SERIAL_PROTOCOLPGM(" d: "); SERIAL_PROTOCOL(d);
++            SERIAL_PROTOCOLPGM(" min: "); SERIAL_PROTOCOL(min);
++            SERIAL_PROTOCOLPGM(" max: "); SERIAL_PROTOCOLLN(max);
++            if(cycles > 2) {
++              Ku = (4.0*d)/(3.14159*(max-min)/2.0);
++              Tu = ((float)(t_low + t_high)/1000.0);
++              Kp = 0.6*Ku;
++              Ki = 2*Kp/Tu;
++              Kd = Kp*Tu/8;
++              SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(Kp);
++              SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(Ki);
++              SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(Kd);
++            }
++          }
++          soft_pwm[0] = (bias + d) >> 1;
++          cycles++;
++          min=temp;
++        }
++      } 
++    }
++    if(input > (temp + 20)) {
++      SERIAL_PROTOCOLLNPGM("PID Autotune failed !!!, Temperature to high");
++      return;
++    }
++    if(millis() - temp_millis > 2000) {
++      temp_millis = millis();
++      SERIAL_PROTOCOLPGM("ok T:");
++      SERIAL_PROTOCOL(degHotend(0));   
++      SERIAL_PROTOCOLPGM(" @:");
++      SERIAL_PROTOCOLLN(getHeaterPower(0));       
++    }
++    LCD_STATUS;
++  }
++}
++
+ void updatePID()
+ {
+ #ifdef PIDTEMP
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 80e68f7..c7a457f 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -1,162 +1,165 @@
+-/*
+-  temperature.h - temperature controller
+-  Part of Marlin
+-
+-  Copyright (c) 2011 Erik van der Zalm
+-
+-  Grbl is free software: you can redistribute it and/or modify
+-  it under the terms of the GNU General Public License as published by
+-  the Free Software Foundation, either version 3 of the License, or
+-  (at your option) any later version.
+-
+-  Grbl is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-  GNU General Public License for more details.
+-
+-  You should have received a copy of the GNU General Public License
+-  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+-*/
+-
+-#ifndef temperature_h
+-#define temperature_h 
+-
+-#include "Marlin.h"
+-#include "planner.h"
+-#ifdef PID_ADD_EXTRUSION_RATE
+-  #include "stepper.h"
+-#endif
+-
+-// public functions
+-void tp_init();  //initialise the heating
+-void manage_heater(); //it is critical that this is called periodically.
+-
+-//low leven conversion routines
+-// do not use this routines and variables outsie of temperature.cpp
+-int temp2analog(int celsius, uint8_t e);
+-int temp2analogBed(int celsius);
+-float analog2temp(int raw, uint8_t e);
+-float analog2tempBed(int raw);
+-extern int target_raw[EXTRUDERS];  
+-extern int heatingtarget_raw[EXTRUDERS];  
+-extern int current_raw[EXTRUDERS];
+-extern int target_raw_bed;
+-extern int current_raw_bed;
+-#ifdef BED_LIMIT_SWITCHING
+-  extern int target_bed_low_temp ;  
+-  extern int target_bed_high_temp ;
+-#endif
+-extern float Kp,Ki,Kd,Kc;
+-
+-#ifdef PIDTEMP
+-  extern float pid_setpoint[EXTRUDERS];
+-#endif
+-  
+-// #ifdef WATCHPERIOD
+-  extern int watch_raw[EXTRUDERS] ;
+-//   extern unsigned long watchmillis;
+-// #endif
+-
+-
+-//high level conversion routines, for use outside of temperature.cpp
+-//inline so that there is no performance decrease.
+-//deg=degreeCelsius
+-
+-FORCE_INLINE float degHotend(uint8_t extruder) {  
+-  return analog2temp(current_raw[extruder], extruder);
+-};
+-
+-FORCE_INLINE float degBed() {
+-  return analog2tempBed(current_raw_bed);
+-};
+-
+-FORCE_INLINE float degTargetHotend(uint8_t extruder) {  
+-  return analog2temp(target_raw[extruder], extruder);
+-};
+-
+-FORCE_INLINE float degTargetBed() {   
+-  return analog2tempBed(target_raw_bed);
+-};
+-
+-FORCE_INLINE void setTargetHotend(const float &celsius, uint8_t extruder) {  
+-  target_raw[extruder] = temp2analog(celsius, extruder);
+-#ifdef PIDTEMP
+-  pid_setpoint[extruder] = celsius;
+-#endif //PIDTEMP
+-};
+-
+-FORCE_INLINE void setTargetBed(const float &celsius) {  
+-  
+-  target_raw_bed = temp2analogBed(celsius);
+-  #ifdef BED_LIMIT_SWITCHING
+-    if(celsius>BED_HYSTERESIS)
+-    {
+-    target_bed_low_temp= temp2analogBed(celsius-BED_HYSTERESIS);
+-    target_bed_high_temp= temp2analogBed(celsius+BED_HYSTERESIS);
+-    }
+-    else
+-    { 
+-      target_bed_low_temp=0;
+-      target_bed_high_temp=0;
+-    }
+-  #endif
+-};
+-
+-FORCE_INLINE bool isHeatingHotend(uint8_t extruder){  
+-  return target_raw[extruder] > current_raw[extruder];
+-};
+-
+-FORCE_INLINE bool isHeatingBed() {
+-  return target_raw_bed > current_raw_bed;
+-};
+-
+-FORCE_INLINE bool isCoolingHotend(uint8_t extruder) {  
+-  return target_raw[extruder] < current_raw[extruder];
+-};
+-
+-FORCE_INLINE bool isCoolingBed() {
+-  return target_raw_bed < current_raw_bed;
+-};
+-
+-#define degHotend0() degHotend(0)
+-#define degTargetHotend0() degTargetHotend(0)
+-#define setTargetHotend0(_celsius) setTargetHotend((_celsius), 0)
+-#define isHeatingHotend0() isHeatingHotend(0)
+-#define isCoolingHotend0() isCoolingHotend(0)
+-#if EXTRUDERS > 1
+-#define degHotend1() degHotend(1)
+-#define degTargetHotend1() degTargetHotend(1)
+-#define setTargetHotend1(_celsius) setTargetHotend((_celsius), 1)
+-#define isHeatingHotend1() isHeatingHotend(1)
+-#define isCoolingHotend1() isCoolingHotend(1)
+-#endif
+-#if EXTRUDERS > 2
+-#define degHotend2() degHotend(2)
+-#define degTargetHotend2() degTargetHotend(2)
+-#define setTargetHotend2(_celsius) setTargetHotend((_celsius), 2)
+-#define isHeatingHotend2() isHeatingHotend(2)
+-#define isCoolingHotend2() isCoolingHotend(2)
+-#endif
+-#if EXTRUDERS > 3
+-#error Invalid number of extruders
+-#endif
+-
+-
+-
+-int getHeaterPower(int heater);
+-void disable_heater();
+-void setWatch();
+-void updatePID();
+-
+-FORCE_INLINE void autotempShutdown(){
+- #ifdef AUTOTEMP
+- if(autotemp_enabled)
+- {
+-  autotemp_enabled=false;
+-  if(degTargetHotend(ACTIVE_EXTRUDER)>autotemp_min)
+-    setTargetHotend(0,ACTIVE_EXTRUDER);
+- }
+- #endif
+-}
+-#endif
++/*
++  temperature.h - temperature controller
++  Part of Marlin
++
++  Copyright (c) 2011 Erik van der Zalm
++
++  Grbl is free software: you can redistribute it and/or modify
++  it under the terms of the GNU General Public License as published by
++  the Free Software Foundation, either version 3 of the License, or
++  (at your option) any later version.
++
++  Grbl is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++  GNU General Public License for more details.
++
++  You should have received a copy of the GNU General Public License
++  along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++#ifndef temperature_h
++#define temperature_h 
++
++#include "Marlin.h"
++#include "planner.h"
++#ifdef PID_ADD_EXTRUSION_RATE
++  #include "stepper.h"
++#endif
++
++// public functions
++void tp_init();  //initialise the heating
++void manage_heater(); //it is critical that this is called periodically.
++
++//low leven conversion routines
++// do not use this routines and variables outsie of temperature.cpp
++int temp2analog(int celsius, uint8_t e);
++int temp2analogBed(int celsius);
++float analog2temp(int raw, uint8_t e);
++float analog2tempBed(int raw);
++extern int target_raw[EXTRUDERS];  
++extern int heatingtarget_raw[EXTRUDERS];  
++extern int current_raw[EXTRUDERS];
++extern int target_raw_bed;
++extern int current_raw_bed;
++#ifdef BED_LIMIT_SWITCHING
++  extern int target_bed_low_temp ;  
++  extern int target_bed_high_temp ;
++#endif
++extern float Kp,Ki,Kd,Kc;
++
++#ifdef PIDTEMP
++  extern float pid_setpoint[EXTRUDERS];
++#endif
++  
++// #ifdef WATCHPERIOD
++  extern int watch_raw[EXTRUDERS] ;
++//   extern unsigned long watchmillis;
++// #endif
++
++
++//high level conversion routines, for use outside of temperature.cpp
++//inline so that there is no performance decrease.
++//deg=degreeCelsius
++
++FORCE_INLINE float degHotend(uint8_t extruder) {  
++  return analog2temp(current_raw[extruder], extruder);
++};
++
++FORCE_INLINE float degBed() {
++  return analog2tempBed(current_raw_bed);
++};
++
++FORCE_INLINE float degTargetHotend(uint8_t extruder) {  
++  return analog2temp(target_raw[extruder], extruder);
++};
++
++FORCE_INLINE float degTargetBed() {   
++  return analog2tempBed(target_raw_bed);
++};
++
++FORCE_INLINE void setTargetHotend(const float &celsius, uint8_t extruder) {  
++  target_raw[extruder] = temp2analog(celsius, extruder);
++#ifdef PIDTEMP
++  pid_setpoint[extruder] = celsius;
++#endif //PIDTEMP
++};
++
++FORCE_INLINE void setTargetBed(const float &celsius) {  
++  
++  target_raw_bed = temp2analogBed(celsius);
++  #ifdef BED_LIMIT_SWITCHING
++    if(celsius>BED_HYSTERESIS)
++    {
++    target_bed_low_temp= temp2analogBed(celsius-BED_HYSTERESIS);
++    target_bed_high_temp= temp2analogBed(celsius+BED_HYSTERESIS);
++    }
++    else
++    { 
++      target_bed_low_temp=0;
++      target_bed_high_temp=0;
++    }
++  #endif
++};
++
++FORCE_INLINE bool isHeatingHotend(uint8_t extruder){  
++  return target_raw[extruder] > current_raw[extruder];
++};
++
++FORCE_INLINE bool isHeatingBed() {
++  return target_raw_bed > current_raw_bed;
++};
++
++FORCE_INLINE bool isCoolingHotend(uint8_t extruder) {  
++  return target_raw[extruder] < current_raw[extruder];
++};
++
++FORCE_INLINE bool isCoolingBed() {
++  return target_raw_bed < current_raw_bed;
++};
++
++#define degHotend0() degHotend(0)
++#define degTargetHotend0() degTargetHotend(0)
++#define setTargetHotend0(_celsius) setTargetHotend((_celsius), 0)
++#define isHeatingHotend0() isHeatingHotend(0)
++#define isCoolingHotend0() isCoolingHotend(0)
++#if EXTRUDERS > 1
++#define degHotend1() degHotend(1)
++#define degTargetHotend1() degTargetHotend(1)
++#define setTargetHotend1(_celsius) setTargetHotend((_celsius), 1)
++#define isHeatingHotend1() isHeatingHotend(1)
++#define isCoolingHotend1() isCoolingHotend(1)
++#endif
++#if EXTRUDERS > 2
++#define degHotend2() degHotend(2)
++#define degTargetHotend2() degTargetHotend(2)
++#define setTargetHotend2(_celsius) setTargetHotend((_celsius), 2)
++#define isHeatingHotend2() isHeatingHotend(2)
++#define isCoolingHotend2() isCoolingHotend(2)
++#endif
++#if EXTRUDERS > 3
++#error Invalid number of extruders
++#endif
++
++
++
++int getHeaterPower(int heater);
++void disable_heater();
++void setWatch();
++void updatePID();
++
++FORCE_INLINE void autotempShutdown(){
++ #ifdef AUTOTEMP
++ if(autotemp_enabled)
++ {
++  autotemp_enabled=false;
++  if(degTargetHotend(ACTIVE_EXTRUDER)>autotemp_min)
++    setTargetHotend(0,ACTIVE_EXTRUDER);
++ }
++ #endif
++}
++
++void PID_autotune(float temp);
++
++#endif
+ 
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 47dc2d5..0f4861b 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -315,19 +315,18 @@ void MainMenu::showStatus()
+   static int olddegHotEnd0=-1;
+   static int oldtargetHotEnd0=-1;
+   //force_lcd_update=true;
+-  if(force_lcd_update||feedmultiplychanged)  //initial display of content
++  if(force_lcd_update)  //initial display of content
+   {
+-    feedmultiplychanged=false;
+     encoderpos=feedmultiply;
+     clear();
+-    lcd.setCursor(0,0);lcdprintPGM("\002123/567\001 ");
++    lcd.setCursor(0,0);lcdprintPGM("\002---/---\001 ");
+     #if defined BED_USES_THERMISTOR || defined BED_USES_AD595 
+-      lcd.setCursor(10,0);lcdprintPGM("B123/567\001 ");
++      lcd.setCursor(10,0);lcdprintPGM("B---/---\001 ");
+     #endif
+   }
+     
+   int tHotEnd0=intround(degHotend0());
+-  if((abs(tHotEnd0-olddegHotEnd0)>1)||force_lcd_update) //>1 because otherwise the lcd is refreshed to often.
++  if((tHotEnd0!=olddegHotEnd0)||force_lcd_update)
+   {
+     lcd.setCursor(1,0);
+     lcd.print(ftostr3(tHotEnd0));
+@@ -379,8 +378,15 @@ void MainMenu::showStatus()
+     lcdprintPGM("Z:");lcd.print(ftostr52(current_position[2]));
+     oldzpos=currentz;
+   }
++  
+   static int oldfeedmultiply=0;
+   int curfeedmultiply=feedmultiply;
++  
++  if(feedmultiplychanged == true) {
++    feedmultiplychanged == false;
++    encoderpos = curfeedmultiply;
++  }
++  
+   if(encoderpos!=curfeedmultiply||force_lcd_update)
+   {
+    curfeedmultiply=encoderpos;
+@@ -391,12 +397,14 @@ void MainMenu::showStatus()
+    feedmultiply=curfeedmultiply;
+    encoderpos=curfeedmultiply;
+   }
++  
+   if((curfeedmultiply!=oldfeedmultiply)||force_lcd_update)
+   {
+    oldfeedmultiply=curfeedmultiply;
+    lcd.setCursor(0,2);
+    lcd.print(itostr3(curfeedmultiply));lcdprintPGM("% ");
+   }
++  
+   if(messagetext[0]!='\0')
+   {
+     lcd.setCursor(0,LCD_HEIGHT-1);
+@@ -404,7 +412,6 @@ void MainMenu::showStatus()
+     uint8_t n=strlen(messagetext);
+     for(int8_t i=0;i<LCD_WIDTH-n;i++)
+       lcd.print(" ");
+-    
+     messagetext[0]='\0';
+   }
+   
+

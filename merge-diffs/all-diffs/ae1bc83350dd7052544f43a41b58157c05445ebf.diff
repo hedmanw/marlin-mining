@@ -1,0 +1,278 @@
+commit ae1bc83350dd7052544f43a41b58157c05445ebf (from 596a7e19045c0fc2c3ceaf79df21d436e4613929)
+Merge: 596a7e1 b264317
+Author: daid303 <daid303@gmail.com>
+Date:   Thu Dec 13 13:25:22 2012 +0100
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index 930a200..c5b8ffb 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -125,13 +125,13 @@ MCU              ?= atmega1280
+ 
+ #Teensylu
+ else ifeq  ($(HARDWARE_MOTHERBOARD),8)
+-HARDWARE_VARIANT ?= Teensyduino
++HARDWARE_VARIANT ?= Teensy
+ MCU              ?= at90usb1286
+ else ifeq  ($(HARDWARE_MOTHERBOARD),81)
+-HARDWARE_VARIANT ?= Teensyduino
++HARDWARE_VARIANT ?= Teensy
+ MCU              ?= at90usb1286
+ else ifeq  ($(HARDWARE_MOTHERBOARD),82)
+-HARDWARE_VARIANT ?= Teensyduino
++HARDWARE_VARIANT ?= Teensy
+ MCU              ?= at90usb646
+ 
+ #Gen3+
+@@ -180,6 +180,7 @@ HARDWARE_SRC = ../ArduinoAddons/Arduino_0.xx/$(HARDWARE_VARIANT)/cores/arduino
+ endif
+ endif
+ 
++
+ TARGET = $(notdir $(CURDIR))
+ 
+ # VPATH tells make to look into these directory for source files,
+@@ -227,9 +228,27 @@ OPT = s
+ 
+ DEFINES ?=
+ 
++# Program settings
++CC = $(AVR_TOOLS_PATH)avr-gcc
++CXX = $(AVR_TOOLS_PATH)avr-g++
++OBJCOPY = $(AVR_TOOLS_PATH)avr-objcopy
++OBJDUMP = $(AVR_TOOLS_PATH)avr-objdump
++AR  = $(AVR_TOOLS_PATH)avr-ar
++SIZE = $(AVR_TOOLS_PATH)avr-size
++NM = $(AVR_TOOLS_PATH)avr-nm
++AVRDUDE = avrdude
++REMOVE = rm -f
++MV = mv -f
++
+ # Place -D or -U options here
+-CDEFS = -DF_CPU=$(F_CPU) ${addprefix -D , $(DEFINES)}
+-CXXDEFS = -DF_CPU=$(F_CPU) ${addprefix -D , $(DEFINES)}
++CDEFS    = -DF_CPU=$(F_CPU) ${addprefix -D , $(DEFINES)}
++CXXDEFS  = $(CDEFS)
++
++ifeq ($(HARDWARE_VARIANT), Teensy)
++CDEFS  += -DUSB_SERIAL
++SRC    += usb.c pins_teensy.c
++CXXSRC += usb_api.cpp
++endif
+ 
+ # Add all the source directories as include directories too
+ CINCS = ${addprefix -I ,${VPATH}}
+@@ -251,9 +270,9 @@ CTUNING += -DMOTHERBOARD=${HARDWARE_MOTHERBOARD}
+ endif
+ #CEXTRA = -Wa,-adhlns=$(<:.c=.lst)
+ 
+-CFLAGS = $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING)
+-CXXFLAGS =         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING)
+-#ASFLAGS = -Wa,-adhlns=$(<:.S=.lst),-gstabs 
++CFLAGS := $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING)
++CXXFLAGS :=         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING)
++#ASFLAGS = -Wa,-adhlns=$(<:.S=.lst),-gstabs
+ LDFLAGS = -lm
+ 
+ 
+@@ -264,18 +283,6 @@ AVRDUDE_FLAGS = -D -C $(ARDUINO_INSTALL_DIR)/hardware/tools/avrdude.conf \
+ 	-p $(MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER) \
+ 	-b $(UPLOAD_RATE)
+ 
+-# Program settings
+-CC = $(AVR_TOOLS_PATH)avr-gcc
+-CXX = $(AVR_TOOLS_PATH)avr-g++
+-OBJCOPY = $(AVR_TOOLS_PATH)avr-objcopy
+-OBJDUMP = $(AVR_TOOLS_PATH)avr-objdump
+-AR  = $(AVR_TOOLS_PATH)avr-ar
+-SIZE = $(AVR_TOOLS_PATH)avr-size
+-NM = $(AVR_TOOLS_PATH)avr-nm
+-AVRDUDE = avrdude
+-REMOVE = rm -f
+-MV = mv -f
+-
+ # Define all object files.
+ OBJ = ${patsubst %.c, $(BUILD_DIR)/%.o, ${SRC}}
+ OBJ += ${patsubst %.cpp, $(BUILD_DIR)/%.o, ${CXXSRC}}
+diff --git a/Marlin/wiring.h b/Marlin/wiring.h
+deleted file mode 100644
+index 904d2eb..0000000
+--- a/Marlin/wiring.h
++++ /dev/null
+@@ -1,141 +0,0 @@
+-/*
+- * fixed by this patch:
+- * http://code.google.com/p/arduino/issues/detail?id=604
+- * */
+-/*
+-  wiring.h - Partial implementation of the Wiring API for the ATmega8.
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id$
+-*/
+-
+-#ifndef Wiring_h
+-#define Wiring_h
+-
+-#include <avr/io.h>
+-#include <stdlib.h>
+-#include "binary.h"
+-
+-#ifdef __cplusplus
+-extern "C"{
+-#endif
+-
+-#define HIGH 0x1
+-#define LOW  0x0
+-
+-#define INPUT 0x0
+-#define OUTPUT 0x1
+-
+-#define true 0x1
+-#define false 0x0
+-
+-#define PI 3.1415926535897932384626433832795
+-#define HALF_PI 1.5707963267948966192313216916398
+-#define TWO_PI 6.283185307179586476925286766559
+-#define DEG_TO_RAD 0.017453292519943295769236907684886
+-#define RAD_TO_DEG 57.295779513082320876798154814105
+-
+-#define SERIAL  0x0
+-#define DISPLAY 0x1
+-
+-#define LSBFIRST 0
+-#define MSBFIRST 1
+-
+-#define CHANGE 1
+-#define FALLING 2
+-#define RISING 3
+-
+-#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+-#define INTERNAL1V1 2
+-#define INTERNAL2V56 3
+-#else
+-#define INTERNAL 3
+-#endif
+-#define DEFAULT 1
+-#define EXTERNAL 0
+-
+-// undefine stdlib's abs if encountered
+-#ifdef abs
+-#undef abs
+-#endif
+-
+-#define min(a,b) ((a)<(b)?(a):(b))
+-#define max(a,b) ((a)>(b)?(a):(b))
+-#define abs(x) ((x)>0?(x):-(x))
+-#define constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
+-#if __AVR_LIBC_VERSION__ < 10701UL
+-#define round(x)     ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
+-#endif
+-#define radians(deg) ((deg)*DEG_TO_RAD)
+-#define degrees(rad) ((rad)*RAD_TO_DEG)
+-#define sq(x) ((x)*(x))
+-
+-#define interrupts() sei()
+-#define noInterrupts() cli()
+-
+-#define clockCyclesPerMicrosecond() ( F_CPU / 1000000L )
+-#define clockCyclesToMicroseconds(a) ( ((a) * 1000L) / (F_CPU / 1000L) )
+-#define microsecondsToClockCycles(a) ( ((a) * (F_CPU / 1000L)) / 1000L )
+-
+-#define lowByte(w) ((uint8_t) ((w) & 0xff))
+-#define highByte(w) ((uint8_t) ((w) >> 8))
+-
+-#define bitRead(value, bit) (((value) >> (bit)) & 0x01)
+-#define bitSet(value, bit) ((value) |= (1UL << (bit)))
+-#define bitClear(value, bit) ((value) &= ~(1UL << (bit)))
+-#define bitWrite(value, bit, bitvalue) (bitvalue ? bitSet(value, bit) : bitClear(value, bit))
+-
+-
+-typedef unsigned int word;
+-
+-#define bit(b) (1UL << (b))
+-
+-typedef uint8_t boolean;
+-typedef uint8_t byte;
+-
+-void init(void);
+-
+-void pinMode(uint8_t, uint8_t);
+-void digitalWrite(uint8_t, uint8_t);
+-int digitalRead(uint8_t);
+-int analogRead(uint8_t);
+-void analogReference(uint8_t mode);
+-void analogWrite(uint8_t, int);
+-
+-unsigned long millis(void);
+-unsigned long micros(void);
+-void delay(unsigned long);
+-void delayMicroseconds(unsigned int us);
+-unsigned long pulseIn(uint8_t pin, uint8_t state, unsigned long timeout);
+-
+-void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val);
+-uint8_t shiftIn(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder);
+-
+-void attachInterrupt(uint8_t, void (*)(void), int mode);
+-void detachInterrupt(uint8_t);
+-
+-void setup(void);
+-void loop(void);
+-
+-#ifdef __cplusplus
+-} // extern "C"
+-#endif
+-
+-#endif
+
+commit ae1bc83350dd7052544f43a41b58157c05445ebf (from b264317fa074d431c781d5de891ad27485c4485e)
+Merge: 596a7e1 b264317
+Author: daid303 <daid303@gmail.com>
+Date:   Thu Dec 13 13:25:22 2012 +0100
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 4de3b3f..c81c95e 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -26,14 +26,12 @@
+ #define  HardwareSerial_h // trick to disable the standard HWserial
+ #endif
+ 
+-#if ARDUINO >= 100 
+-  #if defined(__AVR_ATmega644P__)
+-    #include "WProgram.h"
+-  #else
+-    #include "Arduino.h"
+-  #endif
++#if (ARDUINO >= 100) && !defined(__AVR_ATmega644P__)
++# include "Arduino.h"
+ #else
+-   #include "WProgram.h"
++# include "WProgram.h"
++  //Arduino < 1.0.0 does not define this, so we need to do it ourselfs
++# define analogInputToDigitalPin(p) ((p) + A0)
+ #endif
+ 
+ #include "MarlinSerial.h"
+

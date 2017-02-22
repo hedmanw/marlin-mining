@@ -1,0 +1,2847 @@
+commit 194185539d48fc6eb9e9b7a78efa90a238a2c9ab (from 3fd9b331f097961be54de59babdfbe8629673727)
+Merge: 3fd9b33 ff53819
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jun 2 17:14:04 2016 -0700
+
+    Merge pull request #3925 from thinkyhead/rc_statics_planner
+    
+    Apply static to Planner class
+
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 05a3c71..3627f27 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -71,6 +71,64 @@
+ 
+ Planner planner;
+ 
++  // public:
++
++/**
++ * A ring buffer of moves described in steps
++ */
++block_t Planner::block_buffer[BLOCK_BUFFER_SIZE];
++volatile uint8_t Planner::block_buffer_head = 0;           // Index of the next block to be pushed
++volatile uint8_t Planner::block_buffer_tail = 0;
++
++float Planner::max_feedrate[NUM_AXIS]; // Max speeds in mm per minute
++float Planner::axis_steps_per_unit[NUM_AXIS];
++unsigned long Planner::axis_steps_per_sqr_second[NUM_AXIS];
++unsigned long Planner::max_acceleration_units_per_sq_second[NUM_AXIS]; // Use M201 to override by software
++
++millis_t Planner::min_segment_time;
++float Planner::min_feedrate;
++float Planner::acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
++float Planner::retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
++float Planner::travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
++float Planner::max_xy_jerk;          // The largest speed change requiring no acceleration
++float Planner::max_z_jerk;
++float Planner::max_e_jerk;
++float Planner::min_travel_feedrate;
++
++#if ENABLED(AUTO_BED_LEVELING_FEATURE)
++  matrix_3x3 Planner::bed_level_matrix; // Transform to compensate for bed level
++#endif
++
++#if ENABLED(AUTOTEMP)
++  float Planner::autotemp_max = 250;
++  float Planner::autotemp_min = 210;
++  float Planner::autotemp_factor = 0.1;
++  bool Planner::autotemp_enabled = false;
++#endif
++
++// private:
++
++long Planner::position[NUM_AXIS] = { 0 };
++
++float Planner::previous_speed[NUM_AXIS];
++
++float Planner::previous_nominal_speed;
++
++#if ENABLED(DISABLE_INACTIVE_EXTRUDER)
++  uint8_t Planner::g_uc_extruder_last_move[EXTRUDERS] = { 0 };
++#endif // DISABLE_INACTIVE_EXTRUDER
++
++#ifdef XY_FREQUENCY_LIMIT
++  // Old direction bits. Used for speed calculations
++  unsigned char Planner::old_direction_bits = 0;
++  // Segment times (in µs). Used for speed calculations
++  long Planner::axis_segment_time[2][3] = { {MAX_FREQ_TIME + 1, 0, 0}, {MAX_FREQ_TIME + 1, 0, 0} };
++#endif
++
++/**
++ * Class and Instance Methods
++ */
++
+ Planner::Planner() {
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+     bed_level_matrix.set_to_identity();
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index f623983..b263e2d 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -108,27 +108,27 @@ class Planner {
+     /**
+      * A ring buffer of moves described in steps
+      */
+-    block_t block_buffer[BLOCK_BUFFER_SIZE];
+-    volatile uint8_t block_buffer_head = 0;           // Index of the next block to be pushed
+-    volatile uint8_t block_buffer_tail = 0;
+-
+-    float max_feedrate[NUM_AXIS]; // Max speeds in mm per minute
+-    float axis_steps_per_unit[NUM_AXIS];
+-    unsigned long axis_steps_per_sqr_second[NUM_AXIS];
+-    unsigned long max_acceleration_units_per_sq_second[NUM_AXIS]; // Use M201 to override by software
+-
+-    millis_t min_segment_time;
+-    float min_feedrate;
+-    float acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
+-    float retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
+-    float travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
+-    float max_xy_jerk;          // The largest speed change requiring no acceleration
+-    float max_z_jerk;
+-    float max_e_jerk;
+-    float min_travel_feedrate;
++    static block_t block_buffer[BLOCK_BUFFER_SIZE];
++    static volatile uint8_t block_buffer_head;           // Index of the next block to be pushed
++    static volatile uint8_t block_buffer_tail;
++
++    static float max_feedrate[NUM_AXIS]; // Max speeds in mm per minute
++    static float axis_steps_per_unit[NUM_AXIS];
++    static unsigned long axis_steps_per_sqr_second[NUM_AXIS];
++    static unsigned long max_acceleration_units_per_sq_second[NUM_AXIS]; // Use M201 to override by software
++
++    static millis_t min_segment_time;
++    static float min_feedrate;
++    static float acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
++    static float retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
++    static float travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
++    static float max_xy_jerk;          // The largest speed change requiring no acceleration
++    static float max_z_jerk;
++    static float max_e_jerk;
++    static float min_travel_feedrate;
+ 
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-      matrix_3x3 bed_level_matrix; // Transform to compensate for bed level
++      static matrix_3x3 bed_level_matrix; // Transform to compensate for bed level
+     #endif
+ 
+   private:
+@@ -137,49 +137,57 @@ class Planner {
+      * The current position of the tool in absolute steps
+      * Reclculated if any axis_steps_per_unit are changed by gcode
+      */
+-    long position[NUM_AXIS] = { 0 };
++    static long position[NUM_AXIS];
+ 
+     /**
+      * Speed of previous path line segment
+      */
+-    float previous_speed[NUM_AXIS];
++    static float previous_speed[NUM_AXIS];
+ 
+     /**
+      * Nominal speed of previous path line segment
+      */
+-    float previous_nominal_speed;
++    static float previous_nominal_speed;
+ 
+     #if ENABLED(DISABLE_INACTIVE_EXTRUDER)
+       /**
+        * Counters to manage disabling inactive extruders
+        */
+-      uint8_t g_uc_extruder_last_move[EXTRUDERS] = { 0 };
++      static uint8_t g_uc_extruder_last_move[EXTRUDERS];
+     #endif // DISABLE_INACTIVE_EXTRUDER
+ 
+     #ifdef XY_FREQUENCY_LIMIT
+       // Used for the frequency limit
+-      #define MAX_FREQ_TIME (1000000.0/XY_FREQUENCY_LIMIT)
++      #define MAX_FREQ_TIME long(1000000.0/XY_FREQUENCY_LIMIT)
+       // Old direction bits. Used for speed calculations
+-      static unsigned char old_direction_bits = 0;
++      static unsigned char old_direction_bits;
+       // Segment times (in µs). Used for speed calculations
+-      static long axis_segment_time[2][3] = { {MAX_FREQ_TIME + 1, 0, 0}, {MAX_FREQ_TIME + 1, 0, 0} };
++      static long axis_segment_time[2][3];
+     #endif
+ 
+   public:
+ 
++    /**
++     * Instance Methods
++     */
++
+     Planner();
+ 
+     void init();
+ 
+-    void reset_acceleration_rates();
++    /**
++     * Static (class) Methods
++     */
++
++    static void reset_acceleration_rates();
+ 
+     // Manage fans, paste pressure, etc.
+-    void check_axes_activity();
++    static void check_axes_activity();
+ 
+     /**
+      * Number of moves currently in the planner
+      */
+-    FORCE_INLINE uint8_t movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_tail + BLOCK_BUFFER_SIZE); }
++    static uint8_t movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_tail + BLOCK_BUFFER_SIZE); }
+ 
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(MESH_BED_LEVELING)
+ 
+@@ -187,7 +195,7 @@ class Planner {
+         /**
+          * The corrected position, applying the bed level matrix
+          */
+-        vector_3 adjusted_position();
++        static vector_3 adjusted_position();
+       #endif
+ 
+       /**
+@@ -197,7 +205,7 @@ class Planner {
+        *  feed_rate - (target) speed of the move
+        *  extruder  - target extruder
+        */
+-      void buffer_line(float x, float y, float z, const float& e, float feed_rate, const uint8_t extruder);
++      static void buffer_line(float x, float y, float z, const float& e, float feed_rate, const uint8_t extruder);
+ 
+       /**
+        * Set the planner.position and individual stepper positions.
+@@ -208,30 +216,30 @@ class Planner {
+        *
+        * Clears previous speed values.
+        */
+-      void set_position(float x, float y, float z, const float& e);
++      static void set_position(float x, float y, float z, const float& e);
+ 
+     #else
+ 
+-      void buffer_line(const float& x, const float& y, const float& z, const float& e, float feed_rate, const uint8_t extruder);
+-      void set_position(const float& x, const float& y, const float& z, const float& e);
++      static void buffer_line(const float& x, const float& y, const float& z, const float& e, float feed_rate, const uint8_t extruder);
++      static void set_position(const float& x, const float& y, const float& z, const float& e);
+ 
+     #endif // AUTO_BED_LEVELING_FEATURE || MESH_BED_LEVELING
+ 
+     /**
+      * Set the E position (mm) of the planner (and the E stepper)
+      */
+-    void set_e_position(const float& e);
++    static void set_e_position(const float& e);
+ 
+     /**
+      * Does the buffer have any blocks queued?
+      */
+-    FORCE_INLINE bool blocks_queued() { return (block_buffer_head != block_buffer_tail); }
++    static bool blocks_queued() { return (block_buffer_head != block_buffer_tail); }
+ 
+     /**
+      * "Discards" the block and "releases" the memory.
+      * Called when the current block is no longer needed.
+      */
+-    FORCE_INLINE void discard_current_block() {
++    static void discard_current_block() {
+       if (blocks_queued())
+         block_buffer_tail = BLOCK_MOD(block_buffer_tail + 1);
+     }
+@@ -240,7 +248,7 @@ class Planner {
+      * The current block. NULL if the buffer is empty.
+      * This also marks the block as busy.
+      */
+-    FORCE_INLINE block_t* get_current_block() {
++    static block_t* get_current_block() {
+       if (blocks_queued()) {
+         block_t* block = &block_buffer[block_buffer_tail];
+         block->busy = true;
+@@ -251,12 +259,12 @@ class Planner {
+     }
+ 
+     #if ENABLED(AUTOTEMP)
+-      float autotemp_max = 250;
+-      float autotemp_min = 210;
+-      float autotemp_factor = 0.1;
+-      bool autotemp_enabled = false;
+-      void getHighESpeed();
+-      void autotemp_M109();
++      static float autotemp_max;
++      static float autotemp_min;
++      static float autotemp_factor;
++      static bool autotemp_enabled;
++      static void getHighESpeed();
++      static void autotemp_M109();
+     #endif
+ 
+   private:
+@@ -264,14 +272,14 @@ class Planner {
+     /**
+      * Get the index of the next / previous block in the ring buffer
+      */
+-    FORCE_INLINE int8_t next_block_index(int8_t block_index) { return BLOCK_MOD(block_index + 1); }
+-    FORCE_INLINE int8_t prev_block_index(int8_t block_index) { return BLOCK_MOD(block_index - 1); }
++    static int8_t next_block_index(int8_t block_index) { return BLOCK_MOD(block_index + 1); }
++    static int8_t prev_block_index(int8_t block_index) { return BLOCK_MOD(block_index - 1); }
+ 
+     /**
+      * Calculate the distance (not time) it takes to accelerate
+      * from initial_rate to target_rate using the given acceleration:
+      */
+-    FORCE_INLINE float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration) {
++    static float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration) {
+       if (acceleration == 0) return 0; // acceleration was 0, set acceleration distance to 0
+       return (target_rate * target_rate - initial_rate * initial_rate) / (acceleration * 2);
+     }
+@@ -284,7 +292,7 @@ class Planner {
+      * This is used to compute the intersection point between acceleration and deceleration
+      * in cases where the "trapezoid" has no plateau (i.e., never reaches maximum speed)
+      */
+-    FORCE_INLINE float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) {
++    static float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) {
+       if (acceleration == 0) return 0; // acceleration was 0, set intersection distance to 0
+       return (acceleration * 2 * distance - initial_rate * initial_rate + final_rate * final_rate) / (acceleration * 4);
+     }
+@@ -294,21 +302,21 @@ class Planner {
+      * to reach 'target_velocity' using 'acceleration' within a given
+      * 'distance'.
+      */
+-    FORCE_INLINE float max_allowable_speed(float acceleration, float target_velocity, float distance) {
++    static float max_allowable_speed(float acceleration, float target_velocity, float distance) {
+       return sqrt(target_velocity * target_velocity - 2 * acceleration * distance);
+     }
+ 
+-    void calculate_trapezoid_for_block(block_t* block, float entry_factor, float exit_factor);
++    static void calculate_trapezoid_for_block(block_t* block, float entry_factor, float exit_factor);
+ 
+-    void reverse_pass_kernel(block_t* previous, block_t* current, block_t* next);
+-    void forward_pass_kernel(block_t* previous, block_t* current, block_t* next);
++    static void reverse_pass_kernel(block_t* previous, block_t* current, block_t* next);
++    static void forward_pass_kernel(block_t* previous, block_t* current, block_t* next);
+ 
+-    void reverse_pass();
+-    void forward_pass();
++    static void reverse_pass();
++    static void forward_pass();
+ 
+-    void recalculate_trapezoids();
++    static void recalculate_trapezoids();
+ 
+-    void recalculate();
++    static void recalculate();
+ 
+ };
+ 
+
+commit 194185539d48fc6eb9e9b7a78efa90a238a2c9ab (from ff53819856f45e036c483e9435f8e8257dee15f2)
+Merge: 3fd9b33 ff53819
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jun 2 17:14:04 2016 -0700
+
+    Merge pull request #3925 from thinkyhead/rc_statics_planner
+    
+    Apply static to Planner class
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 6bef252..599a1bf 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -48,11 +48,11 @@
+ 
+   #define LCD_HAS_DIRECTIONAL_BUTTONS (BUTTON_EXISTS(UP) || BUTTON_EXISTS(DWN) || BUTTON_EXISTS(LFT) || BUTTON_EXISTS(RT))
+ 
+-  #if ENABLED(MAKRPANEL)
++  #if ENABLED(MAKRPANEL) || ENABLED(MINIPANEL)
+     #define DOGLCD
+-    #define DEFAULT_LCD_CONTRAST 17
+     #define ULTIPANEL
+     #define NEWPANEL
++    #define DEFAULT_LCD_CONTRAST 17
+   #endif
+ 
+   #if ENABLED(miniVIKI) || ENABLED(VIKI2) || ENABLED(ELB_FULL_GRAPHIC_CONTROLLER)
+@@ -74,13 +74,13 @@
+     #define ENCODER_STEPS_PER_MENU_ITEM 1
+   #endif
+ 
+-  // Generic support for SSD1306 OLED based LCDs.
+-  #if ENABLED(U8GLIB_SSD1306)
++  // Generic support for SSD1306 / SH1106 OLED based LCDs.
++  #if ENABLED(U8GLIB_SSD1306) || ENABLED(U8GLIB_SH1106)
+     #define ULTRA_LCD  //general LCD support, also 16x2
+-    #define DOGLCD  // Support for I2C LCD 128x64 (Controller SSD1306 graphic Display Family)
++    #define DOGLCD  // Support for I2C LCD 128x64 (Controller SSD1306 / SH1106 graphic Display Family)
+   #endif
+ 
+-  #if ENABLED(PANEL_ONE)
++  #if ENABLED(PANEL_ONE) || ENABLED(U8GLIB_SH1106)
+     #define ULTIMAKERCONTROLLER
+   #endif
+ 
+@@ -123,13 +123,6 @@
+     #define NEWPANEL
+   #endif
+ 
+-  #if ENABLED(MINIPANEL)
+-    #define DOGLCD
+-    #define ULTIPANEL
+-    #define NEWPANEL
+-    #define DEFAULT_LCD_CONTRAST 17
+-  #endif
+-
+   /**
+    * I2C PANELS
+    */
+@@ -251,17 +244,10 @@
+   /**
+    * Default LCD contrast for dogm-like LCD displays
+    */
+-  #if ENABLED(DOGLCD) && DISABLED(DEFAULT_LCD_CONTRAST)
+-    #define DEFAULT_LCD_CONTRAST 32
+-  #endif
+-
+   #if ENABLED(DOGLCD)
+-    #define HAS_LCD_CONTRAST
+-    #if ENABLED(U8GLIB_ST7920)
+-      #undef HAS_LCD_CONTRAST
+-    #endif
+-    #if ENABLED(U8GLIB_SSD1306)
+-      #undef HAS_LCD_CONTRAST
++    #define HAS_LCD_CONTRAST (DISABLED(U8GLIB_ST7920) && DISABLED(U8GLIB_SSD1306) && DISABLED(U8GLIB_SH1106))
++    #if HAS_LCD_CONTRAST && !defined(DEFAULT_LCD_CONTRAST)
++      #define DEFAULT_LCD_CONTRAST 32
+     #endif
+   #endif
+ 
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index ae141a6..b67d0a0 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -1063,6 +1063,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index a2a1ea1..61cdef1 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b3c302d..6ddd0d2 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -856,6 +856,10 @@ void setup() {
+     digipot_i2c_init();
+   #endif
+ 
++  #if ENABLED(DAC_STEPPER_CURRENT)
++    dac_init();
++  #endif
++
+   #if ENABLED(Z_PROBE_SLED)
+     pinMode(SLED_PIN, OUTPUT);
+     digitalWrite(SLED_PIN, LOW); // turn it off
+@@ -1268,6 +1272,7 @@ XYZ_CONSTS_FROM_CONFIG(signed char, home_dir, HOME_DIR);
+  */
+ static void update_software_endstops(AxisEnum axis) {
+   float offs = home_offset[axis] + position_shift[axis];
++
+   #if ENABLED(DUAL_X_CARRIAGE)
+     if (axis == X_AXIS) {
+       float dual_max_x = max(extruder_offset[X_AXIS][1], X2_MAX_POS);
+@@ -1288,6 +1293,7 @@ static void update_software_endstops(AxisEnum axis) {
+     sw_endstop_min[axis] = base_min_pos(axis) + offs;
+     sw_endstop_max[axis] = base_max_pos(axis) + offs;
+   }
++
+ }
+ 
+ /**
+@@ -5624,7 +5630,7 @@ inline void gcode_M226() {
+ 
+ #endif // CHDK || PHOTOGRAPH_PIN
+ 
+-#if ENABLED(HAS_LCD_CONTRAST)
++#if HAS_LCD_CONTRAST
+ 
+   /**
+    * M250: Read and optionally set the LCD contrast
+@@ -6468,24 +6474,29 @@ inline void gcode_T(uint8_t tmp_extruder) {
+ 
+         #else // !AUTO_BED_LEVELING_FEATURE
+ 
+-          // Offset extruder (only by XY)
+-          for (int i=X_AXIS; i<=Y_AXIS; i++)
+-            current_position[i] += extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++          // The newly-selected extruder is actually at...
++          for (int i=X_AXIS; i<=Y_AXIS; i++) {
++            float diff = extruder_offset[i][tmp_extruder] - extruder_offset[i][active_extruder];
++            current_position[i] += diff;
++            position_shift[i] += diff; // Offset the coordinate space
++            update_software_endstops((AxisEnum)i);
++          }
+ 
+         #endif // !AUTO_BED_LEVELING_FEATURE
+ 
+-        // Set the new active extruder and position
++        // Set the new active extruder
+         active_extruder = tmp_extruder;
+ 
+       #endif // !DUAL_X_CARRIAGE
+ 
++      // Tell the planner the new "current position"
+       #if ENABLED(DELTA)
+         sync_plan_position_delta();
+       #else
+         sync_plan_position();
+       #endif
+ 
+-      // Move to the old position
++      // Move to the "old position" (move the extruder into place)
+       if (IsRunning()) prepare_move();
+ 
+     } // (tmp_extruder != active_extruder)
+@@ -6975,7 +6986,7 @@ void process_next_command() {
+           break;
+       #endif // CHDK || PHOTOGRAPH_PIN
+ 
+-      #if ENABLED(HAS_LCD_CONTRAST)
++      #if HAS_LCD_CONTRAST
+         case 250: // M250  Set LCD contrast value: C<value> (value 0..63)
+           gcode_M250();
+           break;
+@@ -7183,23 +7194,8 @@ void clamp_to_software_endstops(float target[3]) {
+   if (min_software_endstops) {
+     NOLESS(target[X_AXIS], sw_endstop_min[X_AXIS]);
+     NOLESS(target[Y_AXIS], sw_endstop_min[Y_AXIS]);
+-
+-    float negative_z_offset = 0;
+-    #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-      if (zprobe_zoffset < 0) negative_z_offset += zprobe_zoffset;
+-      if (home_offset[Z_AXIS] < 0) {
+-        #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) {
+-            SERIAL_ECHOPAIR("> clamp_to_software_endstops > Add home_offset[Z_AXIS]:", home_offset[Z_AXIS]);
+-            SERIAL_EOL;
+-          }
+-        #endif
+-        negative_z_offset += home_offset[Z_AXIS];
+-      }
+-    #endif
+-    NOLESS(target[Z_AXIS], sw_endstop_min[Z_AXIS] + negative_z_offset);
++    NOLESS(target[Z_AXIS], sw_endstop_min[Z_AXIS]);
+   }
+-
+   if (max_software_endstops) {
+     NOMORE(target[X_AXIS], sw_endstop_max[X_AXIS]);
+     NOMORE(target[Y_AXIS], sw_endstop_max[Y_AXIS]);
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 05a24ac..001955f 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -282,7 +282,7 @@ void Config_StoreSettings()  {
+     EEPROM_WRITE_VAR(i, thermalManager.bedKd);
+   #endif
+ 
+-  #if DISABLED(HAS_LCD_CONTRAST)
++  #if !HAS_LCD_CONTRAST
+     const int lcd_contrast = 32;
+   #endif
+   EEPROM_WRITE_VAR(i, lcd_contrast);
+@@ -462,7 +462,7 @@ void Config_RetrieveSettings() {
+       for (uint8_t q=3; q--;) EEPROM_READ_VAR(i, dummy); // bedKp, bedKi, bedKd
+     #endif
+ 
+-    #if DISABLED(HAS_LCD_CONTRAST)
++    #if !HAS_LCD_CONTRAST
+       int lcd_contrast;
+     #endif
+     EEPROM_READ_VAR(i, lcd_contrast);
+@@ -579,7 +579,7 @@ void Config_ResetDefault() {
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+   #endif
+ 
+-  #if ENABLED(HAS_LCD_CONTRAST)
++  #if HAS_LCD_CONTRAST
+     lcd_contrast = DEFAULT_LCD_CONTRAST;
+   #endif
+ 
+@@ -842,7 +842,7 @@ void Config_PrintSettings(bool forReplay) {
+ 
+   #endif // PIDTEMP || PIDTEMPBED
+ 
+-  #if ENABLED(HAS_LCD_CONTRAST)
++  #if HAS_LCD_CONTRAST
+     CONFIG_ECHO_START;
+     if (!forReplay) {
+       SERIAL_ECHOLNPGM("LCD Contrast:");
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 89094bb..fda1f53 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -139,18 +139,18 @@
+ #if ENABLED(U8GLIB_ST7920)
+   //U8GLIB_ST7920_128X64_RRD u8g(0,0,0);
+   U8GLIB_ST7920_128X64_RRD u8g(0);
+-#elif ENABLED(MAKRPANEL)
+-  // The MaKrPanel display, ST7565 controller as well
+-  U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+-#elif ENABLED(VIKI2) || ENABLED(miniVIKI)
+-  // Mini Viki and Viki 2.0 LCD, ST7565 controller as well
+-  U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #elif ENABLED(U8GLIB_LM6059_AF)
+   // Based on the Adafruit ST7565 (http://www.adafruit.com/products/250)
+   U8GLIB_LM6059 u8g(DOGLCD_CS, DOGLCD_A0);
++#elif ENABLED(MAKRPANEL) || ENABLED(VIKI2) || ENABLED(miniVIKI)
++  // The MaKrPanel, Mini Viki, and Viki 2.0, ST7565 controller as well
++  U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #elif ENABLED(U8GLIB_SSD1306)
+   // Generic support for SSD1306 OLED I2C LCDs
+-  U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
++  U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE | U8G_I2C_OPT_FAST);
++#elif ENABLED(U8GLIB_SH1106)
++  // Generic support for SH1106 OLED I2C LCDs
++  U8GLIB_SH1106_128X64 u8g(U8G_I2C_OPT_NONE | U8G_I2C_OPT_FAST);
+ #elif ENABLED(MINIPANEL)
+   // The MINIPanel display
+   U8GLIB_MINI12864 u8g(DOGLCD_CS, DOGLCD_A0);
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 49da001..f5dea69 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -36,6 +36,34 @@
+ 
+ Endstops endstops;
+ 
++// public:
++
++bool  Endstops::enabled = true,
++      Endstops::enabled_globally =
++        #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
++          false
++        #else
++          true
++        #endif
++      ;
++volatile char Endstops::endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_PROBE as BIT value
++
++#if ENABLED(Z_DUAL_ENDSTOPS)
++  uint16_t
++#else
++  byte
++#endif
++    Endstops::current_endstop_bits = 0,
++    Endstops::old_endstop_bits = 0;
++
++#if HAS_BED_PROBE
++  volatile bool Endstops::z_probe_enabled = false;
++#endif
++
++/**
++ * Class and Instance Methods
++ */
++
+ Endstops::Endstops() {
+   enable_globally(
+     #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+diff --git a/Marlin/endstops.h b/Marlin/endstops.h
+index b3b5837..76b3486 100644
+--- a/Marlin/endstops.h
++++ b/Marlin/endstops.h
+@@ -33,26 +33,16 @@ class Endstops {
+ 
+   public:
+ 
+-    volatile char endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_PROBE as BIT value
++    static bool enabled, enabled_globally;
++    static volatile char endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_PROBE as BIT value
+ 
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+-      uint16_t current_endstop_bits = 0,
+-                   old_endstop_bits = 0;
++      static uint16_t
+     #else
+-      byte current_endstop_bits = 0,
+-               old_endstop_bits = 0;
++      static byte
+     #endif
++        current_endstop_bits, old_endstop_bits;
+         
+-
+-    bool enabled = true;
+-    bool enabled_globally =
+-      #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-        false
+-      #else
+-        true
+-      #endif
+-    ;
+-
+     Endstops();
+ 
+     /**
+@@ -63,40 +53,40 @@ class Endstops {
+     /**
+      * Update the endstops bits from the pins
+      */
+-    void update();
++    static void update();
+ 
+     /**
+      * Print an error message reporting the position when the endstops were last hit.
+      */
+-    void report_state(); //call from somewhere to create an serial error message with the locations the endstops where hit, in case they were triggered
++    static void report_state(); //call from somewhere to create an serial error message with the locations the endstops where hit, in case they were triggered
+ 
+     /**
+      * Report endstop positions in response to M119
+      */
+-    void M119();
++    static void M119();
+ 
+     // Enable / disable endstop checking globally
+-    FORCE_INLINE void enable_globally(bool onoff=true) { enabled_globally = enabled = onoff; }
++    static void enable_globally(bool onoff=true) { enabled_globally = enabled = onoff; }
+ 
+     // Enable / disable endstop checking
+-    FORCE_INLINE void enable(bool onoff=true) { enabled = onoff; }
++    static void enable(bool onoff=true) { enabled = onoff; }
+ 
+     // Disable / Enable endstops based on ENSTOPS_ONLY_FOR_HOMING and global enable
+-    FORCE_INLINE void not_homing() { enabled = enabled_globally; }
++    static void not_homing() { enabled = enabled_globally; }
+ 
+     // Clear endstops (i.e., they were hit intentionally) to suppress the report
+-    FORCE_INLINE void hit_on_purpose() { endstop_hit_bits = 0; }
++    static void hit_on_purpose() { endstop_hit_bits = 0; }
+ 
+     // Enable / disable endstop z-probe checking
+     #if HAS_BED_PROBE
+-      volatile bool z_probe_enabled = false;
+-      FORCE_INLINE void enable_z_probe(bool onoff=true) { z_probe_enabled = onoff; }
++      static volatile bool z_probe_enabled;
++      static void enable_z_probe(bool onoff=true) { z_probe_enabled = onoff; }
+     #endif
+ 
+   private:
+ 
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+-      void test_dual_z_endstops(EndstopEnum es1, EndstopEnum es2);
++      static void test_dual_z_endstops(EndstopEnum es1, EndstopEnum es2);
+     #endif
+ };
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 3b9c621..39e5ce4 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -501,10 +501,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1049,6 +1046,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 3f784aa..36c6fcd 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index c4e03aa..107f838 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -499,10 +499,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1047,6 +1044,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index a2a43ed..5b41fb3 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -511,10 +511,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1058,6 +1055,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index ab25822..50e8ba2 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 3be2505..3f6f4b6 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -513,10 +513,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1060,6 +1057,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index fbafa65..2fe4d66 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index c9dc2c3..4b74fe5 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -536,10 +536,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1083,6 +1080,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 04e9eb7..296ecd2 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -451,6 +451,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 4c03ddf..d9c8b9b 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -519,10 +519,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1066,6 +1063,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index e3d38fd..967927d 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -513,10 +513,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1063,6 +1060,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 13b4b99..c8a56e4 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 15e8322..a801823 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -527,10 +527,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1074,6 +1071,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 4206092..2571424 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index f65443b..b2bd2ce 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -540,10 +540,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1087,6 +1084,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 033f475..7dfb96e 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -453,6 +453,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 380759f..f32e071 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -511,10 +511,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1058,6 +1055,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index ab25822..50e8ba2 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 12142af..151e16b 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -519,10 +519,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1066,6 +1063,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 9ccfaca..026a727 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -561,10 +561,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -694,60 +691,17 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     // 2 or 3 sets of coordinates for deploying and retracting the spring loaded touch probe on G29,
+     // if servo actuated touch probe is not defined. Uncomment as appropriate for your printer/probe.
+ 
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+-    // Kossel Mini
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 28.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+-    // Kossel Pro
++    // Just like Kossel Pro
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+@@ -757,15 +711,18 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+     #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+     #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
++
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-  #endif
++
++  #endif // Z_PROBE_ALLEN_KEY
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you also enable Z_SAFE_HOMING below!
+@@ -1195,6 +1152,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 99c1b42..ecfe11c 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -447,6 +447,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 1465d2d..dea1dfe 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -561,10 +561,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -698,6 +695,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+@@ -707,65 +705,18 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+     #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+     #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+ 
+-    // Kossel Mini
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 28.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+-    // Kossel Pro
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-  #endif
++  #endif // Z_PROBE_ALLEN_KEY
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you also enable Z_SAFE_HOMING below!
+@@ -1195,6 +1146,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 4774739..145c3cd 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -447,6 +447,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index c432ec4..b262989 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -561,10 +561,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -694,33 +691,12 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     // 2 or 3 sets of coordinates for deploying and retracting the spring loaded touch probe on G29,
+     // if servo actuated touch probe is not defined. Uncomment as appropriate for your printer/probe.
+ 
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+     // Kossel Mini
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+@@ -743,33 +719,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z  (Z_PROBE_ALLEN_KEY_STOW_1_Z+Z_PROBE_ALLEN_KEY_STOW_DEPTH)
+     #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE (XY_TRAVEL_SPEED/2)
+ 
+-    // Kossel Pro
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-  #endif
++  #endif // Z_PROBE_ALLEN_KEY
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you also enable Z_SAFE_HOMING below!
+@@ -1199,6 +1149,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 98e302a..4e629b4 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -446,6 +446,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 8c7042f..d87239d 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -550,10 +550,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -685,60 +682,17 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     // 2 or 3 sets of coordinates for deploying and retracting the spring loaded touch probe on G29,
+     // if servo actuated touch probe is not defined. Uncomment as appropriate for your printer/probe.
+ 
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+-    // Kossel Mini
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 28.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+     // Kossel Pro
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z Z_PROBE_ALLEN_KEY_DEPLOY_1_Z
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z Z_PROBE_ALLEN_KEY_DEPLOY_2_Z
+@@ -748,15 +702,18 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Y -125.00
+     #define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+     #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     #define Z_PROBE_ALLEN_KEY_STOW_2_X Z_PROBE_ALLEN_KEY_STOW_1_X // move down to retract probe
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Y Z_PROBE_ALLEN_KEY_STOW_1_Y
+     #define Z_PROBE_ALLEN_KEY_STOW_2_Z 0.0
+     #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
++
+     #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+     #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-  #endif
++
++  #endif // Z_PROBE_ALLEN_KEY
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you also enable Z_SAFE_HOMING below!
+@@ -1192,6 +1149,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index d01cb46..cc7d88b 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -451,6 +451,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index b0ce02f..fa4e96d 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -559,10 +559,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -696,6 +693,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+     //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+@@ -705,65 +703,18 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
++
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
++
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+     //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+ 
+-    // Kossel Mini
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 35.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 72.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X -46.0 // Move the probe into position
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 28.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X -46.0 // Move the nozzle down further to push the probe into retracted position.
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 8.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/10
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X -46.0 // Raise things back up slightly so we don't bump into anything
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 59.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 38.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-
+-    // Kossel Pro
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE HOMING_FEEDRATE_XYZ
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (HOMING_FEEDRATE_XYZ)/2
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+-    //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE HOMING_FEEDRATE_XYZ
+-  #endif
++  #endif // Z_PROBE_ALLEN_KEY
+ 
+   // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
+   // it is highly recommended you also enable Z_SAFE_HOMING below!
+@@ -1200,6 +1151,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 2f6d37e..3d90e5a 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -447,6 +447,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index f331853..1991ee6 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -522,10 +522,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1069,6 +1066,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index e8a9d9d..1621cbd 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 3b6abfe..c380ee2 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -509,10 +509,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -1060,6 +1057,13 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //
+ //#define U8GLIB_SSD1306
+ 
++// SAV OLEd LCD module support using either SSD1306 or SH1106 based LCD modules
++//#define SAV_3DGLCD
++#if ENABLED(SAV_3DGLCD)
++  //#define U8GLIB_SSD1306
++  #define U8GLIB_SH1106
++#endif
++
+ //
+ // CONTROLLER TYPE: Shift register panels
+ //
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 56767f1..81db411 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -445,6 +445,18 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
++// @section leveling
++
++// Default mesh area is an area with an inset margin on the print area.
++// Below are the macros that are used to define the borders for the mesh area,
++// made available here for specialized needs, ie dual extruder setup.
++#if ENABLED(MESH_BED_LEVELING)
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
++#endif
++
+ // @section extras
+ 
+ // Arc interpretation settings:
+diff --git a/Marlin/language_da.h b/Marlin/language_da.h
+index 2176b93..a66ceb5 100644
+--- a/Marlin/language_da.h
++++ b/Marlin/language_da.h
+@@ -38,16 +38,21 @@
+ #define WELCOME_MSG                         MACHINE_NAME " er klar"
+ #define MSG_SD_INSERTED                     "Kort isat"
+ #define MSG_SD_REMOVED                      "Kort fjernet"
++#define MSG_LCD_ENDSTOPS                    "Endstops" // Max length 8 characters
+ #define MSG_MAIN                            "Menu"
+ #define MSG_AUTOSTART                       "Autostart"
+-#define MSG_DISABLE_STEPPERS                "Slå stepper fra"
+-#define MSG_AUTO_HOME                       "Home" // G28
++#define MSG_DISABLE_STEPPERS                "Slå alle steppere fra"
++#define MSG_AUTO_HOME                       "Auto Home" // G28
++#define MSG_AUTO_HOME_X                     "Home X"
++#define MSG_AUTO_HOME_Y                     "Home Y"
++#define MSG_AUTO_HOME_Z                     "Home Z"
+ #define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "Tryk for at starte"
+-#define MSG_LEVEL_BED_DONE                  "Justering er færdig!"
+-#define MSG_LEVEL_BED_CANCEL                "Annuller"
+-#define MSG_SET_HOME_OFFSETS                "Sæt forskyding til udgangsposition"
+-#define MSG_HOME_OFFSETS_APPLIED            "Forskydninger er tilføjet"
++#define MSG_LEVEL_BED_WAITING               "Tryk for at starte bed level"
++#define MSG_LEVEL_BED_NEXT_POINT            "Næste punkt"
++#define MSG_LEVEL_BED_DONE                  "Bed level er færdig!"
++#define MSG_LEVEL_BED_CANCEL                "Annuller bed level"
++#define MSG_SET_HOME_OFFSETS                "Sæt forskyding af home"
++#define MSG_HOME_OFFSETS_APPLIED            "Forskydninger af home pos. er tilføjet"
+ #define MSG_SET_ORIGIN                      "Sæt origin"
+ #define MSG_PREHEAT_PLA                     "Forvarm PLA"
+ #define MSG_PREHEAT_PLA_N                   "Forvarm PLA "
+@@ -59,22 +64,36 @@
+ #define MSG_PREHEAT_ABS_ALL                 "Forvarm ABS Alle"
+ #define MSG_PREHEAT_ABS_BEDONLY             "Forvarm ABS Bed"
+ #define MSG_PREHEAT_ABS_SETTINGS            "Forvarm ABS conf"
++#define MSG_H1                              "1"
++#define MSG_H2                              "2"
++#define MSG_H3                              "3"
++#define MSG_H4                              "4"
+ #define MSG_COOLDOWN                        "Afkøl"
+ #define MSG_SWITCH_PS_ON                    "Slå strøm til"
+ #define MSG_SWITCH_PS_OFF                   "Slå strøm fra"
+ #define MSG_EXTRUDE                         "Extruder"
+ #define MSG_RETRACT                         "Retract"
+ #define MSG_MOVE_AXIS                       "Flyt akser"
++#define MSG_LEVEL_BED                       "Juster bed"
+ #define MSG_MOVE_X                          "Flyt X"
+ #define MSG_MOVE_Y                          "Flyt Y"
+ #define MSG_MOVE_Z                          "Flyt Z"
+ #define MSG_MOVE_E                          "Extruder"
++#define MSG_MOVE_E1                         "1"
++#define MSG_MOVE_E2                         "2"
++#define MSG_MOVE_E3                         "3"
++#define MSG_MOVE_E4                         "4"
++
+ #define MSG_MOVE_01MM                       "Flyt 0.1mm"
+ #define MSG_MOVE_1MM                        "Flyt 1mm"
+ #define MSG_MOVE_10MM                       "Flyt 10mm"
+ #define MSG_SPEED                           "Hastighed"
+ #define MSG_BED_Z                           "Plade Z"
+ #define MSG_NOZZLE                          "Dyse"
++#define MSG_N1                              " 1"
++#define MSG_N2                              " 2"
++#define MSG_N3                              " 3"
++#define MSG_N4                              " 4"
+ #define MSG_BED                             "Plade"
+ #define MSG_FAN_SPEED                       "Blæser hastighed"
+ #define MSG_FLOW                            "Flow"
+@@ -89,6 +108,10 @@
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
++#define MSG_E1                              " E1"
++#define MSG_E2                              " E2"
++#define MSG_E3                              " E3"
++#define MSG_E4                              " E4"
+ #define MSG_ACC                             "Accel"
+ #define MSG_VXY_JERK                        "Vxy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+@@ -108,10 +131,14 @@
+ #define MSG_ZSTEPS                          "Zsteps/mm"
+ #define MSG_ESTEPS                          "Esteps/mm"
+ #define MSG_TEMPERATURE                     "Temperatur"
+-#define MSG_MOTION                          "Motion"
++#define MSG_MOTION                          "Bevægelse"
+ #define MSG_VOLUMETRIC                      "Filament"
+ #define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+ #define MSG_FILAMENT_DIAM                   "Fil. Dia."
++#define MSG_DIAM_E1                         " 1"
++#define MSG_DIAM_E2                         " 2"
++#define MSG_DIAM_E3                         " 3"
++#define MSG_DIAM_E4                         " 4"
+ #define MSG_CONTRAST                        "LCD kontrast"
+ #define MSG_STORE_EPROM                     "Gem i EEPROM"
+ #define MSG_LOAD_EPROM                      "Hent fra EEPROM"
+@@ -132,7 +159,7 @@
+ #define MSG_NO_MOVE                         "Ingen bevægelse."
+ #define MSG_KILLED                          "DRÆBT. "
+ #define MSG_STOPPED                         "STOPPET. "
+-#define MSG_CONTROL_RETRACT                 "Tilbagetraek mm"
++#define MSG_CONTROL_RETRACT                 "Tilbagetræk mm"
+ #define MSG_CONTROL_RETRACT_SWAP            "Skift Re.mm"
+ #define MSG_CONTROL_RETRACTF                "Tilbagetræk V"
+ #define MSG_CONTROL_RETRACT_ZLIFT           "Hop mm"
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index 20960fd..7b2201f 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -24,10 +24,6 @@
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+ 
+-  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
+-  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
+   #define MESH_X_DIST ((MESH_MAX_X - (MESH_MIN_X))/(MESH_NUM_X_POINTS - 1))
+   #define MESH_Y_DIST ((MESH_MAX_Y - (MESH_MIN_Y))/(MESH_NUM_Y_POINTS - 1))
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index cd2409c..ae1051c 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -257,11 +257,11 @@ class Stepper {
+       NOMORE(step_rate, MAX_STEP_FREQUENCY);
+ 
+       if (step_rate > 20000) { // If steprate > 20kHz >> step 4 times
+-        step_rate = (step_rate >> 2) & 0x3fff;
++        step_rate >>= 2;
+         step_loops = 4;
+       }
+       else if (step_rate > 10000) { // If steprate > 10kHz >> step 2 times
+-        step_rate = (step_rate >> 1) & 0x7fff;
++        step_rate >>= 1;
+         step_loops = 2;
+       }
+       else {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 10a5034..02766f8 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -48,6 +48,145 @@
+ 
+ Temperature thermalManager;
+ 
++// public:
++
++int Temperature::current_temperature_raw[EXTRUDERS] = { 0 };
++float Temperature::current_temperature[EXTRUDERS] = { 0.0 };
++int Temperature::target_temperature[EXTRUDERS] = { 0 };
++
++int Temperature::current_temperature_bed_raw = 0;
++float Temperature::current_temperature_bed = 0.0;
++int Temperature::target_temperature_bed = 0;
++
++#if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
++  float Temperature::redundant_temperature = 0.0;
++#endif
++
++unsigned char Temperature::soft_pwm_bed;
++
++#if ENABLED(FAN_SOFT_PWM)
++  unsigned char Temperature::fanSpeedSoftPwm[FAN_COUNT];
++#endif
++
++#if ENABLED(PIDTEMP)
++  #if ENABLED(PID_PARAMS_PER_EXTRUDER)
++    float Temperature::Kp[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_Kp),
++          Temperature::Ki[EXTRUDERS] = ARRAY_BY_EXTRUDERS1((DEFAULT_Ki) * (PID_dT)),
++          Temperature::Kd[EXTRUDERS] = ARRAY_BY_EXTRUDERS1((DEFAULT_Kd) / (PID_dT));
++    #if ENABLED(PID_ADD_EXTRUSION_RATE)
++      float Temperature::Kc[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_Kc);
++    #endif
++  #else
++    float Temperature::Kp = DEFAULT_Kp,
++          Temperature::Ki = (DEFAULT_Ki) * (PID_dT),
++          Temperature::Kd = (DEFAULT_Kd) / (PID_dT);
++    #if ENABLED(PID_ADD_EXTRUSION_RATE)
++      float Temperature::Kc = DEFAULT_Kc;
++    #endif
++  #endif
++#endif
++
++#if ENABLED(PIDTEMPBED)
++  float Temperature::bedKp = DEFAULT_bedKp,
++        Temperature::bedKi = ((DEFAULT_bedKi) * PID_dT),
++        Temperature::bedKd = ((DEFAULT_bedKd) / PID_dT);
++#endif
++
++#if ENABLED(BABYSTEPPING)
++  volatile int Temperature::babystepsTodo[3] = { 0 };
++#endif
++
++#if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0
++  int Temperature::watch_target_temp[EXTRUDERS] = { 0 };
++  millis_t Temperature::watch_heater_next_ms[EXTRUDERS] = { 0 };
++#endif
++
++#if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_BED_TEMP_PERIOD > 0
++  int Temperature::watch_target_bed_temp = 0;
++  millis_t Temperature::watch_bed_next_ms = 0;
++#endif
++
++#if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++  float Temperature::extrude_min_temp = EXTRUDE_MINTEMP;
++#endif
++
++// private:
++
++#if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
++  int Temperature::redundant_temperature_raw = 0;
++  float Temperature::redundant_temperature = 0.0;
++#endif
++
++volatile bool Temperature::temp_meas_ready = false;
++
++#if ENABLED(PIDTEMP)
++  float Temperature::temp_iState[EXTRUDERS] = { 0 };
++  float Temperature::temp_dState[EXTRUDERS] = { 0 };
++  float Temperature::pTerm[EXTRUDERS];
++  float Temperature::iTerm[EXTRUDERS];
++  float Temperature::dTerm[EXTRUDERS];
++
++  #if ENABLED(PID_ADD_EXTRUSION_RATE)
++    float Temperature::cTerm[EXTRUDERS];
++    long Temperature::last_position[EXTRUDERS];
++    long Temperature::lpq[LPQ_MAX_LEN];
++    int Temperature::lpq_ptr = 0;
++  #endif
++
++  float Temperature::pid_error[EXTRUDERS];
++  float Temperature::temp_iState_min[EXTRUDERS];
++  float Temperature::temp_iState_max[EXTRUDERS];
++  bool Temperature::pid_reset[EXTRUDERS];
++#endif
++
++#if ENABLED(PIDTEMPBED)
++  float Temperature::temp_iState_bed = { 0 };
++  float Temperature::temp_dState_bed = { 0 };
++  float Temperature::pTerm_bed;
++  float Temperature::iTerm_bed;
++  float Temperature::dTerm_bed;
++  float Temperature::pid_error_bed;
++  float Temperature::temp_iState_min_bed;
++  float Temperature::temp_iState_max_bed;
++#else
++  millis_t Temperature::next_bed_check_ms;
++#endif
++
++unsigned long Temperature::raw_temp_value[4] = { 0 };
++unsigned long Temperature::raw_temp_bed_value = 0;
++
++// Init min and max temp with extreme values to prevent false errors during startup
++int Temperature::minttemp_raw[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_RAW_LO_TEMP , HEATER_1_RAW_LO_TEMP , HEATER_2_RAW_LO_TEMP, HEATER_3_RAW_LO_TEMP);
++int Temperature::maxttemp_raw[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_RAW_HI_TEMP , HEATER_1_RAW_HI_TEMP , HEATER_2_RAW_HI_TEMP, HEATER_3_RAW_HI_TEMP);
++int Temperature::minttemp[EXTRUDERS] = { 0 };
++int Temperature::maxttemp[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(16383);
++
++#ifdef BED_MINTEMP
++  int Temperature::bed_minttemp_raw = HEATER_BED_RAW_LO_TEMP;
++#endif
++
++#ifdef BED_MAXTEMP
++  int Temperature::bed_maxttemp_raw = HEATER_BED_RAW_HI_TEMP;
++#endif
++
++#if ENABLED(FILAMENT_WIDTH_SENSOR)
++  int Temperature::meas_shift_index;  // Index of a delayed sample in buffer
++#endif
++
++#if HAS_AUTO_FAN
++  millis_t Temperature::next_auto_fan_check_ms;
++#endif
++
++unsigned char Temperature::soft_pwm[EXTRUDERS];
++
++#if ENABLED(FAN_SOFT_PWM)
++  unsigned char Temperature::soft_pwm_fan[FAN_COUNT];
++#endif
++
++#if ENABLED(FILAMENT_WIDTH_SENSOR)
++  int Temperature::current_raw_filwidth = 0;  //Holds measured filament diameter - one extruder only
++#endif
++
+ #if HAS_PID_HEATING
+ 
+   void Temperature::PID_autotune(float temp, int extruder, int ncycles, bool set_result/*=false*/) {
+@@ -283,31 +422,9 @@ Temperature thermalManager;
+ 
+ #endif // HAS_PID_HEATING
+ 
+-#if ENABLED(PIDTEMP)
+-
+-  #if ENABLED(PID_PARAMS_PER_EXTRUDER)
+-
+-    float Temperature::Kp[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_Kp),
+-          Temperature::Ki[EXTRUDERS] = ARRAY_BY_EXTRUDERS1((DEFAULT_Ki) * (PID_dT)),
+-          Temperature::Kd[EXTRUDERS] = ARRAY_BY_EXTRUDERS1((DEFAULT_Kd) / (PID_dT));
+-
+-    #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-      float Temperature::Kc[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_Kc);
+-    #endif
+-
+-  #else
+-
+-    float Temperature::Kp = DEFAULT_Kp,
+-          Temperature::Ki = (DEFAULT_Ki) * (PID_dT),
+-          Temperature::Kd = (DEFAULT_Kd) / (PID_dT);
+-
+-    #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-      float Temperature::Kc = DEFAULT_Kc;
+-    #endif
+-
+-  #endif
+-
+-#endif
++/**
++ * Class and Instance Methods
++ */
+ 
+ Temperature::Temperature() { }
+ 
+@@ -1045,7 +1162,17 @@ void Temperature::init() {
+ 
+ #if ENABLED(THERMAL_PROTECTION_HOTENDS) || HAS_THERMALLY_PROTECTED_BED
+ 
+-  void Temperature::thermal_runaway_protection(TRState* state, millis_t* timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc) {
++  #if ENABLED(THERMAL_PROTECTION_HOTENDS)
++    Temperature::TRState Temperature::thermal_runaway_state_machine[EXTRUDERS] = { TRInactive };
++    millis_t Temperature::thermal_runaway_timer[EXTRUDERS] = { 0 };
++  #endif
++
++  #if HAS_THERMALLY_PROTECTED_BED
++    Temperature::TRState Temperature::thermal_runaway_bed_state_machine = TRInactive;
++    millis_t Temperature::thermal_runaway_bed_timer;
++  #endif
++
++  void Temperature::thermal_runaway_protection(Temperature::TRState* state, millis_t* timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc) {
+ 
+     static float tr_target_temperature[EXTRUDERS + 1] = { 0.0 };
+ 
+@@ -1138,10 +1265,12 @@ void Temperature::disable_all_heaters() {
+     uint32_t max6675_temp = 2000;
+     #define MAX6675_ERROR_MASK 7
+     #define MAX6675_DISCARD_BITS 18
++    #define MAX6675_SPEED_BITS (_BV(SPR1)) // clock ÷ 64
+   #else
+     uint16_t max6675_temp = 2000;
+     #define MAX6675_ERROR_MASK 4
+     #define MAX6675_DISCARD_BITS 3
++    #define MAX6675_SPEED_BITS (_BV(SPR0)) // clock ÷ 16
+   #endif
+ 
+   int Temperature::read_max6675() {
+@@ -1161,7 +1290,7 @@ void Temperature::disable_all_heaters() {
+         PRR0
+       #endif
+         , PRSPI);
+-    SPCR = _BV(MSTR) | _BV(SPE) | _BV(SPR0);
++    SPCR = _BV(MSTR) | _BV(SPE) | MAX6675_SPEED_BITS;
+ 
+     WRITE(MAX6675_SS, 0); // enable TT_MAX6675
+ 
+@@ -1240,7 +1369,7 @@ void Temperature::set_current_temp_raw() {
+  *  - Check new temperature values for MIN/MAX errors
+  *  - Step the babysteps value for each axis towards 0
+  */
+-ISR(TIMER0_COMPB_vect) { thermalManager.isr(); }
++ISR(TIMER0_COMPB_vect) { Temperature::isr(); }
+ 
+ void Temperature::isr() {
+ 
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 1e9276a..cb57107 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -42,22 +42,22 @@ class Temperature {
+ 
+   public:
+ 
+-    int current_temperature_raw[EXTRUDERS] = { 0 };
+-    float current_temperature[EXTRUDERS] = { 0.0 };
+-    int target_temperature[EXTRUDERS] = { 0 };
++    static int current_temperature_raw[EXTRUDERS];
++    static float current_temperature[EXTRUDERS];
++    static int target_temperature[EXTRUDERS];
+ 
+-    int current_temperature_bed_raw = 0;
+-    float current_temperature_bed = 0.0;
+-    int target_temperature_bed = 0;
++    static int current_temperature_bed_raw;
++    static float current_temperature_bed;
++    static int target_temperature_bed;
+ 
+     #if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
+-      float redundant_temperature = 0.0;
++      static float redundant_temperature;
+     #endif
+ 
+-    unsigned char soft_pwm_bed;
++    static unsigned char soft_pwm_bed;
+ 
+     #if ENABLED(FAN_SOFT_PWM)
+-      unsigned char fanSpeedSoftPwm[FAN_COUNT];
++      static unsigned char fanSpeedSoftPwm[FAN_COUNT];
+     #endif
+ 
+     #if ENABLED(PIDTEMP) || ENABLED(PIDTEMPBED)
+@@ -70,7 +70,7 @@ class Temperature {
+ 
+         static float Kp[EXTRUDERS], Ki[EXTRUDERS], Kd[EXTRUDERS];
+         #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-          float Kc[EXTRUDERS];
++          static float Kc[EXTRUDERS];
+         #endif
+         #define PID_PARAM(param, e) Temperature::param[e]
+ 
+@@ -93,118 +93,110 @@ class Temperature {
+     #endif
+ 
+     #if ENABLED(PIDTEMPBED)
+-      float bedKp = DEFAULT_bedKp,
+-            bedKi = ((DEFAULT_bedKi) * PID_dT),
+-            bedKd = ((DEFAULT_bedKd) / PID_dT);
++      static float bedKp, bedKi, bedKd;
+     #endif
+ 
+     #if ENABLED(BABYSTEPPING)
+-      volatile int babystepsTodo[3] = { 0 };
++      static volatile int babystepsTodo[3];
+     #endif
+ 
+     #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0
+-      int watch_target_temp[EXTRUDERS] = { 0 };
+-      millis_t watch_heater_next_ms[EXTRUDERS] = { 0 };
++      static int watch_target_temp[EXTRUDERS];
++      static millis_t watch_heater_next_ms[EXTRUDERS];
+     #endif
+ 
+     #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_BED_TEMP_PERIOD > 0
+-      int watch_target_bed_temp = 0;
+-      millis_t watch_bed_next_ms = 0;
++      static int watch_target_bed_temp;
++      static millis_t watch_bed_next_ms;
+     #endif
+ 
+     #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
+-      float extrude_min_temp = EXTRUDE_MINTEMP;
+-      FORCE_INLINE bool tooColdToExtrude(uint8_t e) { return degHotend(e) < extrude_min_temp; }
++      static float extrude_min_temp;
++      static bool tooColdToExtrude(uint8_t e) { return degHotend(e) < extrude_min_temp; }
+     #else
+-      FORCE_INLINE bool tooColdToExtrude(uint8_t e) { UNUSED(e); return false; }
++      static bool tooColdToExtrude(uint8_t e) { UNUSED(e); return false; }
+     #endif
+ 
+   private:
+ 
+     #if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
+-      int redundant_temperature_raw = 0;
+-      float redundant_temperature = 0.0;
++      static int redundant_temperature_raw;
++      static float redundant_temperature;
+     #endif
+ 
+-    volatile bool temp_meas_ready = false;
++    static volatile bool temp_meas_ready;
+ 
+     #if ENABLED(PIDTEMP)
+-      float temp_iState[EXTRUDERS] = { 0 };
+-      float temp_dState[EXTRUDERS] = { 0 };
+-      float pTerm[EXTRUDERS];
+-      float iTerm[EXTRUDERS];
+-      float dTerm[EXTRUDERS];
++      static float temp_iState[EXTRUDERS];
++      static float temp_dState[EXTRUDERS];
++      static float pTerm[EXTRUDERS];
++      static float iTerm[EXTRUDERS];
++      static float dTerm[EXTRUDERS];
+ 
+       #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-        float cTerm[EXTRUDERS];
+-        long last_position[EXTRUDERS];
+-        long lpq[LPQ_MAX_LEN];
+-        int lpq_ptr = 0;
++        static float cTerm[EXTRUDERS];
++        static long last_position[EXTRUDERS];
++        static long lpq[LPQ_MAX_LEN];
++        static int lpq_ptr;
+       #endif
+ 
+-      float pid_error[EXTRUDERS];
+-      float temp_iState_min[EXTRUDERS];
+-      float temp_iState_max[EXTRUDERS];
+-      bool pid_reset[EXTRUDERS];
++      static float pid_error[EXTRUDERS];
++      static float temp_iState_min[EXTRUDERS];
++      static float temp_iState_max[EXTRUDERS];
++      static bool pid_reset[EXTRUDERS];
+     #endif
+ 
+     #if ENABLED(PIDTEMPBED)
+-      float temp_iState_bed = { 0 };
+-      float temp_dState_bed = { 0 };
+-      float pTerm_bed;
+-      float iTerm_bed;
+-      float dTerm_bed;
+-      float pid_error_bed;
+-      float temp_iState_min_bed;
+-      float temp_iState_max_bed;
++      static float temp_iState_bed;
++      static float temp_dState_bed;
++      static float pTerm_bed;
++      static float iTerm_bed;
++      static float dTerm_bed;
++      static float pid_error_bed;
++      static float temp_iState_min_bed;
++      static float temp_iState_max_bed;
+     #else
+-      millis_t next_bed_check_ms;
++      static millis_t next_bed_check_ms;
+     #endif
+ 
+-    unsigned long raw_temp_value[4] = { 0 };
+-    unsigned long raw_temp_bed_value = 0;
++    static unsigned long raw_temp_value[4];
++    static unsigned long raw_temp_bed_value;
+ 
+     // Init min and max temp with extreme values to prevent false errors during startup
+-    int minttemp_raw[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_RAW_LO_TEMP , HEATER_1_RAW_LO_TEMP , HEATER_2_RAW_LO_TEMP, HEATER_3_RAW_LO_TEMP);
+-    int maxttemp_raw[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_RAW_HI_TEMP , HEATER_1_RAW_HI_TEMP , HEATER_2_RAW_HI_TEMP, HEATER_3_RAW_HI_TEMP);
+-    int minttemp[EXTRUDERS] = { 0 };
+-    int maxttemp[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(16383);
++    static int minttemp_raw[EXTRUDERS];
++    static int maxttemp_raw[EXTRUDERS];
++    static int minttemp[EXTRUDERS];
++    static int maxttemp[EXTRUDERS];
+ 
+     #ifdef BED_MINTEMP
+-      int bed_minttemp_raw = HEATER_BED_RAW_LO_TEMP;
++      static int bed_minttemp_raw;
+     #endif
+ 
+     #ifdef BED_MAXTEMP
+-      int bed_maxttemp_raw = HEATER_BED_RAW_HI_TEMP;
++      static int bed_maxttemp_raw;
+     #endif
+ 
+     #if ENABLED(FILAMENT_WIDTH_SENSOR)
+-      int meas_shift_index;  // Index of a delayed sample in buffer
++      static int meas_shift_index;  // Index of a delayed sample in buffer
+     #endif
+ 
+     #if HAS_AUTO_FAN
+-      millis_t next_auto_fan_check_ms;
++      static millis_t next_auto_fan_check_ms;
+     #endif
+ 
+-    unsigned char soft_pwm[EXTRUDERS];
++    static unsigned char soft_pwm[EXTRUDERS];
+ 
+     #if ENABLED(FAN_SOFT_PWM)
+-      unsigned char soft_pwm_fan[FAN_COUNT];
++      static unsigned char soft_pwm_fan[FAN_COUNT];
+     #endif
+ 
+     #if ENABLED(FILAMENT_WIDTH_SENSOR)
+-      int current_raw_filwidth = 0;  //Holds measured filament diameter - one extruder only
++      static int current_raw_filwidth;  //Holds measured filament diameter - one extruder only
+     #endif
+ 
+   public:
+ 
+     /**
+-     * Static (class) methods
+-     */
+-    static float analog2temp(int raw, uint8_t e);
+-    static float analog2tempBed(int raw);
+-
+-    /**
+      * Instance Methods
+      */
+ 
+@@ -213,18 +205,24 @@ class Temperature {
+     void init();
+ 
+     /**
++     * Static (class) methods
++     */
++    static float analog2temp(int raw, uint8_t e);
++    static float analog2tempBed(int raw);
++
++    /**
+      * Called from the Temperature ISR
+      */
+-    void isr();
++    static void isr();
+ 
+     /**
+      * Call periodically to manage heaters
+      */
+-    void manage_heater();
++    static void manage_heater();
+ 
+     #if ENABLED(FILAMENT_WIDTH_SENSOR)
+-      float analog2widthFil(); // Convert raw Filament Width to millimeters
+-      int widthFil_to_size_ratio(); // Convert raw Filament Width to an extrusion ratio
++      static float analog2widthFil(); // Convert raw Filament Width to millimeters
++      static int widthFil_to_size_ratio(); // Convert raw Filament Width to an extrusion ratio
+     #endif
+ 
+ 
+@@ -232,68 +230,68 @@ class Temperature {
+     //inline so that there is no performance decrease.
+     //deg=degreeCelsius
+ 
+-    FORCE_INLINE float degHotend(uint8_t extruder) { return current_temperature[extruder]; }
+-    FORCE_INLINE float degBed() { return current_temperature_bed; }
++    static float degHotend(uint8_t extruder) { return current_temperature[extruder]; }
++    static float degBed() { return current_temperature_bed; }
+ 
+     #if ENABLED(SHOW_TEMP_ADC_VALUES)
+-    FORCE_INLINE float rawHotendTemp(uint8_t extruder) { return current_temperature_raw[extruder]; }
+-    FORCE_INLINE float rawBedTemp() { return current_temperature_bed_raw; }
++    static float rawHotendTemp(uint8_t extruder) { return current_temperature_raw[extruder]; }
++    static float rawBedTemp() { return current_temperature_bed_raw; }
+     #endif
+ 
+-    FORCE_INLINE float degTargetHotend(uint8_t extruder) { return target_temperature[extruder]; }
+-    FORCE_INLINE float degTargetBed() { return target_temperature_bed; }
++    static float degTargetHotend(uint8_t extruder) { return target_temperature[extruder]; }
++    static float degTargetBed() { return target_temperature_bed; }
+ 
+     #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0
+-      void start_watching_heater(int e = 0);
++      static void start_watching_heater(int e = 0);
+     #endif
+ 
+     #if ENABLED(THERMAL_PROTECTION_BED) && WATCH_BED_TEMP_PERIOD > 0
+-      void start_watching_bed();
++      static void start_watching_bed();
+     #endif
+ 
+-    FORCE_INLINE void setTargetHotend(const float& celsius, uint8_t extruder) {
++    static void setTargetHotend(const float& celsius, uint8_t extruder) {
+       target_temperature[extruder] = celsius;
+       #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0
+         start_watching_heater(extruder);
+       #endif
+     }
+ 
+-    FORCE_INLINE void setTargetBed(const float& celsius) {
++    static void setTargetBed(const float& celsius) {
+       target_temperature_bed = celsius;
+       #if ENABLED(THERMAL_PROTECTION_BED) && WATCH_BED_TEMP_PERIOD > 0
+         start_watching_bed();
+       #endif
+     }
+ 
+-    FORCE_INLINE bool isHeatingHotend(uint8_t extruder) { return target_temperature[extruder] > current_temperature[extruder]; }
+-    FORCE_INLINE bool isHeatingBed() { return target_temperature_bed > current_temperature_bed; }
++    static bool isHeatingHotend(uint8_t extruder) { return target_temperature[extruder] > current_temperature[extruder]; }
++    static bool isHeatingBed() { return target_temperature_bed > current_temperature_bed; }
+ 
+-    FORCE_INLINE bool isCoolingHotend(uint8_t extruder) { return target_temperature[extruder] < current_temperature[extruder]; }
+-    FORCE_INLINE bool isCoolingBed() { return target_temperature_bed < current_temperature_bed; }
++    static bool isCoolingHotend(uint8_t extruder) { return target_temperature[extruder] < current_temperature[extruder]; }
++    static bool isCoolingBed() { return target_temperature_bed < current_temperature_bed; }
+ 
+     /**
+      * The software PWM power for a heater
+      */
+-    int getHeaterPower(int heater);
++    static int getHeaterPower(int heater);
+ 
+     /**
+      * Switch off all heaters, set all target temperatures to 0
+      */
+-    void disable_all_heaters();
++    static void disable_all_heaters();
+ 
+     /**
+      * Perform auto-tuning for hotend or bed in response to M303
+      */
+     #if HAS_PID_HEATING
+-      void PID_autotune(float temp, int extruder, int ncycles, bool set_result=false);
++      static void PID_autotune(float temp, int extruder, int ncycles, bool set_result=false);
+     #endif
+ 
+     /**
+      * Update the temp manager when PID values change
+      */
+-    void updatePID();
++    static void updatePID();
+ 
+-    FORCE_INLINE void autotempShutdown() {
++    static void autotempShutdown() {
+       #if ENABLED(AUTOTEMP)
+         if (planner.autotemp_enabled) {
+           planner.autotemp_enabled = false;
+@@ -305,7 +303,7 @@ class Temperature {
+ 
+     #if ENABLED(BABYSTEPPING)
+ 
+-      FORCE_INLINE void babystep_axis(AxisEnum axis, int distance) {
++      static void babystep_axis(AxisEnum axis, int distance) {
+         #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
+           #if ENABLED(BABYSTEP_XY)
+             switch (axis) {
+@@ -337,40 +335,40 @@ class Temperature {
+ 
+   private:
+ 
+-    void set_current_temp_raw();
++    static void set_current_temp_raw();
+ 
+-    void updateTemperaturesFromRawValues();
++    static void updateTemperaturesFromRawValues();
+ 
+     #if ENABLED(HEATER_0_USES_MAX6675)
+-      int read_max6675();
++      static int read_max6675();
+     #endif
+ 
+-    void checkExtruderAutoFans();
++    static void checkExtruderAutoFans();
+ 
+-    float get_pid_output(int e);
++    static float get_pid_output(int e);
+ 
+     #if ENABLED(PIDTEMPBED)
+-      float get_pid_output_bed();
++      static float get_pid_output_bed();
+     #endif
+ 
+-    void _temp_error(int e, const char* serial_msg, const char* lcd_msg);
+-    void min_temp_error(uint8_t e);
+-    void max_temp_error(uint8_t e);
++    static void _temp_error(int e, const char* serial_msg, const char* lcd_msg);
++    static void min_temp_error(uint8_t e);
++    static void max_temp_error(uint8_t e);
+ 
+     #if ENABLED(THERMAL_PROTECTION_HOTENDS) || HAS_THERMALLY_PROTECTED_BED
+ 
+       typedef enum TRState { TRInactive, TRFirstHeating, TRStable, TRRunaway } TRstate;
+ 
+-      void thermal_runaway_protection(TRState* state, millis_t* timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
++      static void thermal_runaway_protection(TRState* state, millis_t* timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
+ 
+       #if ENABLED(THERMAL_PROTECTION_HOTENDS)
+-        TRState thermal_runaway_state_machine[EXTRUDERS] = { TRInactive };
+-        millis_t thermal_runaway_timer[EXTRUDERS] = { 0 };
++        static TRState thermal_runaway_state_machine[EXTRUDERS];
++        static millis_t thermal_runaway_timer[EXTRUDERS];
+       #endif
+ 
+       #if HAS_THERMALLY_PROTECTED_BED
+-        TRState thermal_runaway_bed_state_machine = TRInactive;
+-        millis_t thermal_runaway_bed_timer;
++        static TRState thermal_runaway_bed_state_machine;
++        static millis_t thermal_runaway_bed_timer;
+       #endif
+ 
+     #endif // THERMAL_PROTECTION
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 0f7746d..98b5fa6 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -97,7 +97,7 @@ static void lcd_status_screen();
+   static void lcd_control_motion_menu();
+   static void lcd_control_volumetric_menu();
+ 
+-  #if ENABLED(HAS_LCD_CONTRAST)
++  #if HAS_LCD_CONTRAST
+     static void lcd_set_contrast();
+   #endif
+ 
+@@ -1352,7 +1352,7 @@ static void lcd_control_menu() {
+   MENU_ITEM(submenu, MSG_MOTION, lcd_control_motion_menu);
+   MENU_ITEM(submenu, MSG_VOLUMETRIC, lcd_control_volumetric_menu);
+ 
+-  #if ENABLED(HAS_LCD_CONTRAST)
++  #if HAS_LCD_CONTRAST
+     //MENU_ITEM_EDIT(int3, MSG_CONTRAST, &lcd_contrast, 0, 63);
+     MENU_ITEM(submenu, MSG_CONTRAST, lcd_set_contrast);
+   #endif
+@@ -1712,7 +1712,7 @@ static void lcd_control_volumetric_menu() {
+  * "Control" > "Contrast" submenu
+  *
+  */
+-#if ENABLED(HAS_LCD_CONTRAST)
++#if HAS_LCD_CONTRAST
+   static void lcd_set_contrast() {
+     ENCODER_DIRECTION_NORMAL();
+     if (encoderPosition) {
+@@ -2383,7 +2383,7 @@ void lcd_setalertstatuspgm(const char* message) {
+ 
+ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+ 
+-#if ENABLED(HAS_LCD_CONTRAST)
++#if HAS_LCD_CONTRAST
+   void lcd_setcontrast(uint8_t value) {
+     lcd_contrast = value & 0x3F;
+     u8g.setContrast(lcd_contrast);
+

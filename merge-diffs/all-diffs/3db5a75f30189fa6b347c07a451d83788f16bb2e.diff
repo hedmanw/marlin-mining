@@ -1,0 +1,765 @@
+commit 3db5a75f30189fa6b347c07a451d83788f16bb2e (from 3b0bf88233385cabf5d6fcbbb5669cdb0968d28d)
+Merge: 3b0bf88 8a2587f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 19 20:53:38 2016 -0700
+
+    Merge pull request #3568 from thinkyhead/rc_various_fixes
+    
+    General code cleanup, improved naming, etc.
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index aa3d54d..7c40962 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -223,10 +223,9 @@ void ok_to_send();
+ void reset_bed_level();
+ void prepare_move();
+ void kill(const char*);
+-void Stop();
+ 
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  void filrunout();
++  void handle_filament_runout();
+ #endif
+ 
+ /**
+@@ -275,8 +274,8 @@ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in m
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+ extern float current_position[NUM_AXIS];
+ extern float home_offset[3]; // axis[n].home_offset
+-extern float min_pos[3]; // axis[n].min_pos
+-extern float max_pos[3]; // axis[n].max_pos
++extern float sw_endstop_min[3]; // axis[n].sw_endstop_min
++extern float sw_endstop_max[3]; // axis[n].sw_endstop_max
+ extern bool axis_known_position[3]; // axis[n].is_known
+ extern bool axis_homed[3]; // axis[n].is_homed
+ 
+@@ -340,8 +339,8 @@ extern bool axis_homed[3]; // axis[n].is_homed
+ #endif
+ 
+ #if ENABLED(BARICUDA)
+-  extern int ValvePressure;
+-  extern int EtoPPressure;
++  extern int baricuda_valve_pressure;
++  extern int baricuda_e_to_p_pressure;
+ #endif
+ 
+ #if ENABLED(FILAMENT_WIDTH_SENSOR)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index dabd765..ecd9f9e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -284,32 +284,51 @@ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DIA);
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(1.0);
+ 
++// The distance that XYZ has been offset by G92. Reset by G28.
+ float position_shift[3] = { 0 };
++
++// This offset is added to the configured home position.
++// Set by M206, M428, or menu item. Saved to EEPROM.
+ float home_offset[3] = { 0 };
+-float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+-float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
++
++// Software Endstops. Default to configured limits.
++float sw_endstop_min[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
++float sw_endstop_max[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ 
+ #if FAN_COUNT > 0
+   int fanSpeeds[FAN_COUNT] = { 0 };
+ #endif
+ 
++// The active extruder (tool). Set with T<extruder> command.
+ uint8_t active_extruder = 0;
++
++// Relative Mode. Enable with G91, disable with G90.
++static bool relative_mode = false;
++
+ bool cancel_heatup = false;
+ 
+ const char errormagic[] PROGMEM = "Error:";
+ const char echomagic[] PROGMEM = "echo:";
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ 
+-static bool relative_mode = false;  //Determines Absolute or Relative Coordinates
+ static int serial_count = 0;
+-static char* seen_pointer; ///< A pointer to find chars in the command string (X, Y, Z, E, etc.)
+-const char* queued_commands_P = NULL; /* pointer to the current line in the active sequence of commands, or NULL when none */
++
++// GCode parameter pointer used by code_seen(), code_value(), etc.
++static char* seen_pointer;
++
++// Next Immediate GCode Command pointer. NULL if none.
++const char* queued_commands_P = NULL;
++
+ const int sensitive_pins[] = SENSITIVE_PINS; ///< Sensitive pin list for M42
++
+ // Inactivity shutdown
+ millis_t previous_cmd_ms = 0;
+ static millis_t max_inactive_time = 0;
+ static millis_t stepper_inactive_time = (DEFAULT_STEPPER_DEACTIVE_TIME) * 1000UL;
++
++// Print Job Timer
+ Stopwatch print_job_timer = Stopwatch();
++
+ static uint8_t target_extruder;
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+@@ -344,8 +363,8 @@ static uint8_t target_extruder;
+ #endif
+ 
+ #if ENABLED(BARICUDA)
+-  int ValvePressure = 0;
+-  int EtoPPressure = 0;
++  int baricuda_valve_pressure = 0;
++  int baricuda_e_to_p_pressure = 0;
+ #endif
+ 
+ #if ENABLED(FWRETRACT)
+@@ -427,7 +446,7 @@ static uint8_t target_extruder;
+ #endif
+ 
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  static bool filrunoutEnqueued = false;
++  static bool filament_ran_out = false;
+ #endif
+ 
+ static bool send_ok[BUFSIZE];
+@@ -472,13 +491,13 @@ static bool send_ok[BUFSIZE];
+  * ***************************************************************************
+  */
+ 
++void stop();
++
+ void get_available_commands();
+ void process_next_command();
+ 
+ void plan_arc(float target[NUM_AXIS], float* offset, uint8_t clockwise);
+ 
+-bool setTargetedHotend(int code);
+-
+ void serial_echopair_P(const char* s_P, int v)           { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, long v)          { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, float v)         { serialprintPGM(s_P); SERIAL_ECHO(v); }
+@@ -1142,6 +1161,30 @@ bool code_seen(char code) {
+   return (seen_pointer != NULL); // Return TRUE if the code-letter was found
+ }
+ 
++/**
++ * Set target_extruder from the T parameter or the active_extruder
++ *
++ * Returns TRUE if the target is invalid
++ */
++bool get_target_extruder_from_command(int code) {
++  if (code_seen('T')) {
++    short t = code_value_short();
++    if (t >= EXTRUDERS) {
++      SERIAL_ECHO_START;
++      SERIAL_CHAR('M');
++      SERIAL_ECHO(code);
++      SERIAL_ECHOPAIR(" " MSG_INVALID_EXTRUDER " ", t);
++      SERIAL_EOL;
++      return true;
++    }
++    target_extruder = t;
++  }
++  else
++    target_extruder = active_extruder;
++
++  return false;
++}
++
+ #define DEFINE_PGM_READ_ANY(type, reader)       \
+   static inline type pgm_read_any(const type *p)  \
+   { return pgm_read_##reader##_near(p); }
+@@ -1212,24 +1255,32 @@ static void update_software_endstops(AxisEnum axis) {
+     if (axis == X_AXIS) {
+       float dual_max_x = max(extruder_offset[X_AXIS][1], X2_MAX_POS);
+       if (active_extruder != 0) {
+-        min_pos[X_AXIS] = X2_MIN_POS + offs;
+-        max_pos[X_AXIS] = dual_max_x + offs;
++        sw_endstop_min[X_AXIS] = X2_MIN_POS + offs;
++        sw_endstop_max[X_AXIS] = dual_max_x + offs;
+         return;
+       }
+       else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE) {
+-        min_pos[X_AXIS] = base_min_pos(X_AXIS) + offs;
+-        max_pos[X_AXIS] = min(base_max_pos(X_AXIS), dual_max_x - duplicate_extruder_x_offset) + offs;
++        sw_endstop_min[X_AXIS] = base_min_pos(X_AXIS) + offs;
++        sw_endstop_max[X_AXIS] = min(base_max_pos(X_AXIS), dual_max_x - duplicate_extruder_x_offset) + offs;
+         return;
+       }
+     }
+     else
+   #endif
+   {
+-    min_pos[axis] = base_min_pos(axis) + offs;
+-    max_pos[axis] = base_max_pos(axis) + offs;
++    sw_endstop_min[axis] = base_min_pos(axis) + offs;
++    sw_endstop_max[axis] = base_max_pos(axis) + offs;
+   }
+ }
+ 
++/**
++ * Change the home offset for an axis, update the current
++ * position and the software endstops to retain the same
++ * relative distance to the new home.
++ *
++ * Since this changes the current_position, code should
++ * call sync_plan_position soon after this.
++ */
+ static void set_home_offset(AxisEnum axis, float v) {
+   current_position[axis] += v - home_offset[axis];
+   home_offset[axis] = v;
+@@ -1294,8 +1345,8 @@ static void set_axis_is_at_home(AxisEnum axis) {
+        * SCARA home positions are based on configuration since the actual
+        * limits are determined by the inverse kinematic transform.
+        */
+-      min_pos[axis] = base_min_pos(axis); // + (delta[axis] - base_home_pos(axis));
+-      max_pos[axis] = base_max_pos(axis); // + (delta[axis] - base_home_pos(axis));
++      sw_endstop_min[axis] = base_min_pos(axis); // + (delta[axis] - base_home_pos(axis));
++      sw_endstop_max[axis] = base_max_pos(axis); // + (delta[axis] - base_home_pos(axis));
+     }
+     else
+   #endif
+@@ -1712,7 +1763,7 @@ static void setup_for_endstop_move() {
+             SERIAL_ERRORLNPGM("Z-Probe failed to engage!");
+             LCD_ALERTMESSAGEPGM("Err: ZPROBE");
+           }
+-          Stop();
++          stop();
+         }
+ 
+     #endif // Z_PROBE_ALLEN_KEY
+@@ -1816,7 +1867,7 @@ static void setup_for_endstop_move() {
+             SERIAL_ERRORLNPGM("Z-Probe failed to retract!");
+             LCD_ALERTMESSAGEPGM("Err: ZPROBE");
+           }
+-          Stop();
++          stop();
+         }
+     #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -4206,7 +4257,7 @@ inline void gcode_M77() {
+  * M104: Set hot end temperature
+  */
+ inline void gcode_M104() {
+-  if (setTargetedHotend(104)) return;
++  if (get_target_extruder_from_command(104)) return;
+   if (DEBUGGING(DRYRUN)) return;
+ 
+   if (code_seen('S')) {
+@@ -4314,7 +4365,7 @@ inline void gcode_M104() {
+  * M105: Read hot end and bed temperature
+  */
+ inline void gcode_M105() {
+-  if (setTargetedHotend(105)) return;
++  if (get_target_extruder_from_command(105)) return;
+ 
+   #if HAS_TEMP_HOTEND || HAS_TEMP_BED
+     SERIAL_PROTOCOLPGM(MSG_OK);
+@@ -4358,7 +4409,7 @@ inline void gcode_M105() {
+  */
+ inline void gcode_M109() {
+ 
+-  if (setTargetedHotend(109)) return;
++  if (get_target_extruder_from_command(109)) return;
+   if (DEBUGGING(DRYRUN)) return;
+ 
+   bool no_wait_for_cooling = code_seen('S');
+@@ -4612,22 +4663,22 @@ inline void gcode_M112() { kill(PSTR(MSG_KILLED)); }
+     /**
+      * M126: Heater 1 valve open
+      */
+-    inline void gcode_M126() { ValvePressure = code_seen('S') ? constrain(code_value(), 0, 255) : 255; }
++    inline void gcode_M126() { baricuda_valve_pressure = code_seen('S') ? constrain(code_value(), 0, 255) : 255; }
+     /**
+      * M127: Heater 1 valve close
+      */
+-    inline void gcode_M127() { ValvePressure = 0; }
++    inline void gcode_M127() { baricuda_valve_pressure = 0; }
+   #endif
+ 
+   #if HAS_HEATER_2
+     /**
+      * M128: Heater 2 valve open
+      */
+-    inline void gcode_M128() { EtoPPressure = code_seen('S') ? constrain(code_value(), 0, 255) : 255; }
++    inline void gcode_M128() { baricuda_e_to_p_pressure = code_seen('S') ? constrain(code_value(), 0, 255) : 255; }
+     /**
+      * M129: Heater 2 valve close
+      */
+-    inline void gcode_M129() { EtoPPressure = 0; }
++    inline void gcode_M129() { baricuda_e_to_p_pressure = 0; }
+   #endif
+ 
+ #endif //BARICUDA
+@@ -5025,7 +5076,7 @@ inline void gcode_M121() { enable_endstops_globally(false); }
+  */
+ inline void gcode_M200() {
+ 
+-  if (setTargetedHotend(200)) return;
++  if (get_target_extruder_from_command(200)) return;
+ 
+   if (code_seen('D')) {
+     float diameter = code_value();
+@@ -5277,7 +5328,7 @@ inline void gcode_M206() {
+    *   Z<zoffset> - Available with DUAL_X_CARRIAGE
+    */
+   inline void gcode_M218() {
+-    if (setTargetedHotend(218)) return;
++    if (get_target_extruder_from_command(218)) return;
+ 
+     if (code_seen('X')) extruder_offset[X_AXIS][target_extruder] = code_value();
+     if (code_seen('Y')) extruder_offset[Y_AXIS][target_extruder] = code_value();
+@@ -5316,7 +5367,7 @@ inline void gcode_M220() {
+ inline void gcode_M221() {
+   if (code_seen('S')) {
+     int sval = code_value();
+-    if (setTargetedHotend(221)) return;
++    if (get_target_extruder_from_command(221)) return;
+     extruder_multiplier[target_extruder] = sval;
+   }
+ }
+@@ -5842,7 +5893,7 @@ inline void gcode_M428() {
+   bool err = false;
+   for (int8_t i = X_AXIS; i <= Z_AXIS; i++) {
+     if (axis_homed[i]) {
+-      float base = (current_position[i] > (min_pos[i] + max_pos[i]) / 2) ? base_home_pos(i) : 0,
++      float base = (current_position[i] > (sw_endstop_min[i] + sw_endstop_max[i]) / 2) ? base_home_pos(i) : 0,
+             diff = current_position[i] - base;
+       if (diff > -20 && diff < 20) {
+         set_home_offset((AxisEnum)i, home_offset[i] - diff);
+@@ -6078,7 +6129,7 @@ inline void gcode_M503() {
+     #endif
+ 
+     #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-      filrunoutEnqueued = false;
++      filament_ran_out = false;
+     #endif
+ 
+   }
+@@ -7032,8 +7083,8 @@ void ok_to_send() {
+ 
+ void clamp_to_software_endstops(float target[3]) {
+   if (min_software_endstops) {
+-    NOLESS(target[X_AXIS], min_pos[X_AXIS]);
+-    NOLESS(target[Y_AXIS], min_pos[Y_AXIS]);
++    NOLESS(target[X_AXIS], sw_endstop_min[X_AXIS]);
++    NOLESS(target[Y_AXIS], sw_endstop_min[Y_AXIS]);
+ 
+     float negative_z_offset = 0;
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+@@ -7048,13 +7099,13 @@ void clamp_to_software_endstops(float target[3]) {
+         negative_z_offset += home_offset[Z_AXIS];
+       }
+     #endif
+-    NOLESS(target[Z_AXIS], min_pos[Z_AXIS] + negative_z_offset);
++    NOLESS(target[Z_AXIS], sw_endstop_min[Z_AXIS] + negative_z_offset);
+   }
+ 
+   if (max_software_endstops) {
+-    NOMORE(target[X_AXIS], max_pos[X_AXIS]);
+-    NOMORE(target[Y_AXIS], max_pos[Y_AXIS]);
+-    NOMORE(target[Z_AXIS], max_pos[Z_AXIS]);
++    NOMORE(target[X_AXIS], sw_endstop_max[X_AXIS]);
++    NOMORE(target[Y_AXIS], sw_endstop_max[Y_AXIS]);
++    NOMORE(target[Z_AXIS], sw_endstop_max[Z_AXIS]);
+   }
+ }
+ 
+@@ -7714,7 +7765,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+   #if HAS_FILRUNOUT
+     if (IS_SD_PRINTING && !(READ(FILRUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
+-      filrunout();
++      handle_filament_runout();
+   #endif
+ 
+   if (commands_in_queue < BUFSIZE) get_available_commands();
+@@ -7897,9 +7948,9 @@ void kill(const char* lcd_msg) {
+ 
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+ 
+-  void filrunout() {
+-    if (!filrunoutEnqueued) {
+-      filrunoutEnqueued = true;
++  void handle_filament_runout() {
++    if (!filament_ran_out) {
++      filament_ran_out = true;
+       enqueue_and_echo_commands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
+       st_synchronize();
+     }
+@@ -7968,7 +8019,7 @@ void kill(const char* lcd_msg) {
+   }
+ #endif // FAST_PWM_FAN
+ 
+-void Stop() {
++void stop() {
+   disable_all_heaters();
+   if (IsRunning()) {
+     Running = false;
+@@ -7979,27 +8030,6 @@ void Stop() {
+   }
+ }
+ 
+-/**
+- * Set target_extruder from the T parameter or the active_extruder
+- *
+- * Returns TRUE if the target is invalid
+- */
+-bool setTargetedHotend(int code) {
+-  target_extruder = active_extruder;
+-  if (code_seen('T')) {
+-    target_extruder = code_value_short();
+-    if (target_extruder >= EXTRUDERS) {
+-      SERIAL_ECHO_START;
+-      SERIAL_CHAR('M');
+-      SERIAL_ECHO(code);
+-      SERIAL_ECHOPGM(" " MSG_INVALID_EXTRUDER " ");
+-      SERIAL_ECHOLN((int)target_extruder);
+-      return true;
+-    }
+-  }
+-  return false;
+-}
+-
+ float calculate_volumetric_multiplier(float diameter) {
+   if (!volumetric_enabled || diameter == 0) return 1.0;
+   float d2 = diameter * 0.5;
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ae2b66d..ed3cd30 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -428,8 +428,8 @@ void check_axes_activity() {
+   #endif
+ 
+   #if ENABLED(BARICUDA)
+-    unsigned char tail_valve_pressure = ValvePressure,
+-                  tail_e_to_p_pressure = EtoPPressure;
++    unsigned char tail_valve_pressure = baricuda_valve_pressure,
++                  tail_e_to_p_pressure = baricuda_e_to_p_pressure;
+   #endif
+ 
+   block_t* block;
+@@ -650,8 +650,8 @@ float junction_deviation = 0.1;
+   #endif
+ 
+   #if ENABLED(BARICUDA)
+-    block->valve_pressure = ValvePressure;
+-    block->e_to_p_pressure = EtoPPressure;
++    block->valve_pressure = baricuda_valve_pressure;
++    block->e_to_p_pressure = baricuda_e_to_p_pressure;
+   #endif
+ 
+   // Compute direction bits for this block
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index cb175ef..5713cb6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1279,13 +1279,11 @@ void disable_all_heaters() {
+   #define MAX6675_HEAT_INTERVAL 250u
+ 
+   #if ENABLED(MAX6675_IS_MAX31855)
+-    unsigned long max6675_temp = 2000;
+-    #define MAX6675_READ_BYTES 4
++    uint32_t max6675_temp = 2000;
+     #define MAX6675_ERROR_MASK 7
+     #define MAX6675_DISCARD_BITS 18
+   #else
+-    unsigned int max6675_temp = 2000;
+-    #define MAX6675_READ_BYTES 2
++    uint16_t max6675_temp = 2000;
+     #define MAX6675_ERROR_MASK 4
+     #define MAX6675_DISCARD_BITS 3
+   #endif
+@@ -1317,7 +1315,7 @@ void disable_all_heaters() {
+ 
+     // Read a big-endian temperature value
+     max6675_temp = 0;
+-    for (uint8_t i = MAX6675_READ_BYTES; i--;) {
++    for (uint8_t i = sizeof(max6675_temp); i--;) {
+       SPDR = 0;
+       for (;!TEST(SPSR, SPIF););
+       max6675_temp |= SPDR;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index cb9e717..3e77278 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1167,13 +1167,13 @@ static void _lcd_move(const char* name, AxisEnum axis, float min, float max) {
+ #if ENABLED(DELTA)
+   static float delta_clip_radius_2 =  (DELTA_PRINTABLE_RADIUS) * (DELTA_PRINTABLE_RADIUS);
+   static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - a*a); }
+-  static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, max(min_pos[X_AXIS], -clip), min(max_pos[X_AXIS], clip)); }
+-  static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, max(min_pos[Y_AXIS], -clip), min(max_pos[Y_AXIS], clip)); }
++  static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, max(sw_endstop_min[X_AXIS], -clip), min(sw_endstop_max[X_AXIS], clip)); }
++  static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, max(sw_endstop_min[Y_AXIS], -clip), min(sw_endstop_max[Y_AXIS], clip)); }
+ #else
+-  static void lcd_move_x() { _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, min_pos[X_AXIS], max_pos[X_AXIS]); }
+-  static void lcd_move_y() { _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, min_pos[Y_AXIS], max_pos[Y_AXIS]); }
++  static void lcd_move_x() { _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, sw_endstop_min[X_AXIS], sw_endstop_max[X_AXIS]); }
++  static void lcd_move_y() { _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, sw_endstop_min[Y_AXIS], sw_endstop_max[Y_AXIS]); }
+ #endif
+-static void lcd_move_z() { _lcd_move(PSTR(MSG_MOVE_Z), Z_AXIS, min_pos[Z_AXIS], max_pos[Z_AXIS]); }
++static void lcd_move_z() { _lcd_move(PSTR(MSG_MOVE_Z), Z_AXIS, sw_endstop_min[Z_AXIS], sw_endstop_max[Z_AXIS]); }
+ static void lcd_move_e(
+   #if EXTRUDERS > 1
+     uint8_t e
+
+commit 3db5a75f30189fa6b347c07a451d83788f16bb2e (from 8a2587f017a6feb6fd68f344f5677939cdd89fa5)
+Merge: 3b0bf88 8a2587f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 19 20:53:38 2016 -0700
+
+    Merge pull request #3568 from thinkyhead/rc_various_fixes
+    
+    General code cleanup, improved naming, etc.
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index b0a0619..1966f43 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -506,6 +506,12 @@
+   #endif
+ 
+   /**
++   * Flags for PID handling
++   */
++  #define HAS_PID_HEATING (ENABLED(PIDTEMP) || ENABLED(PIDTEMPBED))
++  #define HAS_PID_FOR_BOTH (ENABLED(PIDTEMP) && ENABLED(PIDTEMPBED))
++
++  /**
+    * ARRAY_BY_EXTRUDERS based on EXTRUDERS
+    */
+   #if EXTRUDERS > 3
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1162262..ecd9f9e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -5610,7 +5610,7 @@ inline void gcode_M226() {
+  *       U<bool> with a non-zero value will apply the result to current settings
+  */
+ inline void gcode_M303() {
+-  #if ENABLED(PIDTEMP)
++  #if HAS_PID_HEATING
+     int e = code_seen('E') ? code_value_short() : 0;
+     int c = code_seen('C') ? code_value_short() : 5;
+     bool u = code_seen('U') && code_value_short() != 0;
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 7d5a1b4..ced96e2 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -794,7 +794,7 @@ void Config_PrintSettings(bool forReplay) {
+     SERIAL_EOL;
+   #endif // ULTIPANEL
+ 
+-  #if ENABLED(PIDTEMP) || ENABLED(PIDTEMPBED)
++  #if HAS_PID_HEATING
+ 
+     CONFIG_ECHO_START;
+     if (!forReplay) {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index a48b8db..5713cb6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -221,7 +221,7 @@ static void updateTemperaturesFromRawValues();
+ //================================ Functions ================================
+ //===========================================================================
+ 
+-#if ENABLED(PIDTEMP)
++#if HAS_PID_HEATING
+ 
+   void PID_autotune(float temp, int extruder, int ncycles, bool set_result/*=false*/) {
+     float input = 0.0;
+@@ -240,8 +240,13 @@ static void updateTemperaturesFromRawValues();
+       millis_t next_auto_fan_check_ms = temp_ms + 2500UL;
+     #endif
+ 
+-    if (extruder >= EXTRUDERS
+-      #if !HAS_TEMP_BED
++    if (false
++      #if ENABLED(PIDTEMP)
++         || extruder >= EXTRUDERS
++      #else
++         || extruder >= 0
++      #endif
++      #if DISABLED(PIDTEMPBED)
+          || extruder < 0
+       #endif
+     ) {
+@@ -253,10 +258,16 @@ static void updateTemperaturesFromRawValues();
+ 
+     disable_all_heaters(); // switch off all heaters.
+ 
+-    if (extruder < 0)
+-      soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
+-    else
++    #if HAS_PID_FOR_BOTH
++      if (extruder < 0)
++        soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
++      else
++        soft_pwm[extruder] = bias = d = (PID_MAX) / 2;
++    #elif ENABLED(PIDTEMP)
+       soft_pwm[extruder] = bias = d = (PID_MAX) / 2;
++    #else
++      soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
++    #endif
+ 
+     // PID Tuning loop
+     for (;;) {
+@@ -266,7 +277,15 @@ static void updateTemperaturesFromRawValues();
+       if (temp_meas_ready) { // temp sample ready
+         updateTemperaturesFromRawValues();
+ 
+-        input = (extruder < 0) ? current_temperature_bed : current_temperature[extruder];
++        input =
++          #if HAS_PID_FOR_BOTH
++            extruder < 0 ? current_temperature_bed : current_temperature[extruder]
++          #elif ENABLED(PIDTEMP)
++            current_temperature[extruder]
++          #else
++            current_temperature_bed
++          #endif
++        ;
+ 
+         max = max(max, input);
+         min = min(min, input);
+@@ -281,10 +300,16 @@ static void updateTemperaturesFromRawValues();
+         if (heating && input > temp) {
+           if (ELAPSED(ms, t2 + 5000UL)) {
+             heating = false;
+-            if (extruder < 0)
+-              soft_pwm_bed = (bias - d) >> 1;
+-            else
++            #if HAS_PID_FOR_BOTH
++              if (extruder < 0)
++                soft_pwm_bed = (bias - d) >> 1;
++              else
++                soft_pwm[extruder] = (bias - d) >> 1;
++            #elif ENABLED(PIDTEMP)
+               soft_pwm[extruder] = (bias - d) >> 1;
++            #elif ENABLED(PIDTEMPBED)
++              soft_pwm_bed = (bias - d) >> 1;
++            #endif
+             t1 = ms;
+             t_high = t1 - t2;
+             max = temp;
+@@ -297,7 +322,15 @@ static void updateTemperaturesFromRawValues();
+             t2 = ms;
+             t_low = t2 - t1;
+             if (cycles > 0) {
+-              long max_pow = extruder < 0 ? MAX_BED_POWER : PID_MAX;
++              long max_pow =
++                #if HAS_PID_FOR_BOTH
++                  extruder < 0 ? MAX_BED_POWER : PID_MAX
++                #elif ENABLED(PIDTEMP)
++                  PID_MAX
++                #else
++                  MAX_BED_POWER
++                #endif
++              ;
+               bias += (d * (t_high - t_low)) / (t_low + t_high);
+               bias = constrain(bias, 20, max_pow - 20);
+               d = (bias > max_pow / 2) ? max_pow - 1 - bias : bias;
+@@ -336,10 +369,16 @@ static void updateTemperaturesFromRawValues();
+                 */
+               }
+             }
+-            if (extruder < 0)
+-              soft_pwm_bed = (bias + d) >> 1;
+-            else
++            #if HAS_PID_FOR_BOTH
++              if (extruder < 0)
++                soft_pwm_bed = (bias + d) >> 1;
++              else
++                soft_pwm[extruder] = (bias + d) >> 1;
++            #elif ENABLED(PIDTEMP)
+               soft_pwm[extruder] = (bias + d) >> 1;
++            #else
++              soft_pwm_bed = (bias + d) >> 1;
++            #endif
+             cycles++;
+             min = temp;
+           }
+@@ -366,27 +405,48 @@ static void updateTemperaturesFromRawValues();
+       }
+       if (cycles > ncycles) {
+         SERIAL_PROTOCOLLNPGM(MSG_PID_AUTOTUNE_FINISHED);
+-        const char* estring = extruder < 0 ? "bed" : "";
+-        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(workKp);
+-        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(workKi);
+-        SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(workKd);
++
++        #if HAS_PID_FOR_BOTH
++          const char* estring = extruder < 0 ? "bed" : "";
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(workKp);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(workKi);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(workKd);
++        #elif ENABLED(PIDTEMP)
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_Kp "); SERIAL_PROTOCOLLN(workKp);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_Ki "); SERIAL_PROTOCOLLN(workKi);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_Kd "); SERIAL_PROTOCOLLN(workKd);
++        #else
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKp "); SERIAL_PROTOCOLLN(workKp);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKi "); SERIAL_PROTOCOLLN(workKi);
++          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKd "); SERIAL_PROTOCOLLN(workKd);
++        #endif
++
++        #define _SET_BED_PID() \
++          bedKp = workKp; \
++          bedKi = scalePID_i(workKi); \
++          bedKd = scalePID_d(workKd); \
++          updatePID()
++
++        #define _SET_EXTRUDER_PID() \
++          PID_PARAM(Kp, extruder) = workKp; \
++          PID_PARAM(Ki, extruder) = scalePID_i(workKi); \
++          PID_PARAM(Kd, extruder) = scalePID_d(workKd); \
++          updatePID()
+ 
+         // Use the result? (As with "M303 U1")
+         if (set_result) {
+-          if (extruder < 0) {
+-            #if ENABLED(PIDTEMPBED)
+-              bedKp = workKp;
+-              bedKi = scalePID_i(workKi);
+-              bedKd = scalePID_d(workKd);
+-              updatePID();
+-            #endif
+-          }
+-          else {
+-            PID_PARAM(Kp, extruder) = workKp;
+-            PID_PARAM(Ki, extruder) = scalePID_i(workKi);
+-            PID_PARAM(Kd, extruder) = scalePID_d(workKd);
+-            updatePID();
+-          }
++          #if HAS_PID_FOR_BOTH
++            if (extruder < 0) {
++              _SET_BED_PID();
++            }
++            else {
++              _SET_EXTRUDER_PID();
++            }
++          #elif ENABLED(PIDTEMP)
++            _SET_EXTRUDER_PID();
++          #else
++            _SET_BED_PID();
++          #endif
+         }
+         return;
+       }
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4521587..3e77278 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1343,7 +1343,7 @@ static void lcd_control_menu() {
+   static void _lcd_autotune(int e) {
+     char cmd[30];
+     sprintf_P(cmd, PSTR("M303 U1 E%d S%d"), e,
+-      #if ENABLED(PIDTEMP) && ENABLED(PIDTEMPBED)
++      #if HAS_PID_FOR_BOTH
+         e < 0 ? autotune_temp_bed : autotune_temp[e]
+       #elif ENABLED(PIDTEMPBED)
+         autotune_temp_bed
+

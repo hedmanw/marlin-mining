@@ -1,0 +1,1633 @@
+commit 044886b4a0d546cfe3bae2bf66424d127db7bd33 (from b19c8b74b9b5a5359c8cf508cca17480003e189e)
+Merge: b19c8b7 6d95644
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Mon Nov 28 21:52:16 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index e7102ea..32e0b81 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -858,7 +858,18 @@ inline void process_commands()
+       }
+       else
+       { 
+-        finishAndDisableSteppers();
++        #if ((E_ENABLE_PIN != X_ENABLE_PIN) && (E_ENABLE_PIN != Y_ENABLE_PIN)) // Only enable on boards that have seperate ENABLE_PINS
++        if(code_seen('E')) {
++          st_synchronize()
++          LCD_MESSAGEPGM("Free Move");
++          disable_e();
++        }
++        else {
++          finishAndDisableSteppers();
++        }
++        #else
++          finishAndDisableSteppers();
++        #endif
+       }
+       break;
+     case 85: // M85
+
+commit 044886b4a0d546cfe3bae2bf66424d127db7bd33 (from 6d95644c0d7dcb17b9723374b92aaceed11c6548)
+Merge: b19c8b7 6d95644
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Mon Nov 28 21:52:16 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index c298c97..1099d08 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -39,7 +39,7 @@ template <class T> int EEPROM_readAnything(int &ee, T& value)
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+ #define EEPROM_VERSION "V04"  
+ 
+-inline void StoreSettings() 
++FORCE_INLINE void StoreSettings() 
+ {
+ #ifdef EEPROM_SETTINGS
+   char ver[4]= "000";
+@@ -72,7 +72,7 @@ inline void StoreSettings()
+ #endif //EEPROM_SETTINGS
+ }
+ 
+-inline void RetrieveSettings(bool def=false)
++FORCE_INLINE void RetrieveSettings(bool def=false)
+ {  // if def=true, the default values will be used
+   #ifdef EEPROM_SETTINGS
+     int i=EEPROM_OFFSET;
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 57f403d..464d7eb 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -10,6 +10,8 @@
+ #include "Configuration.h"
+ #include "MarlinSerial.h"
+ 
++
++#define  FORCE_INLINE __attribute__((always_inline)) inline
+ //#define SERIAL_ECHO(x) Serial << "echo: " << x;
+ //#define SERIAL_ECHOLN(x) Serial << "echo: "<<x<<endl;
+ //#define SERIAL_ERROR(x) Serial << "Error: " << x;
+@@ -43,7 +45,7 @@ const char echomagic[] PROGMEM ="echo:";
+ 
+ //things to write to serial from Programmemory. saves 400 to 2k of RAM.
+ #define SerialprintPGM(x) serialprintPGM(PSTR(x))
+-inline void serialprintPGM(const char *str)
++FORCE_INLINE void serialprintPGM(const char *str)
+ {
+   char ch=pgm_read_byte(str);
+   while(ch)
+@@ -112,5 +114,6 @@ void prepare_arc_move(char isclockwise);
+ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern float current_position[NUM_AXIS] ;
++extern float add_homeing[3];
+ 
+ #endif
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 86f5626..32e0b81 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -94,6 +94,7 @@
+ // M92  - Set axis_steps_per_unit - same syntax as G92
+ // M114 - Output current position to serial port 
+ // M115	- Capabilities string
++// M117 - display message
+ // M119 - Output Endstop status to serial port
+ // M140 - Set bed target temp
+ // M190 - Wait for bed current temp to reach target temp.
+@@ -103,6 +104,7 @@
+ // M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+ // M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
+ // M205 -  advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk
++// M206 - set additional homeing offset
+ // M220 - set speed factor override percentage S:factor in percent
+ // M301 - Set PID parameters P I and D
+ // M400 - Finish all moves
+@@ -130,7 +132,7 @@ volatile int feedmultiply=100; //100->1 200->2
+ int saved_feedmultiply;
+ volatile bool feedmultiplychanged=false;
+ float current_position[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
+-
++float add_homeing[3]={0,0,0};
+ 
+ //===========================================================================
+ //=============================private variables=============================
+@@ -528,19 +530,23 @@ inline void process_commands()
+       }
+       feedrate = 0.0;
+       home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+-
++      
+       if((home_all_axis) || (code_seen(axis_codes[X_AXIS]))) 
+       {
+         HOMEAXIS(X);
++	current_position[0]=code_value()+add_homeing[0];
+       }
+ 
+       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
+        HOMEAXIS(Y);
++       current_position[1]=code_value()+add_homeing[1];
+       }
+ 
+       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+         HOMEAXIS(Z);
++	current_position[2]=code_value()+add_homeing[2];
+       }       
++      
+       feedrate = saved_feedrate;
+       feedmultiply = saved_feedmultiply;
+       previous_millis_cmd = millis();
+@@ -557,7 +563,7 @@ inline void process_commands()
+         st_synchronize();
+       for(int8_t i=0; i < NUM_AXIS; i++) {
+         if(code_seen(axis_codes[i])) { 
+-           current_position[i] = code_value();  
++           current_position[i] = code_value()+add_homeing[i];  
+            if(i == E_AXIS) {
+              plan_set_e_position(current_position[E_AXIS]);
+            }
+@@ -880,6 +886,9 @@ inline void process_commands()
+     case 115: // M115
+       SerialprintPGM("FIRMWARE_NAME:Marlin; Sprinter/grbl mashup for gen6 FIRMWARE_URL:http://www.mendel-parts.com PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1");
+       break;
++    case 117: // M117 display message
++      LCD_MESSAGE(cmdbuffer[bufindr]+5);
++      break;
+     case 114: // M114
+       SERIAL_PROTOCOLPGM("X:");
+       SERIAL_PROTOCOL(current_position[X_AXIS]);
+@@ -960,6 +969,12 @@ inline void process_commands()
+       if(code_seen('Z')) max_z_jerk = code_value() ;
+     }
+     break;
++    case 206: // M206 additional homeing offset
++      for(int8_t i=0; i < 3; i++) 
++      {
++        if(code_seen(axis_codes[i])) add_homeing[i] = code_value();
++      }
++      break;
+     case 220: // M220 S<factor in percent>- set speed factor override percentage
+     {
+       if(code_seen('S')) 
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+index fade8b2..d1ec0fe 100644
+--- a/Marlin/MarlinSerial.cpp
++++ b/Marlin/MarlinSerial.cpp
+@@ -32,36 +32,27 @@
+ #if defined(UBRRH) || defined(UBRR0H) || defined(UBRR1H) || defined(UBRR2H) || defined(UBRR3H)
+ 
+ #include "MarlinSerial.h"
++#include "Marlin.h"
++
+ 
+-// Define constants and variables for buffering incoming serial data.  We're
+-// using a ring buffer (I think), in which rx_buffer_head is the index of the
+-// location to which to write the next incoming character and rx_buffer_tail
+-// is the index of the location from which to read.
+-#define RX_BUFFER_SIZE 128
+ 
+-struct ring_buffer
+-{
+-  unsigned char buffer[RX_BUFFER_SIZE];
+-  int head;
+-  int tail;
+-};
+ 
+ #if defined(UBRRH) || defined(UBRR0H)
+   ring_buffer rx_buffer  =  { { 0 }, 0, 0 };
+ #endif
+ 
+ 
+-inline void store_char(unsigned char c, ring_buffer *rx_buffer)
++FORCE_INLINE void store_char(unsigned char c)
+ {
+-  int i = (unsigned int)(rx_buffer->head + 1) % RX_BUFFER_SIZE;
++  int i = (unsigned int)(rx_buffer.head + 1) % RX_BUFFER_SIZE;
+ 
+   // if we should be storing the received character into the location
+   // just before the tail (meaning that the head would advance to the
+   // current location of the tail), we're about to overflow the buffer
+   // and so we don't write the character or advance the head.
+-  if (i != rx_buffer->tail) {
+-    rx_buffer->buffer[rx_buffer->head] = c;
+-    rx_buffer->head = i;
++  if (i != rx_buffer.tail) {
++    rx_buffer.buffer[rx_buffer.head] = c;
++    rx_buffer.head = i;
+   }
+ }
+ 
+@@ -79,29 +70,15 @@ inline void store_char(unsigned char c, ring_buffer *rx_buffer)
+   #else
+     #error UDR not defined
+   #endif
+-    store_char(c, &rx_buffer);
++    store_char(c);
+   }
+ #endif
+ 
+ // Constructors ////////////////////////////////////////////////////////////////
+ 
+-MarlinSerial::MarlinSerial(ring_buffer *rx_buffer,
+-  volatile uint8_t *ubrrh, volatile uint8_t *ubrrl,
+-  volatile uint8_t *ucsra, volatile uint8_t *ucsrb,
+-  volatile uint8_t *udr,
+-  uint8_t rxen, uint8_t txen, uint8_t rxcie, uint8_t udre, uint8_t u2x)
+-{
+-  _rx_buffer = rx_buffer;
+-  _ubrrh = ubrrh;
+-  _ubrrl = ubrrl;
+-  _ucsra = ucsra;
+-  _ucsrb = ucsrb;
+-  _udr = udr;
+-  _rxen = rxen;
+-  _txen = txen;
+-  _rxcie = rxcie;
+-  _udre = udre;
+-  _u2x = u2x;
++MarlinSerial::MarlinSerial()
++{
++
+ }
+ 
+ // Public Methods //////////////////////////////////////////////////////////////
+@@ -109,63 +86,60 @@ MarlinSerial::MarlinSerial(ring_buffer *rx_buffer,
+ void MarlinSerial::begin(long baud)
+ {
+   uint16_t baud_setting;
+-  bool use_u2x = true;
++  bool useU2X0 = true;
+ 
+ #if F_CPU == 16000000UL
+   // hardcoded exception for compatibility with the bootloader shipped
+   // with the Duemilanove and previous boards and the firmware on the 8U2
+   // on the Uno and Mega 2560.
+   if (baud == 57600) {
+-    use_u2x = false;
++    useU2X0 = false;
+   }
+ #endif
+   
+-  if (use_u2x) {
+-    *_ucsra = 1 << _u2x;
++  if (useU2X0) {
++    UCSR0A = 1 << U2X0;
+     baud_setting = (F_CPU / 4 / baud - 1) / 2;
+   } else {
+-    *_ucsra = 0;
++    UCSR0A = 0;
+     baud_setting = (F_CPU / 8 / baud - 1) / 2;
+   }
+ 
+   // assign the baud_setting, a.k.a. ubbr (USART Baud Rate Register)
+-  *_ubrrh = baud_setting >> 8;
+-  *_ubrrl = baud_setting;
++  UBRR0H = baud_setting >> 8;
++  UBRR0L = baud_setting;
+ 
+-  sbi(*_ucsrb, _rxen);
+-  sbi(*_ucsrb, _txen);
+-  sbi(*_ucsrb, _rxcie);
++  sbi(UCSR0B, RXEN0);
++  sbi(UCSR0B, TXEN0);
++  sbi(UCSR0B, RXCIE0);
+ }
+ 
+ void MarlinSerial::end()
+ {
+-  cbi(*_ucsrb, _rxen);
+-  cbi(*_ucsrb, _txen);
+-  cbi(*_ucsrb, _rxcie);  
++  cbi(UCSR0B, RXEN0);
++  cbi(UCSR0B, TXEN0);
++  cbi(UCSR0B, RXCIE0);  
+ }
+ 
+-int MarlinSerial::available(void)
+-{
+-  return (unsigned int)(RX_BUFFER_SIZE + _rx_buffer->head - _rx_buffer->tail) % RX_BUFFER_SIZE;
+-}
++
+ 
+ int MarlinSerial::peek(void)
+ {
+-  if (_rx_buffer->head == _rx_buffer->tail) {
++  if (rx_buffer.head == rx_buffer.tail) {
+     return -1;
+   } else {
+-    return _rx_buffer->buffer[_rx_buffer->tail];
++    return rx_buffer.buffer[rx_buffer.tail];
+   }
+ }
+ 
+ int MarlinSerial::read(void)
+ {
+   // if the head isn't ahead of the tail, we don't have any characters
+-  if (_rx_buffer->head == _rx_buffer->tail) {
++  if (rx_buffer.head == rx_buffer.tail) {
+     return -1;
+   } else {
+-    unsigned char c = _rx_buffer->buffer[_rx_buffer->tail];
+-    _rx_buffer->tail = (unsigned int)(_rx_buffer->tail + 1) % RX_BUFFER_SIZE;
++    unsigned char c = rx_buffer.buffer[rx_buffer.tail];
++    rx_buffer.tail = (unsigned int)(rx_buffer.tail + 1) % RX_BUFFER_SIZE;
+     return c;
+   }
+ }
+@@ -181,32 +155,184 @@ void MarlinSerial::flush()
+   // the value to rx_buffer_tail; the previous value of rx_buffer_head
+   // may be written to rx_buffer_tail, making it appear as if the buffer
+   // were full, not empty.
+-  _rx_buffer->head = _rx_buffer->tail;
++  rx_buffer.head = rx_buffer.tail;
++}
++
++
++
++
++/// imports from print.h
++
++
++
++
++void MarlinSerial::print(char c, int base)
++{
++  print((long) c, base);
+ }
+ 
+-void MarlinSerial::write(uint8_t c)
++void MarlinSerial::print(unsigned char b, int base)
+ {
+-  while (!((*_ucsra) & (1 << _udre)))
+-    ;
++  print((unsigned long) b, base);
++}
+ 
+-  *_udr = c;
++void MarlinSerial::print(int n, int base)
++{
++  print((long) n, base);
+ }
+ 
+-void MarlinSerial::checkRx()
++void MarlinSerial::print(unsigned int n, int base)
+ {
+-  if((UCSR0A & (1<<RXC0)) != 0) {
+-    unsigned char c  =  UDR0;
+-    store_char(c, &rx_buffer);
++  print((unsigned long) n, base);
++}
++
++void MarlinSerial::print(long n, int base)
++{
++  if (base == 0) {
++    write(n);
++  } else if (base == 10) {
++    if (n < 0) {
++      print('-');
++      n = -n;
++    }
++    printNumber(n, 10);
++  } else {
++    printNumber(n, base);
+   }
+ }
+ 
++void MarlinSerial::print(unsigned long n, int base)
++{
++  if (base == 0) write(n);
++  else printNumber(n, base);
++}
++
++void MarlinSerial::print(double n, int digits)
++{
++  printFloat(n, digits);
++}
++
++void MarlinSerial::println(void)
++{
++  print('\r');
++  print('\n');  
++}
++
++void MarlinSerial::println(const String &s)
++{
++  print(s);
++  println();
++}
++
++void MarlinSerial::println(const char c[])
++{
++  print(c);
++  println();
++}
++
++void MarlinSerial::println(char c, int base)
++{
++  print(c, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned char b, int base)
++{
++  print(b, base);
++  println();
++}
++
++void MarlinSerial::println(int n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned int n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(long n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(unsigned long n, int base)
++{
++  print(n, base);
++  println();
++}
++
++void MarlinSerial::println(double n, int digits)
++{
++  print(n, digits);
++  println();
++}
++
++// Private Methods /////////////////////////////////////////////////////////////
++
++void MarlinSerial::printNumber(unsigned long n, uint8_t base)
++{
++  unsigned char buf[8 * sizeof(long)]; // Assumes 8-bit chars. 
++  unsigned long i = 0;
++
++  if (n == 0) {
++    print('0');
++    return;
++  } 
++
++  while (n > 0) {
++    buf[i++] = n % base;
++    n /= base;
++  }
++
++  for (; i > 0; i--)
++    print((char) (buf[i - 1] < 10 ?
++      '0' + buf[i - 1] :
++      'A' + buf[i - 1] - 10));
++}
++
++void MarlinSerial::printFloat(double number, uint8_t digits) 
++{ 
++  // Handle negative numbers
++  if (number < 0.0)
++  {
++     print('-');
++     number = -number;
++  }
++
++  // Round correctly so that print(1.999, 2) prints as "2.00"
++  double rounding = 0.5;
++  for (uint8_t i=0; i<digits; ++i)
++    rounding /= 10.0;
++  
++  number += rounding;
++
++  // Extract the integer part of the number and print it
++  unsigned long int_part = (unsigned long)number;
++  double remainder = number - (double)int_part;
++  print(int_part);
++
++  // Print the decimal point, but only if there are digits beyond
++  if (digits > 0)
++    print("."); 
++
++  // Extract digits from the remainder one at a time
++  while (digits-- > 0)
++  {
++    remainder *= 10.0;
++    int toPrint = int(remainder);
++    print(toPrint);
++    remainder -= toPrint; 
++  } 
++}
++
+ // Preinstantiate Objects //////////////////////////////////////////////////////
+ 
+-#if defined(UBRR0H) && defined(UBRR0L)
+-  MarlinSerial MSerial(&rx_buffer, &UBRR0H, &UBRR0L, &UCSR0A, &UCSR0B, &UDR0, RXEN0, TXEN0, RXCIE0, UDRE0, U2X0);
+-#else
+-  #error no serial port defined  (port 0)
+-#endif
++MarlinSerial MSerial;
+ 
+ 
+ #endif // whole file
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+index 7945449..6bc9ffb 100644
+--- a/Marlin/MarlinSerial.h
++++ b/Marlin/MarlinSerial.h
+@@ -23,40 +23,121 @@
+ #define MarlinSerial_h
+ 
+ #include <inttypes.h>
++#include <Stream.h>
++#define  FORCE_INLINE __attribute__((always_inline)) inline
+ 
+-#include "Stream.h"
+ 
+-struct ring_buffer;
+ 
+-class MarlinSerial : public Stream
++// Define constants and variables for buffering incoming serial data.  We're
++// using a ring buffer (I think), in which rx_buffer_head is the index of the
++// location to which to write the next incoming character and rx_buffer_tail
++// is the index of the location from which to read.
++#define RX_BUFFER_SIZE 128
++
++
++struct ring_buffer
++{
++  unsigned char buffer[RX_BUFFER_SIZE];
++  int head;
++  int tail;
++};
++
++#if defined(UBRRH) || defined(UBRR0H)
++  extern ring_buffer rx_buffer;
++#endif
++
++class MarlinSerial //: public Stream
+ {
+-  private:
+-    ring_buffer *_rx_buffer;
+-    volatile uint8_t *_ubrrh;
+-    volatile uint8_t *_ubrrl;
+-    volatile uint8_t *_ucsra;
+-    volatile uint8_t *_ucsrb;
+-    volatile uint8_t *_udr;
+-    uint8_t _rxen;
+-    uint8_t _txen;
+-    uint8_t _rxcie;
+-    uint8_t _udre;
+-    uint8_t _u2x;
++
+   public:
+-    MarlinSerial(ring_buffer *rx_buffer,
+-      volatile uint8_t *ubrrh, volatile uint8_t *ubrrl,
+-      volatile uint8_t *ucsra, volatile uint8_t *ucsrb,
+-      volatile uint8_t *udr,
+-      uint8_t rxen, uint8_t txen, uint8_t rxcie, uint8_t udre, uint8_t u2x);
++    MarlinSerial();
+     void begin(long);
+     void end();
+-    virtual int available(void);
+-    virtual int peek(void);
+-    virtual int read(void);
+-    virtual void flush(void);
+-    virtual void write(uint8_t);
+-    virtual void checkRx(void);
+-    using Print::write; // pull in write(str) and write(buf, size) from Print
++    int peek(void);
++    int read(void);
++    void flush(void);
++    
++    FORCE_INLINE int available(void)
++    {
++      return (unsigned int)(RX_BUFFER_SIZE + rx_buffer.head - rx_buffer.tail) % RX_BUFFER_SIZE;
++    }
++    
++    FORCE_INLINE void write(uint8_t c)
++    {
++      while (!((UCSR0A) & (1 << UDRE0)))
++        ;
++
++      UDR0 = c;
++    }
++    
++    
++    FORCE_INLINE void checkRx(void)
++    {
++      if((UCSR0A & (1<<RXC0)) != 0) {
++        unsigned char c  =  UDR0;
++        int i = (unsigned int)(rx_buffer.head + 1) % RX_BUFFER_SIZE;
++
++        // if we should be storing the received character into the location
++        // just before the tail (meaning that the head would advance to the
++        // current location of the tail), we're about to overflow the buffer
++        // and so we don't write the character or advance the head.
++        if (i != rx_buffer.tail) {
++          rx_buffer.buffer[rx_buffer.head] = c;
++          rx_buffer.head = i;
++        }
++      }
++    }
++    
++    
++    private:
++    void printNumber(unsigned long, uint8_t);
++    void printFloat(double, uint8_t);
++    
++    
++  public:
++    
++    FORCE_INLINE void write(const char *str)
++    {
++      while (*str)
++        write(*str++);
++    }
++
++
++    FORCE_INLINE void write(const uint8_t *buffer, size_t size)
++    {
++      while (size--)
++        write(*buffer++);
++    }
++
++    FORCE_INLINE void print(const String &s)
++    {
++      for (int i = 0; i < s.length(); i++) {
++        write(s[i]);
++      }
++    }
++    
++    FORCE_INLINE void print(const char *str)
++    {
++      write(str);
++    }
++    void print(char, int = BYTE);
++    void print(unsigned char, int = BYTE);
++    void print(int, int = DEC);
++    void print(unsigned int, int = DEC);
++    void print(long, int = DEC);
++    void print(unsigned long, int = DEC);
++    void print(double, int = 2);
++
++    void println(const String &s);
++    void println(const char[]);
++    void println(char, int = BYTE);
++    void println(unsigned char, int = BYTE);
++    void println(int, int = DEC);
++    void println(unsigned int, int = DEC);
++    void println(long, int = DEC);
++    void println(unsigned long, int = DEC);
++    void println(double, int = 2);
++    void println(void);
+ };
+ 
+ #if defined(UBRRH) || defined(UBRR0H)
+diff --git a/Marlin/SdBaseFile.cpp b/Marlin/SdBaseFile.cpp
+index a485199..d33b1e0 100644
+--- a/Marlin/SdBaseFile.cpp
++++ b/Marlin/SdBaseFile.cpp
+@@ -17,6 +17,8 @@
+  * along with the Arduino SdFat Library.  If not, see
+  * <http://www.gnu.org/licenses/>.
+  */
++
++#define SERIAL MSerial
+ #include "SdBaseFile.h"
+ //------------------------------------------------------------------------------
+ // pointer to cwd directory
+@@ -294,20 +296,7 @@ void SdBaseFile::getpos(fpos_t* pos) {
+   pos->position = curPosition_;
+   pos->cluster = curCluster_;
+ }
+-//------------------------------------------------------------------------------
+-/** List directory contents to Serial.
+- *
+- * \param[in] flags The inclusive OR of
+- *
+- * LS_DATE - %Print file modification date
+- *
+- * LS_SIZE - %Print file size.
+- *
+- * LS_R - Recursive list of subdirectories.
+- */
+-void SdBaseFile::ls(uint8_t flags) {
+-  ls(&MSerial, flags, 0);
+-}
++
+ //------------------------------------------------------------------------------
+ /** List directory contents.
+  *
+@@ -324,14 +313,14 @@ void SdBaseFile::ls(uint8_t flags) {
+  * \param[in] indent Amount of space before file name. Used for recursive
+  * list to indicate subdirectory level.
+  */
+-void SdBaseFile::ls(Print* pr, uint8_t flags, uint8_t indent) {
++void SdBaseFile::ls(uint8_t flags, uint8_t indent) {
+   rewind();
+   int8_t status;
+-  while ((status = lsPrintNext(pr, flags, indent))) {
++  while ((status = lsPrintNext( flags, indent))) {
+     if (status > 1 && (flags & LS_R)) {
+       uint16_t index = curPosition()/32 - 1;
+       SdBaseFile s;
+-      if (s.open(this, index, O_READ)) s.ls(pr, flags, indent + 2);
++      if (s.open(this, index, O_READ)) s.ls( flags, indent + 2);
+       seekSet(32 * (index + 1));
+     }
+   }
+@@ -339,7 +328,7 @@ void SdBaseFile::ls(Print* pr, uint8_t flags, uint8_t indent) {
+ //------------------------------------------------------------------------------
+ // saves 32 bytes on stack for ls recursion
+ // return 0 - EOF, 1 - normal file, or 2 - directory
+-int8_t SdBaseFile::lsPrintNext(Print *pr, uint8_t flags, uint8_t indent) {
++int8_t SdBaseFile::lsPrintNext( uint8_t flags, uint8_t indent) {
+   dir_t dir;
+   uint8_t w = 0;
+ 
+@@ -352,38 +341,38 @@ int8_t SdBaseFile::lsPrintNext(Print *pr, uint8_t flags, uint8_t indent) {
+       && DIR_IS_FILE_OR_SUBDIR(&dir)) break;
+   }
+   // indent for dir level
+-  for (uint8_t i = 0; i < indent; i++) pr->write(' ');
++  for (uint8_t i = 0; i < indent; i++) MSerial.write(' ');
+ 
+   // print name
+   for (uint8_t i = 0; i < 11; i++) {
+     if (dir.name[i] == ' ')continue;
+     if (i == 8) {
+-      pr->write('.');
++      MSerial.write('.');
+       w++;
+     }
+-    pr->write(dir.name[i]);
++    MSerial.write(dir.name[i]);
+     w++;
+   }
+   if (DIR_IS_SUBDIR(&dir)) {
+-    pr->write('/');
++    MSerial.write('/');
+     w++;
+   }
+   if (flags & (LS_DATE | LS_SIZE)) {
+-    while (w++ < 14) pr->write(' ');
++    while (w++ < 14) MSerial.write(' ');
+   }
+   // print modify date/time if requested
+   if (flags & LS_DATE) {
+-    pr->write(' ');
+-    printFatDate(pr, dir.lastWriteDate);
+-    pr->write(' ');
+-    printFatTime(pr, dir.lastWriteTime);
++    MSerial.write(' ');
++    printFatDate( dir.lastWriteDate);
++    MSerial.write(' ');
++    printFatTime( dir.lastWriteTime);
+   }
+   // print size if requested
+   if (!DIR_IS_SUBDIR(&dir) && (flags & LS_SIZE)) {
+-    pr->write(' ');
+-    pr->print(dir.fileSize);
++    MSerial.write(' ');
++    MSerial.print(dir.fileSize);
+   }
+-  pr->println();
++  MSerial.println();
+   return DIR_IS_FILE(&dir) ? 1 : 2;
+ }
+ //------------------------------------------------------------------------------
+@@ -940,17 +929,7 @@ int SdBaseFile::peek() {
+   if (c >= 0) setpos(&pos);
+   return c;
+ }
+-//------------------------------------------------------------------------------
+-/** %Print the name field of a directory entry in 8.3 format to Serial.
+- *
+- * \param[in] dir The directory structure containing the name.
+- * \param[in] width Blank fill name if length is less than \a width.
+- * \param[in] printSlash Print '/' after directory names if true.
+- */
+-void SdBaseFile::printDirName(const dir_t& dir,
+-  uint8_t width, bool printSlash) {
+-  printDirName(&MSerial, dir, width, printSlash);
+-}
++
+ //------------------------------------------------------------------------------
+ /** %Print the name field of a directory entry in 8.3 format.
+  * \param[in] pr Print stream for output.
+@@ -958,32 +937,32 @@ void SdBaseFile::printDirName(const dir_t& dir,
+  * \param[in] width Blank fill name if length is less than \a width.
+  * \param[in] printSlash Print '/' after directory names if true.
+  */
+-void SdBaseFile::printDirName(Print* pr, const dir_t& dir,
++void SdBaseFile::printDirName(const dir_t& dir,
+   uint8_t width, bool printSlash) {
+   uint8_t w = 0;
+   for (uint8_t i = 0; i < 11; i++) {
+     if (dir.name[i] == ' ')continue;
+     if (i == 8) {
+-      pr->write('.');
++      MSerial.write('.');
+       w++;
+     }
+-    pr->write(dir.name[i]);
++    MSerial.write(dir.name[i]);
+     w++;
+   }
+   if (DIR_IS_SUBDIR(&dir) && printSlash) {
+-    pr->write('/');
++    MSerial.write('/');
+     w++;
+   }
+   while (w < width) {
+-    pr->write(' ');
++    MSerial.write(' ');
+     w++;
+   }
+ }
+ //------------------------------------------------------------------------------
+ // print uint8_t with width 2
+-static void print2u(Print* pr, uint8_t v) {
+-  if (v < 10) pr->write('0');
+-  pr->print(v, DEC);
++static void print2u( uint8_t v) {
++  if (v < 10) MSerial.write('0');
++  MSerial.print(v, DEC);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a directory date field to Serial.
+@@ -992,9 +971,7 @@ static void print2u(Print* pr, uint8_t v) {
+  *
+  * \param[in] fatDate The date field from a directory entry.
+  */
+-void SdBaseFile::printFatDate(uint16_t fatDate) {
+-  printFatDate(&MSerial, fatDate);
+-}
++
+ //------------------------------------------------------------------------------
+ /** %Print a directory date field.
+  *
+@@ -1003,23 +980,14 @@ void SdBaseFile::printFatDate(uint16_t fatDate) {
+  * \param[in] pr Print stream for output.
+  * \param[in] fatDate The date field from a directory entry.
+  */
+-void SdBaseFile::printFatDate(Print* pr, uint16_t fatDate) {
+-  pr->print(FAT_YEAR(fatDate));
+-  pr->write('-');
+-  print2u(pr, FAT_MONTH(fatDate));
+-  pr->write('-');
+-  print2u(pr, FAT_DAY(fatDate));
+-}
+-//------------------------------------------------------------------------------
+-/** %Print a directory time field to Serial.
+- *
+- * Format is hh:mm:ss.
+- *
+- * \param[in] fatTime The time field from a directory entry.
+- */
+-void SdBaseFile::printFatTime(uint16_t fatTime) {
+-  printFatTime(&MSerial, fatTime);
++void SdBaseFile::printFatDate(uint16_t fatDate) {
++  MSerial.print(FAT_YEAR(fatDate));
++  MSerial.write('-');
++  print2u( FAT_MONTH(fatDate));
++  MSerial.write('-');
++  print2u( FAT_DAY(fatDate));
+ }
++
+ //------------------------------------------------------------------------------
+ /** %Print a directory time field.
+  *
+@@ -1028,12 +996,12 @@ void SdBaseFile::printFatTime(uint16_t fatTime) {
+  * \param[in] pr Print stream for output.
+  * \param[in] fatTime The time field from a directory entry.
+  */
+-void SdBaseFile::printFatTime(Print* pr, uint16_t fatTime) {
+-  print2u(pr, FAT_HOUR(fatTime));
+-  pr->write(':');
+-  print2u(pr, FAT_MINUTE(fatTime));
+-  pr->write(':');
+-  print2u(pr, FAT_SECOND(fatTime));
++void SdBaseFile::printFatTime( uint16_t fatTime) {
++  print2u( FAT_HOUR(fatTime));
++  MSerial.write(':');
++  print2u( FAT_MINUTE(fatTime));
++  MSerial.write(':');
++  print2u( FAT_SECOND(fatTime));
+ }
+ //------------------------------------------------------------------------------
+ /** Print a file's name to Serial
+diff --git a/Marlin/SdBaseFile.h b/Marlin/SdBaseFile.h
+index e02ec3c..e184acd 100644
+--- a/Marlin/SdBaseFile.h
++++ b/Marlin/SdBaseFile.h
+@@ -270,8 +270,7 @@ class SdBaseFile {
+   bool isRoot() const {
+     return type_ == FAT_FILE_TYPE_ROOT_FIXED || type_ == FAT_FILE_TYPE_ROOT32;
+   }
+-  void ls(Print* pr, uint8_t flags = 0, uint8_t indent = 0);
+-  void ls(uint8_t flags = 0);
++  void ls( uint8_t flags = 0, uint8_t indent = 0);
+   bool mkdir(SdBaseFile* dir, const char* path, bool pFlag = true);
+   // alias for backward compactability
+   bool makeDir(SdBaseFile* dir, const char* path) {
+@@ -284,9 +283,7 @@ class SdBaseFile {
+   bool openRoot(SdVolume* vol);
+   int peek();
+   static void printFatDate(uint16_t fatDate);
+-  static void printFatDate(Print* pr, uint16_t fatDate);
+-  static void printFatTime(uint16_t fatTime);
+-  static void printFatTime(Print* pr, uint16_t fatTime);
++  static void printFatTime( uint16_t fatTime);
+   bool printName();
+   int16_t read();
+   int16_t read(void* buf, uint16_t nbyte);
+@@ -359,7 +356,7 @@ class SdBaseFile {
+   bool addCluster();
+   bool addDirCluster();
+   dir_t* cacheDirEntry(uint8_t action);
+-  int8_t lsPrintNext(Print *pr, uint8_t flags, uint8_t indent);
++  int8_t lsPrintNext( uint8_t flags, uint8_t indent);
+   static bool make83Name(const char* str, uint8_t* name, const char** ptr);
+   bool mkdir(SdBaseFile* parent, const uint8_t dname[11]);
+   bool open(SdBaseFile* dirFile, const uint8_t dname[11], uint8_t oflag);
+@@ -367,9 +364,7 @@ class SdBaseFile {
+   dir_t* readDirCache();
+ //------------------------------------------------------------------------------
+ // to be deleted
+-  static void printDirName(const dir_t& dir,
+-    uint8_t width, bool printSlash);
+-  static void printDirName(Print* pr, const dir_t& dir,
++  static void printDirName( const dir_t& dir,
+     uint8_t width, bool printSlash);
+ //------------------------------------------------------------------------------
+ // Deprecated functions  - suppress cpplint warnings with NOLINT comment
+diff --git a/Marlin/SdFatUtil.cpp b/Marlin/SdFatUtil.cpp
+index 7f82a70..0bf86f2 100644
+--- a/Marlin/SdFatUtil.cpp
++++ b/Marlin/SdFatUtil.cpp
+@@ -43,8 +43,8 @@ int SdFatUtil::FreeRam() {
+  * \param[in] pr Print object for output.
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+-void SdFatUtil::print_P(Print* pr, PGM_P str) {
+-  for (uint8_t c; (c = pgm_read_byte(str)); str++) pr->write(c);
++void SdFatUtil::print_P( PGM_P str) {
++  for (uint8_t c; (c = pgm_read_byte(str)); str++) MSerial.write(c);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory followed by a CR/LF.
+@@ -52,9 +52,9 @@ void SdFatUtil::print_P(Print* pr, PGM_P str) {
+  * \param[in] pr Print object for output.
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+-void SdFatUtil::println_P(Print* pr, PGM_P str) {
+-  print_P(pr, str);
+-  pr->println();
++void SdFatUtil::println_P( PGM_P str) {
++  print_P( str);
++  MSerial.println();
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory to Serial.
+@@ -62,7 +62,7 @@ void SdFatUtil::println_P(Print* pr, PGM_P str) {
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+ void SdFatUtil::SerialPrint_P(PGM_P str) {
+-  print_P(&MSerial, str);
++  print_P(str);
+ }
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory to Serial followed by a CR/LF.
+@@ -70,5 +70,5 @@ void SdFatUtil::SerialPrint_P(PGM_P str) {
+  * \param[in] str Pointer to string stored in flash memory.
+  */
+ void SdFatUtil::SerialPrintln_P(PGM_P str) {
+-  println_P(&MSerial, str);
++  println_P( str);
+ }
+diff --git a/Marlin/SdFatUtil.h b/Marlin/SdFatUtil.h
+index c49e77d..6e3cb49 100644
+--- a/Marlin/SdFatUtil.h
++++ b/Marlin/SdFatUtil.h
+@@ -1,48 +1,48 @@
+-/* Arduino SdFat Library
+- * Copyright (C) 2008 by William Greiman
+- *
+- * This file is part of the Arduino SdFat Library
+- *
+- * This Library is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This Library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+-
+- * You should have received a copy of the GNU General Public License
+- * along with the Arduino SdFat Library.  If not, see
+- * <http://www.gnu.org/licenses/>.
+- */
+-#ifndef SdFatUtil_h
+-#define SdFatUtil_h
+-/**
+- * \file
+- * \brief Useful utility functions.
+- */
+-#include <avr/pgmspace.h>
+-#if ARDUINO < 100
+-#define  HardwareSerial_h // trick to disable the standard HWserial
+-#include <WProgram.h>
+-#include "MarlinSerial.h"
+-#else  // ARDUINO
+-#include <Arduino.h>
+-#endif  // ARDUINO
+-/** Store and print a string in flash memory.*/
+-#define PgmPrint(x) SerialPrint_P(PSTR(x))
+-/** Store and print a string in flash memory followed by a CR/LF.*/
+-#define PgmPrintln(x) SerialPrintln_P(PSTR(x))
+-
+-namespace SdFatUtil {
+-  int FreeRam();
+-  void print_P(Print* pr, PGM_P str);
+-  void println_P(Print* pr, PGM_P str);
+-  void SerialPrint_P(PGM_P str);
+-  void SerialPrintln_P(PGM_P str);
+-}
+-
+-using namespace SdFatUtil;  // NOLINT
++/* Arduino SdFat Library
++ * Copyright (C) 2008 by William Greiman
++ *
++ * This file is part of the Arduino SdFat Library
++ *
++ * This Library is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This Library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++
++ * You should have received a copy of the GNU General Public License
++ * along with the Arduino SdFat Library.  If not, see
++ * <http://www.gnu.org/licenses/>.
++ */
++#ifndef SdFatUtil_h
++#define SdFatUtil_h
++/**
++ * \file
++ * \brief Useful utility functions.
++ */
++#include <avr/pgmspace.h>
++#if ARDUINO < 100
++#define  HardwareSerial_h // trick to disable the standard HWserial
++#include <WProgram.h>
++#include "MarlinSerial.h"
++#else  // ARDUINO
++#include <Arduino.h>
++#endif  // ARDUINO
++/** Store and print a string in flash memory.*/
++#define PgmPrint(x) SerialPrint_P(PSTR(x))
++/** Store and print a string in flash memory followed by a CR/LF.*/
++#define PgmPrintln(x) SerialPrintln_P(PSTR(x))
++
++namespace SdFatUtil {
++  int FreeRam();
++  void print_P( PGM_P str);
++  void println_P( PGM_P str);
++  void SerialPrint_P(PGM_P str);
++  void SerialPrintln_P(PGM_P str);
++}
++
++using namespace SdFatUtil;  // NOLINT
+ #endif  // #define SdFatUtil_h
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 4530e4e..c8ef9db 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -32,11 +32,11 @@ public:
+   void chdir(const char * relpath);
+   void updir();
+ 
+-  inline bool eof() { return sdpos>=filesize ;};
+-  inline int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
+-  inline void setIndex(long index) {sdpos = index;file.seekSet(index);};
+-  inline uint8_t percentDone(){if(!sdprinting) return 0; if(filesize) return sdpos*100/filesize; else return 0;};
+-  inline char* getWorkDirName(){workDir.getFilename(filename);return filename;};
++  FORCE_INLINE bool eof() { return sdpos>=filesize ;};
++  FORCE_INLINE int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
++  FORCE_INLINE void setIndex(long index) {sdpos = index;file.seekSet(index);};
++  FORCE_INLINE uint8_t percentDone(){if(!sdprinting) return 0; if(filesize) return sdpos*100/filesize; else return 0;};
++  FORCE_INLINE char* getWorkDirName(){workDir.getFilename(filename);return filename;};
+ 
+ public:
+   bool saving;
+@@ -69,31 +69,31 @@ private:
+ class CardReader
+ {
+ public:
+-  inline CardReader(){};
++  FORCE_INLINE CardReader(){};
+   
+-  inline static void initsd(){};
+-  inline static void write_command(char *buf){};
++  FORCE_INLINE static void initsd(){};
++  FORCE_INLINE static void write_command(char *buf){};
+   
+-  inline static void checkautostart(bool x) {}; 
++  FORCE_INLINE static void checkautostart(bool x) {}; 
+   
+-  inline static void openFile(char* name,bool read){};
+-  inline static void closefile() {};
+-  inline static void release(){};
+-  inline static void startFileprint(){};
+-  inline static void startFilewrite(char *name){};
+-  inline static void pauseSDPrint(){};
+-  inline static void getStatus(){};
++  FORCE_INLINE static void openFile(char* name,bool read){};
++  FORCE_INLINE static void closefile() {};
++  FORCE_INLINE static void release(){};
++  FORCE_INLINE static void startFileprint(){};
++  FORCE_INLINE static void startFilewrite(char *name){};
++  FORCE_INLINE static void pauseSDPrint(){};
++  FORCE_INLINE static void getStatus(){};
+   
+-  inline static void selectFile(char* name){};
+-  inline static void getfilename(const uint8_t nr){};
+-  inline static uint8_t getnrfilenames(){return 0;};
++  FORCE_INLINE static void selectFile(char* name){};
++  FORCE_INLINE static void getfilename(const uint8_t nr){};
++  FORCE_INLINE static uint8_t getnrfilenames(){return 0;};
+   
+ 
+-  inline static void ls() {};
+-  inline static bool eof() {return true;};
+-  inline static char get() {return 0;};
+-  inline static void setIndex(){};
+-  inline uint8_t percentDone(){return 0;};
++  FORCE_INLINE static void ls() {};
++  FORCE_INLINE static bool eof() {return true;};
++  FORCE_INLINE static char get() {return 0;};
++  FORCE_INLINE static void setIndex(){};
++  FORCE_INLINE uint8_t percentDone(){return 0;};
+ };
+ #endif //SDSUPPORT
+ #endif
+\ No newline at end of file
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4728698..f26ae10 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -95,13 +95,17 @@ static float previous_nominal_speed; // Nominal speed of previous path line segm
+     bool autotemp_enabled=false;
+ #endif
+ 
++    
++//===========================================================================
++//=================semi-private variables, used in inline  functions    =====
++//===========================================================================
++block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
++volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
++volatile unsigned char block_buffer_tail;           // Index of the block to process now
+ 
+ //===========================================================================
+ //=============================private variables ============================
+ //===========================================================================
+-static block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
+-static volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
+-static volatile unsigned char block_buffer_tail;           // Index of the block to process now
+ 
+ // Used for the frequency limit
+ static unsigned char old_direction_bits = 0;               // Old direction bits. Used for speed calculations
+@@ -130,7 +134,8 @@ static int8_t prev_block_index(int8_t block_index) {
+ 
+ // Calculates the distance (not time) it takes to accelerate from initial_rate to target_rate using the 
+ // given acceleration:
+-inline float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration) {
++FORCE_INLINE float estimate_acceleration_distance(float initial_rate, float target_rate, float acceleration)
++{
+   if (acceleration!=0) {
+   return((target_rate*target_rate-initial_rate*initial_rate)/
+          (2.0*acceleration));
+@@ -145,7 +150,8 @@ inline float estimate_acceleration_distance(float initial_rate, float target_rat
+ // a total travel of distance. This can be used to compute the intersection point between acceleration and
+ // deceleration in the cases where the trapezoid has no plateau (i.e. never reaches maximum speed)
+ 
+-inline float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) {
++FORCE_INLINE float intersection_distance(float initial_rate, float final_rate, float acceleration, float distance) 
++{
+  if (acceleration!=0) {
+   return((2.0*acceleration*distance-initial_rate*initial_rate+final_rate*final_rate)/
+          (4.0*acceleration) );
+@@ -209,7 +215,7 @@ void calculate_trapezoid_for_block(block_t *block, float entry_factor, float exi
+ 
+ // Calculates the maximum allowable speed at this point when you must be able to reach target_velocity using the 
+ // acceleration within the allotted distance.
+-inline float max_allowable_speed(float acceleration, float target_velocity, float distance) {
++FORCE_INLINE float max_allowable_speed(float acceleration, float target_velocity, float distance) {
+   return  sqrt(target_velocity*target_velocity-2*acceleration*distance);
+ }
+ 
+@@ -366,20 +372,7 @@ void plan_init() {
+ }
+ 
+ 
+-void plan_discard_current_block() {
+-  if (block_buffer_head != block_buffer_tail) {
+-    block_buffer_tail = (block_buffer_tail + 1) & (BLOCK_BUFFER_SIZE - 1);  
+-  }
+-}
+ 
+-block_t *plan_get_current_block() {
+-  if (block_buffer_head == block_buffer_tail) { 
+-    return(NULL); 
+-  }
+-  block_t *block = &block_buffer[block_buffer_tail];
+-  block->busy = true;
+-  return(block);
+-}
+ 
+ #ifdef AUTOTEMP
+ void getHighESpeed()
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 8ef8fec..741c6f9 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -25,6 +25,7 @@
+ #define planner_h
+ 
+ #include "Configuration.h"
++#include "Marlin.h"
+ 
+ // This struct is used when buffering the setup for each linear movement "nominal" values are as specified in 
+ // the source g-code and may never actually be reached if acceleration management is active.
+@@ -72,12 +73,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+ void plan_set_position(const float &x, const float &y, const float &z, const float &e);
+ void plan_set_e_position(const float &e);
+ 
+-// Called when the current block is no longer needed. Discards the block and makes the memory
+-// availible for new blocks.
+-void plan_discard_current_block();
+ 
+-// Gets the current block. Returns NULL if buffer empty
+-block_t *plan_get_current_block();
+ 
+ void check_axes_activity();
+ uint8_t movesplanned(); //return the nr of buffered moves
+@@ -103,4 +99,30 @@ extern uint8_t active_extruder;
+     extern float autotemp_factor;
+ #endif
+ 
++    
++/////semi-private stuff
++#include <WProgram.h>
++
++extern block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
++extern volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
++extern volatile unsigned char block_buffer_tail; 
++// Called when the current block is no longer needed. Discards the block and makes the memory
++// availible for new blocks.    
++FORCE_INLINE void plan_discard_current_block()  
++{
++  if (block_buffer_head != block_buffer_tail) {
++    block_buffer_tail = (block_buffer_tail + 1) & (BLOCK_BUFFER_SIZE - 1);  
++  }
++}
++
++// Gets the current block. Returns NULL if buffer empty
++FORCE_INLINE block_t *plan_get_current_block() 
++{
++  if (block_buffer_head == block_buffer_tail) { 
++    return(NULL); 
++  }
++  block_t *block = &block_buffer[block_buffer_tail];
++  block->busy = true;
++  return(block);
++}
+ #endif
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 34c7153..fcc0ace 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -212,7 +212,7 @@ void st_wake_up() {
+   ENABLE_STEPPER_DRIVER_INTERRUPT();  
+ }
+ 
+-inline unsigned short calc_timer(unsigned short step_rate) {
++FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+   unsigned short timer;
+   if(step_rate > MAX_STEP_FREQUENCY) step_rate = MAX_STEP_FREQUENCY;
+   
+@@ -249,7 +249,7 @@ inline unsigned short calc_timer(unsigned short step_rate) {
+ 
+ // Initializes the trapezoid generator from the current block. Called whenever a new 
+ // block begins.
+-inline void trapezoid_generator_reset() {
++FORCE_INLINE void trapezoid_generator_reset() {
+   #ifdef ADVANCE
+     advance = current_block->initial_advance;
+     final_advance = current_block->final_advance;
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index e832eb6..13a0e0c 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -59,52 +59,52 @@ extern float Kp,Ki,Kd,Kc;
+ //inline so that there is no performance decrease.
+ //deg=degreeCelsius
+ 
+-inline float degHotend0(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);};
+-inline float degHotend1(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);};
+-inline float degBed() {  return analog2tempBed(current_raw[TEMPSENSOR_BED]);};
+-inline float degHotend(uint8_t extruder){  
++FORCE_INLINE float degHotend0(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);};
++FORCE_INLINE float degHotend1(){  return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);};
++FORCE_INLINE float degBed() {  return analog2tempBed(current_raw[TEMPSENSOR_BED]);};
++FORCE_INLINE float degHotend(uint8_t extruder){  
+   if(extruder == 0) return analog2temp(current_raw[TEMPSENSOR_HOTEND_0]);
+   if(extruder == 1) return analog2temp(current_raw[TEMPSENSOR_HOTEND_1]);
+ };
+ 
+-inline float degTargetHotend0() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);};
+-inline float degTargetHotend1() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);};
++FORCE_INLINE float degTargetHotend0() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);};
++FORCE_INLINE float degTargetHotend1() {  return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);};
+ inline float degTargetHotend(uint8_t extruder){  
+   if(extruder == 0) return analog2temp(target_raw[TEMPSENSOR_HOTEND_0]);
+   if(extruder == 1) return analog2temp(target_raw[TEMPSENSOR_HOTEND_1]);
+ };
+ 
+-inline float degTargetBed() {   return analog2tempBed(target_raw[TEMPSENSOR_BED]);};
++FORCE_INLINE float degTargetBed() {   return analog2tempBed(target_raw[TEMPSENSOR_BED]);};
+ 
+-inline void setTargetHotend0(const float &celsius) 
++FORCE_INLINE void setTargetHotend0(const float &celsius) 
+ {  
+   target_raw[TEMPSENSOR_HOTEND_0]=temp2analog(celsius);
+   #ifdef PIDTEMP
+     pid_setpoint = celsius;
+   #endif //PIDTEMP
+ };
+-inline void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
+-inline float setTargetHotend(const float &celcius, uint8_t extruder){  
++FORCE_INLINE void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
++FORCE_INLINE float setTargetHotend(const float &celcius, uint8_t extruder){  
+   if(extruder == 0) setTargetHotend0(celcius);
+   if(extruder == 1) setTargetHotend1(celcius);
+ };
+-inline void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSOR_BED     ]=temp2analogBed(celsius);};
++FORCE_INLINE void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSOR_BED     ]=temp2analogBed(celsius);};
+ 
+-inline bool isHeatingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
+-inline bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
+-inline float isHeatingHotend(uint8_t extruder){  
++FORCE_INLINE bool isHeatingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
++FORCE_INLINE bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
++FORCE_INLINE float isHeatingHotend(uint8_t extruder){  
+   if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];
+ };
+-inline bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
++FORCE_INLINE bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
+ 
+-inline bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
+-inline bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
+-inline float isCoolingHotend(uint8_t extruder){  
++FORCE_INLINE bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
++FORCE_INLINE bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
++FORCE_INLINE float isCoolingHotend(uint8_t extruder){  
+   if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];
+ };
+-inline bool isCoolingBed() {return target_raw[TEMPSENSOR_BED] < current_raw[TEMPSENSOR_BED];};
++FORCE_INLINE bool isCoolingBed() {return target_raw[TEMPSENSOR_BED] < current_raw[TEMPSENSOR_BED];};
+ 
+ void disable_heater();
+ void setWatch();
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 85a8df7..887dc04 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -79,7 +79,7 @@
+     bool tune;
+     
+   private:
+-    inline void updateActiveLines(const uint8_t &maxlines,volatile int &encoderpos)
++    FORCE_INLINE void updateActiveLines(const uint8_t &maxlines,volatile int &encoderpos)
+     {
+       if(linechanging) return; // an item is changint its value, do not switch lines hence
+       lastlineoffset=lineoffset; 
+@@ -119,7 +119,7 @@
+       } 
+     }
+     
+-    inline void clearIfNecessary()
++    FORCE_INLINE void clearIfNecessary()
+     {
+       if(lastlineoffset!=lineoffset ||force_lcd_update)
+       {
+@@ -143,7 +143,7 @@
+   #define LCD_STATUS
+   #define LCD_MESSAGE(x)
+   #define LCD_MESSAGEPGM(x)
+-  inline void lcd_status() {};
++  FORCE_INLINE void lcd_status() {};
+ #endif
+   
+ #ifndef ULTIPANEL  
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index a90a6c6..a4bb640 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -660,7 +660,12 @@ void MainMenu::showTune()
+ //   
+ 
+ enum {
+-  ItemCT_exit, ItemCT_nozzle, ItemCT_fan,
++  ItemCT_exit,ItemCT_nozzle,
++#ifdef AUTOTEMP
++  ItemCT_autotempactive,
++  ItemCT_autotempmin,ItemCT_autotempmax,ItemCT_autotempfact,
++#endif
++  ItemCT_fan,
+   ItemCT_PID_P,ItemCT_PID_I,ItemCT_PID_D,ItemCT_PID_C
+ };
+ 
+@@ -708,7 +713,128 @@ void MainMenu::showControlTemp()
+           }
+         }
+       }break;
+-      
++      #ifdef AUTOTEMP
++      case ItemCT_autotempmin:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Min:");
++          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_max);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>260) encoderpos=260;
++            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++          }
++        }
++      }break;  
++      case ItemCT_autotempmax:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Max:");
++          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_max);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>260) encoderpos=260;
++            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++          }
++        }
++      }break;  
++      case ItemCT_autotempfact:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" \002 Fact:");
++          lcd.setCursor(13,line);lcd.print(ftostr32(autotemp_factor));
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            linechanging=!linechanging;
++            if(linechanging)
++            {
++               encoderpos=intround(autotemp_factor*100);
++            }
++            else
++            {
++              autotemp_max=encoderpos;
++              encoderpos=activeline*lcdslow;
++              beepshort();
++            }
++            BLOCK;
++          }
++          if(linechanging)
++          {
++            if(encoderpos<0) encoderpos=0;
++            if(encoderpos>99) encoderpos=99;
++            lcd.setCursor(13,line);lcd.print(ftostr32(encoderpos/100.));
++          }
++        }
++      }break;
++      case ItemCT_autotempactive:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(" Autotemp:");
++          lcd.setCursor(13,line);
++	  if(autotemp_enabled)
++	    lcdprintPGM("On");
++	  else
++	    lcdprintPGM("Off");
++        }
++        
++        if((activeline==line) )
++        {
++          if(CLICKED)
++          {
++            autotemp_enabled=!autotemp_enabled;
++            BLOCK;
++          }
++        }
++      }break;  
++      #endif //autotemp
+       case ItemCT_fan:
+       {
+         if(force_lcd_update)
+@@ -1620,6 +1746,19 @@ char *ftostr31(const float &x)
+   return conv;
+ }
+ 
++char *ftostr32(const float &x)
++{
++  int xx=x*100;
++  conv[0]=(xx>=0)?'+':'-';
++  xx=abs(xx);
++  conv[1]=(xx/100)%10+'0';
++  conv[2]='.';
++  conv[3]=(xx/10)%10+'0';
++  conv[4]=(xx)%10+'0';
++  conv[6]=0;
++  return conv;
++}
++
+ char *itostr31(const int &xx)
+ {
+   conv[0]=(xx>=0)?'+':'-';
+diff --git a/Marlin/watchdog.h b/Marlin/watchdog.h
+index 44ee9de..1d41488 100644
+--- a/Marlin/watchdog.h
++++ b/Marlin/watchdog.h
+@@ -9,8 +9,8 @@
+   void wd_reset();
+ 
+ #else
+-  inline void wd_init() {};
+-  inline void wd_reset() {};
++  FORCE_INLINE void wd_init() {};
++  FORCE_INLINE void wd_reset() {};
+ #endif
+ 
+ #endif
+

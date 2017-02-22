@@ -1,0 +1,1664 @@
+commit 832fe284b4a1cf32190e5f811e33e1796fd292e9 (from 32247c1b806057b7019e433cd5f2344279138183)
+Merge: 32247c1 f3eee02
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Nov 18 20:50:24 2016 -0600
+
+    Merge pull request #5184 from AnHardt/endstop_interrupts
+    
+    Introduce endstop interrupts
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 827444a..83c2bed 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2dd6610..a459118 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -89,6 +89,9 @@
+   #include "twibus.h"
+ #endif
+ 
++#if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
++  #include "endstop_interrupts.h"
++#endif
+ /**
+  * Look here for descriptions of G-codes:
+  *  - http://linuxcnc.org/handbook/gcode/g-code.html
+@@ -10015,6 +10018,10 @@ void setup() {
+     i2c.onReceive(i2c_on_receive);
+     i2c.onRequest(i2c_on_request);
+   #endif
++
++  #if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
++    setup_enstop_interrupts();
++  #endif
+ }
+ 
+ /**
+diff --git a/Marlin/endstop_interrupts.h b/Marlin/endstop_interrupts.h
+new file mode 100644
+index 0000000..db8691d
+--- /dev/null
++++ b/Marlin/endstop_interrupts.h
+@@ -0,0 +1,211 @@
++/**
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++/**
++ *  Endstop interrupts
++ *  Without endstop interrups the stepper-ISR must always test all endstops when interested in their states (endstops.update()).
++ *  Most time the test will result in finding out nothing has changed.
++ *  With endstop interrupts endstops.update() is called only when we know that at least one endstop has changed its state.
++ *
++ *  This can work only if all __used__ endstop pins can provide ether an 'external interrupt' or a 'pin change interrupt'.
++ *  You can find out about pins issuing interrupts by running 'pin_interrupt_test.ino' (Marlin\buildroot\share\pin_interrupt_test\pin_interrupt_test.ino)
++ */
++
++ #ifndef _ENDSTOP_INTERRUPTS_H_
++   #define _ENDSTOP_INTERRUPTS_H_
++
++  /**
++   * Patch for pins_arduino.h (...\Arduino\hardware\arduino\avr\variants\mega\pins_arduino.h)  
++   *
++   * These macros for the Arduino MEGA do not include the two connected pins on Port J (D13, D14).
++   * So we extend them here because this are the normal pins for Y_MIN and Y_MAX on RAMPS.
++   * There are more PCI enabled processor pins on Port J, but they are not connected to Arduino MEGA.
++   */
++  #if defined(ARDUINO_AVR_MEGA2560) || defined(ARDUINO_AVR_MEGA)
++    #undef  digitalPinToPCICR
++    #define digitalPinToPCICR(p)    ( (((p) >= 10) && ((p) <= 15)) || \
++                                    (((p) >= 50) && ((p) <= 53)) || \
++                                    (((p) >= 62) && ((p) <= 69)) ? (&PCICR) : ((uint8_t *)0) )
++    #undef  digitalPinToPCICRbit
++    #define digitalPinToPCICRbit(p) ( (((p) >= 10) && ((p) <= 13)) || (((p) >= 50) && ((p) <= 53)) ? 0 : \
++                                    ( (((p) >= 14) && ((p) <= 15)) ? 1 : \
++                                    ( (((p) >= 62) && ((p) <= 69)) ? 2 : \
++                                    0 ) ) )
++    #undef  digitalPinToPCMSK
++    #define digitalPinToPCMSK(p)    ( (((p) >= 10) && ((p) <= 13)) || (((p) >= 50) && ((p) <= 53)) ? (&PCMSK0) : \
++                                    ( (((p) >= 14) && ((p) <= 15)) ? (&PCMSK1) : \
++                                    ( (((p) >= 62) && ((p) <= 69)) ? (&PCMSK2) : \
++                                    ((uint8_t *)0) ) ) )
++    #undef  digitalPinToPCMSKbit
++    #define digitalPinToPCMSKbit(p) ( (((p) >= 10) && ((p) <= 13)) ? ((p) - 6) : \
++                                    ( ((p) == 14) ? 2 : \
++                                    ( ((p) == 15) ? 1 : \
++                                    ( ((p) == 50) ? 3 : \
++                                    ( ((p) == 51) ? 2 : \
++                                    ( ((p) == 52) ? 1 : \
++                                    ( ((p) == 53) ? 0 : \
++                                    ( (((p) >= 62) && ((p) <= 69)) ? ((p) - 62) : \
++                                    0 ) ) ) ) ) ) ) )
++  #endif
++
++  volatile uint8_t e_hit = 0; // Different from 0 when the endstops shall be tested in detail. 
++                              // Must be reset to 0 by the test function when the tests are finished.
++
++  // Install Pin change interrupt for a pin, can be called multiple times
++  void pciSetup(byte pin) {
++    *digitalPinToPCMSK(pin) |= bit (digitalPinToPCMSKbit(pin));  // enable pin
++    PCIFR  |= bit (digitalPinToPCICRbit(pin)); // clear any outstanding interrupt
++    PCICR  |= bit (digitalPinToPCICRbit(pin)); // enable interrupt for the group
++  }
++
++  // This is what is really done inside the interrupts.
++  FORCE_INLINE void endstop_ISR_worker( void ) {
++    e_hit = 2; // Because the detection of a e-stop hit has a 1 step debouncer it has to be called at least twice.
++  }
++
++  // Use one Routine to handle each group
++  // One ISR for all EXT-Interrupts
++  void endstop_ISR(void) {
++    endstop_ISR_worker();
++  }
++
++  #ifdef PCINT0_vect
++    ISR(PCINT0_vect) { // handle pin change interrupt
++      endstop_ISR_worker();
++    }
++  #endif
++
++  #ifdef PCINT1_vect
++    ISR(PCINT1_vect) { // handle pin change interrupt
++      endstop_ISR_worker();
++    }
++  #endif
++
++  #ifdef PCINT2_vect
++    ISR(PCINT2_vect) { // handle pin change interrupt
++      endstop_ISR_worker();
++    }
++  #endif
++
++  #ifdef PCINT3_vect
++    ISR(PCINT3_vect) { // handle pin change interrupt
++      endstop_ISR_worker();
++    }
++  #endif
++
++  void setup_enstop_interrupts( void ) {
++
++    #if HAS_X_MAX
++      #if (digitalPinToInterrupt(X_MAX_PIN) != NOT_AN_INTERRUPT) // if pin has an external interrupt
++        attachInterrupt(digitalPinToInterrupt(X_MAX_PIN), endstop_ISR, CHANGE); // assign it
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(X_MAX_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR"); // if pin has no pin change interrupt - error
++        pciSetup(X_MAX_PIN);                                                            // assign it
++      #endif
++    #endif
++
++    #if HAS_X_MIN
++      #if (digitalPinToInterrupt(X_MIN_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(X_MIN_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(X_MIN_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(X_MIN_PIN);
++      #endif
++    #endif
++
++    #if HAS_Y_MAX
++      #if (digitalPinToInterrupt(Y_MAX_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Y_MAX_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Y_MAX_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Y_MAX_PIN);
++      #endif
++    #endif
++
++    #if HAS_Y_MIN
++      #if (digitalPinToInterrupt(Y_MIN_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Y_MIN_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Y_MIN_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Y_MIN_PIN);
++      #endif
++    #endif
++
++    #if HAS_Z_MAX
++      #if (digitalPinToInterrupt(Z_MAX_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Z_MAX_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Z_MAX_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Z_MAX_PIN);
++      #endif
++    #endif
++
++    #if HAS_Z_MIN
++      #if (digitalPinToInterrupt(Z_MIN_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Z_MIN_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Z_MIN_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Z_MIN_PIN);
++      #endif
++    #endif
++
++    #if HAS_Z2_MAX
++      #if (digitalPinToInterrupt(Z2_MAX_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Z2_MAX_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Z2_MAX_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Z2_MAX_PIN);
++      #endif
++    #endif
++
++    #if HAS_Z2_MIN
++      #if (digitalPinToInterrupt(Z2_MIN_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Z2_MIN_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Z2_MIN_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Z2_MIN_PIN);
++      #endif
++    #endif
++
++    #if HAS_Z_MIN_PROBE_PIN
++      #if (digitalPinToInterrupt(Z_MIN_PROBE_PIN) != NOT_AN_INTERRUPT)
++        attachInterrupt(digitalPinToInterrupt(Z_MIN_PROBE_PIN), endstop_ISR, CHANGE);
++      #else
++        // Not all used endstop/probe -pins can raise interrupts. Please deactivate ENDSTOP_INTERRUPTS or change the pin configuration!
++        static_assert(digitalPinToPCICR(Z_MIN_PROBE_PIN) != NULL, "ENDSTOP_INTERRUPT_ERROR");
++        pciSetup(Z_MIN_PROBE_PIN);
++      #endif
++    #endif
++
++    // When we arive here without error each pin has ether a EXT-interrupt or a PCI.
++  }
++
++
++#endif //_ENDSTOP_INTERRUPTS_H_
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index f606aea..107132a 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index cc8e8e6..6fa3945 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -427,6 +427,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 94d4edb..34ffdbf 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -427,6 +427,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 2a55cbf..fba7318 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -437,6 +437,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 0c4f078..d26986e 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -439,6 +439,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a74e208..424d786 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -462,6 +462,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index b6806be..43bef5a 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 07038e6..61e6c45 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 372fc3f..12f7ac8 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 673f2b7..c41ca13 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -442,6 +442,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index f0d8f19..31b9d55 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -460,6 +460,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 2c94543..c056168 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -466,6 +466,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 81f6ef3..1ede76f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -437,6 +437,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 3122492..429c4ef 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -445,6 +445,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index eb640eb..8c1c508 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -489,6 +489,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 02b014c..e002337 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -489,6 +489,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index a2daec9..8387854 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -489,6 +489,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 085c764..73289f8 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -478,6 +478,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 3d0b242..dec2c11 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -487,6 +487,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index b8d5bbc..0f28212 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -448,6 +448,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index cbe2a54..95a5e87 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -435,6 +435,9 @@
+ #define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ #define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
++// If all used endstop pins are able to cause interrupts, you can enable ENDSTOP_INTERRUPTS_FEATURE.
++// Then the function testing the endstops will only be called, if the state of one of the endstops changed.
++//#define ENDSTOP_INTERRUPTS_FEATURE
+ 
+ //=============================================================================
+ //============================== Movement Settings ============================
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index dd35990..9f712fa 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -310,6 +310,10 @@ void Stepper::set_directions() {
+   #endif // !ADVANCE && !LIN_ADVANCE
+ }
+ 
++#if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
++  extern volatile uint8_t e_hit;
++#endif
++
+ /**
+  * Stepper Driver Interrupt
+  *
+@@ -378,7 +382,15 @@ void Stepper::isr() {
+     #if HAS_BED_PROBE
+       || endstops.z_probe_enabled
+     #endif
+-  ) endstops.update();
++  )
++  #if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
++    if(e_hit) {
++  #endif
++      endstops.update();
++  #if ENABLED(ENDSTOP_INTERRUPTS_FEATURE)
++      e_hit--;
++    }
++  #endif
+ 
+   // Take multiple steps per interrupt (For high speed moves)
+   bool all_steps_done = false;
+diff --git a/buildroot/share/pin_interrupt_test/pin_interrupt_test.ino b/buildroot/share/pin_interrupt_test/pin_interrupt_test.ino
+new file mode 100644
+index 0000000..8650a3d
+--- /dev/null
++++ b/buildroot/share/pin_interrupt_test/pin_interrupt_test.ino
+@@ -0,0 +1,32 @@
++// Search pins uasable for endstop-interupts
++// Compile with the same settings you'd use with Marlin.
++
++#if defined(ARDUINO_AVR_MEGA2560) || defined(ARDUINO_AVR_MEGA)
++    #undef  digitalPinToPCICR
++    #define digitalPinToPCICR(p)    ( (((p) >= 10) && ((p) <= 15)) || \
++                                    (((p) >= 50) && ((p) <= 53)) || \
++                                    (((p) >= 62) && ((p) <= 69)) ? (&PCICR) : ((uint8_t *)0) )
++#endif
++
++void setup() {
++  Serial.begin(9600);
++  Serial.println("PINs causing interrups are:");
++  for(int i=2; i<NUM_DIGITAL_PINS; i++){
++    if( digitalPinToPCICR(i) != NULL || (int)digitalPinToInterrupt(i) != -1 ) {
++      for (int j= 0; j<NUM_ANALOG_INPUTS; j++){
++        if(analogInputToDigitalPin(j) == i) {
++          Serial.print("A");
++          Serial.print(j);
++          Serial.print(" = ");
++        }
++      }
++      Serial.print("D");
++      Serial.println(i);
++    }
++  }
++  Serial.println("Arduino pin numbering!");
++}
++
++void loop() {
++  // put your main code here, to run repeatedly:
++}
+
+commit 832fe284b4a1cf32190e5f811e33e1796fd292e9 (from f3eee02596240b5db0e5491ae93acd750acce719)
+Merge: 32247c1 f3eee02
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Nov 18 20:50:24 2016 -0600
+
+    Merge pull request #5184 from AnHardt/endstop_interrupts
+    
+    Introduce endstop interrupts
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 5b15c3f..83c2bed 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index a5d68a2..81eecea 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -380,16 +380,14 @@ endif
+ CINCS = ${addprefix -I ,${VPATH}}
+ CXXINCS = ${addprefix -I ,${VPATH}}
+ 
+-# Compiler flag to set the C Standard level.
+-# c89   - "ANSI" C
+-# gnu89 - c89 plus GCC extensions
+-# c99   - ISO C99 standard (not yet fully implemented)
+-# gnu99 - c99 plus GCC extensions
+-#CSTANDARD = -std=gnu99
++# Compiler flag to set the C/CPP Standard level.
++CSTANDARD = -std=gnu99
++CXXSTANDARD = -std=gnu++11
+ CDEBUG = -g$(DEBUG)
+ CWARN = -Wall -Wstrict-prototypes
+ CTUNING = -funsigned-char -funsigned-bitfields -fpack-struct \
+ 	-fshort-enums -w -ffunction-sections -fdata-sections \
++	-flto \
+ 	-DARDUINO=$(ARDUINO_VERSION)
+ ifneq ($(HARDWARE_MOTHERBOARD),)
+ CTUNING += -DMOTHERBOARD=${HARDWARE_MOTHERBOARD}
+@@ -397,8 +395,8 @@ endif
+ #CEXTRA = -Wa,-adhlns=$(<:.c=.lst)
+ CEXTRA = -fno-use-cxa-atexit
+ 
+-CFLAGS := $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING)
+-CXXFLAGS :=         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING)
++CFLAGS := $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING) $(CSTANDARD)
++CXXFLAGS :=         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING) $(CXXSTANDARD)
+ #ASFLAGS = -Wa,-adhlns=$(<:.S=.lst),-gstabs
+ LDFLAGS = -lm
+ 
+@@ -513,7 +511,7 @@ extcoff: $(TARGET).elf
+ 	# Link: create ELF output file from library.
+ $(BUILD_DIR)/$(TARGET).elf: $(OBJ) Configuration.h
+ 	$(Pecho) "  CXX   $@"
+-	$P $(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections -o $@ -L. $(OBJ) $(LDFLAGS)
++	$P $(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections,--relax -o $@ -L. $(OBJ) $(LDFLAGS)
+ 
+ $(BUILD_DIR)/%.o: %.c Configuration.h Configuration_adv.h $(MAKEFILE)
+ 	$(Pecho) "  CC    $<"
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 862f7df..a459118 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2675,16 +2675,26 @@ static void homeaxis(AxisEnum axis) {
+ 
+   #if ENABLED(DIRECT_MIXING_IN_G1)
+     // Get mixing parameters from the GCode
+-    // Factors that are left out are set to 0
+     // The total "must" be 1.0 (but it will be normalized)
++    // If no mix factors are given, the old mix is preserved
+     void gcode_get_mix() {
+       const char* mixing_codes = "ABCDHI";
+-      for (int i = 0; i < MIXING_STEPPERS; i++) {
+-        float v = code_seen(mixing_codes[i]) ? code_value_float() : 0.0;
+-        NOLESS(v, 0.0);
+-        mixing_factor[i] = RECIPROCAL(v);
++      byte mix_bits = 0;
++      for (uint8_t i = 0; i < MIXING_STEPPERS; i++) {
++        if (code_seen(mixing_codes[i])) {
++          SBI(mix_bits, i);
++          float v = code_value_float();
++          NOLESS(v, 0.0);
++          mixing_factor[i] = RECIPROCAL(v);
++        }
++      }
++      // If any mixing factors were included, clear the rest
++      // If none were included, preserve the last mix
++      if (mix_bits) {
++        for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
++          if (!TEST(mix_bits, i)) mixing_factor[i] = 0.0;
++        normalize_mix();
+       }
+-      normalize_mix();
+     }
+   #endif
+ 
+@@ -4244,8 +4254,12 @@ inline void gcode_G28() {
+    *     S = Stows the probe if 1 (default=1)
+    */
+   inline void gcode_G30() {
+-    float X_probe_location = code_seen('X') ? code_value_axis_units(X_AXIS) : current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
+-    float Y_probe_location = code_seen('Y') ? code_value_axis_units(Y_AXIS) : current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++    float X_probe_location = code_seen('X') ? code_value_axis_units(X_AXIS) : current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER,
++          Y_probe_location = code_seen('Y') ? code_value_axis_units(Y_AXIS) : current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++
++    float pos[XYZ] = { X_probe_location, Y_probe_location, LOGICAL_Z_POSITION(0) };
++    if (!position_is_reachable(pos, true)) return;
++
+     bool stow = code_seen('S') ? code_value_bool() : true;
+ 
+     // Disable leveling so the planner won't mess with us
+@@ -4255,17 +4269,14 @@ inline void gcode_G28() {
+ 
+     setup_for_endstop_or_probe_move();
+ 
+-    float measured_z = probe_pt(X_probe_location,
+-                                Y_probe_location,
+-                                stow, 1);
++    float measured_z = probe_pt(X_probe_location, Y_probe_location, stow, 1);
+ 
+     SERIAL_PROTOCOLPGM("Bed X: ");
+-    SERIAL_PROTOCOL(current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER + 0.0001);
++    SERIAL_PROTOCOL(X_probe_location + 0.0001);
+     SERIAL_PROTOCOLPGM(" Y: ");
+-    SERIAL_PROTOCOL(current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER + 0.0001);
++    SERIAL_PROTOCOL(Y_probe_location + 0.0001);
+     SERIAL_PROTOCOLPGM(" Z: ");
+-    SERIAL_PROTOCOL(measured_z + 0.0001);
+-    SERIAL_EOL;
++    SERIAL_PROTOCOLLN(measured_z + 0.0001);
+ 
+     clean_up_after_endstop_or_probe_move();
+ 
+@@ -5081,6 +5092,10 @@ inline void gcode_M104() {
+ 
+     if (code_value_temp_abs() > thermalManager.degHotend(target_extruder)) LCD_MESSAGEPGM(MSG_HEATING);
+   }
++  
++  #if ENABLED(AUTOTEMP)
++    planner.autotemp_M104_M109();
++  #endif
+ }
+ 
+ #if HAS_TEMP_HOTEND || HAS_TEMP_BED
+@@ -5276,7 +5291,7 @@ inline void gcode_M109() {
+   }
+ 
+   #if ENABLED(AUTOTEMP)
+-    planner.autotemp_M109();
++    planner.autotemp_M104_M109();
+   #endif
+ 
+   #if TEMP_RESIDENCY_TIME > 0
+@@ -9594,7 +9609,7 @@ void disable_all_steppers() {
+ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+ 
+   #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-    if ((IS_SD_PRINTING || print_job_timer.isRunning()) && !(READ(FIL_RUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
++    if ((IS_SD_PRINTING || print_job_timer.isRunning()) && (READ(FIL_RUNOUT_PIN) == FIL_RUNOUT_INVERTING))
+       handle_filament_runout();
+   #endif
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index b25931b..107132a 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index f11ec8a..6fa3945 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -694,7 +694,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 5f65aa5..34ffdbf 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -694,7 +694,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index d2cce01..fba7318 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -703,7 +703,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 7a352d8..d26986e 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -705,7 +705,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index fb2adee..424d786 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -728,7 +728,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 4ea9328..43bef5a 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index b290503..61e6c45 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index c8f4ac9..12f7ac8 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index f6c0dc1..c41ca13 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -709,7 +709,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index c2c0e6a..31b9d55 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -726,7 +726,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index d7f6aef..c056168 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -732,7 +732,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 0d933e8..1ede76f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -703,7 +703,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 3e9da7b..429c4ef 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -711,7 +711,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index e939c4b..8c1c508 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -803,7 +803,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 107ccb6..e002337 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -797,7 +797,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index cf2d63b..8387854 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -800,7 +800,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 233ce8b..73289f8 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -801,7 +801,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index c6ca06f..dec2c11 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -803,7 +803,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 5f5ad1d..0f28212 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -714,7 +714,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 03bb14b..95a5e87 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -707,7 +707,7 @@
+                                  // It is assumed that when logic high = filament available
+                                  //                    when logic  low = filament ran out
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+-  const bool FIL_RUNOUT_INVERTING = false; // set to true to invert the logic of the sensor.
++  #define FIL_RUNOUT_INVERTING false // set to true to invert the logic of the sensor.
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index 401f11b..9a45a24 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -188,7 +188,7 @@
+ #define MSG_INFO_EXTRUDERS                  "Extrudery"
+ #define MSG_INFO_BAUDRATE                   "Rychlost"
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Pocet tisku"
+   #define MSG_INFO_COMPLETED_PRINTS         "Dokonceno"
+   #define MSG_INFO_PRINT_TIME               "Celkovy cas"
+diff --git a/Marlin/language_da.h b/Marlin/language_da.h
+index 8c77092..09aaa82 100644
+--- a/Marlin/language_da.h
++++ b/Marlin/language_da.h
+@@ -31,6 +31,8 @@
+ #define LANGUAGE_DA_H
+ 
+ #define MAPPER_C2C3
++// Define SIMULATE_ROMFONT to see what is seen on the character based display defined in Configuration.h
++//#define SIMULATE_ROMFONT
+ #define DISPLAY_CHARSET_ISO10646_1
+ 
+ #define WELCOME_MSG                         MACHINE_NAME " er klar"
+@@ -113,7 +115,7 @@
+ #define MSG_TEMPERATURE                     "Temperatur"
+ #define MSG_MOTION                          "Bevægelse"
+ #define MSG_VOLUMETRIC                      "Filament"
+-#define MSG_VOLUMETRIC_ENABLED              "E in mm3"
++#define MSG_VOLUMETRIC_ENABLED              "E i mm3"
+ #define MSG_FILAMENT_DIAM                   "Fil. Dia."
+ #define MSG_CONTRAST                        "LCD kontrast"
+ #define MSG_STORE_EPROM                     "Gem i EEPROM"
+@@ -140,13 +142,15 @@
+ #define MSG_CONTROL_RETRACTF                "Tilbagetræk V"
+ #define MSG_CONTROL_RETRACT_ZLIFT           "Hop mm"
+ #define MSG_CONTROL_RETRACT_RECOVER         "UnRet +mm"
+-#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "S UnRet+mm"
++#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "Skift UnRet+mm"
+ #define MSG_CONTROL_RETRACT_RECOVERF        "UnRet  V"
+ #define MSG_AUTORETRACT                     "AutoRetr."
+ #define MSG_FILAMENTCHANGE                  "Skift filament"
+ #define MSG_INIT_SDCARD                     "Init. SD card"
+ #define MSG_CNG_SDCARD                      "Skift SD kort"
+ #define MSG_ZPROBE_OUT                      "Probe udenfor plade"
++#define MSG_BLTOUCH_SELFTEST                "BLTouch Selv-Test"
++#define MSG_BLTOUCH_RESET                   "Reset BLTouch"
+ #define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+ #define MSG_FIRST                           "først"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+@@ -157,15 +161,16 @@
+ #define MSG_HEATING_FAILED_LCD              "Opvarmning fejlet"
+ #define MSG_ERR_REDUNDANT_TEMP              "Fejl: reserve temp"
+ #define MSG_THERMAL_RUNAWAY                 "Temp løber løbsk"
+-#define MSG_ERR_MAXTEMP                     "Fejl: MAKSTEMP"
+-#define MSG_ERR_MINTEMP                     "Fejl: MINTEMP"
+-#define MSG_ERR_MAXTEMP_BED                 "Fejl: MAKSTEMP PLADE"
+-#define MSG_ERR_MINTEMP_BED                 "Fejl: MINTEMP PLADE"
+-#define MSG_HALTED                          "PRINTER HALTED"
+-#define MSG_PLEASE_RESET                    "Reset venligst"
+-#define MSG_SHORT_DAY                       "d" // One character only
+-#define MSG_SHORT_HOUR                      "h" // One character only
+-#define MSG_SHORT_MINUTE                    "m" // One character only
++#define MSG_ERR_MAXTEMP                     "Fejl: Maks temp"
++#define MSG_ERR_MINTEMP                     "Fejl: Min temp"
++#define MSG_ERR_MAXTEMP_BED                 "Fejl: Maks Plade temp"
++#define MSG_ERR_MINTEMP_BED                 "Fejl: Min Plade temp"
++#define MSG_ERR_Z_HOMING                    "G28 Z Forbudt"
++#define MSG_HALTED                          "PRINTER STOPPET"
++#define MSG_PLEASE_RESET                    "Reset Venligst"
++#define MSG_SHORT_DAY                       "d" // Kun et bogstav
++#define MSG_SHORT_HOUR                      "h" // Kun et bogstav
++#define MSG_SHORT_MINUTE                    "m" // Kun et bogstav
+ #define MSG_HEATING                         "Opvarmer..."
+ #define MSG_HEATING_COMPLETE                "Opvarmet"
+ #define MSG_BED_HEATING                     "Opvarmer plade"
+@@ -178,19 +183,19 @@
+ 
+ #define MSG_INFO_MENU                       "Om Printer"
+ #define MSG_INFO_PRINTER_MENU               "Printer Info"
+-#define MSG_INFO_STATS_MENU                 "Printer Stat."
+-#define MSG_INFO_BOARD_MENU                 "Board Info"
++#define MSG_INFO_STATS_MENU                 "Printer Stats"
++#define MSG_INFO_BOARD_MENU                 "Kort Info"
+ #define MSG_INFO_THERMISTOR_MENU            "Thermistors"
+-#define MSG_INFO_EXTRUDERS                  "Extrudere"
++#define MSG_INFO_EXTRUDERS                  "Extruders"
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protocol"
+ 
+-#if LCD_WIDTH > 19
+-  #define MSG_INFO_PRINT_COUNT              "Antal Print"
++#if LCD_WIDTH >= 20
++  #define MSG_INFO_PRINT_COUNT              "Ant. Prints"
+   #define MSG_INFO_COMPLETED_PRINTS         "Færdige"
+   #define MSG_INFO_PRINT_TIME               "Total print tid"
+-  #define MSG_INFO_PRINT_LONGEST            "Længste print tid"
+-  #define MSG_INFO_PRINT_FILAMENT           "Total extruderet"
++  #define MSG_INFO_PRINT_LONGEST            "Længste print"
++  #define MSG_INFO_PRINT_FILAMENT           "Total Extruderet"
+ #else
+   #define MSG_INFO_PRINT_COUNT              "Prints"
+   #define MSG_INFO_COMPLETED_PRINTS         "Færdige"
+@@ -201,36 +206,38 @@
+ 
+ #define MSG_INFO_MIN_TEMP                   "Min Temp"
+ #define MSG_INFO_MAX_TEMP                   "Max Temp"
+-#define MSG_INFO_PSU                        "Strømforsyning"
++#define MSG_INFO_PSU                        "Strømfors."
+ 
++#define MSG_DRIVE_STRENGTH                  "Driv Styrke"
++#define MSG_DAC_PERCENT                     "Driv %"
++#define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Skriv"
+ #define MSG_FILAMENT_CHANGE_HEADER          "SKIFT FILAMENT"
+-#define MSG_FILAMENT_CHANGE_OPTION_HEADER   "SKIFTE MULIGHEDER:"
++#define MSG_FILAMENT_CHANGE_OPTION_HEADER   "Skift muligheder:"
+ #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extruder mere"
+-#define MSG_FILAMENT_CHANGE_OPTION_RESUME   "forsæt print"
++#define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Forsæt print"
+ 
+ #if LCD_HEIGHT >= 4
+-  #define MSG_FILAMENT_CHANGE_INIT_1          "Vent på"
+-  #define MSG_FILAMENT_CHANGE_INIT_2          "skift af "
+-  #define MSG_FILAMENT_CHANGE_INIT_3          "filament"
++  #define MSG_FILAMENT_CHANGE_INIT_1          "Vent på start"
++  #define MSG_FILAMENT_CHANGE_INIT_2          "af filament"
++  #define MSG_FILAMENT_CHANGE_INIT_3          "skift"
+   #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Vent på"
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament tømning"
+-  #define MSG_FILAMENT_CHANGE_INSERT_1        "indsæt filament"
+-  #define MSG_FILAMENT_CHANGE_INSERT_2        "og tryk for"
+-  #define MSG_FILAMENT_CHANGE_INSERT_3        "at fortsætte..."
++  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament udskyd."
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Indsæt filament"
++  #define MSG_FILAMENT_CHANGE_INSERT_2        "og tryk på knap"
++  #define MSG_FILAMENT_CHANGE_INSERT_3        "for at fortsætte..."
+   #define MSG_FILAMENT_CHANGE_LOAD_1          "Vent på"
+-  #define MSG_FILAMENT_CHANGE_LOAD_2          "filament fødning"
++  #define MSG_FILAMENT_CHANGE_LOAD_2          "filament indtag"
+   #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Vent på"
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrudere"
+-  #define MSG_FILAMENT_CHANGE_RESUME_1        "Vent på at"
+-  #define MSG_FILAMENT_CHANGE_RESUME_2        "print forsætter"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrudering"
++  #define MSG_FILAMENT_CHANGE_RESUME_1        "Vent på at print"
++  #define MSG_FILAMENT_CHANGE_RESUME_2        "fortsætter"
+ #else // LCD_HEIGHT < 4
+   #define MSG_FILAMENT_CHANGE_INIT_1          "Vent venligst..."
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Tømmer..."
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Udskyder..."
+   #define MSG_FILAMENT_CHANGE_INSERT_1        "Indsæt og klik"
+-  #define MSG_FILAMENT_CHANGE_LOAD_1          "Føder..."
++  #define MSG_FILAMENT_CHANGE_LOAD_1          "Indtager..."
+   #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extrudere..."
+   #define MSG_FILAMENT_CHANGE_RESUME_1        "Fortsætter..."
+ #endif // LCD_HEIGHT < 4
+ 
+ #endif // LANGUAGE_DA_H
+-
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index 0b64e67..9c8aa69 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -185,7 +185,7 @@
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+ 
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Gesamte Drucke"
+   #define MSG_INFO_COMPLETED_PRINTS         "Beendete Drucke"
+   #define MSG_INFO_PRINT_TIME               "Gesamte Druckzeit"
+diff --git a/Marlin/language_el.h b/Marlin/language_el.h
+index 03b45c3..21cee03 100644
+--- a/Marlin/language_el.h
++++ b/Marlin/language_el.h
+@@ -180,7 +180,7 @@
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protocol"
+ 
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Print Count"
+   #define MSG_INFO_COMPLETED_PRINTS         "Completed  "
+   #define MSG_INFO_PRINT_TIME               "Total Time "
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 648cee6..d0439f5 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -488,7 +488,7 @@
+   #define MSG_INFO_PROTOCOL                   "Protocol"
+ #endif
+ 
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #ifndef MSG_INFO_PRINT_COUNT
+     #define MSG_INFO_PRINT_COUNT              "Print Count"
+   #endif
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index b680f8f..c567b68 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -188,8 +188,7 @@
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protocole"
+ 
+-
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Nbre impressions"
+   #define MSG_INFO_COMPLETED_PRINTS         "Terminees"
+   #define MSG_INFO_PRINT_TIME               "Tps impr. total"
+diff --git a/Marlin/language_gl.h b/Marlin/language_gl.h
+index 19b028b..11016dd 100644
+--- a/Marlin/language_gl.h
++++ b/Marlin/language_gl.h
+@@ -182,18 +182,18 @@
+ #define MSG_INFO_EXTRUDERS                  "Extrusores"
+ #define MSG_INFO_BAUDRATE                   "Baudios"
+ #define MSG_INFO_PROTOCOL                   "Protocolo"
+-#if LCD_WIDTH > 19
+-    #define MSG_INFO_PRINT_COUNT              "Total traballos"
+-    #define MSG_INFO_COMPLETED_PRINTS         "Total completos"
+-    #define MSG_INFO_PRINT_TIME               "Tempo impresion"
+-    #define MSG_INFO_PRINT_LONGEST            "Traballo +longo"
+-    #define MSG_INFO_PRINT_FILAMENT           "Total extruido"
++#if LCD_WIDTH >= 20
++  #define MSG_INFO_PRINT_COUNT              "Total traballos"
++  #define MSG_INFO_COMPLETED_PRINTS         "Total completos"
++  #define MSG_INFO_PRINT_TIME               "Tempo impresion"
++  #define MSG_INFO_PRINT_LONGEST            "Traballo +longo"
++  #define MSG_INFO_PRINT_FILAMENT           "Total extruido"
+ #else
+-    #define MSG_INFO_PRINT_COUNT              "Traballos"
+-    #define MSG_INFO_COMPLETED_PRINTS         "Completos"
+-    #define MSG_INFO_PRINT_TIME               "Tempo"
+-    #define MSG_INFO_PRINT_LONGEST            "O +longo"
+-    #define MSG_INFO_PRINT_FILAMENT           "Extruido"
++  #define MSG_INFO_PRINT_COUNT              "Traballos"
++  #define MSG_INFO_COMPLETED_PRINTS         "Completos"
++  #define MSG_INFO_PRINT_TIME               "Tempo"
++  #define MSG_INFO_PRINT_LONGEST            "O +longo"
++  #define MSG_INFO_PRINT_FILAMENT           "Extruido"
+ #endif
+ #define MSG_INFO_MIN_TEMP                   "Min Temp"
+ #define MSG_INFO_MAX_TEMP                   "Max Temp"
+@@ -203,31 +203,31 @@
+ #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extruir mais"
+ #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Segue traballo"
+ #if LCD_HEIGHT >= 4
+-    #define MSG_FILAMENT_CHANGE_INIT_1          "Agarde para"
+-    #define MSG_FILAMENT_CHANGE_INIT_2          "iniciar troco"
+-    #define MSG_FILAMENT_CHANGE_INIT_3          "de filamento"
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Agarde pola"
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_2        "descarga do"
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_3        "filamento"
+-    #define MSG_FILAMENT_CHANGE_INSERT_1        "Introduza o"
+-    #define MSG_FILAMENT_CHANGE_INSERT_2        "filamento e"
+-    #define MSG_FILAMENT_CHANGE_INSERT_3        "faga click"
+-    #define MSG_FILAMENT_CHANGE_LOAD_1          "Agarde pola"
+-    #define MSG_FILAMENT_CHANGE_LOAD_2          "carga do"
+-    #define MSG_FILAMENT_CHANGE_LOAD_3          "filamento"
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Agarde pola"
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "extrusion do"
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_3       "filamento"
+-    #define MSG_FILAMENT_CHANGE_RESUME_1        "Agarde para"
+-    #define MSG_FILAMENT_CHANGE_RESUME_2        "seguir co"
+-    #define MSG_FILAMENT_CHANGE_RESUME_3        "traballo"
++  #define MSG_FILAMENT_CHANGE_INIT_1          "Agarde para"
++  #define MSG_FILAMENT_CHANGE_INIT_2          "iniciar troco"
++  #define MSG_FILAMENT_CHANGE_INIT_3          "de filamento"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Agarde pola"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "descarga do"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_3        "filamento"
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Introduza o"
++  #define MSG_FILAMENT_CHANGE_INSERT_2        "filamento e"
++  #define MSG_FILAMENT_CHANGE_INSERT_3        "faga click"
++  #define MSG_FILAMENT_CHANGE_LOAD_1          "Agarde pola"
++  #define MSG_FILAMENT_CHANGE_LOAD_2          "carga do"
++  #define MSG_FILAMENT_CHANGE_LOAD_3          "filamento"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Agarde pola"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "extrusion do"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_3       "filamento"
++  #define MSG_FILAMENT_CHANGE_RESUME_1        "Agarde para"
++  #define MSG_FILAMENT_CHANGE_RESUME_2        "seguir co"
++  #define MSG_FILAMENT_CHANGE_RESUME_3        "traballo"
+ #else // LCD_HEIGHT < 4
+-    #define MSG_FILAMENT_CHANGE_INIT_1          "Agarde..."
+-    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Descargando..."
+-    #define MSG_FILAMENT_CHANGE_INSERT_1        "Introduza e click"
+-    #define MSG_FILAMENT_CHANGE_LOAD_1          "Cargando..."
+-    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extruindo..."
+-    #define MSG_FILAMENT_CHANGE_RESUME_1        "Seguindo..."
++  #define MSG_FILAMENT_CHANGE_INIT_1          "Agarde..."
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Descargando..."
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Introduza e click"
++  #define MSG_FILAMENT_CHANGE_LOAD_1          "Cargando..."
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extruindo..."
++  #define MSG_FILAMENT_CHANGE_RESUME_1        "Seguindo..."
+ #endif // LCD_HEIGHT < 4
+ 
+ #endif // LANGUAGE_GL_H
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index 75df0ef..edde963 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -190,7 +190,7 @@
+ #define MSG_INFO_EXTRUDERS                  "Estrusori"
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protocollo"
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Contat. stampa"
+   #define MSG_INFO_COMPLETED_PRINTS         "Completati"
+   #define MSG_INFO_PRINT_TIME               "Tempo totale"
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 03c7331..6a40fb9 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -89,7 +89,7 @@
+ #define MSG_MIN                             LCD_STR_THERMOMETER " \xbb\xb2\xc3\xb2"                            // " ｻｲﾃｲ" (" Min")
+ #define MSG_MAX                             LCD_STR_THERMOMETER " \xbb\xb2\xba\xb3"                            // " ｻｲｺｳ" (" Max")
+ #define MSG_FACTOR                          LCD_STR_THERMOMETER " \xcc\xa7\xb8\xc0\xb0"                        // " ﾌｧｸﾀｰ" (" Fact")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_AUTOTEMP                      "\xbc\xde\xc4\xde\xb3\xb5\xdd\xc4\xde\xbe\xb2\xb7\xde\xae"         // "ｼﾞﾄﾞｳｵﾝﾄﾞｾｲｷﾞｮ" ("Autotemp")
+ #else
+   #define MSG_AUTOTEMP                      "\xbc\xde\xc4\xde\xb3\xb5\xdd\xc4\xde"                             // "ｼﾞﾄﾞｳｵﾝﾄﾞ" ("Autotemp")
+@@ -101,7 +101,7 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "\xbe\xdd\xc0\xb8"                                                 // "ｾﾝﾀｸ" ("Select")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_ACC                           "\xb6\xbf\xb8\xc4\xde mm/s2"                                       // "ｶｿｸﾄﾞ mm/s2" ("Accel")
+   #define MSG_VX_JERK                       "X\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "Xｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vx-jerk")
+   #define MSG_VY_JERK                       "Y\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "Yｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vy-jerk")
+@@ -132,7 +132,7 @@
+ #define MSG_MOTION                          "\xb3\xba\xde\xb7\xbe\xaf\xc3\xb2"                                 // "ｳｺﾞｷｾｯﾃｲ" ("Motion")
+ #define MSG_VOLUMETRIC                      "\xcc\xa8\xd7\xd2\xdd\xc4"                                         // "ﾌｨﾗﾒﾝﾄ" ("Filament")
+ #define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_FILAMENT_DIAM                 "\xcc\xa8\xd7\xd2\xdd\xc4\xc1\xae\xaf\xb9\xb2"                     // "ﾌｨﾗﾒﾝﾄﾁｮｯｹｲ" ("Fil. Dia.")
+ #else
+   #define MSG_FILAMENT_DIAM                 "\xcc\xa8\xd7\xd2\xdd\xc4\xb9\xb2"                                 // "ﾌｨﾗﾒﾝﾄｹｲ" ("Fil. Dia.")
+@@ -157,7 +157,7 @@
+ #define MSG_NO_MOVE                         "\xb3\xba\xde\xb7\xcf\xbe\xdd"                                     // "ｳｺﾞｷﾏｾﾝ" ("No move.")
+ #define MSG_KILLED                          "\xcb\xbc\xde\xae\xb3\xc3\xb2\xbc"                                 // "ﾋｼﾞｮｳﾃｲｼ" ("KILLED. ")
+ #define MSG_STOPPED                         "\xc3\xb2\xbc\xbc\xcf\xbc\xc0"                                     // "ﾃｲｼｼﾏｼﾀ" ("STOPPED. ")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_CONTROL_RETRACT               "\xcb\xb7\xba\xd0\xd8\xae\xb3 mm"                                  // "ﾋｷｺﾐﾘｮｳ mm" ("Retract mm")
+   #define MSG_CONTROL_RETRACT_SWAP          "\xcb\xb7\xba\xd0\xd8\xae\xb3S mm"                                 // "ﾋｷｺﾐﾘｮｳS mm" ("Swap Re.mm")
+   #define MSG_CONTROL_RETRACTF              "\xcb\xb7\xba\xd0\xbf\xb8\xc4\xde mm/s"                            // "ﾋｷｺﾐｿｸﾄﾞ mm/s" ("Retract  V")
+@@ -179,14 +179,14 @@
+ #define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                       // "SDｶｰﾄﾞｻｲﾖﾐｺﾐ" ("Init. SD card")
+ #define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                               // "SDｶｰﾄﾞｺｳｶﾝ" ("Change SD card")
+ #define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2"    // "Zﾌﾟﾛｰﾌﾞ ﾍﾞｯﾄﾞｶﾞｲ" ("Z probe out. bed")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_BLTOUCH_SELFTEST              "BLTouch \xbc\xde\xba\xbc\xdd\xc0\xde\xdd"                         // "BLTouch ｼﾞｺｼﾝﾀﾞﾝ" ("BLTouch Self-Test")
+ #else
+   #define MSG_BLTOUCH_SELFTEST              "BLTouch \xbe\xd9\xcc\xc3\xbd\xc4"                                 // "BLTouch ｾﾙﾌﾃｽﾄ" ("BLTouch Self-Test")
+ #endif
+ #define MSG_BLTOUCH_RESET                   "BLTouch \xd8\xbe\xaf\xc4"                                         // "BLTouch ﾘｾｯﾄ" ("Reset BLTouch")
+ #define MSG_HOME                            "\xbb\xb7\xc6"                                                     // "ｻｷﾆ" ("Home") // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_FIRST                         "\xa6\xcc\xaf\xb7\xbb\xbe\xc3\xb8\xc0\xde\xbb\xb2"                 // "ｦﾌｯｷｻｾﾃｸﾀﾞｻｲ" ("first")
+ #else
+   #define MSG_FIRST                         "\xa6\xcc\xaf\xb7\xbb\xbe\xd6"                                     // "ｦﾌｯｷｻｾﾖ" ("first")
+@@ -195,13 +195,13 @@
+ #define MSG_BABYSTEP_X                      "X\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                            // "Xｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep X")
+ #define MSG_BABYSTEP_Y                      "Y\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                            // "Yｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep Y")
+ #define MSG_BABYSTEP_Z                      "Z\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                            // "Zｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep Z")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_ENDSTOP_ABORT                 "\xb2\xc4\xde\xb3\xb9\xde\xdd\xb6\xb2\xb9\xdd\xc1\xb7\xc9\xb3"     // "ｲﾄﾞｳｹﾞﾝｶｲｹﾝﾁｷﾉｳ" ("Endstop abort")
+ #else
+   #define MSG_ENDSTOP_ABORT                 "\xb2\xc4\xde\xb3\xb9\xde\xdd\xb6\xb2\xb9\xdd\xc1"                 // "ｲﾄﾞｳｹﾞﾝｶｲｹﾝﾁ" ("Endstop abort")
+ #endif
+ #define MSG_HEATING_FAILED_LCD              "\xb6\xc8\xc2\xbc\xaf\xca\xdf\xb2"                                 // "ｶﾈﾂｼｯﾊﾟｲ" ("Heating failed")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_ERR_REDUNDANT_TEMP            "\xb4\xd7\xb0:\xbc\xde\xae\xb3\xc1\xae\xb3\xbb\xb0\xd0\xbd\xc0\xb0\xb7\xc9\xb3" // "ｴﾗｰ:ｼﾞｮｳﾁｮｳｻｰﾐｽﾀｰｷﾉｳ" ("Err: REDUNDANT TEMP")
+ #else
+   #define MSG_ERR_REDUNDANT_TEMP            "\xb4\xd7\xb0:\xbc\xde\xae\xb3\xc1\xae\xb3\xbb\xb0\xd0\xbd\xc0"                 // "ｴﾗｰ:ｼﾞｮｳﾁｮｳｻｰﾐｽﾀ" ("Err: REDUNDANT TEMP")
+@@ -209,7 +209,7 @@
+ #define MSG_THERMAL_RUNAWAY                 "\xc8\xc2\xce\xde\xb3\xbf\xb3"                                                  // "ﾈﾂﾎﾞｳｿｳ" ("THERMAL RUNAWAY")
+ #define MSG_ERR_MAXTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6"                         // "ｴﾗｰ:ｻｲｺｳｵﾝﾁｮｳｶ" ("Err: MAXTEMP")
+ #define MSG_ERR_MINTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"                             // "ｴﾗｰ:ｻｲﾃｲｵﾝﾐﾏﾝ" ("Err: MINTEMP")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_ERR_MAXTEMP_BED               "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6" // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲｺｳｵﾝﾁｮｳｶ" ("Err: MAXTEMP BED")
+   #define MSG_ERR_MINTEMP_BED               "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"     // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲﾃｲｵﾝﾐﾏﾝ" ("Err: MINTEMP BED")
+ #else
+@@ -239,24 +239,24 @@
+ #define MSG_INFO_EXTRUDERS                  "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\xbd\xb3"                     // "ｴｸｽﾄﾙｰﾀﾞｰｽｳ" ("Extruders")
+ #define MSG_INFO_BAUDRATE                   "\xce\xde\xb0\xda\xb0\xc4"                                         // "ﾎﾞｰﾚｰﾄ" ("Baud")
+ #define MSG_INFO_PROTOCOL                   "\xcc\xdf\xdb\xc4\xba\xd9"                                         // "ﾌﾟﾛﾄｺﾙ" ("Protocol")
+-#define MSG_INFO_PRINT_COUNT                "\xcc\xdf\xd8\xdd\xc4\xbd\xb3  "                                   // "ﾌﾟﾘﾝﾄｽｳ  " ("Print Count")
++#define MSG_INFO_PRINT_COUNT                "\xcc\xdf\xd8\xdd\xc4\xbd\xb3"                                     // "ﾌﾟﾘﾝﾄｽｳ" ("Print Count")
+ #define MSG_INFO_COMPLETED_PRINTS           "\xb6\xdd\xd8\xae\xb3\xbd\xb3"                                     // "ｶﾝﾘｮｳｽｳ" ("Completed")
+ #define MSG_INFO_PRINT_TIME                 "\xcc\xdf\xd8\xdd\xc4\xbc\xde\xb6\xdd\xd9\xb2\xb9\xb2"             // "ﾌﾟﾘﾝﾄｼﾞｶﾝﾙｲｹｲ" ("Total print time")
+ #define MSG_INFO_PRINT_LONGEST              "\xbb\xb2\xc1\xae\xb3\xcc\xdf\xd8\xdd\xc4\xbc\xde\xb6\xdd"         // "ｻｲﾁｮｳﾌﾟﾘﾝﾄｼﾞｶﾝ" ("Longest job time")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_FILAMENT           "\xcc\xa8\xd7\xd2\xdd\xc4\xbc\xd6\xb3\xd8\xae\xb3\xd9\xb2\xb9\xb2" // "ﾌｨﾗﾒﾝﾄｼﾖｳﾘｮｳﾙｲｹｲ" ("Extruded total")
+ #else
+   #define MSG_INFO_PRINT_FILAMENT           "\xcc\xa8\xd7\xd2\xdd\xc4\xbf\xb3\xbc\xd6\xb3\xd8\xae\xb3"         // "ﾌｨﾗﾒﾝﾄｿｳｼﾖｳﾘｮｳ" ("Extruded")
+ #endif
+ #define MSG_INFO_MIN_TEMP                   "\xbe\xaf\xc3\xb2\xbb\xb2\xc3\xb2\xb5\xdd"                         // "ｾｯﾃｲｻｲﾃｲｵﾝ" ("Min Temp")
+ #define MSG_INFO_MAX_TEMP                   "\xbe\xaf\xc3\xb2\xbb\xb2\xba\xb3\xb5\xdd"                         // "ｾｯﾃｲｻｲｺｳｵﾝ" ("Max Temp")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PSU                      "\xc3\xde\xdd\xb9\xde\xdd\xbc\xad\xcd\xde\xc2"                     // "ﾃﾞﾝｹﾞﾝｼｭﾍﾞﾂ" ("Power Supply")
+ #else
+   #define MSG_INFO_PSU                      "\xc3\xde\xdd\xb9\xde\xdd"                                         // "ﾃﾞﾝｹﾞﾝ" ("Power Supply")
+ #endif
+ #define MSG_DRIVE_STRENGTH                  "\xd3\xb0\xc0\xb0\xb8\xc4\xde\xb3\xd8\xae\xb8"                     // "ﾓｰﾀｰｸﾄﾞｳﾘｮｸ" ("Drive Strength")
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_DAC_PERCENT                   "DAC\xbc\xad\xc2\xd8\xae\xb8 %"                                    // "DACｼｭﾂﾘｮｸ %" ("Driver %")
+ #else
+   #define MSG_DAC_PERCENT                   "DAC\xbc\xad\xc2\xd8\xae\xb8"                                      // "DACｼｭﾂﾘｮｸ" ("Driver %")
+@@ -288,7 +288,7 @@
+ #else // LCD_HEIGHT < 4
+   #define MSG_FILAMENT_CHANGE_INIT_1        "\xba\xb3\xb6\xdd\xa6\xb6\xb2\xbc\xbc\xcf\xbd"                     // "ｺｳｶﾝｦｶｲｼｼﾏｽ" ("Please wait...")
+   #define MSG_FILAMENT_CHANGE_UNLOAD_1      "\xcc\xa8\xd7\xd2\xdd\xc4\xc7\xb7\xc0\xde\xbc\xc1\xad\xb3"         // "ﾌｨﾗﾒﾝﾄﾇｷﾀﾞｼﾁｭｳ" ("Ejecting...")
+-  #if LCD_WIDTH > 19
++  #if LCD_WIDTH >= 20
+     #define MSG_FILAMENT_CHANGE_INSERT_1    "\xbf\xb3\xc6\xad\xb3\xbc\x2c\xb8\xd8\xaf\xb8\xbc\xc3\xb8\xc0\xde\xbb\xb2" // "ｿｳﾆｭｳｼ,ｸﾘｯｸｼﾃｸﾀﾞｻｲ" ("Insert and Click")
+   #else
+     #define MSG_FILAMENT_CHANGE_INSERT_1    "\xbf\xb3\xc6\xad\xb3\xbc\x2c\xb8\xd8\xaf\xb8\xbe\xd6"                     // "ｿｳﾆｭｳｼ,ｸﾘｯｸｾﾖ" ("Insert and Click")
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 2d64059..330ee0a 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -190,7 +190,7 @@
+ #define MSG_INFO_EXTRUDERS                  "エクストルーダースウ"             // "Extruders"
+ #define MSG_INFO_BAUDRATE                   "ボーレート"                    // "Baud"
+ #define MSG_INFO_PROTOCOL                   "プロトコル"                    // "Protocol"
+-#define MSG_INFO_PRINT_COUNT                "プリントスウ   "                // "Print Count"
++#define MSG_INFO_PRINT_COUNT                "プリントスウ "                  // "Print Count"
+ #define MSG_INFO_COMPLETED_PRINTS           "カンリョウスウ"                  // "Completed"
+ #define MSG_INFO_PRINT_TIME                 "プリントジカンルイケイ"            // "Total print time"
+ #define MSG_INFO_PRINT_LONGEST              "サイチョウプリントジカン"           // "Longest job time"
+diff --git a/Marlin/language_tr.h b/Marlin/language_tr.h
+index 440f51e..edef587 100644
+--- a/Marlin/language_tr.h
++++ b/Marlin/language_tr.h
+@@ -186,7 +186,7 @@
+ #define MSG_INFO_BAUDRATE                   "\xddleti\xfeim H\xfdz\xfd"
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+ 
+-#if LCD_WIDTH > 19
++#if LCD_WIDTH >= 20
+   #define MSG_INFO_PRINT_COUNT              "Bask\xfd Say\xfds\xfd"
+   #define MSG_INFO_COMPLETED_PRINTS         "Tamamlanan"
+   #define MSG_INFO_PRINT_TIME               "Toplam Bask\xfd S\xfcresi"
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index d627deb..ab03d9f 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -662,7 +662,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+         SERIAL_ECHOLNPGM(MSG_ERR_COLD_EXTRUDE_STOP);
+       }
+       #if ENABLED(PREVENT_LENGTHY_EXTRUDE)
+-        if (labs(de) > axis_steps_per_mm[E_AXIS] * (EXTRUDE_MAXLENGTH)) {
++        if (labs(de) > (int32_t)axis_steps_per_mm[E_AXIS] * (EXTRUDE_MAXLENGTH)) { // It's not important to get max. extrusion length in a precision < 1mm, so save some cycles and cast to int
+           position[E_AXIS] = target[E_AXIS]; // Behave as if the move really took place, but ignore E part
+           de = 0; // no difference
+           SERIAL_ECHO_START;
+@@ -699,10 +699,11 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+   #endif
+   if (de < 0) SBI(dm, E_AXIS);
+ 
+-  int32_t esteps = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
++  float esteps_float = de * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01;
++  int32_t esteps = abs(esteps_float) + 0.5;
+ 
+   // Calculate the buffer head after we push this byte
+-  int next_buffer_head = next_block_index(block_buffer_head);
++  int8_t next_buffer_head = next_block_index(block_buffer_head);
+ 
+   // If the buffer is full: good! That means we are well ahead of the robot.
+   // Rest here until there is room in the buffer.
+@@ -798,7 +799,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+ 
+     #if ENABLED(DISABLE_INACTIVE_EXTRUDER) // Enable only the selected extruder
+ 
+-      for (int i = 0; i < EXTRUDERS; i++)
++      for (int8_t i = 0; i < EXTRUDERS; i++)
+         if (g_uc_extruder_last_move[i] > 0) g_uc_extruder_last_move[i]--;
+ 
+       switch(extruder) {
+@@ -903,7 +904,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     delta_mm[Y_AXIS] = db * steps_to_mm[Y_AXIS];
+     delta_mm[Z_AXIS] = dc * steps_to_mm[Z_AXIS];
+   #endif
+-  delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * flow_percentage[extruder];
++  delta_mm[E_AXIS] = esteps_float * steps_to_mm[E_AXIS];
+ 
+   if (block->steps[X_AXIS] < MIN_STEPS_PER_SEGMENT && block->steps[Y_AXIS] < MIN_STEPS_PER_SEGMENT && block->steps[Z_AXIS] < MIN_STEPS_PER_SEGMENT) {
+     block->millimeters = fabs(delta_mm[E_AXIS]);
+@@ -1251,7 +1252,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     }
+     else {
+       block->use_advance_lead = true;
+-      block->abs_adv_steps_multiplier8 = lround(extruder_advance_k * (de_float / mm_D_float) * block->nominal_speed / (float)block->nominal_rate * axis_steps_per_mm[Z_AXIS] * 256.0);
++      block->abs_adv_steps_multiplier8 = lround(extruder_advance_k * (de_float / mm_D_float) * block->nominal_speed / (float)block->nominal_rate * axis_steps_per_mm[E_AXIS] * 256.0);
+     }
+ 
+   #elif ENABLED(ADVANCE)
+@@ -1360,7 +1361,7 @@ void Planner::refresh_positioning() {
+ 
+ #if ENABLED(AUTOTEMP)
+ 
+-  void Planner::autotemp_M109() {
++  void Planner::autotemp_M104_M109() {
+     autotemp_enabled = code_seen('F');
+     if (autotemp_enabled) autotemp_factor = code_value_temp_diff();
+     if (code_seen('S')) autotemp_min = code_value_temp_abs();
+@@ -1378,4 +1379,4 @@ void Planner::refresh_positioning() {
+     SERIAL_EOL;
+   }
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index ab691a6..8b8d498 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -117,7 +117,7 @@ typedef struct {
+            acceleration_steps_per_s2;       // acceleration steps/sec^2
+ 
+   #if FAN_COUNT > 0
+-    uint32_t fan_speed[FAN_COUNT];
++    uint16_t fan_speed[FAN_COUNT];
+   #endif
+ 
+   #if ENABLED(BARICUDA)
+@@ -372,7 +372,7 @@ class Planner {
+       static float autotemp_factor;
+       static bool autotemp_enabled;
+       static void getHighESpeed();
+-      static void autotemp_M109();
++      static void autotemp_M104_M109();
+     #endif
+ 
+   private:
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 1642639..2216a9f 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2011,7 +2011,7 @@ void kill_screen(const char* lcd_msg) {
+ 
+         START_SCREEN();                                                                                // 12345678901234567890
+         STATIC_ITEM(MSG_INFO_PRINT_COUNT ": ", false, false, itostr3left(stats.totalPrints));          // Print Count: 999
+-        STATIC_ITEM(MSG_INFO_COMPLETED_PRINTS"  : ", false, false, itostr3left(stats.finishedPrints)); // Completed  : 666
++        STATIC_ITEM(MSG_INFO_COMPLETED_PRINTS": ", false, false, itostr3left(stats.finishedPrints)); // Completed  : 666
+ 
+         duration_t elapsed = stats.printTime;
+         elapsed.toString(buffer);
+diff --git a/Marlin/ultralcd_impl_HD44780.h b/Marlin/ultralcd_impl_HD44780.h
+index b60deec..45f59da 100644
+--- a/Marlin/ultralcd_impl_HD44780.h
++++ b/Marlin/ultralcd_impl_HD44780.h
+@@ -721,7 +721,7 @@ static void lcd_implementation_status_screen() {
+     lcd.print(itostr3(feedrate_percentage));
+     lcd.print('%');
+ 
+-    #if LCD_WIDTH > 19 && ENABLED(SDSUPPORT)
++    #if LCD_WIDTH >= 20 && ENABLED(SDSUPPORT)
+ 
+       lcd.setCursor(7, 2);
+       lcd_printPGM(PSTR("SD"));
+@@ -731,7 +731,7 @@ static void lcd_implementation_status_screen() {
+         lcd_printPGM(PSTR("---"));
+       lcd.print('%');
+ 
+-    #endif // LCD_WIDTH > 19 && SDSUPPORT
++    #endif // LCD_WIDTH >= 20 && SDSUPPORT
+ 
+     lcd.setCursor(LCD_WIDTH - 6, 2);
+     lcd.print(LCD_STR_CLOCK[0]);
+

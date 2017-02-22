@@ -1,0 +1,1433 @@
+commit 6d9e9a6befdeb72098c956e1ea4a378941619582 (from 4db2179f5c355e4832ac1126626d30785d2b394a)
+Merge: 4db2179 0e074d4
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Thu Mar 5 02:49:18 2015 -0800
+
+    Merge branch 'Development' into enhanced_g29
+    Latest upstream changes
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 25c77c4..f335a33 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -180,8 +180,8 @@ void manage_inactivity(bool ignore_stepper_queue=false);
+   #define disable_e3() /* nothing */
+ #endif
+ 
+-enum AxisEnum {X_AXIS=0, Y_AXIS=1, Z_AXIS=2, E_AXIS=3, X_HEAD=4, Y_HEAD=5};
+-
++enum AxisEnum {X_AXIS=0, Y_AXIS=1, Z_AXIS=2, E_AXIS=3, X_HEAD=4, Y_HEAD=5}; 
++//X_HEAD and Y_HEAD is used for systems that don't have a 1:1 relationship between X_AXIS and X Head movement, like CoreXY bots.
+ 
+ void FlushSerialRequestResend();
+ void ClearToSend();
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2948119..2174eb8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -154,6 +154,8 @@
+ // M302 - Allow cold extrudes, or set the minimum extrude S<temperature>.
+ // M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+ // M304 - Set bed PID parameters P I and D
++// M380 - Activate solenoid on active extruder
++// M381 - Disable all solenoids
+ // M400 - Finish all moves
+ // M401 - Lower z-probe if present
+ // M402 - Raise z-probe if present
+@@ -529,32 +531,28 @@ void setup_homepin(void)
+ void setup_photpin()
+ {
+   #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+-    SET_OUTPUT(PHOTOGRAPH_PIN);
+-    WRITE(PHOTOGRAPH_PIN, LOW);
++    OUT_WRITE(PHOTOGRAPH_PIN, LOW);
+   #endif
+ }
+ 
+ void setup_powerhold()
+ {
+   #if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
+-    SET_OUTPUT(SUICIDE_PIN);
+-    WRITE(SUICIDE_PIN, HIGH);
++    OUT_WRITE(SUICIDE_PIN, HIGH);
+   #endif
+   #if defined(PS_ON_PIN) && PS_ON_PIN > -1
+-    SET_OUTPUT(PS_ON_PIN);
+-	#if defined(PS_DEFAULT_OFF)
+-	  WRITE(PS_ON_PIN, PS_ON_ASLEEP);
+-    #else
+-	  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+-	#endif
++    #if defined(PS_DEFAULT_OFF)
++      OUT_WRITE(PS_ON_PIN, PS_ON_ASLEEP);
++      #else
++      OUT_WRITE(PS_ON_PIN, PS_ON_AWAKE);
++    #endif
+   #endif
+ }
+ 
+ void suicide()
+ {
+   #if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
+-    SET_OUTPUT(SUICIDE_PIN);
+-    WRITE(SUICIDE_PIN, LOW);
++    OUT_WRITE(SUICIDE_PIN, LOW);
+   #endif
+ }
+ 
+@@ -1437,10 +1435,10 @@ void process_commands()
+             if(autoretract_enabled)
+             if( !(code_seen('X') || code_seen('Y') || code_seen('Z')) && code_seen('E')) {
+               float echange=destination[E_AXIS]-current_position[E_AXIS];
+-              if((echange<-MIN_RETRACT && !retracted) || (echange>MIN_RETRACT && retracted)) { //move appears to be an attempt to retract or recover
++              if((echange<-MIN_RETRACT && !retracted[active_extruder]) || (echange>MIN_RETRACT && retracted[active_extruder])) { //move appears to be an attempt to retract or recover
+                   current_position[E_AXIS] = destination[E_AXIS]; //hide the slicer-generated retract/recover from calculations
+                   plan_set_e_position(current_position[E_AXIS]); //AND from the planner
+-                  retract(!retracted);
++                  retract(!retracted[active_extruder]);
+                   return;
+               }
+             }
+@@ -2865,15 +2863,13 @@ Sigma_Exit:
+ 
+     #if defined(PS_ON_PIN) && PS_ON_PIN > -1
+       case 80: // M80 - Turn on Power Supply
+-        SET_OUTPUT(PS_ON_PIN); //GND
+-        WRITE(PS_ON_PIN, PS_ON_AWAKE);
++        OUT_WRITE(PS_ON_PIN, PS_ON_AWAKE); // GND
+ 
+         // If you have a switch on suicide pin, this is useful
+         // if you want to start another print with suicide feature after
+         // a print without suicide...
+         #if defined SUICIDE_PIN && SUICIDE_PIN > -1
+-            SET_OUTPUT(SUICIDE_PIN);
+-            WRITE(SUICIDE_PIN, HIGH);
++            OUT_WRITE(SUICIDE_PIN, HIGH);
+         #endif
+ 
+         #ifdef ULTIPANEL
+@@ -2898,8 +2894,7 @@ Sigma_Exit:
+         st_synchronize();
+         suicide();
+       #elif defined(PS_ON_PIN) && PS_ON_PIN > -1
+-        SET_OUTPUT(PS_ON_PIN);
+-        WRITE(PS_ON_PIN, PS_ON_ASLEEP);
++        OUT_WRITE(PS_ON_PIN, PS_ON_ASLEEP);
+       #endif
+       #ifdef ULTIPANEL
+         powersupply = false;
+@@ -3263,7 +3258,7 @@ Sigma_Exit:
+          SERIAL_ECHO(extruder_offset[Z_AXIS][tmp_extruder]);
+       #endif
+       }
+-      SERIAL_ECHOLN("");
++      SERIAL_EOL;
+     }break;
+     #endif
+     case 220: // M220 S<factor in percent>- set speed factor override percentage
+@@ -3482,8 +3477,7 @@ Sigma_Exit:
+      {
+      	#ifdef CHDK
+        
+-         SET_OUTPUT(CHDK);
+-         WRITE(CHDK, HIGH);
++         OUT_WRITE(CHDK, HIGH);
+          chdkHigh = millis();
+          chdkActive = true;
+        
+@@ -3642,6 +3636,17 @@ Sigma_Exit:
+       }
+       break;
+ 	#endif
++    
++#ifdef EXT_SOLENOID
++    case 380:
++        enable_solenoid_on_active_extruder();
++        break;
++
++    case 381:
++        disable_all_solenoids();
++        break;
++#endif //EXT_SOLENOID
++
+     case 400: // M400 finish all moves
+     {
+       st_synchronize();
+@@ -3883,9 +3888,7 @@ case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or disp
+           if(cnt==0)
+           {
+           #if BEEPER > 0
+-            SET_OUTPUT(BEEPER);
+-
+-            WRITE(BEEPER,HIGH);
++            OUT_WRITE(BEEPER,HIGH);
+             delay(3);
+             WRITE(BEEPER,LOW);
+             delay(3);
+@@ -4146,6 +4149,13 @@ case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or disp
+            prepare_move();
+         }
+       }
++
++#ifdef EXT_SOLENOID
++      st_synchronize();
++      disable_all_solenoids();
++      enable_solenoid_on_active_extruder();
++#endif //EXT_SOLENOID
++
+       #endif
+       SERIAL_ECHO_START;
+       SERIAL_ECHO(MSG_ACTIVE_EXTRUDER);
+@@ -4855,7 +4865,6 @@ bool setTargetedHotend(int code){
+   return false;
+ }
+ 
+-
+ float calculate_volumetric_multiplier(float diameter) {
+   if (!volumetric_enabled || diameter == 0) return 1.0;
+   float d2 = diameter * 0.5;
+@@ -4866,3 +4875,43 @@ void calculate_volumetric_multipliers() {
+   for (int i=0; i<EXTRUDERS; i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
++
++#ifdef EXT_SOLENOID
++
++void enable_solenoid(uint8_t num) {
++  switch(num) {
++    case 0:
++      OUT_WRITE(SOL0_PIN, HIGH);
++      break;
++      #if defined(SOL1_PIN) && SOL1_PIN > -1
++        case 1:
++          OUT_WRITE(SOL1_PIN, HIGH);
++          break;
++      #endif
++      #if defined(SOL2_PIN) && SOL2_PIN > -1
++        case 2:
++          OUT_WRITE(SOL2_PIN, HIGH);
++          break;
++      #endif
++      #if defined(SOL3_PIN) && SOL3_PIN > -1
++        case 3:
++          OUT_WRITE(SOL3_PIN, HIGH);
++          break;
++      #endif
++    default:
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_INVALID_SOLENOID);
++      break;
++  }
++}
++
++void enable_solenoid_on_active_extruder() { enable_solenoid(active_extruder); }
++
++void disable_all_solenoids() {
++  OUT_WRITE(SOL0_PIN, LOW);
++  OUT_WRITE(SOL1_PIN, LOW);
++  OUT_WRITE(SOL2_PIN, LOW);
++  OUT_WRITE(SOL3_PIN, LOW);
++}
++
++#endif //EXT_SOLENOID
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 7ee7df4..a51d77b 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -22,8 +22,7 @@ CardReader::CardReader() {
+   autostart_index = 0;
+   //power to SD reader
+   #if SDPOWER > -1
+-    SET_OUTPUT(SDPOWER);
+-    WRITE(SDPOWER, HIGH);
++    OUT_WRITE(SDPOWER, HIGH);
+   #endif //SDPOWER
+ 
+   autostart_atmillis = millis() + 5000;
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index c7df306..4e2a567 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -21,17 +21,13 @@
+ **/
+ 
+ #ifdef ULTIPANEL
+-#define BLEN_A 0
+-#define BLEN_B 1
+-#define BLEN_C 2
+-#define EN_A (1<<BLEN_A)
+-#define EN_B (1<<BLEN_B)
+-#define EN_C (1<<BLEN_C)
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+-#define LCD_CLICKED (buttons&EN_C)
++  #define BLEN_A 0
++  #define BLEN_B 1
++  #define BLEN_C 2
++  #define EN_A (1<<BLEN_A)
++  #define EN_B (1<<BLEN_B)
++  #define EN_C (1<<BLEN_C)
++  #define LCD_CLICKED (buttons&EN_C)
+ #endif
+ 
+ #include <U8glib.h>
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index 53f8221..d7198f3 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -83,6 +83,9 @@
+ /// check if pin is an timer wrapper
+ #define GET_TIMER(IO)  _GET_TIMER(IO)
+ 
++// Shorthand
++#define OUT_WRITE(IO, v) { SET_OUTPUT(IO); WRITE(IO, v); }
++
+ /*
+ 	ports and functions
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index f554c6a..dc32bea 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -121,6 +121,7 @@
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+ #define MSG_INVALID_EXTRUDER                "Invalid extruder"
++#define MSG_INVALID_SOLENOID                "Invalid solenoid"
+ #define MSG_X_MIN                           "x_min: "
+ #define MSG_X_MAX                           "x_max: "
+ #define MSG_Y_MIN                           "y_min: "
+diff --git a/Marlin/pins_CHEAPTRONIC.h b/Marlin/pins_CHEAPTRONIC.h
+index 83d67e5..dbf53a7 100644
+--- a/Marlin/pins_CHEAPTRONIC.h
++++ b/Marlin/pins_CHEAPTRONIC.h
+@@ -87,9 +87,3 @@
+ 
+ // Cheaptronic v1.0 does not use this port
+ #define SDCARDDETECT -1
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_ELEFU_3.h b/Marlin/pins_ELEFU_3.h
+index 4c9663a..e0e0a50 100644
+--- a/Marlin/pins_ELEFU_3.h
++++ b/Marlin/pins_ELEFU_3.h
+@@ -74,12 +74,6 @@
+   #define BLEN_B           1
+   #define BLEN_A           0
+ 
+-  //encoder rotation values
+-  #define encrot0          0
+-  #define encrot1          2
+-  #define encrot2          3
+-  #define encrot3          1
+-
+ #endif // RA_CONTROL_PANEL
+ 
+ #ifdef RA_DISCO
+diff --git a/Marlin/pins_MEGATRONICS.h b/Marlin/pins_MEGATRONICS.h
+index 2bd0e33..413906e 100644
+--- a/Marlin/pins_MEGATRONICS.h
++++ b/Marlin/pins_MEGATRONICS.h
+@@ -83,10 +83,4 @@
+ 
+   #define SDCARDDETECT -1   // Ramps does not use this port
+ 
+-    //encoder rotation values
+-  #define encrot0 0
+-  #define encrot1 2
+-  #define encrot2 3
+-  #define encrot3 1
+-
+ #endif // ULTRA_LCD && NEWPANEL
+diff --git a/Marlin/pins_MEGATRONICS_1.h b/Marlin/pins_MEGATRONICS_1.h
+index f321941..1592dfe 100644
+--- a/Marlin/pins_MEGATRONICS_1.h
++++ b/Marlin/pins_MEGATRONICS_1.h
+@@ -80,9 +80,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1  // Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_MEGATRONICS_2.h b/Marlin/pins_MEGATRONICS_2.h
+index 064431b..b05eaaa 100644
+--- a/Marlin/pins_MEGATRONICS_2.h
++++ b/Marlin/pins_MEGATRONICS_2.h
+@@ -95,9 +95,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1  // Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_MEGATRONICS_3.h b/Marlin/pins_MEGATRONICS_3.h
+index 3c53bca..04a7306 100644
+--- a/Marlin/pins_MEGATRONICS_3.h
++++ b/Marlin/pins_MEGATRONICS_3.h
+@@ -95,9 +95,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1	// Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index b2ccdc4..3849e29 100644
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -116,11 +116,6 @@
+ 
+     #define SDCARDDETECT 81    // Ramps does not use this port
+ 
+-    //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+   #else //!NEWPANEL - old style panel with shift register
+     //arduino pin witch triggers an piezzo beeper
+     #define BEEPER 33    No Beeper added
+@@ -138,12 +133,6 @@
+     #define LCD_PINS_D6 27
+     #define LCD_PINS_D7 29
+ 
+-    //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-
+     //bits in the shift register that carry the buttons for:
+     // left up center down right red
+     #define BL_LE 7
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 8e49d2b..375a86f 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -187,7 +187,7 @@ void checkHitEndstops()
+      SERIAL_ECHOPAIR(" Z:",(float)endstops_trigsteps[Z_AXIS]/axis_steps_per_unit[Z_AXIS]);
+      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
+    }
+-   SERIAL_ECHOLN("");
++   SERIAL_EOL;
+    endstop_x_hit=false;
+    endstop_y_hit=false;
+    endstop_z_hit=false;
+@@ -399,89 +399,84 @@ ISR(TIMER1_COMPA_vect)
+       count_direction[Y_AXIS]=1;
+     }
+ 
+-    // Set direction en check limit switches
+-    #ifndef COREXY
+-    if ((out_bits & (1<<X_AXIS)) != 0)   // stepping along -X axis
+-    #else
+-    if ((out_bits & (1<<X_HEAD)) != 0)   //AlexBorro: Head direction in -X axis for CoreXY bots.
+-    #endif
++    if(check_endstops) // check X and Y Endstops
+     {
+-      CHECK_ENDSTOPS
+-      {
+-        #ifdef DUAL_X_CARRIAGE
+-        // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
+-        if ((current_block->active_extruder == 0 && X_HOME_DIR == -1) 
+-            || (current_block->active_extruder != 0 && X2_HOME_DIR == -1))
+-        #endif          
+-        {
+-          #if defined(X_MIN_PIN) && X_MIN_PIN > -1
+-            bool x_min_endstop=(READ(X_MIN_PIN) != X_MIN_ENDSTOP_INVERTING);
+-            if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0)) {
+-              endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-              endstop_x_hit=true;
+-              step_events_completed = current_block->step_event_count;
++        #ifndef COREXY
++        if ((out_bits & (1<<X_AXIS)) != 0)   // stepping along -X axis (regular cartesians bot)
++        #else
++        if (!((current_block->steps_x == current_block->steps_y) && ((out_bits & (1<<X_AXIS))>>X_AXIS != (out_bits & (1<<Y_AXIS))>>Y_AXIS))) // AlexBorro: If DeltaX == -DeltaY, the movement is only in Y axis
++        if ((out_bits & (1<<X_HEAD)) != 0) //AlexBorro: Head direction in -X axis for CoreXY bots.
++        #endif
++        { // -direction
++            #ifdef DUAL_X_CARRIAGE
++            // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
++            if ((current_block->active_extruder == 0 && X_HOME_DIR == -1) || (current_block->active_extruder != 0 && X2_HOME_DIR == -1))
++            #endif          
++            {
++                #if defined(X_MIN_PIN) && X_MIN_PIN > -1
++                bool x_min_endstop=(READ(X_MIN_PIN) != X_MIN_ENDSTOP_INVERTING);
++                if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0))
++                {
++                    endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++                    endstop_x_hit=true;
++                    step_events_completed = current_block->step_event_count;
++                }
++                old_x_min_endstop = x_min_endstop;
++                #endif
+             }
+-            old_x_min_endstop = x_min_endstop;
+-          #endif
+         }
+-      }
+-    }
+-    else 
+-    { // +direction
+-      CHECK_ENDSTOPS
+-      {
+-        #ifdef DUAL_X_CARRIAGE
+-        // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
+-        if ((current_block->active_extruder == 0 && X_HOME_DIR == 1) 
+-            || (current_block->active_extruder != 0 && X2_HOME_DIR == 1))
+-        #endif          
+-        {
+-          #if defined(X_MAX_PIN) && X_MAX_PIN > -1
+-            bool x_max_endstop=(READ(X_MAX_PIN) != X_MAX_ENDSTOP_INVERTING);
+-            if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0)){
+-              endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-              endstop_x_hit=true;
+-              step_events_completed = current_block->step_event_count;
++        else 
++        { // +direction
++            #ifdef DUAL_X_CARRIAGE
++            // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
++            if ((current_block->active_extruder == 0 && X_HOME_DIR == 1) || (current_block->active_extruder != 0 && X2_HOME_DIR == 1))
++            #endif          
++            {
++                #if defined(X_MAX_PIN) && X_MAX_PIN > -1
++                bool x_max_endstop=(READ(X_MAX_PIN) != X_MAX_ENDSTOP_INVERTING);
++                if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0))
++                {
++                    endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++                    endstop_x_hit=true;
++                    step_events_completed = current_block->step_event_count;
++                }
++                old_x_max_endstop = x_max_endstop;
++                #endif
+             }
+-            old_x_max_endstop = x_max_endstop;
+-          #endif
+         }
+-      }
+-    }
+ 
+-    #ifndef COREXY
+-    if ((out_bits & (1<<Y_AXIS)) != 0)   // -direction
+-    #else
+-    if ((out_bits & (1<<Y_HEAD)) != 0)  //AlexBorro: Head direction in -Y axis for CoreXY bots.
+-    #endif
+-    {
+-      CHECK_ENDSTOPS
+-      {
+-        #if defined(Y_MIN_PIN) && Y_MIN_PIN > -1
+-          bool y_min_endstop=(READ(Y_MIN_PIN) != Y_MIN_ENDSTOP_INVERTING);
+-          if(y_min_endstop && old_y_min_endstop && (current_block->steps_y > 0)) {
+-            endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-            endstop_y_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_y_min_endstop = y_min_endstop;
+-        #endif
+-      }
+-    }
+-    else 
+-    { // +direction
+-      CHECK_ENDSTOPS
+-      {
+-        #if defined(Y_MAX_PIN) && Y_MAX_PIN > -1
+-          bool y_max_endstop=(READ(Y_MAX_PIN) != Y_MAX_ENDSTOP_INVERTING);
+-          if(y_max_endstop && old_y_max_endstop && (current_block->steps_y > 0)){
+-            endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-            endstop_y_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_y_max_endstop = y_max_endstop;
++        #ifndef COREXY
++        if ((out_bits & (1<<Y_AXIS)) != 0)   // -direction
++        #else
++        if (!((current_block->steps_x == current_block->steps_y) && ((out_bits & (1<<X_AXIS))>>X_AXIS == (out_bits & (1<<Y_AXIS))>>Y_AXIS))) // AlexBorro: If DeltaX == DeltaY, the movement is only in X axis
++        if ((out_bits & (1<<Y_HEAD)) != 0)  //AlexBorro: Head direction in -Y axis for CoreXY bots.
+         #endif
+-      }
++        { // -direction
++            #if defined(Y_MIN_PIN) && Y_MIN_PIN > -1
++            bool y_min_endstop=(READ(Y_MIN_PIN) != Y_MIN_ENDSTOP_INVERTING);
++            if(y_min_endstop && old_y_min_endstop && (current_block->steps_y > 0))
++            {
++                endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
++                endstop_y_hit=true;
++                step_events_completed = current_block->step_event_count;
++            }
++            old_y_min_endstop = y_min_endstop;
++            #endif
++        }
++        else 
++        { // +direction
++            #if defined(Y_MAX_PIN) && Y_MAX_PIN > -1
++            bool y_max_endstop=(READ(Y_MAX_PIN) != Y_MAX_ENDSTOP_INVERTING);
++            if(y_max_endstop && old_y_max_endstop && (current_block->steps_y > 0))
++            {
++                endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
++                endstop_y_hit=true;
++                step_events_completed = current_block->step_event_count;
++            }
++            old_y_max_endstop = y_max_endstop;
++            #endif
++
++        }
+     }
+ 
+     if ((out_bits & (1<<Z_AXIS)) != 0) {   // -direction
+@@ -964,51 +959,41 @@ void st_init()
+ 
+   //Initialize Step Pins
+   #if defined(X_STEP_PIN) && (X_STEP_PIN > -1)
+-    SET_OUTPUT(X_STEP_PIN);
+-    WRITE(X_STEP_PIN,INVERT_X_STEP_PIN);
++    OUT_WRITE(X_STEP_PIN,INVERT_X_STEP_PIN);
+     disable_x();
+   #endif
+   #if defined(X2_STEP_PIN) && (X2_STEP_PIN > -1)
+-    SET_OUTPUT(X2_STEP_PIN);
+-    WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
++    OUT_WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
+     disable_x();
+   #endif
+   #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1)
+-    SET_OUTPUT(Y_STEP_PIN);
+-    WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
++    OUT_WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
+     #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && (Y2_STEP_PIN > -1)
+-      SET_OUTPUT(Y2_STEP_PIN);
+-      WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
++      OUT_WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
+     #endif
+     disable_y();
+   #endif
+   #if defined(Z_STEP_PIN) && (Z_STEP_PIN > -1)
+-    SET_OUTPUT(Z_STEP_PIN);
+-    WRITE(Z_STEP_PIN,INVERT_Z_STEP_PIN);
++    OUT_WRITE(Z_STEP_PIN,INVERT_Z_STEP_PIN);
+     #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_STEP_PIN) && (Z2_STEP_PIN > -1)
+-      SET_OUTPUT(Z2_STEP_PIN);
+-      WRITE(Z2_STEP_PIN,INVERT_Z_STEP_PIN);
++      OUT_WRITE(Z2_STEP_PIN,INVERT_Z_STEP_PIN);
+     #endif
+     disable_z();
+   #endif
+   #if defined(E0_STEP_PIN) && (E0_STEP_PIN > -1)
+-    SET_OUTPUT(E0_STEP_PIN);
+-    WRITE(E0_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E0_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e0();
+   #endif
+   #if defined(E1_STEP_PIN) && (E1_STEP_PIN > -1)
+-    SET_OUTPUT(E1_STEP_PIN);
+-    WRITE(E1_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E1_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e1();
+   #endif
+   #if defined(E2_STEP_PIN) && (E2_STEP_PIN > -1)
+-    SET_OUTPUT(E2_STEP_PIN);
+-    WRITE(E2_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E2_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e2();
+   #endif
+   #if defined(E3_STEP_PIN) && (E3_STEP_PIN > -1)
+-    SET_OUTPUT(E3_STEP_PIN);
+-    WRITE(E3_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E3_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e3();
+   #endif
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index c2f536b..ae9e5f4 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -901,21 +901,15 @@ void tp_init()
+   #ifdef HEATER_0_USES_MAX6675
+ 
+     #ifndef SDSUPPORT
+-      SET_OUTPUT(SCK_PIN);
+-      WRITE(SCK_PIN,0);
+-    
+-      SET_OUTPUT(MOSI_PIN);
+-      WRITE(MOSI_PIN,1);
+-    
+-      SET_INPUT(MISO_PIN);
+-      WRITE(MISO_PIN,1);
++      OUT_WRITE(SCK_PIN, LOW);
++      OUT_WRITE(MOSI_PIN, HIGH);
++      OUT_WRITE(MISO_PIN, HIGH);
+     #else
+       pinMode(SS_PIN, OUTPUT);
+       digitalWrite(SS_PIN, HIGH);
+     #endif
+     
+-    SET_OUTPUT(MAX6675_SS);
+-    WRITE(MAX6675_SS,1);
++    OUT_WRITE(MAX6675_SS,HIGH);
+ 
+   #endif //HEATER_0_USES_MAX6675
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2726547..2f83afe 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1394,6 +1394,17 @@ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+ 
+ #ifdef ULTIPANEL
+ 
++////////////////////////
++// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
++// These values are independent of which pins are used for EN_A and EN_B indications
++// The rotary encoder part is also independent to the chipset used for the LCD
++#if defined(EN_A) && defined(EN_B)
++  #define encrot0 0
++  #define encrot1 2
++  #define encrot2 3
++  #define encrot3 1
++#endif 
++
+ /* Warning: This function is called from interrupt context */
+ void lcd_buttons_update() {
+   #ifdef NEWPANEL
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 1628bf8..2081414 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -123,17 +123,6 @@
+   #define LCD_CLICKED (buttons&(B_MI|B_ST))
+ #endif
+ 
+-////////////////////////
+-// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
+-// These values are independent of which pins are used for EN_A and EN_B indications
+-// The rotary encoder part is also independent to the chipset used for the LCD
+-#if defined(EN_A) && defined(EN_B)
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-#endif 
+-
+ #endif //ULTIPANEL
+ 
+ ////////////////////////////////////
+@@ -832,32 +821,28 @@ static void lcd_implementation_drawmenu_sddirectory(uint8_t row, const char* pst
+ 
+ static void lcd_implementation_quick_feedback()
+ {
+-#ifdef LCD_USE_I2C_BUZZER
+-	#if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
+-	  lcd_buzz(1000/6,100);
+-	#else
+-	  lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS,LCD_FEEDBACK_FREQUENCY_HZ);
+-	#endif
+-#elif defined(BEEPER) && BEEPER > -1
++  #ifdef LCD_USE_I2C_BUZZER
++    #if defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS) && defined(LCD_FEEDBACK_FREQUENCY_HZ)
++      lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
++    #else
++      lcd_buzz(1000/6, 100);
++    #endif
++  #elif defined(BEEPER) && BEEPER > -1
+     SET_OUTPUT(BEEPER);
+-	#if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
+-    for(int8_t i=0;i<10;i++)
+-    {
+-      WRITE(BEEPER,HIGH);
+-      delayMicroseconds(100);
+-      WRITE(BEEPER,LOW);
+-      delayMicroseconds(100);
+-    }
++    #if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
++      const unsigned int delay = 100;
++      uint8_t i = 10;
+     #else
+-    for(int8_t i=0;i<(LCD_FEEDBACK_FREQUENCY_DURATION_MS / (1000 / LCD_FEEDBACK_FREQUENCY_HZ));i++)
+-    {
++      const unsigned int delay = 1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2;
++      int8_t i = LCD_FEEDBACK_FREQUENCY_DURATION_MS * LCD_FEEDBACK_FREQUENCY_HZ / 1000;
++    #endif
++    while (i--) {
+       WRITE(BEEPER,HIGH);
+-      delayMicroseconds(1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2);
++      delayMicroseconds(delay);
+       WRITE(BEEPER,LOW);
+-      delayMicroseconds(1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2);
++      delayMicroseconds(delay);
+     }
+-    #endif
+-#endif
++  #endif
+ }
+ 
+ #ifdef LCD_HAS_STATUS_INDICATORS
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index 15e9e9d..f95431a 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -47,12 +47,9 @@ uint8_t u8g_dev_rrd_st7920_128x64_fn(u8g_t *u8g, u8g_dev_t *dev, uint8_t msg, vo
+   {
+     case U8G_DEV_MSG_INIT:
+       {
+-        SET_OUTPUT(ST7920_CS_PIN);
+-        WRITE(ST7920_CS_PIN,0);
+-        SET_OUTPUT(ST7920_DAT_PIN);
+-        WRITE(ST7920_DAT_PIN,0);
+-        SET_OUTPUT(ST7920_CLK_PIN);
+-        WRITE(ST7920_CLK_PIN,1);
++        OUT_WRITE(ST7920_CS_PIN,LOW);
++        OUT_WRITE(ST7920_DAT_PIN,LOW);
++        OUT_WRITE(ST7920_CLK_PIN,HIGH);
+ 
+         ST7920_CS();
+         u8g_Delay(120);                 //initial delay for boot up
+
+commit 6d9e9a6befdeb72098c956e1ea4a378941619582 (from 0e074d40505b7124cf80da6c91c5845ecf901eed)
+Merge: 4db2179 0e074d4
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Thu Mar 5 02:49:18 2015 -0800
+
+    Merge branch 'Development' into enhanced_g29
+    Latest upstream changes
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 8c12b0f..076e75c 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -428,9 +428,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ 
+   // these are the offsets to the probe relative to the extruder tip (Hotend - Probe)
+   // X and Y offsets must be integers
+-  #define X_PROBE_OFFSET_FROM_EXTRUDER -25
+-  #define Y_PROBE_OFFSET_FROM_EXTRUDER -29
+-  #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35
++  #define X_PROBE_OFFSET_FROM_EXTRUDER -25     // -left  +right
++  #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // -front +behind
++  #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // -below (always!)
+ 
+   #define Z_RAISE_BEFORE_HOMING 4       // (in mm) Raise Z before homing (G28) for Probe Clearance.
+                                         // Be sure you have this distance over your Z_MAX_POS in case
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e968392..2174eb8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1198,22 +1198,24 @@ static void retract_z_probe() {
+     #endif
+ }
+ 
++enum ProbeAction { ProbeStay, ProbeEngage, ProbeRetract, ProbeEngageRetract };
++
+ /// Probe bed height at position (x,y), returns the measured z value
+-static float probe_pt(float x, float y, float z_before, int retract_action=0) {
++static float probe_pt(float x, float y, float z_before, ProbeAction retract_action=ProbeEngageRetract) {
+   // move to right place
+   do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z_before);
+   do_blocking_move_to(x - X_PROBE_OFFSET_FROM_EXTRUDER, y - Y_PROBE_OFFSET_FROM_EXTRUDER, current_position[Z_AXIS]);
+ 
+-#ifndef Z_PROBE_SLED
+-   if ((retract_action==0) || (retract_action==1)) 
+-     engage_z_probe();   // Engage Z Servo endstop if available
+-#endif // Z_PROBE_SLED
++  #ifndef Z_PROBE_SLED
++    if (retract_action & ProbeEngage) engage_z_probe();
++  #endif
++
+   run_z_probe();
+   float measured_z = current_position[Z_AXIS];
+-#ifndef Z_PROBE_SLED
+-  if ((retract_action==0) || (retract_action==3)) 
+-     retract_z_probe();
+-#endif // Z_PROBE_SLED
++
++  #ifndef Z_PROBE_SLED
++    if (retract_action & ProbeRetract) retract_z_probe();
++  #endif
+ 
+   SERIAL_PROTOCOLPGM(MSG_BED);
+   SERIAL_PROTOCOLPGM(" x: ");
+@@ -1374,6 +1376,11 @@ void refresh_cmd_timeout(void)
+ #endif //FWRETRACT
+ 
+ #ifdef Z_PROBE_SLED
++
++  #ifndef SLED_DOCKING_OFFSET
++    #define SLED_DOCKING_OFFSET 0
++  #endif
++
+ //
+ // Method to dock/undock a sled designed by Charles Bell.
+ //
+@@ -1660,10 +1667,10 @@ void process_commands()
+                                                 // Let's see if X and Y are homed and probe is inside bed area.
+           if(code_seen(axis_codes[Z_AXIS])) {
+             if ( (axis_known_position[X_AXIS]) && (axis_known_position[Y_AXIS]) \
+-              && (current_position[X_AXIS]+X_PROBE_OFFSET_FROM_EXTRUDER >= X_MIN_POS) \
+-              && (current_position[X_AXIS]+X_PROBE_OFFSET_FROM_EXTRUDER <= X_MAX_POS) \
+-              && (current_position[Y_AXIS]+Y_PROBE_OFFSET_FROM_EXTRUDER >= Y_MIN_POS) \
+-              && (current_position[Y_AXIS]+Y_PROBE_OFFSET_FROM_EXTRUDER <= Y_MAX_POS)) {
++              && (current_position[X_AXIS] >= X_MIN_POS - X_PROBE_OFFSET_FROM_EXTRUDER) \
++              && (current_position[X_AXIS] <= X_MAX_POS - X_PROBE_OFFSET_FROM_EXTRUDER) \
++              && (current_position[Y_AXIS] >= Y_MIN_POS - Y_PROBE_OFFSET_FROM_EXTRUDER) \
++              && (current_position[Y_AXIS] <= Y_MAX_POS - Y_PROBE_OFFSET_FROM_EXTRUDER)) {
+ 
+               current_position[Z_AXIS] = 0;
+               plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+@@ -1717,193 +1724,327 @@ void process_commands()
+       break;
+ 
+ #ifdef ENABLE_AUTO_BED_LEVELING
++
++    #if Z_MIN_PIN == -1
++      #error "You must have a Z_MIN endstop in order to enable Auto Bed Leveling!!! Z_MIN_PIN must point to a valid hardware pin."
++    #endif
++
++   /**
++    * Enhanced G29 Auto Bed Leveling Probe Routine
++    * 
++    * Parameters With AUTO_BED_LEVELING_GRID:
++    *
++    *  P  Set the size of the grid that will be probed (P x P points).
++    *     Example: "G29 P4"
++    *
++    *  V  Set the verbose level (0-4). Example: "G29 V3"
++    *
++    *  T  Generate a Bed Topology Report. Example: "G29 P5 T" for a detailed report.
++    *     This is useful for manual bed leveling and finding flaws in the bed (to
++    *     assist with part placement).
++    *
++    *  F  Set the Front limit of the probing grid
++    *  B  Set the Back limit of the probing grid
++    *  L  Set the Left limit of the probing grid
++    *  R  Set the Right limit of the probing grid
++    *
++    * Global Parameters:
++    *
++    * E/e By default G29 engages / disengages the probe for each point.
++    *     Include "E" to engage and disengage the probe just once.
++    *     There's no extra effect if you have a fixed probe.
++    *     Usage: "G29 E" or "G29 e"
++    *
++    */
++
+     case 29: // G29 Detailed Z-Probe, probes the bed at 3 or more points.
+-    	     // Override probing area by providing [F]ront [B]ack [L]eft [R]ight Grid[P]oints values
+-        {
+-            #if Z_MIN_PIN == -1
+-            #error "You must have a Z_MIN endstop in order to enable Auto Bed Leveling feature!!! Z_MIN_PIN must point to a valid hardware pin."
+-            #endif
++    {
++      // Use one of these defines to specify the origin
++      // for a topographical map to be printed for your bed.
++      #define ORIGIN_BACK_LEFT   1
++      #define ORIGIN_FRONT_RIGHT 2
++      #define ORIGIN_BACK_RIGHT  3
++      #define ORIGIN_FRONT_LEFT  4
++      #define TOPO_ORIGIN        ORIGIN_FRONT_LEFT
++
++      // Prevent user from running a G29 without first homing in X and Y
++      if (!(axis_known_position[X_AXIS] && axis_known_position[Y_AXIS])) {
++        LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
++        SERIAL_ECHO_START;
++        SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
++        break; // abort G29, since we don't know where we are
++      }
+ 
+-            // Prevent user from running a G29 without first homing in X and Y
+-            if (! (axis_known_position[X_AXIS] && axis_known_position[Y_AXIS]) )
+-            {
+-                LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
+-                SERIAL_ECHO_START;
+-                SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
+-                break; // abort G29, since we don't know where we are
+-            }
++      bool enhanced_g29 = code_seen('E') || code_seen('e');
+ 
+-#ifdef Z_PROBE_SLED
+-            dock_sled(false);
+-#endif // Z_PROBE_SLED
+-            st_synchronize();
+-            // make sure the bed_level_rotation_matrix is identity or the planner will get it incorectly
+-            //vector_3 corrected_position = plan_get_position_mm();
+-            //corrected_position.debug("position before G29");
+-            plan_bed_level_matrix.set_to_identity();
+-            vector_3 uncorrected_position = plan_get_position();
+-            //uncorrected_position.debug("position durring G29");
+-            current_position[X_AXIS] = uncorrected_position.x;
+-            current_position[Y_AXIS] = uncorrected_position.y;
+-            current_position[Z_AXIS] = uncorrected_position.z;
+-            plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-            setup_for_endstop_move();
++      #ifdef AUTO_BED_LEVELING_GRID
+ 
+-            feedrate = homing_feedrate[Z_AXIS];
+-#ifdef AUTO_BED_LEVELING_GRID
+-            // probe at the points of a lattice grid
+-            int left_probe_bed_position=LEFT_PROBE_BED_POSITION;
+-            int right_probe_bed_position=RIGHT_PROBE_BED_POSITION;
+-            int back_probe_bed_position=BACK_PROBE_BED_POSITION;
+-            int front_probe_bed_position=FRONT_PROBE_BED_POSITION;
+-            int auto_bed_leveling_grid_points=AUTO_BED_LEVELING_GRID_POINTS;
+-            if (code_seen('L')) left_probe_bed_position=(int)code_value();
+-            if (code_seen('R')) right_probe_bed_position=(int)code_value();
+-            if (code_seen('B')) back_probe_bed_position=(int)code_value();
+-            if (code_seen('F')) front_probe_bed_position=(int)code_value();
+-            if (code_seen('P')) auto_bed_leveling_grid_points=(int)code_value();
++        // Example Syntax:  G29 N4 V2 E T
++        int verbose_level = 1;
+ 
+-            int xGridSpacing = (right_probe_bed_position - left_probe_bed_position) / (auto_bed_leveling_grid_points-1);
+-            int yGridSpacing = (back_probe_bed_position - front_probe_bed_position) / (auto_bed_leveling_grid_points-1);
++        bool topo_flag = code_seen('T') || code_seen('t');
+ 
++        if (code_seen('V') || code_seen('v')) {
++          verbose_level = code_value();
++          if (verbose_level < 0 || verbose_level > 4) {
++            SERIAL_PROTOCOLPGM("?(V)erbose Level is implausible (0-4).\n");
++            break;
++          }
++          if (verbose_level > 0) {
++            SERIAL_PROTOCOLPGM("G29 Enhanced Auto Bed Leveling Code V1.25:\n");
++            SERIAL_PROTOCOLPGM("Full support at: http://3dprintboard.com/forum.php\n");
++            if (verbose_level > 2) topo_flag = true;
++          }
++        }
+ 
+-            // solve the plane equation ax + by + d = z
+-            // A is the matrix with rows [x y 1] for all the probed points
+-            // B is the vector of the Z positions
+-            // the normal vector to the plane is formed by the coefficients of the plane equation in the standard form, which is Vx*x+Vy*y+Vz*z+d = 0
+-            // so Vx = -a Vy = -b Vz = 1 (we want the vector facing towards positive Z
++        int auto_bed_leveling_grid_points = code_seen('P') ? code_value_long() : AUTO_BED_LEVELING_GRID_POINTS;
++        if (auto_bed_leveling_grid_points < 2 || auto_bed_leveling_grid_points > AUTO_BED_LEVELING_GRID_POINTS) {
++          SERIAL_PROTOCOLPGM("?Number of probed (P)oints is implausible (2 minimum).\n");
++          break;
++        }
+ 
+-            // "A" matrix of the linear system of equations
+-            double eqnAMatrix[auto_bed_leveling_grid_points*auto_bed_leveling_grid_points*3];
++        // Define the possible boundaries for probing based on the set limits.
++        // Code above (in G28) might have these limits wrong, or I am wrong here.
++        #define MIN_PROBE_EDGE 10 // Edges of the probe square can be no less
++        const int min_probe_x = max(X_MIN_POS, X_MIN_POS + X_PROBE_OFFSET_FROM_EXTRUDER),
++                  max_probe_x = min(X_MAX_POS, X_MAX_POS + X_PROBE_OFFSET_FROM_EXTRUDER),
++                  min_probe_y = max(Y_MIN_POS, Y_MIN_POS + Y_PROBE_OFFSET_FROM_EXTRUDER),
++                  max_probe_y = min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER);
++
++        int left_probe_bed_position = code_seen('L') ? code_value_long() : LEFT_PROBE_BED_POSITION,
++            right_probe_bed_position = code_seen('R') ? code_value_long() : RIGHT_PROBE_BED_POSITION,
++            front_probe_bed_position = code_seen('F') ? code_value_long() : FRONT_PROBE_BED_POSITION,
++            back_probe_bed_position = code_seen('B') ? code_value_long() : BACK_PROBE_BED_POSITION;
++
++        bool left_out_l = left_probe_bed_position < min_probe_x,
++             left_out_r = left_probe_bed_position > right_probe_bed_position - MIN_PROBE_EDGE,
++             left_out = left_out_l || left_out_r,
++             right_out_r = right_probe_bed_position > max_probe_x,
++             right_out_l =right_probe_bed_position < left_probe_bed_position + MIN_PROBE_EDGE,
++             right_out = right_out_l || right_out_r,
++             front_out_f = front_probe_bed_position < min_probe_y,
++             front_out_b = front_probe_bed_position > back_probe_bed_position - MIN_PROBE_EDGE,
++             front_out = front_out_f || front_out_b,
++             back_out_b = back_probe_bed_position > max_probe_y,
++             back_out_f = back_probe_bed_position < front_probe_bed_position + MIN_PROBE_EDGE,
++             back_out = back_out_f || back_out_b;
++
++        if (left_out || right_out || front_out || back_out) {
++          if (left_out) {
++            SERIAL_PROTOCOLPGM("?Probe (L)eft position out of range.\n");
++            left_probe_bed_position = left_out_l ? min_probe_x : right_probe_bed_position - MIN_PROBE_EDGE;
++          }
++          if (right_out) {
++            SERIAL_PROTOCOLPGM("?Probe (R)ight position out of range.\n");
++            right_probe_bed_position = right_out_r ? max_probe_x : left_probe_bed_position + MIN_PROBE_EDGE;
++          }
++          if (front_out) {
++            SERIAL_PROTOCOLPGM("?Probe (F)ront position out of range.\n");
++            front_probe_bed_position = front_out_f ? min_probe_y : back_probe_bed_position - MIN_PROBE_EDGE;
++          }
++          if (back_out) {
++            SERIAL_PROTOCOLPGM("?Probe (B)ack position out of range.\n");
++            back_probe_bed_position = back_out_b ? max_probe_y : front_probe_bed_position + MIN_PROBE_EDGE;
++          }
++          break;
++        }
+ 
+-            // "B" vector of Z points
+-            double eqnBVector[auto_bed_leveling_grid_points*auto_bed_leveling_grid_points];
++      #endif
+ 
++      #ifdef Z_PROBE_SLED
++        dock_sled(false); // engage (un-dock) the probe
++      #endif
+ 
++      st_synchronize();
++      // make sure the bed_level_rotation_matrix is identity or the planner will get it incorectly
++      //vector_3 corrected_position = plan_get_position_mm();
++      //corrected_position.debug("position before G29");
++      plan_bed_level_matrix.set_to_identity();
++      vector_3 uncorrected_position = plan_get_position();
++      //uncorrected_position.debug("position durring G29");
++      current_position[X_AXIS] = uncorrected_position.x;
++      current_position[Y_AXIS] = uncorrected_position.y;
++      current_position[Z_AXIS] = uncorrected_position.z;
++      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++      setup_for_endstop_move();
+ 
+-            int probePointCounter = 0;
+-            bool zig = true;
++      feedrate = homing_feedrate[Z_AXIS];
+ 
+-            for (int yProbe=front_probe_bed_position; yProbe <= back_probe_bed_position; yProbe += yGridSpacing)
++      #ifdef AUTO_BED_LEVELING_GRID
++        // probe at the points of a lattice grid
+ 
+-            {
+-              int xProbe, xInc;
+-              if (zig)
+-              {
+-                xProbe = left_probe_bed_position;
+-                //xEnd = right_probe_bed_position;
+-                xInc = xGridSpacing;
+-                zig = false;
+-              } else // zag
+-              {
+-                xProbe = right_probe_bed_position;
+-                //xEnd = left_probe_bed_position;
+-                xInc = -xGridSpacing;
+-                zig = true;
+-              }
++        int xGridSpacing = (right_probe_bed_position - left_probe_bed_position) / (auto_bed_leveling_grid_points - 1);
++        int yGridSpacing = (back_probe_bed_position - front_probe_bed_position) / (auto_bed_leveling_grid_points - 1);
+ 
+-              for (int xCount=0; xCount < auto_bed_leveling_grid_points; xCount++)
+-              {
+-                float z_before;
+-                if (probePointCounter == 0)
+-                {
+-                  // raise before probing
+-                  z_before = Z_RAISE_BEFORE_PROBING;
+-                } else
+-                {
+-                  // raise extruder
+-                  z_before = current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS;
+-                }
+-
+-                float measured_z;
+-                //Enhanced G29 - Do not retract servo between probes
+-                if (code_seen('E') || code_seen('e') )
+-                   {
+-                   if ((yProbe==FRONT_PROBE_BED_POSITION) && (xCount==0))
+-                       {
+-                        measured_z = probe_pt(xProbe, yProbe, z_before,1);
+-                       } else if ((yProbe==FRONT_PROBE_BED_POSITION + (yGridSpacing * (AUTO_BED_LEVELING_GRID_POINTS-1))) && (xCount == AUTO_BED_LEVELING_GRID_POINTS-1))
+-                         {
+-                         measured_z = probe_pt(xProbe, yProbe, z_before,3);
+-                         } else {
+-                           measured_z = probe_pt(xProbe, yProbe, z_before,2);
+-                         }
+-                    } else {
+-                    measured_z = probe_pt(xProbe, yProbe, z_before);
+-                    }
+-
+-                eqnBVector[probePointCounter] = measured_z;
+-
+-                eqnAMatrix[probePointCounter + 0*auto_bed_leveling_grid_points*auto_bed_leveling_grid_points] = xProbe;
+-                eqnAMatrix[probePointCounter + 1*auto_bed_leveling_grid_points*auto_bed_leveling_grid_points] = yProbe;
+-                eqnAMatrix[probePointCounter + 2*auto_bed_leveling_grid_points*auto_bed_leveling_grid_points] = 1;
+-                probePointCounter++;
+-                xProbe += xInc;
+-              }
++        // solve the plane equation ax + by + d = z
++        // A is the matrix with rows [x y 1] for all the probed points
++        // B is the vector of the Z positions
++        // the normal vector to the plane is formed by the coefficients of the plane equation in the standard form, which is Vx*x+Vy*y+Vz*z+d = 0
++        // so Vx = -a Vy = -b Vz = 1 (we want the vector facing towards positive Z
++
++        int abl2 = auto_bed_leveling_grid_points * auto_bed_leveling_grid_points;
++
++        double eqnAMatrix[abl2 * 3], // "A" matrix of the linear system of equations
++               eqnBVector[abl2],     // "B" vector of Z points
++               mean = 0.0;
++
++        int probePointCounter = 0;
++        bool zig = true;
++
++        for (int yProbe = front_probe_bed_position; yProbe <= back_probe_bed_position; yProbe += yGridSpacing) {
++          int xProbe, xInc;
++
++          if (zig)
++            xProbe = left_probe_bed_position, xInc = xGridSpacing;
++          else
++            xProbe = right_probe_bed_position, xInc = -xGridSpacing;
++
++          // If topo_flag is set then don't zig-zag. Just scan in one direction.
++          // This gets the probe points in more readable order.
++          if (!topo_flag) zig = !zig;
++
++          for (int xCount = 0; xCount < auto_bed_leveling_grid_points; xCount++) {
++            // raise extruder
++            float z_before = probePointCounter == 0 ? Z_RAISE_BEFORE_PROBING : current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS,
++                  measured_z;
++
++            // Enhanced G29 - Do not retract servo between probes
++            ProbeAction act;
++            if (enhanced_g29) {
++              if (yProbe == front_probe_bed_position && xCount == 0)
++                act = ProbeEngage;
++              else if (yProbe == front_probe_bed_position + (yGridSpacing * (auto_bed_leveling_grid_points - 1)) && xCount == auto_bed_leveling_grid_points - 1)
++                act = ProbeRetract;
++              else
++                act = ProbeStay;
+             }
+-            clean_up_after_endstop_move();
++            else
++              act = ProbeEngageRetract;
+ 
+-            // solve lsq problem
+-            double *plane_equation_coefficients = qr_solve(auto_bed_leveling_grid_points*auto_bed_leveling_grid_points, 3, eqnAMatrix, eqnBVector);
++            measured_z = probe_pt(xProbe, yProbe, z_before, act);
+ 
+-            SERIAL_PROTOCOLPGM("Eqn coefficients: a: ");
+-            SERIAL_PROTOCOL(plane_equation_coefficients[0]);
+-            SERIAL_PROTOCOLPGM(" b: ");
+-            SERIAL_PROTOCOL(plane_equation_coefficients[1]);
+-            SERIAL_PROTOCOLPGM(" d: ");
+-            SERIAL_PROTOCOLLN(plane_equation_coefficients[2]);
++            mean += measured_z;
+ 
++            eqnBVector[probePointCounter] = measured_z;
++            eqnAMatrix[probePointCounter + 0 * abl2] = xProbe;
++            eqnAMatrix[probePointCounter + 1 * abl2] = yProbe;
++            eqnAMatrix[probePointCounter + 2 * abl2] = 1;
+ 
+-            set_bed_level_equation_lsq(plane_equation_coefficients);
++            probePointCounter++;
++            xProbe += xInc;
+ 
+-            free(plane_equation_coefficients);
++          } //xProbe
+ 
+-#else // AUTO_BED_LEVELING_GRID not defined
++        } //yProbe
+ 
+-            // Probe at 3 arbitrary points
+-            // Enhanced G29
+-            
+-            float z_at_pt_1, z_at_pt_2, z_at_pt_3;
+-            
+-            if (code_seen('E') || code_seen('e')) {
+-              // probe 1               
+-              z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING,1);
+-              // probe 2
+-              z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS,2);
+-              // probe 3
+-              z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS,3); 
+-            }
+-            else {
+-              // probe 1
+-              z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING);
+-              // probe 2
+-              z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS);
+-              // probe 3
+-              z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS);
+-            }
+-            clean_up_after_endstop_move();
+-            set_bed_level_equation_3pts(z_at_pt_1, z_at_pt_2, z_at_pt_3);
++        clean_up_after_endstop_move();
+ 
++        // solve lsq problem
++        double *plane_equation_coefficients = qr_solve(abl2, 3, eqnAMatrix, eqnBVector);
++
++        mean /= abl2;
++
++        if (verbose_level) {
++          SERIAL_PROTOCOLPGM("Eqn coefficients: a: ");
++          SERIAL_PROTOCOL(plane_equation_coefficients[0]);
++          SERIAL_PROTOCOLPGM(" b: ");
++          SERIAL_PROTOCOL(plane_equation_coefficients[1]);
++          SERIAL_PROTOCOLPGM(" d: ");
++          SERIAL_PROTOCOLLN(plane_equation_coefficients[2]);
++          if (verbose_level > 2) {
++            SERIAL_PROTOCOLPGM("Mean of sampled points: ");
++            SERIAL_PROTOCOL_F(mean, 6);
++            SERIAL_PROTOCOLPGM(" \n");
++          }
++        }
+ 
+-#endif // AUTO_BED_LEVELING_GRID
+-            st_synchronize();
++        if (topo_flag) {
+ 
+-            // The following code correct the Z height difference from z-probe position and hotend tip position.
+-            // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend.
+-            // When the bed is uneven, this height must be corrected.
+-            real_z = float(st_get_position(Z_AXIS))/axis_steps_per_unit[Z_AXIS];  //get the real Z (since the auto bed leveling is already correcting the plane)
+-            x_tmp = current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
+-            y_tmp = current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
+-            z_tmp = current_position[Z_AXIS];
++          int xx, yy;
+ 
+-            apply_rotation_xyz(plan_bed_level_matrix, x_tmp, y_tmp, z_tmp);         //Apply the correction sending the probe offset
+-            current_position[Z_AXIS] = z_tmp - real_z + current_position[Z_AXIS];   //The difference is added to current position and sent to planner.
+-            plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-#ifdef Z_PROBE_SLED
+-            dock_sled(true, -SLED_DOCKING_OFFSET); // correct for over travel.
+-#endif // Z_PROBE_SLED
++          SERIAL_PROTOCOLPGM(" \nBed Height Topography: \n");
++          #if TOPO_ORIGIN == ORIGIN_FRONT_LEFT
++            for (yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--)
++          #else
++            for (yy = 0; yy < auto_bed_leveling_grid_points; yy++)
++          #endif
++            {
++              #if TOPO_ORIGIN == ORIGIN_BACK_RIGHT
++                for (xx = auto_bed_leveling_grid_points - 1; xx >= 0; xx--)
++              #else
++                for (xx = 0; xx < auto_bed_leveling_grid_points; xx++)
++              #endif
++                {
++                  int ind =
++                    #if TOPO_ORIGIN == ORIGIN_BACK_RIGHT || TOPO_ORIGIN == ORIGIN_FRONT_LEFT
++                      yy * auto_bed_leveling_grid_points + xx
++                    #elif TOPO_ORIGIN == ORIGIN_BACK_LEFT
++                      xx * auto_bed_leveling_grid_points + yy
++                    #elif TOPO_ORIGIN == ORIGIN_FRONT_RIGHT
++                      abl2 - xx * auto_bed_leveling_grid_points - yy - 1
++                    #endif
++                  ;
++                  float diff = eqnBVector[ind] - mean;
++                  if (diff >= 0.0)
++                    SERIAL_PROTOCOLPGM(" +");   // Watch column alignment in Pronterface
++                  else
++                    SERIAL_PROTOCOLPGM(" -");
++                  SERIAL_PROTOCOL_F(diff, 5);
++                } // xx
++                SERIAL_PROTOCOLPGM("\n");
++            } // yy
++            SERIAL_PROTOCOLPGM("\n");
++
++        } //topo_flag
++
++
++        set_bed_level_equation_lsq(plane_equation_coefficients);
++        free(plane_equation_coefficients);
++
++      #else // !AUTO_BED_LEVELING_GRID
++
++        // Probe at 3 arbitrary points
++        float z_at_pt_1, z_at_pt_2, z_at_pt_3;
++
++        if (enhanced_g29) {
++          // Basic Enhanced G29
++          z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING, ProbeEngage);
++          z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, ProbeStay);
++          z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS, ProbeRetract);
+         }
+-        break;
++        else {
++          z_at_pt_1 = probe_pt(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, Z_RAISE_BEFORE_PROBING);
++          z_at_pt_2 = probe_pt(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS);
++          z_at_pt_3 = probe_pt(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, current_position[Z_AXIS] + Z_RAISE_BETWEEN_PROBINGS);
++        }
++        clean_up_after_endstop_move();
++        set_bed_level_equation_3pts(z_at_pt_1, z_at_pt_2, z_at_pt_3);
++
++      #endif // !AUTO_BED_LEVELING_GRID
++
++      st_synchronize();
++
++      if (verbose_level > 0)
++        plan_bed_level_matrix.debug(" \n\nBed Level Correction Matrix:");
++
++      // The following code correct the Z height difference from z-probe position and hotend tip position.
++      // The Z height on homing is measured by Z-Probe, but the probe is quite far from the hotend.
++      // When the bed is uneven, this height must be corrected.
++      real_z = float(st_get_position(Z_AXIS)) / axis_steps_per_unit[Z_AXIS];  //get the real Z (since the auto bed leveling is already correcting the plane)
++      x_tmp = current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
++      y_tmp = current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++      z_tmp = current_position[Z_AXIS];
++
++      apply_rotation_xyz(plan_bed_level_matrix, x_tmp, y_tmp, z_tmp);         //Apply the correction sending the probe offset
++      current_position[Z_AXIS] = z_tmp - real_z + current_position[Z_AXIS];   //The difference is added to current position and sent to planner.
++      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++
++      #ifdef Z_PROBE_SLED
++        dock_sled(true, -SLED_DOCKING_OFFSET); // dock the probe, correcting for over-travel
++      #endif
++    }
++    break;
++
+ #ifndef Z_PROBE_SLED
+     case 30: // G30 Single Z Probe
+         {
+@@ -2036,6 +2177,7 @@ void process_commands()
+         enable_e0();
+         enable_e1();
+         enable_e2();
++        enable_e3();
+       break;
+ 
+ #ifdef SDSUPPORT
+@@ -2744,6 +2886,7 @@ Sigma_Exit:
+         disable_e0();
+         disable_e1();
+         disable_e2();
++        disable_e3();
+         finishAndDisableSteppers();
+         fanSpeed = 0;
+         delay(1000); // Wait a little before to switch off
+@@ -2780,6 +2923,7 @@ Sigma_Exit:
+           disable_e0();
+           disable_e1();
+           disable_e2();
++          disable_e3();
+           finishAndDisableSteppers();
+         }
+         else
+@@ -2793,6 +2937,7 @@ Sigma_Exit:
+               disable_e0();
+               disable_e1();
+               disable_e2();
++              disable_e3();
+             }
+           #endif
+         }
+@@ -3731,6 +3876,7 @@ case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or disp
+         disable_e0();
+         disable_e1();
+         disable_e2();
++        disable_e3();
+         delay(100);
+         LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+         uint8_t cnt=0;
+@@ -4479,6 +4625,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) //default argument s
+         disable_e0();
+         disable_e1();
+         disable_e2();
++        disable_e3();
+       }
+     }
+   }
+@@ -4584,6 +4731,7 @@ void kill()
+   disable_e0();
+   disable_e1();
+   disable_e2();
++  disable_e3();
+ 
+ #if defined(PS_ON_PIN) && PS_ON_PIN > -1
+   pinMode(PS_ON_PIN,INPUT);
+

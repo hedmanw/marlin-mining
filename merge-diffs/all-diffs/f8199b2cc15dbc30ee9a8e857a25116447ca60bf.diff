@@ -1,0 +1,1268 @@
+commit f8199b2cc15dbc30ee9a8e857a25116447ca60bf (from f4ec265363943cf3377a02ba599ff9f05ab47f4f)
+Merge: f4ec265 e4e290d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 10 13:24:22 2016 -0500
+
+    Merge pull request #4982 from thinkyhead/rc_abl_bugfix
+    
+    Fix planner with kinematics, delta ABL
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 85da6c3..12db800 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -706,4 +706,8 @@
+   // Stepper pulse duration, in cycles
+   #define STEP_PULSE_CYCLES ((MINIMUM_STEPPER_PULSE) * CYCLES_PER_MICROSECOND)
+ 
++  #ifndef DELTA_ENDSTOP_ADJ
++    #define DELTA_ENDSTOP_ADJ { 0 }
++  #endif
++
+ #endif // CONDITIONALS_POST_H
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 5d0e0e3..2e46ffb 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -456,6 +456,18 @@ static uint8_t target_extruder;
+   #define XY_PROBE_FEEDRATE_MM_S PLANNER_XY_FEEDRATE()
+ #endif
+ 
++#if ENABLED(AUTO_BED_LEVELING_BILINEAR)
++  #define ADJUST_DELTA(V) \
++    if (planner.abl_enabled) { \
++      const float zadj = bilinear_z_offset(V); \
++      delta[A_AXIS] += zadj; \
++      delta[B_AXIS] += zadj; \
++      delta[C_AXIS] += zadj; \
++    }
++#elif IS_KINEMATIC
++  #define ADJUST_DELTA(V) NOOP
++#endif
++
+ #if ENABLED(Z_DUAL_ENDSTOPS)
+   float z_endstop_adj = 0;
+ #endif
+@@ -711,8 +723,7 @@ inline void sync_plan_position_e() { planner.set_e_position_mm(current_position[
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) DEBUG_POS("sync_plan_position_kinematic", current_position);
+     #endif
+-    inverse_kinematics(current_position);
+-    planner.set_position_mm(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], current_position[E_AXIS]);
++    planner.set_position_mm_kinematic(current_position);
+   }
+   #define SYNC_PLAN_POSITION_KINEMATIC() sync_plan_position_kinematic()
+ 
+@@ -1541,8 +1552,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     ) return;
+ 
+     refresh_cmd_timeout();
+-    inverse_kinematics(destination);
+-    planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], destination[E_AXIS], MMS_SCALED(fr_mm_s ? fr_mm_s : feedrate_mm_s), active_extruder);
++    planner.buffer_line_kinematic(destination, MMS_SCALED(fr_mm_s ? fr_mm_s : feedrate_mm_s), active_extruder);
+     set_current_to_destination();
+   }
+ #endif // IS_KINEMATIC
+@@ -6778,8 +6788,7 @@ inline void gcode_M503() {
+ 
+     // Define runplan for move axes
+     #if IS_KINEMATIC
+-      #define RUNPLAN(RATE_MM_S) inverse_kinematics(destination); \
+-                                 planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], destination[E_AXIS], RATE_MM_S, active_extruder);
++      #define RUNPLAN(RATE_MM_S) planner.buffer_line_kinematic(destination, RATE_MM_S, active_extruder);
+     #else
+       #define RUNPLAN(RATE_MM_S) line_to_destination(RATE_MM_S);
+     #endif
+@@ -6894,17 +6903,14 @@ inline void gcode_M503() {
+     KEEPALIVE_STATE(IN_HANDLER);
+ 
+     // Set extruder to saved position
+-    current_position[E_AXIS] = lastpos[E_AXIS];
+-    destination[E_AXIS] = lastpos[E_AXIS];
++    destination[E_AXIS] = current_position[E_AXIS] = lastpos[E_AXIS];
+     planner.set_e_position_mm(current_position[E_AXIS]);
+ 
+     #if IS_KINEMATIC
+-      // Move XYZ to starting position, then E
+-      inverse_kinematics(lastpos);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], destination[E_AXIS], FILAMENT_CHANGE_XY_FEEDRATE, active_extruder);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], lastpos[E_AXIS], FILAMENT_CHANGE_XY_FEEDRATE, active_extruder);
++      // Move XYZ to starting position
++      planner.buffer_line_kinematic(lastpos, FILAMENT_CHANGE_XY_FEEDRATE, active_extruder);
+     #else
+-      // Move XY to starting position, then Z, then E
++      // Move XY to starting position, then Z
+       destination[X_AXIS] = lastpos[X_AXIS];
+       destination[Y_AXIS] = lastpos[Y_AXIS];
+       RUNPLAN(FILAMENT_CHANGE_XY_FEEDRATE);
+@@ -7295,15 +7301,11 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+             float z_diff = hotend_offset[Z_AXIS][active_extruder] - hotend_offset[Z_AXIS][tmp_extruder],
+                   z_raise = 0.3 + (z_diff > 0.0 ? z_diff : 0.0);
+ 
++            set_destination_to_current();
++
+             // Always raise by some amount
+-            planner.buffer_line(
+-              current_position[X_AXIS],
+-              current_position[Y_AXIS],
+-              current_position[Z_AXIS] + z_raise,
+-              current_position[E_AXIS],
+-              planner.max_feedrate_mm_s[Z_AXIS],
+-              active_extruder
+-            );
++            destination[Z_AXIS] += z_raise;
++            planner.buffer_line_kinematic(destination, planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+             stepper.synchronize();
+ 
+             move_extruder_servo(active_extruder);
+@@ -7311,14 +7313,8 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+ 
+             // Move back down, if needed
+             if (z_raise != z_diff) {
+-              planner.buffer_line(
+-                current_position[X_AXIS],
+-                current_position[Y_AXIS],
+-                current_position[Z_AXIS] + z_diff,
+-                current_position[E_AXIS],
+-                planner.max_feedrate_mm_s[Z_AXIS],
+-                active_extruder
+-              );
++              destination[Z_AXIS] = current_position[Z_AXIS] + z_diff;
++              planner.buffer_line_kinematic(destination, planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+               stepper.synchronize();
+             }
+           #endif
+@@ -8670,8 +8666,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+ 
+     // If the move is only in Z/E don't split up the move
+     if (ltarget[X_AXIS] == current_position[X_AXIS] && ltarget[Y_AXIS] == current_position[Y_AXIS]) {
+-      inverse_kinematics(ltarget);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], ltarget[E_AXIS], _feedrate_mm_s, active_extruder);
++      planner.buffer_line_kinematic(ltarget, _feedrate_mm_s, active_extruder);
+       return true;
+     }
+ 
+@@ -8764,7 +8759,10 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+       #define DELTA_NEXT(ADDEND) LOOP_XYZ(i) DELTA_VAR[i] += ADDEND;
+ 
+       // Get the starting delta if interpolation is possible
+-      if (segments >= 2) DELTA_IK();
++      if (segments >= 2) {
++        DELTA_IK();
++        ADJUST_DELTA(DELTA_VAR); // Adjust Z if bed leveling is enabled
++      }
+ 
+       // Loop using decrement
+       for (uint16_t s = segments + 1; --s;) {
+@@ -8781,6 +8779,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+ 
+           // Get the exact delta for the move after this
+           DELTA_IK();
++          ADJUST_DELTA(DELTA_VAR); // Adjust Z if bed leveling is enabled
+ 
+           // Move to the interpolated delta position first
+           planner.buffer_line(
+@@ -8801,6 +8800,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+           DELTA_NEXT(segment_distance[i]);
+           DELTA_VAR[E_AXIS] += segment_distance[E_AXIS];
+           DELTA_IK();
++          ADJUST_DELTA(DELTA_VAR); // Adjust Z if bed leveling is enabled
+         }
+ 
+         // Move to the non-interpolated position
+@@ -8815,6 +8815,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+       for (uint16_t s = segments + 1; --s;) {
+         DELTA_NEXT(segment_distance[i]);
+         DELTA_IK();
++        ADJUST_DELTA(DELTA_VAR);
+         planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], DELTA_VAR[E_AXIS], _feedrate_mm_s, active_extruder);
+       }
+ 
+@@ -8822,8 +8823,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+ 
+     // Since segment_distance is only approximate,
+     // the final move must be to the exact destination.
+-    inverse_kinematics(ltarget);
+-    planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], ltarget[E_AXIS], _feedrate_mm_s, active_extruder);
++    planner.buffer_line_kinematic(ltarget, _feedrate_mm_s, active_extruder);
+     return true;
+   }
+ 
+@@ -9063,21 +9063,11 @@ void prepare_move_to_destination() {
+ 
+       clamp_to_software_endstops(arc_target);
+ 
+-      #if IS_KINEMATIC
+-        inverse_kinematics(arc_target);
+-        planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], arc_target[E_AXIS], fr_mm_s, active_extruder);
+-      #else
+-        planner.buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], fr_mm_s, active_extruder);
+-      #endif
++      planner.buffer_line_kinematic(arc_target, fr_mm_s, active_extruder);
+     }
+ 
+     // Ensure last segment arrives at target location.
+-    #if IS_KINEMATIC
+-      inverse_kinematics(logical);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], logical[E_AXIS], fr_mm_s, active_extruder);
+-    #else
+-      planner.buffer_line(logical[X_AXIS], logical[Y_AXIS], logical[Z_AXIS], logical[E_AXIS], fr_mm_s, active_extruder);
+-    #endif
++    planner.buffer_line_kinematic(logical, fr_mm_s, active_extruder);
+ 
+     // As far as the parser is concerned, the position is now == target. In reality the
+     // motion control system might still be processing the action and the real tool position
+@@ -9472,11 +9462,22 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+       #endif // !SWITCHING_EXTRUDER
+ 
+       previous_cmd_ms = ms; // refresh_cmd_timeout()
+-      planner.buffer_line(
+-        current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS],
+-        current_position[E_AXIS] + EXTRUDER_RUNOUT_EXTRUDE,
+-        MMM_TO_MMS(EXTRUDER_RUNOUT_SPEED), active_extruder
+-      );
++
++      #if IS_KINEMATIC
++        inverse_kinematics(current_position);
++        ADJUST_DELTA(current_position);
++        planner.buffer_line(
++          delta[A_AXIS], delta[B_AXIS], delta[C_AXIS],
++          current_position[E_AXIS] + EXTRUDER_RUNOUT_EXTRUDE,
++          MMM_TO_MMS(EXTRUDER_RUNOUT_SPEED), active_extruder
++        );
++      #else
++        planner.buffer_line(
++          current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS],
++          current_position[E_AXIS] + EXTRUDER_RUNOUT_EXTRUDE,
++          MMM_TO_MMS(EXTRUDER_RUNOUT_SPEED), active_extruder
++        );
++      #endif
+       stepper.synchronize();
+       planner.set_e_position_mm(current_position[E_AXIS]);
+       #if ENABLED(SWITCHING_EXTRUDER)
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 44950ff..cb3c859 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -518,6 +518,10 @@
+  */
+ #if HAS_ABL
+ 
++  #if ENABLED(USE_RAW_KINEMATICS)
++    #error "USE_RAW_KINEMATICS is not compatible with AUTO_BED_LEVELING"
++  #endif
++
+   /**
+    * Delta and SCARA have limited bed leveling options
+    */
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 65480a2..cb958d9 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -589,7 +589,10 @@ void Config_ResetDefault() {
+   #endif
+ 
+   #if ENABLED(DELTA)
+-    endstop_adj[X_AXIS] = endstop_adj[Y_AXIS] = endstop_adj[Z_AXIS] = 0;
++    const float adj[ABC] = DELTA_ENDSTOP_ADJ;
++    endstop_adj[A_AXIS] = adj[A_AXIS];
++    endstop_adj[B_AXIS] = adj[B_AXIS];
++    endstop_adj[C_AXIS] = adj[C_AXIS];
+     delta_radius =  DELTA_RADIUS;
+     delta_diagonal_rod =  DELTA_DIAGONAL_ROD;
+     delta_segments_per_second =  DELTA_SEGMENTS_PER_SECOND;
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index a921038..d4ae0ae 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -441,6 +441,8 @@
+   // in ultralcd.cpp@lcd_delta_calibrate_menu()
+   //#define DELTA_CALIBRATION_MENU
+ 
++  //#define DELTA_ENDSTOP_ADJ { 0, 0, 0 }
++
+ #endif
+ 
+ // Enable this option for Toshiba steppers
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index f562389..cb7888d 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -441,6 +441,8 @@
+   // in ultralcd.cpp@lcd_delta_calibrate_menu()
+   //#define DELTA_CALIBRATION_MENU
+ 
++  //#define DELTA_ENDSTOP_ADJ { 0, 0, 0 }
++
+ #endif
+ 
+ // Enable this option for Toshiba steppers
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 7155072..c965f9a 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -441,6 +441,8 @@
+   // in ultralcd.cpp@lcd_delta_calibrate_menu()
+   //#define DELTA_CALIBRATION_MENU
+ 
++  //#define DELTA_ENDSTOP_ADJ { 0, 0, 0 }
++
+ #endif
+ 
+ // Enable this option for Toshiba steppers
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 4b45957..f0aa29e 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -430,6 +430,8 @@
+   // in ultralcd.cpp@lcd_delta_calibrate_menu()
+   //#define DELTA_CALIBRATION_MENU
+ 
++  //#define DELTA_ENDSTOP_ADJ { 0, 0, 0 }
++
+ #endif
+ 
+ // Enable this option for Toshiba steppers
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index ea10725..0ecb38c 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -439,6 +439,8 @@
+   // in ultralcd.cpp@lcd_delta_calibrate_menu()
+   //#define DELTA_CALIBRATION_MENU
+ 
++  //#define DELTA_ENDSTOP_ADJ { 0, 0, 0 }
++
+ #endif
+ 
+ // Enable this option for Toshiba steppers
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 959b109..d1cf89e 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -522,7 +522,9 @@ void Planner::check_axes_activity() {
+ }
+ 
+ #if PLANNER_LEVELING
+-
++  /**
++   * lx, ly, lz - logical (cartesian, not delta) positions in mm
++   */
+   void Planner::apply_leveling(float &lx, float &ly, float &lz) {
+ 
+     #if HAS_ABL
+@@ -549,19 +551,7 @@ void Planner::check_axes_activity() {
+     #elif ENABLED(AUTO_BED_LEVELING_BILINEAR)
+ 
+       float tmp[XYZ] = { lx, ly, 0 };
+-
+-      #if ENABLED(DELTA)
+-
+-        float offset = bilinear_z_offset(tmp);
+-        lx += offset;
+-        ly += offset;
+-        lz += offset;
+-
+-      #else
+-
+-        lz += bilinear_z_offset(tmp);
+-
+-      #endif
++      lz += bilinear_z_offset(tmp);
+ 
+     #endif
+   }
+@@ -601,15 +591,17 @@ void Planner::check_axes_activity() {
+ #endif // PLANNER_LEVELING
+ 
+ /**
+- * Planner::buffer_line
++ * Planner::_buffer_line
+  *
+  * Add a new linear movement to the buffer.
+  *
+- *  x,y,z,e   - target position in mm
+- *  fr_mm_s   - (target) speed of the move
+- *  extruder  - target extruder
++ * Leveling and kinematics should be applied ahead of calling this.
++ *
++ *  a,b,c,e     - target positions in mm or degrees
++ *  fr_mm_s     - (target) speed of the move
++ *  extruder    - target extruder
+  */
+-void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, const uint8_t extruder) {
++void Planner::_buffer_line(const float &a, const float &b, const float &c, const float &e, float fr_mm_s, const uint8_t extruder) {
+   // Calculate the buffer head after we push this byte
+   int next_buffer_head = next_block_index(block_buffer_head);
+ 
+@@ -617,43 +609,39 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+   // Rest here until there is room in the buffer.
+   while (block_buffer_tail == next_buffer_head) idle();
+ 
+-  #if PLANNER_LEVELING
+-    apply_leveling(lx, ly, lz);
+-  #endif
+-
+   // The target position of the tool in absolute steps
+   // Calculate target position in absolute steps
+   //this should be done after the wait, because otherwise a M92 code within the gcode disrupts this calculation somehow
+-  long target[NUM_AXIS] = {
+-    lround(lx * axis_steps_per_mm[X_AXIS]),
+-    lround(ly * axis_steps_per_mm[Y_AXIS]),
+-    lround(lz * axis_steps_per_mm[Z_AXIS]),
++  long target[XYZE] = {
++    lround(a * axis_steps_per_mm[X_AXIS]),
++    lround(b * axis_steps_per_mm[Y_AXIS]),
++    lround(c * axis_steps_per_mm[Z_AXIS]),
+     lround(e * axis_steps_per_mm[E_AXIS])
+   };
+ 
+-  long dx = target[X_AXIS] - position[X_AXIS],
+-       dy = target[Y_AXIS] - position[Y_AXIS],
+-       dz = target[Z_AXIS] - position[Z_AXIS];
++  long da = target[X_AXIS] - position[X_AXIS],
++       db = target[Y_AXIS] - position[Y_AXIS],
++       dc = target[Z_AXIS] - position[Z_AXIS];
+ 
+   /*
+   SERIAL_ECHOPAIR("  Planner FR:", fr_mm_s);
+   SERIAL_CHAR(' ');
+   #if IS_KINEMATIC
+-    SERIAL_ECHOPAIR("A:", lx);
+-    SERIAL_ECHOPAIR(" (", dx);
+-    SERIAL_ECHOPAIR(") B:", ly);
++    SERIAL_ECHOPAIR("A:", a);
++    SERIAL_ECHOPAIR(" (", da);
++    SERIAL_ECHOPAIR(") B:", b);
+   #else
+-    SERIAL_ECHOPAIR("X:", lx);
+-    SERIAL_ECHOPAIR(" (", dx);
+-    SERIAL_ECHOPAIR(") Y:", ly);
++    SERIAL_ECHOPAIR("X:", a);
++    SERIAL_ECHOPAIR(" (", da);
++    SERIAL_ECHOPAIR(") Y:", b);
+   #endif
+-  SERIAL_ECHOPAIR(" (", dy);
++  SERIAL_ECHOPAIR(" (", db);
+   #if ENABLED(DELTA)
+-    SERIAL_ECHOPAIR(") C:", lz);
++    SERIAL_ECHOPAIR(") C:", c);
+   #else
+-    SERIAL_ECHOPAIR(") Z:", lz);
++    SERIAL_ECHOPAIR(") Z:", c);
+   #endif
+-  SERIAL_ECHOPAIR(" (", dz);
++  SERIAL_ECHOPAIR(" (", dc);
+   SERIAL_CHAR(')');
+   SERIAL_EOL;
+   //*/
+@@ -692,24 +680,24 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+   #if ENABLED(COREXY)
+     // corexy planning
+     // these equations follow the form of the dA and dB equations on http://www.corexy.com/theory.html
+-    block->steps[A_AXIS] = labs(dx + dy);
+-    block->steps[B_AXIS] = labs(dx - dy);
+-    block->steps[Z_AXIS] = labs(dz);
++    block->steps[A_AXIS] = labs(da + db);
++    block->steps[B_AXIS] = labs(da - db);
++    block->steps[Z_AXIS] = labs(dc);
+   #elif ENABLED(COREXZ)
+     // corexz planning
+-    block->steps[A_AXIS] = labs(dx + dz);
+-    block->steps[Y_AXIS] = labs(dy);
+-    block->steps[C_AXIS] = labs(dx - dz);
++    block->steps[A_AXIS] = labs(da + dc);
++    block->steps[Y_AXIS] = labs(db);
++    block->steps[C_AXIS] = labs(da - dc);
+   #elif ENABLED(COREYZ)
+     // coreyz planning
+-    block->steps[X_AXIS] = labs(dx);
+-    block->steps[B_AXIS] = labs(dy + dz);
+-    block->steps[C_AXIS] = labs(dy - dz);
++    block->steps[X_AXIS] = labs(da);
++    block->steps[B_AXIS] = labs(db + dc);
++    block->steps[C_AXIS] = labs(db - dc);
+   #else
+     // default non-h-bot planning
+-    block->steps[X_AXIS] = labs(dx);
+-    block->steps[Y_AXIS] = labs(dy);
+-    block->steps[Z_AXIS] = labs(dz);
++    block->steps[X_AXIS] = labs(da);
++    block->steps[Y_AXIS] = labs(db);
++    block->steps[Z_AXIS] = labs(dc);
+   #endif
+ 
+   block->steps[E_AXIS] = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
+@@ -733,33 +721,33 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+     block->e_to_p_pressure = baricuda_e_to_p_pressure;
+   #endif
+ 
+-  // Compute direction bits for this block
+-  uint8_t db = 0;
++  // Compute direction bit-mask for this block
++  uint8_t dm = 0;
+   #if ENABLED(COREXY)
+-    if (dx < 0) SBI(db, X_HEAD); // Save the real Extruder (head) direction in X Axis
+-    if (dy < 0) SBI(db, Y_HEAD); // ...and Y
+-    if (dz < 0) SBI(db, Z_AXIS);
+-    if (dx + dy < 0) SBI(db, A_AXIS); // Motor A direction
+-    if (dx - dy < 0) SBI(db, B_AXIS); // Motor B direction
++    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
++    if (db < 0) SBI(dm, Y_HEAD); // ...and Y
++    if (dc < 0) SBI(dm, Z_AXIS);
++    if (da + db < 0) SBI(dm, A_AXIS); // Motor A direction
++    if (da - db < 0) SBI(dm, B_AXIS); // Motor B direction
+   #elif ENABLED(COREXZ)
+-    if (dx < 0) SBI(db, X_HEAD); // Save the real Extruder (head) direction in X Axis
+-    if (dy < 0) SBI(db, Y_AXIS);
+-    if (dz < 0) SBI(db, Z_HEAD); // ...and Z
+-    if (dx + dz < 0) SBI(db, A_AXIS); // Motor A direction
+-    if (dx - dz < 0) SBI(db, C_AXIS); // Motor C direction
++    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
++    if (db < 0) SBI(dm, Y_AXIS);
++    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
++    if (da + dc < 0) SBI(dm, A_AXIS); // Motor A direction
++    if (da - dc < 0) SBI(dm, C_AXIS); // Motor C direction
+   #elif ENABLED(COREYZ)
+-    if (dx < 0) SBI(db, X_AXIS);
+-    if (dy < 0) SBI(db, Y_HEAD); // Save the real Extruder (head) direction in Y Axis
+-    if (dz < 0) SBI(db, Z_HEAD); // ...and Z
+-    if (dy + dz < 0) SBI(db, B_AXIS); // Motor B direction
+-    if (dy - dz < 0) SBI(db, C_AXIS); // Motor C direction
++    if (da < 0) SBI(dm, X_AXIS);
++    if (db < 0) SBI(dm, Y_HEAD); // Save the real Extruder (head) direction in Y Axis
++    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
++    if (db + dc < 0) SBI(dm, B_AXIS); // Motor B direction
++    if (db - dc < 0) SBI(dm, C_AXIS); // Motor C direction
+   #else
+-    if (dx < 0) SBI(db, X_AXIS);
+-    if (dy < 0) SBI(db, Y_AXIS);
+-    if (dz < 0) SBI(db, Z_AXIS);
++    if (da < 0) SBI(dm, X_AXIS);
++    if (db < 0) SBI(dm, Y_AXIS);
++    if (dc < 0) SBI(dm, Z_AXIS);
+   #endif
+-  if (de < 0) SBI(db, E_AXIS);
+-  block->direction_bits = db;
++  if (de < 0) SBI(dm, E_AXIS);
++  block->direction_bits = dm;
+ 
+   block->active_extruder = extruder;
+ 
+@@ -872,29 +860,29 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+   #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
+     float delta_mm[7];
+     #if ENABLED(COREXY)
+-      delta_mm[X_HEAD] = dx * steps_to_mm[A_AXIS];
+-      delta_mm[Y_HEAD] = dy * steps_to_mm[B_AXIS];
+-      delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
+-      delta_mm[A_AXIS] = (dx + dy) * steps_to_mm[A_AXIS];
+-      delta_mm[B_AXIS] = (dx - dy) * steps_to_mm[B_AXIS];
++      delta_mm[X_HEAD] = da * steps_to_mm[A_AXIS];
++      delta_mm[Y_HEAD] = db * steps_to_mm[B_AXIS];
++      delta_mm[Z_AXIS] = dc * steps_to_mm[Z_AXIS];
++      delta_mm[A_AXIS] = (da + db) * steps_to_mm[A_AXIS];
++      delta_mm[B_AXIS] = (da - db) * steps_to_mm[B_AXIS];
+     #elif ENABLED(COREXZ)
+-      delta_mm[X_HEAD] = dx * steps_to_mm[A_AXIS];
+-      delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
+-      delta_mm[Z_HEAD] = dz * steps_to_mm[C_AXIS];
+-      delta_mm[A_AXIS] = (dx + dz) * steps_to_mm[A_AXIS];
+-      delta_mm[C_AXIS] = (dx - dz) * steps_to_mm[C_AXIS];
++      delta_mm[X_HEAD] = da * steps_to_mm[A_AXIS];
++      delta_mm[Y_AXIS] = db * steps_to_mm[Y_AXIS];
++      delta_mm[Z_HEAD] = dc * steps_to_mm[C_AXIS];
++      delta_mm[A_AXIS] = (da + dc) * steps_to_mm[A_AXIS];
++      delta_mm[C_AXIS] = (da - dc) * steps_to_mm[C_AXIS];
+     #elif ENABLED(COREYZ)
+-      delta_mm[X_AXIS] = dx * steps_to_mm[X_AXIS];
+-      delta_mm[Y_HEAD] = dy * steps_to_mm[B_AXIS];
+-      delta_mm[Z_HEAD] = dz * steps_to_mm[C_AXIS];
+-      delta_mm[B_AXIS] = (dy + dz) * steps_to_mm[B_AXIS];
+-      delta_mm[C_AXIS] = (dy - dz) * steps_to_mm[C_AXIS];
++      delta_mm[X_AXIS] = da * steps_to_mm[X_AXIS];
++      delta_mm[Y_HEAD] = db * steps_to_mm[B_AXIS];
++      delta_mm[Z_HEAD] = dc * steps_to_mm[C_AXIS];
++      delta_mm[B_AXIS] = (db + dc) * steps_to_mm[B_AXIS];
++      delta_mm[C_AXIS] = (db - dc) * steps_to_mm[C_AXIS];
+     #endif
+   #else
+     float delta_mm[4];
+-    delta_mm[X_AXIS] = dx * steps_to_mm[X_AXIS];
+-    delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
+-    delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
++    delta_mm[X_AXIS] = da * steps_to_mm[X_AXIS];
++    delta_mm[Y_AXIS] = db * steps_to_mm[Y_AXIS];
++    delta_mm[Z_AXIS] = dc * steps_to_mm[Z_AXIS];
+   #endif
+   delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * flow_percentage[extruder];
+ 
+@@ -1196,22 +1184,34 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+  *
+  * On CORE machines stepper ABC will be translated from the given XYZ.
+  */
+-void Planner::set_position_mm(ARG_X, ARG_Y, ARG_Z, const float &e) {
+ 
+-  #if PLANNER_LEVELING
+-    apply_leveling(lx, ly, lz);
+-  #endif
+-
+-  long nx = position[X_AXIS] = lround(lx * axis_steps_per_mm[X_AXIS]),
+-       ny = position[Y_AXIS] = lround(ly * axis_steps_per_mm[Y_AXIS]),
+-       nz = position[Z_AXIS] = lround(lz * axis_steps_per_mm[Z_AXIS]),
++void Planner::_set_position_mm(const float &a, const float &b, const float &c, const float &e) {
++  long na = position[X_AXIS] = lround(a * axis_steps_per_mm[X_AXIS]),
++       nb = position[Y_AXIS] = lround(b * axis_steps_per_mm[Y_AXIS]),
++       nc = position[Z_AXIS] = lround(c * axis_steps_per_mm[Z_AXIS]),
+        ne = position[E_AXIS] = lround(e * axis_steps_per_mm[E_AXIS]);
+-  stepper.set_position(nx, ny, nz, ne);
++  stepper.set_position(na, nb, nc, ne);
+   previous_nominal_speed = 0.0; // Resets planner junction speeds. Assumes start from rest.
+ 
+   memset(previous_speed, 0, sizeof(previous_speed));
+ }
+ 
++void Planner::set_position_mm_kinematic(const float position[NUM_AXIS]) {
++  #if PLANNER_LEVELING
++    float pos[XYZ] = { position[X_AXIS], position[Y_AXIS], position[Z_AXIS] };
++    apply_leveling(pos);
++  #else
++    const float * const pos = position;
++  #endif
++  #if IS_KINEMATIC
++    inverse_kinematics(pos);
++    _set_position_mm(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], position[E_AXIS]);
++  #else
++    _set_position_mm(pos[X_AXIS], pos[Y_AXIS], pos[Z_AXIS], position[E_AXIS]);
++  #endif
++}
++
++
+ /**
+  * Sync from the stepper positions. (e.g., after an interrupted move)
+  */
+@@ -1237,12 +1237,7 @@ void Planner::reset_acceleration_rates() {
+ // Recalculate position, steps_to_mm if axis_steps_per_mm changes!
+ void Planner::refresh_positioning() {
+   LOOP_XYZE(i) steps_to_mm[i] = 1.0 / axis_steps_per_mm[i];
+-  #if IS_KINEMATIC
+-    inverse_kinematics(current_position);
+-    set_position_mm(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], current_position[E_AXIS]);
+-  #else
+-    set_position_mm(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-  #endif
++  set_position_mm_kinematic(current_position);
+   reset_acceleration_rates();
+ }
+ 
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 0e95be4..785c6ac 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -43,6 +43,12 @@
+ class Planner;
+ extern Planner planner;
+ 
++#if IS_KINEMATIC
++  // for inline buffer_line_kinematic
++  extern float delta[ABC];
++  void inverse_kinematics(const float logical[XYZ]);
++#endif
++
+ /**
+  * struct block_t
+  *
+@@ -218,18 +224,68 @@ class Planner {
+        * as it will be given to the planner and steppers.
+        */
+       static void apply_leveling(float &lx, float &ly, float &lz);
++      static void apply_leveling(float logical[XYZ]) { apply_leveling(logical[X_AXIS], logical[Y_AXIS], logical[Z_AXIS]); }
+       static void unapply_leveling(float logical[XYZ]);
+ 
+     #endif
+ 
+     /**
+-     * Add a new linear movement to the buffer.
++     * Planner::_buffer_line
+      *
+-     *  x,y,z,e   - target position in mm
++     * Add a new direct linear movement to the buffer.
++     *
++     * Leveling and kinematics should be applied ahead of this.
++     *
++     *  a,b,c,e   - target position in mm or degrees
+      *  fr_mm_s   - (target) speed of the move (mm/s)
+      *  extruder  - target extruder
+      */
+-    static void buffer_line(ARG_X, ARG_Y, ARG_Z, const float& e, float fr_mm_s, const uint8_t extruder);
++    static void _buffer_line(const float &a, const float &b, const float &c, const float &e, float fr_mm_s, const uint8_t extruder);
++
++    static void _set_position_mm(const float &a, const float &b, const float &c, const float &e);
++
++    /**
++     * Add a new linear movement to the buffer.
++     * The target is NOT translated to delta/scara
++     *
++     * Leveling will be applied to input on cartesians.
++     * Kinematic machines should call buffer_line_kinematic (for leveled moves).
++     * (Cartesians may also call buffer_line_kinematic.)
++     *
++     *  lx,ly,lz,e   - target position in mm or degrees
++     *  fr_mm_s      - (target) speed of the move (mm/s)
++     *  extruder     - target extruder
++     */
++    static FORCE_INLINE void buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, const uint8_t extruder) {
++      #if PLANNER_LEVELING && IS_CARTESIAN
++        apply_leveling(lx, ly, lz);
++      #endif
++      _buffer_line(lx, ly, lz, e, fr_mm_s, extruder);
++    }
++
++    /**
++     * Add a new linear movement to the buffer.
++     * The target is cartesian, it's translated to delta/scara if
++     * needed.
++     *
++     *  target   - x,y,z,e CARTESIAN target in mm
++     *  fr_mm_s  - (target) speed of the move (mm/s)
++     *  extruder - target extruder
++     */
++    static FORCE_INLINE void buffer_line_kinematic(const float target[XYZE], float fr_mm_s, const uint8_t extruder) {
++      #if PLANNER_LEVELING
++        float pos[XYZ] = { target[X_AXIS], target[Y_AXIS], target[Z_AXIS] };
++        apply_leveling(pos);
++      #else
++        const float * const pos = target;
++      #endif
++      #if IS_KINEMATIC
++        inverse_kinematics(pos);
++        _buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], target[E_AXIS], fr_mm_s, extruder);
++      #else
++        _buffer_line(pos[X_AXIS], pos[Y_AXIS], pos[Z_AXIS], target[E_AXIS], fr_mm_s, extruder);
++      #endif
++    }
+ 
+     /**
+      * Set the planner.position and individual stepper positions.
+@@ -240,9 +296,14 @@ class Planner {
+      *
+      * Clears previous speed values.
+      */
+-    static void set_position_mm(ARG_X, ARG_Y, ARG_Z, const float& e);
++    static FORCE_INLINE void set_position_mm(ARG_X, ARG_Y, ARG_Z, const float &e) {
++      #if PLANNER_LEVELING && IS_CARTESIAN
++        apply_leveling(lx, ly, lz);
++      #endif
++      _set_position_mm(lx, ly, lz, e);
++    }
++    static void set_position_mm_kinematic(const float position[NUM_AXIS]);
+     static void set_position_mm(const AxisEnum axis, const float& v);
+-
+     static FORCE_INLINE void set_z_position_mm(const float& z) { set_position_mm(Z_AXIS, z); }
+     static FORCE_INLINE void set_e_position_mm(const float& e) { set_position_mm(E_AXIS, e); }
+ 
+diff --git a/Marlin/planner_bezier.cpp b/Marlin/planner_bezier.cpp
+index ad46f89..d7dd960 100644
+--- a/Marlin/planner_bezier.cpp
++++ b/Marlin/planner_bezier.cpp
+@@ -187,13 +187,7 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+     bez_target[Z_AXIS] = interp(position[Z_AXIS], target[Z_AXIS], t);
+     bez_target[E_AXIS] = interp(position[E_AXIS], target[E_AXIS], t);
+     clamp_to_software_endstops(bez_target);
+-
+-    #if IS_KINEMATIC
+-      inverse_kinematics(bez_target);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], bez_target[E_AXIS], fr_mm_s, extruder);
+-    #else
+-      planner.buffer_line(bez_target[X_AXIS], bez_target[Y_AXIS], bez_target[Z_AXIS], bez_target[E_AXIS], fr_mm_s, extruder);
+-    #endif
++    planner.buffer_line_kinematic(bez_target, fr_mm_s, extruder);
+   }
+ }
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index ebe55b9..c394c8a 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -966,7 +966,7 @@ void Stepper::synchronize() { while (planner.blocks_queued()) idle(); }
+  * This allows get_axis_position_mm to correctly
+  * derive the current XYZ position later on.
+  */
+-void Stepper::set_position(const long& x, const long& y, const long& z, const long& e) {
++void Stepper::set_position(const long &a, const long &b, const long &c, const long &e) {
+ 
+   synchronize(); // Bad to set stepper counts in the middle of a move
+ 
+@@ -975,37 +975,37 @@ void Stepper::set_position(const long& x, const long& y, const long& z, const lo
+   #if ENABLED(COREXY)
+     // corexy positioning
+     // these equations follow the form of the dA and dB equations on http://www.corexy.com/theory.html
+-    count_position[A_AXIS] = x + y;
+-    count_position[B_AXIS] = x - y;
+-    count_position[Z_AXIS] = z;
++    count_position[A_AXIS] = a + b;
++    count_position[B_AXIS] = a - b;
++    count_position[Z_AXIS] = c;
+   #elif ENABLED(COREXZ)
+     // corexz planning
+-    count_position[A_AXIS] = x + z;
+-    count_position[Y_AXIS] = y;
+-    count_position[C_AXIS] = x - z;
++    count_position[A_AXIS] = a + c;
++    count_position[Y_AXIS] = b;
++    count_position[C_AXIS] = a - c;
+   #elif ENABLED(COREYZ)
+     // coreyz planning
+-    count_position[X_AXIS] = x;
+-    count_position[B_AXIS] = y + z;
+-    count_position[C_AXIS] = y - z;
++    count_position[X_AXIS] = a;
++    count_position[B_AXIS] = y + c;
++    count_position[C_AXIS] = y - c;
+   #else
+     // default non-h-bot planning
+-    count_position[X_AXIS] = x;
+-    count_position[Y_AXIS] = y;
+-    count_position[Z_AXIS] = z;
++    count_position[X_AXIS] = a;
++    count_position[Y_AXIS] = b;
++    count_position[Z_AXIS] = c;
+   #endif
+ 
+   count_position[E_AXIS] = e;
+   CRITICAL_SECTION_END;
+ }
+ 
+-void Stepper::set_position(const AxisEnum &axis, const long& v) {
++void Stepper::set_position(const AxisEnum &axis, const long &v) {
+   CRITICAL_SECTION_START;
+   count_position[axis] = v;
+   CRITICAL_SECTION_END;
+ }
+ 
+-void Stepper::set_e_position(const long& e) {
++void Stepper::set_e_position(const long &e) {
+   CRITICAL_SECTION_START;
+   count_position[E_AXIS] = e;
+   CRITICAL_SECTION_END;
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 5b6b144..a722a50 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -188,9 +188,9 @@ class Stepper {
+     //
+     // Set the current position in steps
+     //
+-    static void set_position(const long& x, const long& y, const long& z, const long& e);
+-    static void set_position(const AxisEnum& a, const long& v);
+-    static void set_e_position(const long& e);
++    static void set_position(const long &a, const long &b, const long &c, const long &e);
++    static void set_position(const AxisEnum &a, const long &v);
++    static void set_e_position(const long &e);
+ 
+     //
+     // Set direction bits for all steppers
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index bcedace..b0b77e6 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -561,12 +561,7 @@ void kill_screen(const char* lcd_msg) {
+ #if ENABLED(ULTIPANEL)
+ 
+   inline void line_to_current(AxisEnum axis) {
+-    #if ENABLED(DELTA)
+-      inverse_kinematics(current_position);
+-      planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[axis]), active_extruder);
+-    #else // !DELTA
+-      planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[axis]), active_extruder);
+-    #endif // !DELTA
++    planner.buffer_line_kinematic(current_position, MMM_TO_MMS(manual_feedrate_mm_m[axis]), active_extruder);
+   }
+ 
+   #if ENABLED(SDSUPPORT)
+@@ -1351,12 +1346,7 @@ void kill_screen(const char* lcd_msg) {
+    */
+   inline void manage_manual_move() {
+     if (manual_move_axis != (int8_t)NO_AXIS && ELAPSED(millis(), manual_move_start_time) && !planner.is_full()) {
+-      #if ENABLED(DELTA)
+-        inverse_kinematics(current_position);
+-        planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[manual_move_axis]), manual_move_e_index);
+-      #else
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[manual_move_axis]), manual_move_e_index);
+-      #endif
++      planner.buffer_line_kinematic(current_position, MMM_TO_MMS(manual_feedrate_mm_m[manual_move_axis]), manual_move_e_index);
+       manual_move_axis = (int8_t)NO_AXIS;
+     }
+   }
+
+commit f8199b2cc15dbc30ee9a8e857a25116447ca60bf (from e4e290d957e4b34acec6906bb7a60763102a4472)
+Merge: f4ec265 e4e290d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 10 13:24:22 2016 -0500
+
+    Merge pull request #4982 from thinkyhead/rc_abl_bugfix
+    
+    Fix planner with kinematics, delta ABL
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a106b3d..2e46ffb 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -4909,8 +4909,8 @@ inline void gcode_M42() {
+       for (uint8_t j = 0; j <= n; j++) sum += sample_set[j];
+       mean = sum / (n + 1);
+ 
+-      if(sample_set[n] < min) min = sample_set[n];
+-      if(sample_set[n] > max) max = sample_set[n];
++      NOMORE(min, sample_set[n]);
++      NOLESS(max, sample_set[n]);
+ 
+       /**
+        * Now, use that mean to calculate the standard deviation for the
+@@ -4966,7 +4966,6 @@ inline void gcode_M42() {
+     SERIAL_PROTOCOLPGM("Standard Deviation: ");
+     SERIAL_PROTOCOL_F(sigma, 6);
+     SERIAL_EOL;
+-
+     SERIAL_EOL;
+ 
+     clean_up_after_endstop_or_probe_move();
+diff --git a/Marlin/dac_mcp4728.cpp b/Marlin/dac_mcp4728.cpp
+index 5ba78e0..76ca7de 100644
+--- a/Marlin/dac_mcp4728.cpp
++++ b/Marlin/dac_mcp4728.cpp
+@@ -80,7 +80,7 @@ uint8_t mcp4728_eepromWrite() {
+  */
+ uint8_t mcp4728_setVref_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.write(GAINWRITE | (value ? 0x0F : 0x00));
++  Wire.write(VREFWRITE | (value ? 0x0F : 0x00));
+   return Wire.endTransmission();
+ }
+ /**
+@@ -93,7 +93,7 @@ uint8_t mcp4728_setGain_all(uint8_t value) {
+ }
+ 
+ /**
+- * Return Input Regiter value
++ * Return Input Register value
+  */
+ uint16_t mcp4728_getValue(uint8_t channel) { return mcp4728_values[channel]; }
+ 
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index cfad896..648cee6 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -532,6 +532,15 @@
+   #define MSG_INFO_PSU                        "Power Supply"
+ #endif
+ 
++#ifndef MSG_DRIVE_STRENGTH
++  #define MSG_DRIVE_STRENGTH                  "Drive Strength"
++#endif
++#ifndef MSG_DAC_PERCENT
++  #define MSG_DAC_PERCENT                     "Driver %"
++#endif
++#ifndef MSG_DAC_EEPROM_WRITE
++  #define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Write"
++#endif
+ #ifndef MSG_FILAMENT_CHANGE_HEADER
+   #define MSG_FILAMENT_CHANGE_HEADER          "CHANGE FILAMENT"
+ #endif
+@@ -544,15 +553,6 @@
+ #ifndef MSG_FILAMENT_CHANGE_OPTION_RESUME
+   #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Resume print"
+ #endif
+-#ifndef MSG_DRIVE_STRENGTH
+-  #define MSG_DRIVE_STRENGTH                  "Drive Strength"
+-#endif
+-#ifndef MSG_DAC_PERCENT
+-  #define MSG_DAC_PERCENT                     "Driver %"
+-#endif
+-#ifndef MSG_DAC_EEPROM_WRITE
+-  #define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Write"
+-#endif
+ #if LCD_HEIGHT >= 4
+   #ifndef MSG_FILAMENT_CHANGE_INIT_1
+     #define MSG_FILAMENT_CHANGE_INIT_1          "Wait for start"
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index ba6098e..03c7331 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -255,6 +255,13 @@
+ #else
+   #define MSG_INFO_PSU                      "\xc3\xde\xdd\xb9\xde\xdd"                                         // "ﾃﾞﾝｹﾞﾝ" ("Power Supply")
+ #endif
++#define MSG_DRIVE_STRENGTH                  "\xd3\xb0\xc0\xb0\xb8\xc4\xde\xb3\xd8\xae\xb8"                     // "ﾓｰﾀｰｸﾄﾞｳﾘｮｸ" ("Drive Strength")
++#if LCD_WIDTH > 19
++  #define MSG_DAC_PERCENT                   "DAC\xbc\xad\xc2\xd8\xae\xb8 %"                                    // "DACｼｭﾂﾘｮｸ %" ("Driver %")
++#else
++  #define MSG_DAC_PERCENT                   "DAC\xbc\xad\xc2\xd8\xae\xb8"                                      // "DACｼｭﾂﾘｮｸ" ("Driver %")
++#endif
++#define MSG_DAC_EEPROM_WRITE                MSG_STORE_EPROM                                                    // "ﾒﾓﾘﾍｶｸﾉｳ" ("DAC EEPROM Write")
+ #define MSG_FILAMENT_CHANGE_HEADER          "\xcc\xa8\xd7\xd2\xdd\xc4\xba\xb3\xb6\xdd"                         // "ﾌｨﾗﾒﾝﾄｺｳｶﾝ" ("CHANGE FILAMENT")
+ #define MSG_FILAMENT_CHANGE_OPTION_HEADER   "\xc4\xde\xb3\xbb\xa6\xbe\xdd\xc0\xb8\xbc\xc3\xb8\xc0\xde\xbb\xb2" // "ﾄﾞｳｻｦｾﾝﾀｸｼﾃｸﾀﾞｻｲ" ("CHANGE OPTIONS:")
+ #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "\xbb\xd7\xc6\xb5\xbc\xc0\xde\xbd"                                 // "ｻﾗﾆｵｼﾀﾞｽ" ("Extrude more")
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 15712fd..2d64059 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -198,6 +198,9 @@
+ #define MSG_INFO_MIN_TEMP                   "セッテイサイテイオン"              // "Min Temp"
+ #define MSG_INFO_MAX_TEMP                   "セッテイサイコウオン"              // "Max Temp"
+ #define MSG_INFO_PSU                        "デンゲンシュベツ"                // "Power Supply"
++#define MSG_DRIVE_STRENGTH                  "モータークドウリョク"              // "Drive Strength"
++#define MSG_DAC_PERCENT                     "DACシュツリョク %"               // "Driver %"
++#define MSG_DAC_EEPROM_WRITE                MSG_STORE_EPROM              // "DAC EEPROM Write"
+ #define MSG_FILAMENT_CHANGE_HEADER          "フィラメントコウカン"              // "CHANGE FILAMENT"
+ #define MSG_FILAMENT_CHANGE_OPTION_HEADER   "ドウサヲセンタクシテクダサイ"        // "CHANGE OPTIONS:"
+ #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "サラニオシダス"                 // "Extrude more"
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index bd4aa85..c394c8a 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -95,7 +95,7 @@ volatile uint32_t Stepper::step_events_completed = 0; // The number of step even
+   volatile unsigned char Stepper::eISR_Rate = 200; // Keep the ISR at a low rate until needed
+ 
+   #if ENABLED(LIN_ADVANCE)
+-    volatile long Stepper::e_steps[E_STEPPERS];
++    volatile int Stepper::e_steps[E_STEPPERS];
+     int Stepper::extruder_advance_k = LIN_ADVANCE_K,
+         Stepper::final_estep_rate,
+         Stepper::current_estep_rate[E_STEPPERS],
+@@ -311,8 +311,20 @@ void Stepper::set_directions() {
+   #endif // !ADVANCE && !LIN_ADVANCE
+ }
+ 
+-// "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.
+-// It pops blocks from the block_buffer and executes them by pulsing the stepper pins appropriately.
++/**
++ * Stepper Driver Interrupt
++ *
++ * Directly pulses the stepper motors at high frequency.
++ * Timer 1 runs at a base frequency of 2MHz, with this ISR using OCR1A compare mode.
++ *
++ * OCR1A   Frequency
++ *     1     2 MHz
++ *    50    40 KHz
++ *   100    20 KHz - capped max rate
++ *   200    10 KHz - nominal max rate
++ *  2000     1 KHz - sleep rate
++ *  4000   500  Hz - init rate
++ */
+ ISR(TIMER1_COMPA_vect) { Stepper::isr(); }
+ 
+ void Stepper::isr() {
+@@ -323,7 +335,7 @@ void Stepper::isr() {
+       if ((cleaning_buffer_counter == 1) && (SD_FINISHED_STEPPERRELEASE)) enqueue_and_echo_commands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     #endif
+     cleaning_buffer_counter--;
+-    OCR1A = 200;
++    OCR1A = 200; // Run at max speed - 10 KHz
+     return;
+   }
+ 
+@@ -348,7 +360,7 @@ void Stepper::isr() {
+       #if ENABLED(Z_LATE_ENABLE)
+         if (current_block->steps[Z_AXIS] > 0) {
+           enable_z();
+-          OCR1A = 2000; //1ms wait
++          OCR1A = 2000; // Run at slow speed - 1 KHz
+           return;
+         }
+       #endif
+@@ -358,7 +370,7 @@ void Stepper::isr() {
+       // #endif
+     }
+     else {
+-      OCR1A = 2000; // 1kHz.
++      OCR1A = 2000; // Run at slow speed - 1 KHz
+       return;
+     }
+   }
+@@ -391,7 +403,7 @@ void Stepper::isr() {
+ 
+       #if ENABLED(MIXING_EXTRUDER)
+         // Step mixing steppers proportionally
+-        bool dir = motor_direction(E_AXIS);
++        const bool dir = motor_direction(E_AXIS);
+         MIXING_STEPPERS_LOOP(j) {
+           counter_m[j] += current_block->steps[E_AXIS];
+           if (counter_m[j] > 0) {
+@@ -401,22 +413,6 @@ void Stepper::isr() {
+         }
+       #endif
+ 
+-      if (current_block->use_advance_lead) {
+-        int delta_adv_steps = (((long)extruder_advance_k * current_estep_rate[TOOL_E_INDEX]) >> 9) - current_adv_steps[TOOL_E_INDEX];
+-        #if ENABLED(MIXING_EXTRUDER)
+-          // Mixing extruders apply advance lead proportionally
+-          MIXING_STEPPERS_LOOP(j) {
+-            int steps = delta_adv_steps * current_block->step_event_count / current_block->mix_event_count[j];
+-            e_steps[j] += steps;
+-            current_adv_steps[j] += steps;
+-          }
+-        #else
+-          // For most extruders, advance the single E stepper
+-          e_steps[TOOL_E_INDEX] += delta_adv_steps;
+-          current_adv_steps[TOOL_E_INDEX] += delta_adv_steps;
+-        #endif
+-      }
+-
+     #elif ENABLED(ADVANCE)
+ 
+       // Always count the unified E axis
+@@ -432,7 +428,7 @@ void Stepper::isr() {
+       #if ENABLED(MIXING_EXTRUDER)
+ 
+         // Step mixing steppers proportionally
+-        bool dir = motor_direction(E_AXIS);
++        const bool dir = motor_direction(E_AXIS);
+         MIXING_STEPPERS_LOOP(j) {
+           counter_m[j] += current_block->steps[E_AXIS];
+           if (counter_m[j] > 0) {
+@@ -536,6 +532,21 @@ void Stepper::isr() {
+     }
+   }
+ 
++  #if ENABLED(LIN_ADVANCE)
++    if (current_block->use_advance_lead) {
++      int delta_adv_steps = (((long)extruder_advance_k * current_estep_rate[TOOL_E_INDEX]) >> 9) - current_adv_steps[TOOL_E_INDEX];
++      current_adv_steps[TOOL_E_INDEX] += delta_adv_steps;
++      #if ENABLED(MIXING_EXTRUDER)
++        // Mixing extruders apply advance lead proportionally
++        MIXING_STEPPERS_LOOP(j)
++          e_steps[j] += delta_adv_steps * current_block->step_event_count / current_block->mix_event_count[j];
++      #else
++        // For most extruders, advance the single E stepper
++        e_steps[TOOL_E_INDEX] += delta_adv_steps;
++      #endif
++   }
++  #endif
++  
+   #if ENABLED(ADVANCE) || ENABLED(LIN_ADVANCE)
+     // If we have esteps to execute, fire the next advance_isr "now"
+     if (e_steps[TOOL_E_INDEX]) OCR0A = TCNT0 + 2;
+@@ -593,7 +604,7 @@ void Stepper::isr() {
+     #endif // ADVANCE or LIN_ADVANCE
+ 
+     #if ENABLED(ADVANCE) || ENABLED(LIN_ADVANCE)
+-      eISR_Rate = (timer >> 2) * step_loops / abs(e_steps[TOOL_E_INDEX]);
++      eISR_Rate = (timer >> 3) * step_loops / abs(e_steps[TOOL_E_INDEX]); //>> 3 is divide by 8. Reason: Timer 0 runs at 16/8=2MHz, Timer 1 at 16/64=0.25MHz. ==> 2/0.25=8.
+     #endif
+   }
+   else if (step_events_completed > (uint32_t)current_block->decelerate_after) {
+@@ -643,7 +654,7 @@ void Stepper::isr() {
+     #endif // ADVANCE or LIN_ADVANCE
+ 
+     #if ENABLED(ADVANCE) || ENABLED(LIN_ADVANCE)
+-      eISR_Rate = (timer >> 2) * step_loops / abs(e_steps[TOOL_E_INDEX]);
++      eISR_Rate = (timer >> 3) * step_loops / abs(e_steps[TOOL_E_INDEX]);
+     #endif
+   }
+   else {
+@@ -653,7 +664,7 @@ void Stepper::isr() {
+       if (current_block->use_advance_lead)
+         current_estep_rate[TOOL_E_INDEX] = final_estep_rate;
+ 
+-      eISR_Rate = (OCR1A_nominal >> 2) * step_loops_nominal / abs(e_steps[TOOL_E_INDEX]);
++      eISR_Rate = (OCR1A_nominal >> 3) * step_loops_nominal / abs(e_steps[TOOL_E_INDEX]);
+ 
+     #endif
+ 
+@@ -904,6 +915,7 @@ void Stepper::init() {
+   // output mode = 00 (disconnected)
+   TCCR1A &= ~(3 << COM1A0);
+   TCCR1A &= ~(3 << COM1B0);
++
+   // Set the timer pre-scaler
+   // Generally we use a divider of 8, resulting in a 2MHz timer
+   // frequency on a 16MHz MCU. If you are going to change this, be
+@@ -911,6 +923,7 @@ void Stepper::init() {
+   // create_speed_lookuptable.py
+   TCCR1B = (TCCR1B & ~(0x07 << CS10)) | (2 << CS10);
+ 
++  // Init Stepper ISR to 122 Hz for quick starting
+   OCR1A = 0x4000;
+   TCNT1 = 0;
+   ENABLE_STEPPER_DRIVER_INTERRUPT();
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 77e67fc..a722a50 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -108,7 +108,7 @@ class Stepper {
+       static unsigned char old_OCR0A;
+       static volatile unsigned char eISR_Rate;
+       #if ENABLED(LIN_ADVANCE)
+-        static volatile long e_steps[E_STEPPERS];
++        static volatile int e_steps[E_STEPPERS];
+         static int extruder_advance_k;
+         static int final_estep_rate;
+         static int current_estep_rate[E_STEPPERS]; // Actual extruder speed [steps/s]
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 42f68f4..285871a 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1371,7 +1371,7 @@ void Temperature::set_current_temp_raw() {
+  * Timer 0 is shared with millies so don't change the prescaler.
+  *
+  * This ISR uses the compare method so it runs at the base
+- * frequency (16 MHz / 256 = 62500 Hz), but at the TCNT0 set
++ * frequency (16 MHz / 64 / 256 = 976.5625 Hz), but at the TCNT0 set
+  * in OCR0B above (128 or halfway between OVFs).
+  *
+  *  - Manage PWM to all the heaters and fan
+@@ -1485,9 +1485,16 @@ void Temperature::isr() {
+       #endif
+     #endif
+ 
+-    // 488.28 Hz (or 1:976.56, 2:1953.12, 3:3906.25, 4:7812.5, 5:7812.5 6:15625, 6:15625 7:31250)
++    // SOFT_PWM_SCALE to frequency:
++    //
++    // 0: 16000000/64/256/128 =   7.6294 Hz
++    // 1:                / 64 =  15.2588 Hz
++    // 2:                / 32 =  30.5176 Hz
++    // 3:                / 16 =  61.0352 Hz
++    // 4:                /  8 = 122.0703 Hz
++    // 5:                /  4 = 244.1406 Hz
+     pwm_count += _BV(SOFT_PWM_SCALE);
+-    pwm_count &= 0x7f;
++    pwm_count &= 0x7F;
+ 
+   #else // SLOW_PWM_HEATERS
+ 
+@@ -1586,10 +1593,18 @@ void Temperature::isr() {
+       #endif
+     #endif //FAN_SOFT_PWM
+ 
++    // SOFT_PWM_SCALE to frequency:
++    //
++    // 0: 16000000/64/256/128 =   7.6294 Hz
++    // 1:                / 64 =  15.2588 Hz
++    // 2:                / 32 =  30.5176 Hz
++    // 3:                / 16 =  61.0352 Hz
++    // 4:                /  8 = 122.0703 Hz
++    // 5:                /  4 = 244.1406 Hz
+     pwm_count += _BV(SOFT_PWM_SCALE);
+-    pwm_count &= 0x7f;
++    pwm_count &= 0x7F;
+ 
+-    // increment slow_pwm_count only every 64 pwm_count circa 65.5ms
++    // increment slow_pwm_count only every 64 pwm_count (e.g., every 8s)
+     if ((pwm_count % 64) == 0) {
+       slow_pwm_count++;
+       slow_pwm_count &= 0x7f;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index fdf879f..b0b77e6 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -223,7 +223,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+     static int8_t _countedItems = 0; \
+     int8_t encoderLine = encoderPosition / ENCODER_STEPS_PER_MENU_ITEM; \
+     if (_countedItems > 0 && encoderLine >= _countedItems - LIMIT) { \
+-      encoderLine = _countedItems - LIMIT; \
++      encoderLine = max(0, _countedItems - LIMIT); \
+       encoderPosition = encoderLine * (ENCODER_STEPS_PER_MENU_ITEM); \
+     }
+ 
+

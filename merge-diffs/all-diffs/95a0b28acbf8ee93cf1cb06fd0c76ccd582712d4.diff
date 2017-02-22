@@ -1,0 +1,1789 @@
+commit 95a0b28acbf8ee93cf1cb06fd0c76ccd582712d4 (from af22e9cd38c9684bd64cc7307137abe9efbba6d0)
+Merge: af22e9c 7714b98
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Dec 4 19:54:43 2011 +0100
+
+    Merge branch 'Marlin_v1', remote-tracking branch 'origin/Marlin_v1' into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 08bf6ea..f288aba 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -214,6 +214,7 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ #define X_HOME_RETRACT_MM 5 
+ #define Y_HOME_RETRACT_MM 5 
+ #define Z_HOME_RETRACT_MM 1 
++#define QUICK_HOME  //if this is defined, if both x and y are to be homed, a diagonal move will be performed initially.
+ 
+ #define AXIS_RELATIVE_MODES {false, false, false, false}
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 8afc87b..910cf46 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -16,7 +16,6 @@
+ #include "Configuration.h"
+ #include "MarlinSerial.h"
+ 
+-
+ #define  FORCE_INLINE __attribute__((always_inline)) inline
+ //#define SERIAL_ECHO(x) Serial << "echo: " << x;
+ //#define SERIAL_ECHOLN(x) Serial << "echo: "<<x<<endl;
+@@ -25,15 +24,25 @@
+ //#define SERIAL_PROTOCOL(x) Serial << x;
+ //#define SERIAL_PROTOCOLLN(x) Serial << x<<endl;
+ 
++//this is a unfinsihed attemp to removes a lot of warning messages, see:
++// http://www.avrfreaks.net/index.php?name=PNphpBB2&file=printview&t=57011
++//typedef char prog_char PROGMEM; 
++// //#define PSTR    (s )        ((const PROGMEM char *)(s))
++// //# define MYPGM(s) (__extension__({static prog_char __c[] = (s); &__c[0];})) 
++// //#define MYPGM(s) ((const prog_char *g PROGMEM=s))
++// //#define MYPGM(s) PSTR(s)
++#define MYPGM(s)  (__extension__({static char __c[] __attribute__((__progmem__)) = (s); &__c[0];}))  //This is the normal behaviour
++//#define MYPGM(s)  (__extension__({static prog_char __c[]  = (s); &__c[0];})) //this does not work but hides the warnings
+ 
+ 
+ #define SERIAL_PROTOCOL(x) MSerial.print(x);
+-#define SERIAL_PROTOCOLPGM(x) serialprintPGM(PSTR(x));
++#define SERIAL_PROTOCOLPGM(x) serialprintPGM(MYPGM(x));
+ #define SERIAL_PROTOCOLLN(x) {MSerial.print(x);MSerial.write('\n');}
+-#define SERIAL_PROTOCOLLNPGM(x) {serialprintPGM(PSTR(x));MSerial.write('\n');}
++#define SERIAL_PROTOCOLLNPGM(x) {serialprintPGM(MYPGM(x));MSerial.write('\n');}
++
+ 
+-const char errormagic[] PROGMEM ="Error:";
+-const char echomagic[] PROGMEM ="echo:";
++const prog_char errormagic[] PROGMEM ="Error:";
++const prog_char echomagic[] PROGMEM ="echo:";
+ #define SERIAL_ERROR_START serialprintPGM(errormagic);
+ #define SERIAL_ERROR(x) SERIAL_PROTOCOL(x)
+ #define SERIAL_ERRORPGM(x) SERIAL_PROTOCOLPGM(x)
+@@ -50,7 +59,7 @@ const char echomagic[] PROGMEM ="echo:";
+ 
+ 
+ //things to write to serial from Programmemory. saves 400 to 2k of RAM.
+-#define SerialprintPGM(x) serialprintPGM(PSTR(x))
++#define SerialprintPGM(x) serialprintPGM(MYPGM(x))
+ FORCE_INLINE void serialprintPGM(const char *str)
+ {
+   char ch=pgm_read_byte(str);
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 06fd097..016702e 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -167,7 +167,8 @@ static char *strchr_pointer; // just a pointer to find chars in the cmd string l
+ 
+ const int sensitive_pins[] = SENSITIVE_PINS; // Sensitive pin list for M42
+ 
+-static float tt = 0, bt = 0;
++//static float tt = 0;
++//static float bt = 0;
+ 
+ //Inactivity shutdown variables
+ static unsigned long previous_millis_cmd = 0;
+@@ -532,7 +533,7 @@ FORCE_INLINE void process_commands()
+       }
+       feedrate = 0.0;
+       home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+-      
++      #ifdef QUICK_HOME
+       if( code_seen(axis_codes[0]) && code_seen(axis_codes[1]) )  //first diagonal move
+       {
+         current_position[X_AXIS] = 0; current_position[Y_AXIS] = 0;
+@@ -545,6 +546,7 @@ FORCE_INLINE void process_commands()
+         prepare_move();
+         current_position[X_AXIS] = 0; current_position[Y_AXIS] = 0;
+       }
++      #endif
+       
+       if((home_all_axis) || (code_seen(axis_codes[X_AXIS]))) 
+       {
+@@ -669,6 +671,7 @@ FORCE_INLINE void process_commands()
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLN(time);
+       LCD_MESSAGE(time);
++      autotempShutdown();
+     }
+     break;
+     case 42: //M42 -Change pin status via gcode
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+index 54db907..63268e8 100644
+--- a/Marlin/MarlinSerial.cpp
++++ b/Marlin/MarlinSerial.cpp
+@@ -20,6 +20,7 @@
+   Modified 28 September 2010 by Mark Sproul
+ */
+ 
++
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+index 76d5a35..0fe0c52 100644
+--- a/Marlin/MarlinSerial.h
++++ b/Marlin/MarlinSerial.h
+@@ -120,7 +120,7 @@ class MarlinSerial //: public Stream
+ 
+     FORCE_INLINE void print(const String &s)
+     {
+-      for (int i = 0; i < s.length(); i++) {
++      for (int i = 0; i < (int)s.length(); i++) {
+         write(s[i]);
+       }
+     }
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index c8ef9db..70244a8 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -59,7 +59,7 @@ private:
+   LsAction lsAction; //stored for recursion.
+   int16_t nrFiles; //counter for the files in the current directory and recycled as position counter for getting the nrFiles'th name in the directory.
+   char* diveDirName;
+-  void lsDive(char *prepend,SdFile parent);
++  void lsDive(const char *prepend,SdFile parent);
+ };
+   
+ 
+diff --git a/Marlin/cardreader.pde b/Marlin/cardreader.pde
+index 03f3f46..1eb19ba 100644
+--- a/Marlin/cardreader.pde
++++ b/Marlin/cardreader.pde
+@@ -40,7 +40,7 @@ char *createFilename(char *buffer,const dir_t &p) //buffer>12characters
+ }
+ 
+ 
+-void  CardReader::lsDive(char *prepend,SdFile parent)
++void  CardReader::lsDive(const char *prepend,SdFile parent)
+ {
+   dir_t p;
+  uint8_t cnt=0;
+@@ -436,5 +436,6 @@ void CardReader::printingHasFinished()
+  {
+    finishAndDisableSteppers();
+  }
++ autotempShutdown();
+ }
+ #endif //SDSUPPORT
+\ No newline at end of file
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 7a7a35d..a8f41d3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -91,7 +91,7 @@ static float previous_nominal_speed; // Nominal speed of previous path line segm
+ #ifdef AUTOTEMP
+     float autotemp_max=250;
+     float autotemp_min=210;
+-    float autotemp_factor=1;
++    float autotemp_factor=0.1;
+     bool autotemp_enabled=false;
+ #endif
+ 
+@@ -107,10 +107,12 @@ volatile unsigned char block_buffer_tail;           // Index of the block to pro
+ //=============================private variables ============================
+ //===========================================================================
+ 
+-// Used for the frequency limit
+-static unsigned char old_direction_bits = 0;               // Old direction bits. Used for speed calculations
+-static long x_segment_time[3]={0,0,0};                     // Segment times (in us). Used for speed calculations
+-static long y_segment_time[3]={0,0,0};
++#ifdef XY_FREQUENCY_LIMIT
++  // Used for the frequency limit
++  static unsigned char old_direction_bits = 0;               // Old direction bits. Used for speed calculations
++  static long x_segment_time[3]={0,0,0};                     // Segment times (in us). Used for speed calculations
++  static long y_segment_time[3]={0,0,0};
++#endif
+ 
+ // Returns the index of the next block in the ring buffer
+ // NOTE: Removed modulo (%) operator, which uses an expensive divide and multiplication.
+@@ -254,7 +256,7 @@ void planner_reverse_pass_kernel(block_t *previous, block_t *current, block_t *n
+ // planner_recalculate() needs to go over the current plan twice. Once in reverse and once forward. This 
+ // implements the reverse pass.
+ void planner_reverse_pass() {
+-  char block_index = block_buffer_head;
++  uint8_t block_index = block_buffer_head;
+   if(((block_buffer_head-block_buffer_tail + BLOCK_BUFFER_SIZE) & (BLOCK_BUFFER_SIZE - 1)) > 3) {
+     block_index = (block_buffer_head - 3) & (BLOCK_BUFFER_SIZE - 1);
+     block_t *block[3] = { NULL, NULL, NULL };
+@@ -293,7 +295,7 @@ void planner_forward_pass_kernel(block_t *previous, block_t *current, block_t *n
+ // planner_recalculate() needs to go over the current plan twice. Once in reverse and once forward. This 
+ // implements the forward pass.
+ void planner_forward_pass() {
+-  char block_index = block_buffer_tail;
++  uint8_t block_index = block_buffer_tail;
+   block_t *block[3] = { NULL, NULL, NULL };
+ 
+   while(block_index != block_buffer_head) {
+@@ -383,7 +385,7 @@ void getHighESpeed()
+     return; //do nothing
+   
+   float high=0;
+-  char block_index = block_buffer_tail;
++  uint8_t block_index = block_buffer_tail;
+   
+   while(block_index != block_buffer_head) {
+     float se=block_buffer[block_index].steps_e/float(block_buffer[block_index].step_event_count)*block_buffer[block_index].nominal_rate;
+@@ -422,7 +424,7 @@ void check_axes_activity() {
+   block_t *block;
+ 
+   if(block_buffer_tail != block_buffer_head) {
+-    char block_index = block_buffer_tail;
++    uint8_t block_index = block_buffer_tail;
+     while(block_index != block_buffer_head) {
+       block = &block_buffer[block_index];
+       if(block->steps_x != 0) x_active++;
+@@ -518,8 +520,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   block->nominal_speed = block->millimeters * inverse_second; // (mm/sec) Always > 0
+   block->nominal_rate = ceil(block->step_event_count * inverse_second); // (step/sec) Always > 0
+ 
+-  //  segment time im micro seconds
+-  long segment_time = lround(1000000.0/inverse_second);
++  
+  
+ 
+   if (block->steps_e == 0) {
+@@ -537,6 +538,8 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+ #endif
+ 
+ /*
++  //  segment time im micro seconds
++  long segment_time = lround(1000000.0/inverse_second);
+   if ((blockcount>0) && (blockcount < (BLOCK_BUFFER_SIZE - 4))) {
+     if (segment_time<minsegmenttime)  { // buffer is draining, add extra time.  The amount of time added increases if the buffer is still emptied more.
+         segment_time=segment_time+lround(2*(minsegmenttime-segment_time)/blockcount);
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index bcad026..e25d179 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -21,6 +21,7 @@
+ /* The timer calculations of this module informed by the 'RepRap cartesian firmware' by Zack Smith
+    and Philipp Tiefenbacher. */
+ 
++
+ #include "stepper.h"
+ #include "Configuration.h"
+ #include "Marlin.h"
+@@ -454,7 +455,7 @@ ISR(TIMER1_COMPA_vect)
+     // Calculare new timer value
+     unsigned short timer;
+     unsigned short step_rate;
+-    if (step_events_completed <= current_block->accelerate_until) {
++    if (step_events_completed <= (unsigned long int)current_block->accelerate_until) {
+       
+       MultiU24X24toH16(acc_step_rate, acceleration_time, current_block->acceleration_rate);
+       acc_step_rate += current_block->initial_rate;
+@@ -478,7 +479,7 @@ ISR(TIMER1_COMPA_vect)
+         
+       #endif
+     } 
+-    else if (step_events_completed > current_block->decelerate_after) {   
++    else if (step_events_completed > (unsigned long int)current_block->decelerate_after) {   
+       MultiU24X24toH16(step_rate, deceleration_time, current_block->acceleration_rate);
+       
+       if(step_rate > acc_step_rate) { // Check step_rate stays positive
+@@ -695,7 +696,7 @@ void st_set_e_position(const long &e)
+   CRITICAL_SECTION_END;
+ }
+ 
+-long st_get_position(char axis)
++long st_get_position(uint8_t axis)
+ {
+   long count_pos;
+   CRITICAL_SECTION_START;
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 73b7efb..e11f5e5 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -34,7 +34,7 @@ void st_set_position(const long &x, const long &y, const long &z, const long &e)
+ void st_set_e_position(const long &e);
+ 
+ // Get current position in steps
+-long st_get_position(char axis);
++long st_get_position(uint8_t axis);
+ 
+ // The stepper subsystem goes to sleep when it runs out of things to execute. Call this
+ // to notify the subsystem that it is time to go to work.
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 93364f8..ac5aeaa 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -67,7 +67,8 @@ int heatingtarget_raw[3]= {0, 0, 0};
+ //===========================================================================
+ static bool temp_meas_ready = false;
+ 
+-static unsigned long previous_millis_heater, previous_millis_bed_heater;
++static unsigned long  previous_millis_bed_heater;
++//static unsigned long previous_millis_heater;
+ 
+ #ifdef PIDTEMP
+   //static cannot be external:
+@@ -80,8 +81,8 @@ static unsigned long previous_millis_heater, previous_millis_bed_heater;
+   static float pid_error;
+   static float temp_iState_min;
+   static float temp_iState_max;
+-  static float pid_input;
+-  static float pid_output;
++ // static float pid_input; 
++ // static float pid_output;
+   static bool pid_reset;
+  
+ #endif //PIDTEMP
+@@ -94,8 +95,8 @@ static unsigned long previous_millis_heater, previous_millis_bed_heater;
+ // Init min and max temp with extreme values to prevent false errors during startup
+   static int minttemp_0   = 0;
+   static int maxttemp_0   = 16383;
+-  static int minttemp_1   = 0;
+-  static int maxttemp_1   = 16383;
++  //static int minttemp_1   = 0;
++  //static int maxttemp_1   = 16383;
+   static int bed_minttemp = 0;
+   static int bed_maxttemp = 16383;
+ 
+@@ -268,7 +269,10 @@ int temp2analogBed(int celsius) {
+     return (1023 * OVERSAMPLENR) - raw;
+   #elif defined BED_USES_AD595
+     return lround(celsius * (1024.0 * OVERSAMPLENR/ (5.0 * 100.0) ) );
++  #else
++    #warning No heater-type defined for the bed.
+   #endif
++  return 0;
+ }
+ 
+ // Derived from RepRap FiveD extruder::getTemperature()
+@@ -296,6 +300,8 @@ float analog2temp(int raw) {
+     return celsius;
+   #elif defined HEATER_0_USES_AD595
+     return raw * ((5.0 * 100.0) / 1024.0) / OVERSAMPLENR;
++  #else
++    #error PLEASE DEFINE HEATER TYPE 
+   #endif
+ }
+ 
+@@ -328,7 +334,10 @@ float analog2tempBed(int raw) {
+     
+   #elif defined BED_USES_AD595
+     return raw * ((5.0 * 100.0) / 1024.0) / OVERSAMPLENR;
++  #else
++    #warning No heater-type defined for the bed.
+   #endif
++  return 0;
+ }
+ 
+ void tp_init()
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index ba1043b..623f890 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -86,7 +86,7 @@ FORCE_INLINE void setTargetHotend0(const float &celsius)
+   #endif //PIDTEMP
+ };
+ FORCE_INLINE void setTargetHotend1(const float &celsius) {  target_raw[TEMPSENSOR_HOTEND_1]=temp2analog(celsius);};
+-FORCE_INLINE float setTargetHotend(const float &celcius, uint8_t extruder){  
++FORCE_INLINE void setTargetHotend(const float &celcius, uint8_t extruder){  
+   if(extruder == 0) setTargetHotend0(celcius);
+   if(extruder == 1) setTargetHotend1(celcius);
+ };
+@@ -94,20 +94,32 @@ FORCE_INLINE void setTargetBed(const float &celsius)     {  target_raw[TEMPSENSO
+ 
+ FORCE_INLINE bool isHeatingHotend0() {return heatingtarget_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];};
+ FORCE_INLINE bool isHeatingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];};
+-FORCE_INLINE float isHeatingHotend(uint8_t extruder){  
++FORCE_INLINE bool isHeatingHotend(uint8_t extruder){  
+   if(extruder == 0) return heatingtarget_raw[TEMPSENSOR_HOTEND_0] > current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] > current_raw[TEMPSENSOR_HOTEND_1];
++  return false; 
+ };
+ FORCE_INLINE bool isHeatingBed() {return target_raw[TEMPSENSOR_BED] > current_raw[TEMPSENSOR_BED];};
+ 
+ FORCE_INLINE bool isCoolingHotend0() {return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];};
+ FORCE_INLINE bool isCoolingHotend1() {return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];};
+-FORCE_INLINE float isCoolingHotend(uint8_t extruder){  
++FORCE_INLINE bool isCoolingHotend(uint8_t extruder){  
+   if(extruder == 0) return target_raw[TEMPSENSOR_HOTEND_0] < current_raw[TEMPSENSOR_HOTEND_0];
+   if(extruder == 1) return target_raw[TEMPSENSOR_HOTEND_1] < current_raw[TEMPSENSOR_HOTEND_1];
++  return false; 
+ };
+ FORCE_INLINE bool isCoolingBed() {return target_raw[TEMPSENSOR_BED] < current_raw[TEMPSENSOR_BED];};
+ 
++FORCE_INLINE void autotempShutdown(){
++ #ifdef AUTOTEMP
++ if(autotemp_enabled)
++ {
++  autotemp_enabled=false;
++  if(degTargetHotend0()>autotemp_min)
++    setTargetHotend0(0);
++ }
++ #endif
++}
+ void disable_heater();
+ void setWatch();
+ void updatePID();
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 887dc04..93fa489 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -1,7 +1,7 @@
+ #ifndef __ULTRALCDH
+ #define __ULTRALCDH
+ #include "Configuration.h"
+-
++#include "Marlin.h"
+ #ifdef ULTRA_LCD
+ 
+   void lcd_status();
+@@ -104,7 +104,6 @@
+             curencoderpos=maxlines*lcdslow; 
+         } 
+         lastencoderpos=encoderpos=curencoderpos;
+-        int lastactiveline=activeline;
+         activeline=curencoderpos/lcdslow;
+         if(activeline<0) activeline=0;
+         if(activeline>LCD_HEIGHT-1) activeline=LCD_HEIGHT-1;
+@@ -137,7 +136,7 @@
+ 
+ 
+   #define LCD_MESSAGE(x) lcd_status(x);
+-  #define LCD_MESSAGEPGM(x) lcd_statuspgm(PSTR(x));
++  #define LCD_MESSAGEPGM(x) lcd_statuspgm(MYPGM(x));
+   #define LCD_STATUS lcd_status()
+ #else //no lcd
+   #define LCD_STATUS
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 4ca93aa..65ba86f 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -53,7 +53,7 @@ void lcdProgMemprint(const char *str)
+     ch=pgm_read_byte(++str);
+   }
+ }
+-#define lcdprintPGM(x) lcdProgMemprint(PSTR(x))
++#define lcdprintPGM(x) lcdProgMemprint(MYPGM(x))
+ 
+ 
+ //===========================================================================
+@@ -159,8 +159,8 @@ void lcd_status()
+ {
+   #ifdef ULTIPANEL
+     static uint8_t oldbuttons=0;
+-    static long previous_millis_buttons=0;
+-    static long previous_lcdinit=0;
++    //static long previous_millis_buttons=0;
++    //static long previous_lcdinit=0;
+   //  buttons_check(); // Done in temperature interrupt
+     //previous_millis_buttons=millis();
+     
+@@ -503,31 +503,32 @@ void MainMenu::showTune()
+         lcd.setCursor(13,line);lcd.print(ftostr3(feedmultiply));
+       }
+       
+-      if((activeline==line) )
++      if((activeline!=line) )
++        break;
++      
++      if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
+       {
+-        if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
++        linechanging=!linechanging;
++        if(linechanging)
+         {
+-          linechanging=!linechanging;
+-          if(linechanging)
+-          {
+-              encoderpos=feedmultiply;
+-          }
+-          else
+-          {
+-            encoderpos=activeline*lcdslow;
+-            beepshort();
+-          }
+-          BLOCK;
++            encoderpos=feedmultiply;
+         }
+-        if(linechanging)
++        else
+         {
+-          if(encoderpos<1) encoderpos=1;
+-          if(encoderpos>400) encoderpos=400;
+-          feedmultiply = encoderpos;
+-          feedmultiplychanged=true;
+-          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++          encoderpos=activeline*lcdslow;
++          beepshort();
+         }
++        BLOCK;
++      }
++      if(linechanging)
++      {
++        if(encoderpos<1) encoderpos=1;
++        if(encoderpos>400) encoderpos=400;
++        feedmultiply = encoderpos;
++        feedmultiplychanged=true;
++        lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+       }
++      
+     }break;
+     case ItemT_nozzle:
+       {
+@@ -537,29 +538,29 @@ void MainMenu::showTune()
+           lcd.setCursor(13,line);lcd.print(ftostr3(intround(degTargetHotend0())));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=intround(degTargetHotend0());
+-            }
+-            else
+-            {
+-              setTargetHotend0(encoderpos);
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=intround(degTargetHotend0());
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>260) encoderpos=260;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            setTargetHotend0(encoderpos);
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
+       }break;
+       
+@@ -571,31 +572,32 @@ void MainMenu::showTune()
+           lcd.setCursor(13,line);lcd.print(ftostr3(fanpwm));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
+         {
+-          if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=fanpwm;
+-            }
+-            else
+-            {
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=fanpwm;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>255) encoderpos=255;
+-            fanpwm=encoderpos;
+-              analogWrite(FAN_PIN,  fanpwm);
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
+         }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>255) encoderpos=255;
++          fanpwm=encoderpos;
++            analogWrite(FAN_PIN,  fanpwm);
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
+       }break;
+       case ItemT_flow://axis_steps_per_unit[i] = code_value();
+          {
+@@ -605,34 +607,35 @@ void MainMenu::showTune()
+           lcd.setCursor(13,line);lcd.print(itostr4(axis_steps_per_unit[3]));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)axis_steps_per_unit[3];
+-            }
+-            else
+-            {
+-              float factor=float(encoderpos)/float(axis_steps_per_unit[3]);
+-              position[E_AXIS]=lround(position[E_AXIS]*factor);
+-              //current_position[3]*=factor;
+-              axis_steps_per_unit[E_AXIS]= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)axis_steps_per_unit[3];
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<5) encoderpos=5;
+-            if(encoderpos>9999) encoderpos=9999;
+-            lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++            float factor=float(encoderpos)/float(axis_steps_per_unit[3]);
++            position[E_AXIS]=lround(position[E_AXIS]*factor);
++            //current_position[3]*=factor;
++            axis_steps_per_unit[E_AXIS]= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<5) encoderpos=5;
++          if(encoderpos>9999) encoderpos=9999;
++          lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++        }
++        
+       }break; 
+     default:   
+       break;
+@@ -688,30 +691,31 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(ftostr3(intround(degTargetHotend0())));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=intround(degTargetHotend0());
+-            }
+-            else
+-            {
+-              setTargetHotend0(encoderpos);
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=intround(degTargetHotend0());
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>260) encoderpos=260;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            setTargetHotend0(encoderpos);
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;
+       #ifdef AUTOTEMP
+       case ItemCT_autotempmin:
+@@ -719,33 +723,34 @@ void MainMenu::showControlTemp()
+         if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(" \002 Min:");
+-          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
++          lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_min));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=intround(autotemp_max);
+-            }
+-            else
+-            {
+-              autotemp_max=encoderpos;
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=intround(autotemp_min);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>260) encoderpos=260;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            autotemp_min=encoderpos;
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;  
+       case ItemCT_autotempmax:
+       {
+@@ -755,30 +760,31 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(ftostr3(autotemp_max));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=intround(autotemp_max);
+-            }
+-            else
+-            {
+-              autotemp_max=encoderpos;
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=intround(autotemp_max);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>260) encoderpos=260;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            autotemp_max=encoderpos;
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
+         }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
+       }break;  
+       case ItemCT_autotempfact:
+       {
+@@ -788,30 +794,31 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(ftostr32(autotemp_factor));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=intround(autotemp_factor*100);
+-            }
+-            else
+-            {
+-              autotemp_max=encoderpos;
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=intround(autotemp_factor*100);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>99) encoderpos=99;
+-            lcd.setCursor(13,line);lcd.print(ftostr32(encoderpos/100.));
++            autotemp_max=encoderpos;
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>99) encoderpos=99;
++          lcd.setCursor(13,line);lcd.print(ftostr32(encoderpos/100.));
+         }
++        
+       }break;
+       case ItemCT_autotempactive:
+       {
+@@ -819,20 +826,26 @@ void MainMenu::showControlTemp()
+         {
+           lcd.setCursor(0,line);lcdprintPGM(" Autotemp:");
+           lcd.setCursor(13,line);
+-	  if(autotemp_enabled)
+-	    lcdprintPGM("On");
+-	  else
+-	    lcdprintPGM("Off");
++          if(autotemp_enabled)
++            lcdprintPGM("On");
++          else
++            lcdprintPGM("Off");
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
+-          {
+-            autotemp_enabled=!autotemp_enabled;
+-            BLOCK;
+-          }
++          autotemp_enabled=!autotemp_enabled;
++          lcd.setCursor(13,line);
++          if(autotemp_enabled)
++            lcdprintPGM("On ");
++          else
++            lcdprintPGM("Off");
++          BLOCK;
+         }
++        
+       }break;  
+       #endif //autotemp
+       case ItemCT_fan:
+@@ -843,31 +856,32 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(ftostr3(fanpwm));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
+         {
+-          if(CLICKED) //nalogWrite(FAN_PIN,  fanpwm);
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=fanpwm;
+-            }
+-            else
+-            {
+-              encoderpos=activeline*lcdslow;
+-              beepshort();
+-            }
+-            BLOCK;
++              encoderpos=fanpwm;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>255) encoderpos=255;
+-            fanpwm=encoderpos;
+-              analogWrite(FAN_PIN,  fanpwm);
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            encoderpos=activeline*lcdslow;
++            beepshort();
+           }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>255) encoderpos=255;
++          fanpwm=encoderpos;
++            analogWrite(FAN_PIN,  fanpwm);
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;
+       case ItemCT_PID_P: 
+       {
+@@ -877,31 +891,32 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(itostr4(Kp));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)Kp;
+-            }
+-            else
+-            {
+-              Kp= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)Kp;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<1) encoderpos=1;
+-            if(encoderpos>9990) encoderpos=9990;
+-            lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++            Kp= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<1) encoderpos=1;
++          if(encoderpos>9990) encoderpos=9990;
++          lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
+         }
++        
+       }break;
+     case ItemCT_PID_I: 
+       {
+@@ -911,31 +926,32 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(ftostr51(Ki/PID_dT));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)(Ki*10/PID_dT);
+-            }
+-            else
+-            {
+-              Ki= encoderpos/10.*PID_dT;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)(Ki*10/PID_dT);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>9990) encoderpos=9990;
+-            lcd.setCursor(13,line);lcd.print(ftostr51(encoderpos/10.));
++            Ki= encoderpos/10.*PID_dT;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>9990) encoderpos=9990;
++          lcd.setCursor(13,line);lcd.print(ftostr51(encoderpos/10.));
++        }
++        
+       }break;
+       case ItemCT_PID_D: 
+       {
+@@ -945,31 +961,33 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(itostr4(Kd*PID_dT));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)(Kd/5./PID_dT);
+-            }
+-            else
+-            {
+-              Kd= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)(Kd/5./PID_dT);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>9990) encoderpos=9990;
+-            lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++            Kd= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>9990) encoderpos=9990;
++          lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
+         }
++       
+       }break;   
+     case ItemCT_PID_C: 
+       #ifdef PID_ADD_EXTRUSION_RATE
+@@ -980,31 +998,32 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(itostr3(Kc));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)Kc;
+-            }
+-            else
+-            {
+-              Kc= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)Kc;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            Kc= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
+       }
+       #endif
+       break;
+@@ -1051,30 +1070,31 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(acceleration/100));lcdprintPGM("00");
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)acceleration/100;
+-            }
+-            else
+-            {
+-              acceleration= encoderpos*100;
+-              encoderpos=activeline*lcdslow;
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)acceleration/100;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<5) encoderpos=5;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
++            acceleration= encoderpos*100;
++            encoderpos=activeline*lcdslow;
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<5) encoderpos=5;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
++        }
++        
+       }break;
+     case ItemCM_xyjerk: //max_xy_jerk
+       {
+@@ -1084,31 +1104,32 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(max_xy_jerk));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)max_xy_jerk;
+-            }
+-            else
+-            {
+-              max_xy_jerk= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)max_xy_jerk;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<1) encoderpos=1;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            max_xy_jerk= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<1) encoderpos=1;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
+       }break;
+       
+     case ItemCM_vmaxx:
+@@ -1126,31 +1147,32 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(max_feedrate[i-ItemCM_vmaxx]));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)max_feedrate[i-ItemCM_vmaxx];
+-            }
+-            else
+-            {
+-              max_feedrate[i-ItemCM_vmaxx]= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)max_feedrate[i-ItemCM_vmaxx];
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<1) encoderpos=1;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            max_feedrate[i-ItemCM_vmaxx]= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<1) encoderpos=1;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;
+     
+     case ItemCM_vmin:
+@@ -1161,31 +1183,32 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(minimumfeedrate));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)(minimumfeedrate);
+-            }
+-            else
+-            {
+-              minimumfeedrate= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)(minimumfeedrate);
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            minimumfeedrate= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;
+     case ItemCM_vtravmin:
+     {
+@@ -1195,31 +1218,32 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(mintravelfeedrate));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)mintravelfeedrate;
+-            }
+-            else
+-            {
+-              mintravelfeedrate= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)mintravelfeedrate;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<0) encoderpos=0;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++            mintravelfeedrate= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
++        
+       }break;
+     
+     case ItemCM_amaxx:      
+@@ -1237,30 +1261,31 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr3(max_acceleration_units_per_sq_second[i-ItemCM_amaxx]/100));lcdprintPGM("00");
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)max_acceleration_units_per_sq_second[i-ItemCM_amaxx]/100;
+-            }
+-            else
+-            {
+-              max_acceleration_units_per_sq_second[i-ItemCM_amaxx]= encoderpos*100;
+-              encoderpos=activeline*lcdslow;
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)max_acceleration_units_per_sq_second[i-ItemCM_amaxx]/100;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<1) encoderpos=1;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
++            max_acceleration_units_per_sq_second[i-ItemCM_amaxx]= encoderpos*100;
++            encoderpos=activeline*lcdslow;
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<1) encoderpos=1;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
+         }
++        
+       }break;
+     case ItemCM_aret://float retract_acceleration = 7000;
+     {
+@@ -1270,31 +1295,32 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(ftostr3(retract_acceleration/100));lcdprintPGM("00");
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)retract_acceleration/100;
+-            }
+-            else
+-            {
+-              retract_acceleration= encoderpos*100;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)retract_acceleration/100;
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<10) encoderpos=10;
+-            if(encoderpos>990) encoderpos=990;
+-            lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
++            retract_acceleration= encoderpos*100;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
++        }
++        if(linechanging)
++        {
++          if(encoderpos<10) encoderpos=10;
++          if(encoderpos>990) encoderpos=990;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));lcdprintPGM("00");
+         }
++        
+       }break;
+     case ItemCM_esteps://axis_steps_per_unit[i] = code_value();
+          {
+@@ -1304,34 +1330,35 @@ void MainMenu::showControlMotion()
+           lcd.setCursor(13,line);lcd.print(itostr4(axis_steps_per_unit[3]));
+         }
+         
+-        if((activeline==line) )
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
+         {
+-          if(CLICKED)
++          linechanging=!linechanging;
++          if(linechanging)
+           {
+-            linechanging=!linechanging;
+-            if(linechanging)
+-            {
+-               encoderpos=(int)axis_steps_per_unit[3];
+-            }
+-            else
+-            {
+-              float factor=float(encoderpos)/float(axis_steps_per_unit[3]);
+-              position[E_AXIS]=lround(position[E_AXIS]*factor);
+-              //current_position[3]*=factor;
+-              axis_steps_per_unit[E_AXIS]= encoderpos;
+-              encoderpos=activeline*lcdslow;
+-                
+-            }
+-            BLOCK;
+-            beepshort();
++              encoderpos=(int)axis_steps_per_unit[3];
+           }
+-          if(linechanging)
++          else
+           {
+-            if(encoderpos<5) encoderpos=5;
+-            if(encoderpos>9999) encoderpos=9999;
+-            lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++            float factor=float(encoderpos)/float(axis_steps_per_unit[3]);
++            position[E_AXIS]=lround(position[E_AXIS]*factor);
++            //current_position[3]*=factor;
++            axis_steps_per_unit[E_AXIS]= encoderpos;
++            encoderpos=activeline*lcdslow;
++              
+           }
++          BLOCK;
++          beepshort();
+         }
++        if(linechanging)
++        {
++          if(encoderpos<5) encoderpos=5;
++          if(encoderpos>9999) encoderpos=9999;
++          lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++        }
++        
+       }break; 
+     default:   
+       break;
+
+commit 95a0b28acbf8ee93cf1cb06fd0c76ccd582712d4 (from 7714b98da74b0b84cb620474fd8e4cb19d15bfc0)
+Merge: af22e9c 7714b98
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Dec 4 19:54:43 2011 +0100
+
+    Merge branch 'Marlin_v1', remote-tracking branch 'origin/Marlin_v1' into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 6f40bbb..f288aba 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -279,8 +279,8 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ #ifdef ADVANCE
+   #define EXTRUDER_ADVANCE_K .3
+ 
+-  #define D_FILAMENT 1.7
+-  #define STEPS_MM_E 65
++  #define D_FILAMENT 2.85
++  #define STEPS_MM_E 836
+   #define EXTRUTION_AREA (0.25 * D_FILAMENT * D_FILAMENT * 3.14159)
+   #define STEPS_PER_CUBIC_MM_E (axis_steps_per_unit[E_AXIS]/ EXTRUTION_AREA)
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 61f27fc..a8f41d3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -200,7 +200,6 @@ void calculate_trapezoid_for_block(block_t *block, float entry_factor, float exi
+   
+  // block->accelerate_until = accelerate_steps;
+  // block->decelerate_after = accelerate_steps+plateau_steps;
+-  
+   CRITICAL_SECTION_START;  // Fill variables used by the stepper in a critical section
+   if(block->busy == false) { // Don't update variables if block is busy.
+     block->accelerate_until = accelerate_steps;
+@@ -484,7 +483,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   // Bail if this is a zero-length block
+   if (block->step_event_count <=dropsegments) { return; };
+ 
+-  // Compute direction bits for this block
++  // Compute direction bits for this block 
+   block->direction_bits = 0;
+   if (target[X_AXIS] < position[X_AXIS]) { block->direction_bits |= (1<<X_AXIS); }
+   if (target[Y_AXIS] < position[Y_AXIS]) { block->direction_bits |= (1<<Y_AXIS); }
+@@ -725,7 +724,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+     else {
+       long acc_dist = estimate_acceleration_distance(0, block->nominal_rate, block->acceleration_st);
+       float advance = (STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K) * 
+-        (current_speed[E_AXIS] * current_speed[E_AXIS] * EXTRUTION_AREA * EXTRUTION_AREA / 3600.0)*65536;
++        (current_speed[E_AXIS] * current_speed[E_AXIS] * EXTRUTION_AREA * EXTRUTION_AREA)*256;
+       block->advance = advance;
+       if(acc_dist == 0) {
+         block->advance_rate = 0;
+@@ -734,6 +733,13 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+         block->advance_rate = advance / (float)acc_dist;
+       }
+     }
++    /*
++    SERIAL_ECHO_START;
++    SERIAL_ECHOPGM("advance :");
++    SERIAL_ECHO(block->advance/256.0);
++    SERIAL_ECHOPGM("advance rate :");
++    SERIAL_ECHOLN(block->advance_rate/256.0);
++    */
+   #endif // ADVANCE
+ 
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index e0b7678..e25d179 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -56,9 +56,9 @@ static long counter_x,       // Counter variables for the bresenham line tracer
+ volatile static unsigned long step_events_completed; // The number of step events executed in the current block
+ #ifdef ADVANCE
+   static long advance_rate, advance, final_advance = 0;
+-  static short old_advance = 0;
++  static long old_advance = 0;
+ #endif
+-static short e_steps;
++static long e_steps;
+ static unsigned char busy = false; // TRUE when SIG_OUTPUT_COMPARE1A is being serviced. Used to avoid retriggering that handler.
+ static long acceleration_time, deceleration_time;
+ //static unsigned long accelerate_until, decelerate_after, acceleration_rate, initial_rate, final_rate, nominal_rate;
+@@ -254,6 +254,9 @@ FORCE_INLINE void trapezoid_generator_reset() {
+   #ifdef ADVANCE
+     advance = current_block->initial_advance;
+     final_advance = current_block->final_advance;
++    // Do E steps + advance steps
++    e_steps += ((advance >>8) - old_advance);
++    old_advance = advance >>8;  
+   #endif
+   deceleration_time = 0;
+   // step_rate to timer interval
+@@ -261,6 +264,17 @@ FORCE_INLINE void trapezoid_generator_reset() {
+   acceleration_time = calc_timer(acc_step_rate);
+   OCR1A = acceleration_time;
+   OCR1A_nominal = calc_timer(current_block->nominal_rate);
++  
++//    SERIAL_ECHO_START;
++//    SERIAL_ECHOPGM("advance :");
++//    SERIAL_ECHO(current_block->advance/256.0);
++//    SERIAL_ECHOPGM("advance rate :");
++//    SERIAL_ECHO(current_block->advance_rate/256.0);
++//    SERIAL_ECHOPGM("initial advance :");
++//  SERIAL_ECHO(current_block->initial_advance/256.0);
++//    SERIAL_ECHOPGM("final advance :");
++//    SERIAL_ECHOLN(current_block->final_advance/256.0);
++    
+ }
+ 
+ // "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.  
+@@ -383,6 +397,9 @@ ISR(TIMER1_COMPA_vect)
+         count_direction[E_AXIS]=-1;
+       }
+     #endif //!ADVANCE
++    
++
++    
+     for(int8_t i=0; i < step_loops; i++) { // Take multiple steps per interrupt (For high speed moves) 
+       MSerial.checkRx(); // Check for serial chars. 
+       
+@@ -391,19 +408,12 @@ ISR(TIMER1_COMPA_vect)
+       if (counter_e > 0) {
+         counter_e -= current_block->step_event_count;
+         if ((out_bits & (1<<E_AXIS)) != 0) { // - direction
+-          CRITICAL_SECTION_START;
+           e_steps--;
+-          CRITICAL_SECTION_END;
+         }
+         else {
+-          CRITICAL_SECTION_START;
+           e_steps++;
+-          CRITICAL_SECTION_END;
+         }
+       }    
+-      // Do E steps + advance steps
+-      e_steps += ((advance >> 16) - old_advance);
+-      old_advance = advance >> 16;  
+       #endif //ADVANCE
+       
+       counter_x += current_block->steps_x;
+@@ -462,6 +472,11 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance += advance_rate;
+         }
++        //if(advance > current_block->advance) advance = current_block->advance;
++        // Do E steps + advance steps
++        e_steps += ((advance >>8) - old_advance);
++        old_advance = advance >>8;  
++        
+       #endif
+     } 
+     else if (step_events_completed > (unsigned long int)current_block->decelerate_after) {   
+@@ -486,8 +501,10 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance -= advance_rate;
+         }
+-        if(advance < final_advance)
+-          advance = final_advance;
++        if(advance < final_advance) advance = final_advance;
++        // Do E steps + advance steps
++        e_steps += ((advance >>8) - old_advance);
++        old_advance = advance >>8;  
+       #endif //ADVANCE
+     }
+     else {
+@@ -508,7 +525,7 @@ ISR(TIMER1_COMPA_vect)
+   // Timer 0 is shared with millies
+   ISR(TIMER0_COMPA_vect)
+   {
+-    old_OCR0A += 25; // ~10kHz interrupt
++    old_OCR0A += 52; // ~10kHz interrupt (250000 / 26 = 9615kHz)
+     OCR0A = old_OCR0A;
+     // Set E direction (Depends on E direction + advance)
+     for(unsigned char i=0; i<4;) {
+@@ -520,7 +537,7 @@ ISR(TIMER1_COMPA_vect)
+         e_steps++;
+         WRITE(E_STEP_PIN, HIGH);
+       } 
+-      if (e_steps > 0) {
++      else if (e_steps > 0) {
+         WRITE(E_DIR_PIN,!INVERT_E_DIR);
+         e_steps--;
+         WRITE(E_STEP_PIN, HIGH);
+

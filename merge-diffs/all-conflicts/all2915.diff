@@ -1,0 +1,619 @@
+commit 69dc411ae029443bec90f6012ac14dbd0249c17b (from 905aab3b85d5dc7b0ba5a42450d59ba256b9ed4f)
+Merge: 905aab3 d743943
+Author: Steffen Vogel <post@steffenvogel.de>
+Date:   Sat Jan 10 14:57:11 2015 +0100
+
+    Merge branch 'Development' of github.com:MarlinFirmware/Marlin into LogoLCD
+    
+    Conflicts:
+    	Marlin/dogm_lcd_implementation.h
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 50c4581..c2dd54b 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -297,7 +297,7 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
+-// Show a progress bar on the LCD when printing from SD?
++// Show a progress bar on HD44780 LCDs for SD printing
+ //#define LCD_PROGRESS_BAR
+ 
+ #ifdef LCD_PROGRESS_BAR
+@@ -309,6 +309,12 @@
+   #define PROGRESS_MSG_EXPIRE   0
+   // Enable this to show messages for MSG_TIME then hide them
+   //#define PROGRESS_MSG_ONCE
++  #ifdef DOGLCD
++    #warning LCD_PROGRESS_BAR does not apply to graphical displays at this time.
++  #endif
++  #ifdef FILAMENT_LCD_DISPLAY
++    #error LCD_PROGRESS_BAR and FILAMENT_LCD_DISPLAY are not fully compatible. Comment out this line to use both.
++  #endif
+ #endif
+ 
+ // The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e3e5ef3..0862e1f 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1281,28 +1281,32 @@ void refresh_cmd_timeout(void)
+       feedrate=retract_feedrate*60;
+       retracted[active_extruder]=true;
+       prepare_move();
+-      current_position[Z_AXIS]-=retract_zlift;
++      if(retract_zlift > 0.01) {
++         current_position[Z_AXIS]-=retract_zlift;
+ #ifdef DELTA
+-      calculate_delta(current_position); // change cartesian kinematic to  delta kinematic;
+-      plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
++         calculate_delta(current_position); // change cartesian kinematic to  delta kinematic;
++         plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
+ #else
+-      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ #endif
+-      prepare_move();
++         prepare_move();
++      }
+       feedrate = oldFeedrate;
+     } else if(!retracting && retracted[active_extruder]) {
+       destination[X_AXIS]=current_position[X_AXIS];
+       destination[Y_AXIS]=current_position[Y_AXIS];
+       destination[Z_AXIS]=current_position[Z_AXIS];
+       destination[E_AXIS]=current_position[E_AXIS];
+-      current_position[Z_AXIS]+=retract_zlift;
++      if(retract_zlift > 0.01) {
++         current_position[Z_AXIS]+=retract_zlift;
+ #ifdef DELTA
+-      calculate_delta(current_position); // change cartesian kinematic  to  delta kinematic;
+-      plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
++         calculate_delta(current_position); // change cartesian kinematic  to  delta kinematic;
++         plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
+ #else
+-      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ #endif
+-      //prepare_move();
++         //prepare_move();
++      }
+       if (swapretract) {
+         current_position[E_AXIS]-=(retract_length_swap+retract_recover_length_swap)/volumetric_multiplier[active_extruder]; 
+       } else {
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index fdd68ec..6f595ce 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -1,19 +1,20 @@
+ /**
+- *dogm_lcd_implementation.h
++ * dogm_lcd_implementation.h
+  *
+- *Graphics LCD implementation for 128x64 pixel LCDs by STB for ErikZalm/Marlin
+- *Demonstrator: http://www.reprap.org/wiki/STB_Electronics
+- *License: http://opensource.org/licenses/BSD-3-Clause
++ * Graphics LCD implementation for 128x64 pixel LCDs by STB for ErikZalm/Marlin
++ * Demonstrator: http://www.reprap.org/wiki/STB_Electronics
++ * License: http://opensource.org/licenses/BSD-3-Clause
+  *
+- *With the use of:
+- *u8glib by Oliver Kraus
+- *http://code.google.com/p/u8glib/
+- *License: http://opensource.org/licenses/BSD-3-Clause
++ * With the use of:
++ * u8glib by Oliver Kraus
++ * http://code.google.com/p/u8glib/
++ * License: http://opensource.org/licenses/BSD-3-Clause
+  */
+ 
++#ifndef DOGM_LCD_IMPLEMENTATION_H
++#define DOGM_LCD_IMPLEMENTATION_H
+ 
+-#ifndef ULTRA_LCD_IMPLEMENTATION_DOGM_H
+-#define ULTRA_LCD_IMPLEMENTATION_DOGM_H
++#define MARLIN_VERSION "1.0.2"
+ 
+ /**
+ * Implementation of the LCD display routines for a DOGM128 graphic display. These are common LCD 128x64 pixel graphic displays.
+@@ -51,12 +52,12 @@
+ */
+ 
+ // DOGM parameters (size in pixels)
+-#define DOG_CHAR_WIDTH			6
+-#define DOG_CHAR_HEIGHT			12
+-#define DOG_CHAR_WIDTH_LARGE	9
+-#define DOG_CHAR_HEIGHT_LARGE	18
++#define DOG_CHAR_WIDTH         6
++#define DOG_CHAR_HEIGHT        12
++#define DOG_CHAR_WIDTH_LARGE   9
++#define DOG_CHAR_HEIGHT_LARGE  18
+ 
+-#define START_ROW				0
++#define START_ROW              0
+ 
+ /* Custom characters defined in font font_6x10_marlin.c */
+ #define LCD_STR_DEGREE      "\xB0"
+@@ -69,7 +70,7 @@
+ #define LCD_STR_BEDTEMP     "\xFE"
+ #define LCD_STR_THERMOMETER "\xFF"
+ 
+-#define FONT_STATUSMENU	u8g_font_6x9
++#define FONT_STATUSMENU u8g_font_6x9
+ 
+ int lcd_contrast;
+ 
+@@ -82,7 +83,7 @@ U8GLIB_ST7920_128X64_RRD u8g(0);
+ U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #else
+ // for regular DOGM128 display with HW-SPI
+-U8GLIB_DOGM128 u8g(DOGLCD_CS, DOGLCD_A0);	// HW-SPI Com: CS, A0
++U8GLIB_DOGM128 u8g(DOGLCD_CS, DOGLCD_A0);  // HW-SPI Com: CS, A0
+ #endif
+ 
+ static void lcd_implementation_init()
+@@ -134,28 +135,12 @@ static void lcd_implementation_init()
+ 	} while(u8g.nextPage());
+ }
+ 
+-static void lcd_implementation_clear()
+-{
+-// NO NEED TO IMPLEMENT LIKE SO. Picture loop automatically clears the display.
+-//
+-// Check this article: http://arduino.cc/forum/index.php?topic=91395.25;wap2
+-//
+-//	u8g.firstPage();
+-//	do {	
+-//			u8g.setColorIndex(0);
+-//			u8g.drawBox (0, 0, u8g.getWidth(), u8g.getHeight());
+-//			u8g.setColorIndex(1);
+-//		} while( u8g.nextPage() );
+-}
++static void lcd_implementation_clear() { } // Automatically cleared by Picture Loop
+ 
+ /* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
+-static void lcd_printPGM(const char* str)
+-{
+-    char c;
+-    while((c = pgm_read_byte(str++)) != '\0')
+-    {
+-			u8g.print(c);
+-    }
++static void lcd_printPGM(const char* str) {
++  char c;
++  while ((c = pgm_read_byte(str++))) u8g.print(c);
+ }
+ 
+ static void _draw_heater_status(int x, int heater) {
+@@ -178,49 +163,44 @@ static void _draw_heater_status(int x, int heater) {
+   }
+ }
+ 
+-static void lcd_implementation_status_screen()
+-{
++static void lcd_implementation_status_screen() {
+ 
+- static unsigned char fan_rot = 0;
+- 
+- u8g.setColorIndex(1);	// black on white
++  static unsigned char fan_rot = 0;
+  
+- // Symbols menu graphics, animated fan
+- u8g.drawBitmapP(9,1,STATUS_SCREENBYTEWIDTH,STATUS_SCREENHEIGHT, (blink % 2) && fanSpeed ? status_screen0_bmp : status_screen1_bmp);
+- 
+- #ifdef SDSUPPORT
+- //SD Card Symbol
+- u8g.drawBox(42,42,8,7);
+- u8g.drawBox(50,44,2,5);
+- u8g.drawFrame(42,49,10,4);
+- u8g.drawPixel(50,43);
+- // Progress bar
+- u8g.drawFrame(54,49,73,4);
++  u8g.setColorIndex(1); // black on white
++
++  // Symbols menu graphics, animated fan
++  u8g.drawBitmapP(9,1,STATUS_SCREENBYTEWIDTH,STATUS_SCREENHEIGHT, (blink % 2) && fanSpeed ? status_screen0_bmp : status_screen1_bmp);
+  
+- // SD Card Progress bar and clock
+- u8g.setFont(FONT_STATUSMENU);
++  #ifdef SDSUPPORT
++    // SD Card Symbol
++    u8g.drawBox(42,42,8,7);
++    u8g.drawBox(50,44,2,5);
++    u8g.drawFrame(42,49,10,4);
++    u8g.drawPixel(50,43);
++
++    // Progress bar frame
++    u8g.drawFrame(54,49,73,4);
++
++    // SD Card Progress bar and clock
++    u8g.setFont(FONT_STATUSMENU);
+  
+- if (IS_SD_PRINTING)
+-   {
+-	// Progress bar
+-	u8g.drawBox(55,50, (unsigned int)( (71 * card.percentDone())/100) ,2);
+-   }
++    if (IS_SD_PRINTING) {
++      // Progress bar solid part
++      u8g.drawBox(55, 50, (unsigned int)(71.f * card.percentDone() / 100.f), 2);
++    }
++
++    u8g.setPrintPos(80,47);
++    if (starttime != 0) {
++      uint16_t time = millis()/60000 - starttime/60000;
++      u8g.print(itostr2(time/60));
++      u8g.print(':');
++      u8g.print(itostr2(time%60));
++    }
+     else {
+-			// do nothing
+-		 }
+- 
+- u8g.setPrintPos(80,47);
+- if(starttime != 0)
+-    {
+-        uint16_t time = millis()/60000 - starttime/60000;
+-
+-		u8g.print(itostr2(time/60));
+-		u8g.print(':');
+-		u8g.print(itostr2(time%60));
+-    }else{
+-			lcd_printPGM(PSTR("--:--"));
+-		 }
+- #endif
++      lcd_printPGM(PSTR("--:--"));
++    }
++  #endif
+  
+   // Extruders
+   _draw_heater_status(6, 0);
+@@ -234,107 +214,101 @@ static void lcd_implementation_status_screen()
+   // Heatbed
+   _draw_heater_status(81, -1);
+  
+- // Fan
+- u8g.setFont(FONT_STATUSMENU);
+- u8g.setPrintPos(104,27);
+- #if defined(FAN_PIN) && FAN_PIN > -1
+- u8g.print(itostr3(int((fanSpeed*100)/256 + 1)));
+- u8g.print("%");
+- #else
+- u8g.print("---");
+- #endif
+- 
+- 
+- // X, Y, Z-Coordinates
+- u8g.setFont(FONT_STATUSMENU);
+- u8g.drawBox(0,29,128,10);
+- u8g.setColorIndex(0);	// white on black
+- u8g.setPrintPos(2,37);
+- u8g.print("X");
+- u8g.drawPixel(8,33);
+- u8g.drawPixel(8,35);
+- u8g.setPrintPos(10,37);
+- u8g.print(ftostr31ns(current_position[X_AXIS]));
+- u8g.setPrintPos(43,37);
+- lcd_printPGM(PSTR("Y"));
+- u8g.drawPixel(49,33);
+- u8g.drawPixel(49,35);
+- u8g.setPrintPos(51,37);
+- u8g.print(ftostr31ns(current_position[Y_AXIS]));
+- u8g.setPrintPos(83,37);
+- u8g.print("Z");
+- u8g.drawPixel(89,33);
+- u8g.drawPixel(89,35);
+- u8g.setPrintPos(91,37);
+- u8g.print(ftostr31(current_position[Z_AXIS]));
+- u8g.setColorIndex(1);	// black on white
++  // Fan
++  u8g.setFont(FONT_STATUSMENU);
++  u8g.setPrintPos(104,27);
++  #if defined(FAN_PIN) && FAN_PIN > -1
++    u8g.print(itostr3(int((fanSpeed*100)/256 + 1)));
++    u8g.print("%");
++  #else
++    u8g.print("---");
++  #endif
++
++  // X, Y, Z-Coordinates
++  u8g.setFont(FONT_STATUSMENU);
++  u8g.drawBox(0,29,128,10);
++  u8g.setColorIndex(0); // white on black
++  u8g.setPrintPos(2,37);
++  u8g.print("X");
++  u8g.drawPixel(8,33);
++  u8g.drawPixel(8,35);
++  u8g.setPrintPos(10,37);
++  u8g.print(ftostr31ns(current_position[X_AXIS]));
++  u8g.setPrintPos(43,37);
++  lcd_printPGM(PSTR("Y"));
++  u8g.drawPixel(49,33);
++  u8g.drawPixel(49,35);
++  u8g.setPrintPos(51,37);
++  u8g.print(ftostr31ns(current_position[Y_AXIS]));
++  u8g.setPrintPos(83,37);
++  u8g.print("Z");
++  u8g.drawPixel(89,33);
++  u8g.drawPixel(89,35);
++  u8g.setPrintPos(91,37);
++  u8g.print(ftostr31(current_position[Z_AXIS]));
++  u8g.setColorIndex(1); // black on white
+  
+- // Feedrate
+- u8g.setFont(u8g_font_6x10_marlin);
+- u8g.setPrintPos(3,49);
+- u8g.print(LCD_STR_FEEDRATE[0]);
+- u8g.setFont(FONT_STATUSMENU);
+- u8g.setPrintPos(12,48);
+- u8g.print(itostr3(feedmultiply));
+- u8g.print('%');
+-
+- // Status line
+- u8g.setFont(FONT_STATUSMENU);
+- u8g.setPrintPos(0,61);
+- #ifndef FILAMENT_LCD_DISPLAY
+- 	u8g.print(lcd_status_message);
+- #else
+-	if(message_millis+5000>millis()){  //Display both Status message line and Filament display on the last line
+-	 u8g.print(lcd_status_message);
+- 	}
+- 	else
+-	{
+-	 lcd_printPGM(PSTR("dia:"));
+-	 u8g.print(ftostr12ns(filament_width_meas));
+-	 lcd_printPGM(PSTR(" factor:"));
+-	 u8g.print(itostr3(extrudemultiply));
+-	 u8g.print('%');
+-	}
+- #endif 	
++  // Feedrate
++  u8g.setFont(u8g_font_6x10_marlin);
++  u8g.setPrintPos(3,49);
++  u8g.print(LCD_STR_FEEDRATE[0]);
++  u8g.setFont(FONT_STATUSMENU);
++  u8g.setPrintPos(12,48);
++  u8g.print(itostr3(feedmultiply));
++  u8g.print('%');
+ 
++  // Status line
++  u8g.setFont(FONT_STATUSMENU);
++  u8g.setPrintPos(0,61);
++  #ifndef FILAMENT_LCD_DISPLAY
++    u8g.print(lcd_status_message);
++  #else
++    if (millis() < message_millis + 5000) {  //Display both Status message line and Filament display on the last line
++      u8g.print(lcd_status_message);
++    }
++    else {
++      lcd_printPGM(PSTR("dia:"));
++      u8g.print(ftostr12ns(filament_width_meas));
++      lcd_printPGM(PSTR(" factor:"));
++      u8g.print(itostr3(extrudemultiply));
++      u8g.print('%');
++    }
++  #endif
+ }
+ 
+-static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, char pre_char, char post_char)
+-{
+-    char c;
+-    
+-    uint8_t n = LCD_WIDTH - 1 - 2;
+-		
+-		if ((pre_char == '>') || (pre_char == LCD_STR_UPLEVEL[0] ))
+-		   {
+-			u8g.setColorIndex(1);		// black on white
+-			u8g.drawBox (0, row*DOG_CHAR_HEIGHT + 3, 128, DOG_CHAR_HEIGHT);
+-			u8g.setColorIndex(0);		// following text must be white on black
+-		   } else u8g.setColorIndex(1); // unmarked text is black on white
+-		
+-		u8g.setPrintPos(0 * DOG_CHAR_WIDTH, (row + 1) * DOG_CHAR_HEIGHT);
+-		u8g.print(pre_char == '>' ? ' ' : pre_char);	// Row selector is obsolete
+-
+-
+-    while( (c = pgm_read_byte(pstr)) != '\0' )
+-    {
+-		u8g.print(c);
+-        pstr++;
+-        n--;
+-    }
+-    while(n--){
+-					u8g.print(' ');
+-		}
+-	   
+-		u8g.print(post_char);
+-		u8g.print(' ');
+-		u8g.setColorIndex(1);		// restore settings to black on white
++static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, char pre_char, char post_char) {
++  char c;
++  
++  uint8_t n = LCD_WIDTH - 1 - 2;
++  
++  if ((pre_char == '>') || (pre_char == LCD_STR_UPLEVEL[0] )) {
++    u8g.setColorIndex(1);  // black on white
++    u8g.drawBox (0, row*DOG_CHAR_HEIGHT + 3, 128, DOG_CHAR_HEIGHT);
++    u8g.setColorIndex(0);  // following text must be white on black
++  }
++  else {
++    u8g.setColorIndex(1); // unmarked text is black on white
++  }
++  
++  u8g.setPrintPos(0 * DOG_CHAR_WIDTH, (row + 1) * DOG_CHAR_HEIGHT);
++  u8g.print(pre_char == '>' ? ' ' : pre_char);  // Row selector is obsolete
++
++  while((c = pgm_read_byte(pstr))) {
++    u8g.print(c);
++    pstr++;
++    n--;
++  }
++  while(n--) u8g.print(' ');
++  
++  u8g.print(post_char);
++  u8g.print(' ');
++  u8g.setColorIndex(1);  // restore settings to black on white
+ }
+ 
+ static void _drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char pre_char, const char* data, bool pgm) {
+   char c;
+   uint8_t n = LCD_WIDTH - 1 - 2 - (pgm ? strlen_P(data) : strlen(data));
+-		
++
+   u8g.setPrintPos(0 * DOG_CHAR_WIDTH, (row + 1) * DOG_CHAR_HEIGHT);
+   u8g.print(pre_char);
+ 
+@@ -393,14 +367,13 @@ static void _drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char p
+ #define lcd_implementation_drawmenu_setting_edit_callback_bool_selected(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+ #define lcd_implementation_drawmenu_setting_edit_callback_bool(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, ' ', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+ 
+-void lcd_implementation_drawedit(const char* pstr, char* value)
+-{
+-		u8g.setPrintPos(0 * DOG_CHAR_WIDTH_LARGE, (u8g.getHeight() - 1 - DOG_CHAR_HEIGHT_LARGE) - (1 * DOG_CHAR_HEIGHT_LARGE) - START_ROW );
+-		u8g.setFont(u8g_font_9x18);
+-		lcd_printPGM(pstr);
+-		u8g.print(':');
+-		u8g.setPrintPos((14 - strlen(value)) * DOG_CHAR_WIDTH_LARGE, (u8g.getHeight() - 1 - DOG_CHAR_HEIGHT_LARGE) - (1 * DOG_CHAR_HEIGHT_LARGE) - START_ROW );
+-		u8g.print(value);
++void lcd_implementation_drawedit(const char* pstr, char* value) {
++  u8g.setPrintPos(0 * DOG_CHAR_WIDTH_LARGE, (u8g.getHeight() - 1 - DOG_CHAR_HEIGHT_LARGE) - (1 * DOG_CHAR_HEIGHT_LARGE) - START_ROW );
++  u8g.setFont(u8g_font_9x18);
++  lcd_printPGM(pstr);
++  u8g.print(':');
++  u8g.setPrintPos((14 - strlen(value)) * DOG_CHAR_WIDTH_LARGE, (u8g.getHeight() - 1 - DOG_CHAR_HEIGHT_LARGE) - (1 * DOG_CHAR_HEIGHT_LARGE) - START_ROW );
++  u8g.print(value);
+ }
+ 
+ static void _drawmenu_sd(uint8_t row, const char* pstr, const char* filename, char * const longFilename, bool isDir, bool isSelected) {
+@@ -419,7 +392,7 @@ static void _drawmenu_sd(uint8_t row, const char* pstr, const char* filename, ch
+   }
+ 
+   u8g.setPrintPos(0 * DOG_CHAR_WIDTH, (row + 1) * DOG_CHAR_HEIGHT);
+-  u8g.print(' ');	// Indent by 1 char
++  u8g.print(' '); // Indent by 1 char
+ 
+   if (isDir) u8g.print(LCD_STR_FOLDER[0]);
+ 
+@@ -447,20 +420,16 @@ static void _drawmenu_sd(uint8_t row, const char* pstr, const char* filename, ch
+ #define lcd_implementation_drawmenu_function_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, '>', ' ')
+ #define lcd_implementation_drawmenu_function(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', ' ')
+ 
+-static void lcd_implementation_quick_feedback()
+-{
+-
+-#if BEEPER > -1
++static void lcd_implementation_quick_feedback() {
++  #if BEEPER > -1
+     SET_OUTPUT(BEEPER);
+-    for(int8_t i=0;i<10;i++)
+-    {
+-		WRITE(BEEPER,HIGH);
+-		delay(3);
+-		WRITE(BEEPER,LOW);
+-		delay(3);
++    for(int8_t i=0; i<10; i++) {
++      WRITE(BEEPER,HIGH);
++      delay(3);
++      WRITE(BEEPER,LOW);
++      delay(3);
+     }
+-#endif
++  #endif
+ }
+-#endif//ULTRA_LCD_IMPLEMENTATION_DOGM_H
+-
+ 
++#endif //__DOGM_LCD_IMPLEMENTATION_H
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index d790266..13d4f3f 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -195,7 +195,7 @@ static void lcd_goto_menu(menuFunc_t menu, const uint32_t encoder=0, const bool
+     if (feedback) lcd_quick_feedback();
+ 
+     // For LCD_PROGRESS_BAR re-initialize the custom characters
+-    #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT) && !defined(DOGLCD)
+       lcd_set_custom_characters(menu == lcd_status_screen);
+     #endif
+   }
+@@ -204,7 +204,7 @@ static void lcd_goto_menu(menuFunc_t menu, const uint32_t encoder=0, const bool
+ /* Main status screen. It's up to the implementation specific part to show what is needed. As this is very display dependent */
+ static void lcd_status_screen()
+ {
+-  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT) && !defined(DOGLCD)
+     uint16_t mil = millis();
+     #ifndef PROGRESS_MSG_ONCE
+       if (mil > progressBarTick + PROGRESS_BAR_MSG_TIME + PROGRESS_BAR_BAR_TIME) {
+@@ -236,11 +236,12 @@ static void lcd_status_screen()
+         lcd_status_update_delay--;
+     else
+         lcdDrawUpdate = 1;
+-    if (lcdDrawUpdate)
+-    {
++
++    if (lcdDrawUpdate) {
+         lcd_implementation_status_screen();
+         lcd_status_update_delay = 10;   /* redraw the main screen every second. This is easier then trying keep track of all things that change on the screen */
+     }
++
+ #ifdef ULTIPANEL
+ 
+     bool current_click = LCD_CLICKED;
+@@ -265,7 +266,7 @@ static void lcd_status_screen()
+     {
+         lcd_goto_menu(lcd_main_menu);
+         lcd_implementation_init( // to maybe revive the LCD if static electricity killed it.
+-          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT) && !defined(DOGLCD)
+             currentMenu == lcd_status_screen
+           #endif
+         );
+@@ -1191,7 +1192,7 @@ void lcd_update()
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+         lcd_implementation_init( // to maybe revive the LCD if static electricity killed it.
+-          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT) && !defined(DOGLCD)
+             currentMenu == lcd_status_screen
+           #endif
+         );
+@@ -1294,7 +1295,7 @@ void lcd_finishstatus() {
+     }
+   }
+   lcd_status_message[LCD_WIDTH] = '\0';
+-  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT) && !defined(DOGLCD)
+     #if PROGRESS_MSG_EXPIRE > 0
+       messageTick =
+     #endif
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index a175f4a..30175be 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -49,7 +49,7 @@
+   #ifdef FILAMENT_LCD_DISPLAY
+         extern unsigned long message_millis;
+   #endif
+-    
++
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+ 
+diff --git a/README.md b/README.md
+index 4118ffc..8a2eb6c 100644
+--- a/README.md
++++ b/README.md
+@@ -30,9 +30,9 @@ What bugs are we working on: [Bug Fixing Round 2](https://github.com/MarlinFirmw
+ 
+ ## Contact
+ 
+-__IRC:__ #marlin-firmware @freenode
++__IRC:__ #marlin-firmware @freenode ([WebChat Client](https://webchat.freenode.net/?channels=marlin-firmware), [Archive](http://energymonitor-dk.dns4e.net/marlin-firmware-log/))
+ 
+-__Google Hangouts:__ https://plus.google.com/hangouts/_/event/cps5d0ru0iruhl6ebqbk9dpqpa4?authuser=0&hl=da
++__Mailing List:__ marlin@lists.0l.de ([Subscribe](http://lists.0l.de/mailman/listinfo/marlin), [Archive](http://lists.0l.de/pipermail/marlin/))
+ 
+ ## Credits
+ 
+

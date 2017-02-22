@@ -1,0 +1,332 @@
+commit 90f6f02aca493c0174998241b64377d47806876c (from d5f0db26dcc289e11b546209702afe17d453844e)
+Merge: d5f0db2 fb38d69
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 5 15:45:35 2016 -0700
+
+    Merge pull request #3397 from thinkyhead/rc_menu_issues_fixer
+    
+    Revert #3388, clean up lcd_move code
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index b9ee875..af31e95 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -319,7 +319,10 @@ static void lcd_goto_menu(menuFunc_t menu, const bool feedback = false, const ui
+       encoderPosition = encoder;
+       if (feedback) lcd_quick_feedback();
+     #endif
+-    if (menu == lcd_status_screen) menu_history_depth = 0;
++    if (menu == lcd_status_screen) {
++      defer_return_to_status = false;
++      menu_history_depth = 0;
++    }
+     #if ENABLED(LCD_PROGRESS_BAR)
+       // For LCD_PROGRESS_BAR re-initialize custom characters
+       lcd_set_custom_characters(menu == lcd_status_screen);
+@@ -327,10 +330,7 @@ static void lcd_goto_menu(menuFunc_t menu, const bool feedback = false, const ui
+   }
+ }
+ 
+-static void lcd_return_to_status() {
+-  defer_return_to_status = false;
+-  lcd_goto_menu(lcd_status_screen);
+-}
++static void lcd_return_to_status() { lcd_goto_menu(lcd_status_screen); }
+ 
+ inline void lcd_save_previous_menu() {
+   if (menu_history_depth < COUNT(menu_history)) {
+@@ -432,13 +432,13 @@ static void lcd_status_screen() {
+     }
+ 
+     #if ENABLED(ULTIPANEL_FEEDMULTIPLY)
++      int new_frm = feedrate_multiplier + int(encoderPosition);
+       // Dead zone at 100% feedrate
+-      if ((feedrate_multiplier < 100 && (feedrate_multiplier + int(encoderPosition)) > 100) ||
+-          (feedrate_multiplier > 100 && (feedrate_multiplier + int(encoderPosition)) < 100)) {
+-        encoderPosition = 0;
++      if ((feedrate_multiplier < 100 && new_frm > 100) || (feedrate_multiplier > 100 && new_frm < 100)) {
+         feedrate_multiplier = 100;
++        encoderPosition = 0;
+       }
+-      if (feedrate_multiplier == 100) {
++      else if (feedrate_multiplier == 100) {
+         if (int(encoderPosition) > ENCODER_FEEDRATE_DEADZONE) {
+           feedrate_multiplier += int(encoderPosition) - (ENCODER_FEEDRATE_DEADZONE);
+           encoderPosition = 0;
+@@ -449,7 +449,7 @@ static void lcd_status_screen() {
+         }
+       }
+       else {
+-        feedrate_multiplier += int(encoderPosition);
++        feedrate_multiplier = new_frm;
+         encoderPosition = 0;
+       }
+     #endif // ULTIPANEL_FEEDMULTIPLY
+@@ -583,7 +583,7 @@ void lcd_set_home_offsets() {
+       #endif
+     }
+     if (lcdDrawUpdate) lcd_implementation_drawedit(msg, NULL);
+-    if (LCD_CLICKED) lcd_goto_previous_menu();
++    if (LCD_CLICKED) lcd_goto_previous_menu(true);
+   }
+ 
+   #if ENABLED(BABYSTEP_XY)
+@@ -901,7 +901,7 @@ void lcd_cooldown() {
+     ENCODER_DIRECTION_NORMAL();
+ 
+     // Encoder wheel adjusts the Z position
+-    if (encoderPosition != 0 && movesplanned() <= 3) {
++    if (encoderPosition && movesplanned() <= 3) {
+       refresh_cmd_timeout();
+       current_position[Z_AXIS] += float((int)encoderPosition) * (MBL_Z_STEP);
+       if (min_software_endstops) NOLESS(current_position[Z_AXIS], Z_MIN_POS);
+@@ -978,7 +978,7 @@ void lcd_cooldown() {
+       current_position[Y_AXIS] = MESH_MIN_Y;
+       line_to_current(manual_feedrate[X_AXIS] <= manual_feedrate[Y_AXIS] ? X_AXIS : Y_AXIS);
+       _lcd_level_bed_position = 0;
+-      lcd_goto_menu(_lcd_level_bed_procedure);
++      lcd_goto_menu(_lcd_level_bed_procedure, true);
+     }
+   }
+ 
+@@ -1121,9 +1121,8 @@ static void lcd_prepare_menu() {
+  */
+ 
+ float move_menu_scale;
+-static void lcd_move_menu_axis();
+ 
+-static void _lcd_move(const char* name, AxisEnum axis, int min, int max) {
++static void _lcd_move(const char* name, AxisEnum axis, float min, float max) {
+   ENCODER_DIRECTION_NORMAL();
+   if ((encoderPosition != 0) && (movesplanned() <= 3)) {
+     refresh_cmd_timeout();
+@@ -1135,18 +1134,18 @@ static void _lcd_move(const char* name, AxisEnum axis, int min, int max) {
+     lcdDrawUpdate = LCD_DRAW_UPDATE_CALL_REDRAW;
+   }
+   if (lcdDrawUpdate) lcd_implementation_drawedit(name, ftostr31(current_position[axis]));
+-  if (LCD_CLICKED) lcd_goto_previous_menu();
++  if (LCD_CLICKED) lcd_goto_previous_menu(true);
+ }
+ #if ENABLED(DELTA)
+   static float delta_clip_radius_2 =  (DELTA_PRINTABLE_RADIUS) * (DELTA_PRINTABLE_RADIUS);
+   static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - a*a); }
+-  static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, max(X_MIN_POS, -clip), min(X_MAX_POS, clip)); }
+-  static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, max(Y_MIN_POS, -clip), min(Y_MAX_POS, clip)); }
++  static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, max(min_pos[X_AXIS], -clip), min(max_pos[X_AXIS], clip)); }
++  static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, max(min_pos[Y_AXIS], -clip), min(max_pos[Y_AXIS], clip)); }
+ #else
+-  static void lcd_move_x() { _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, X_MIN_POS, X_MAX_POS); }
+-  static void lcd_move_y() { _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, Y_MIN_POS, Y_MAX_POS); }
++  static void lcd_move_x() { _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, min_pos[X_AXIS], max_pos[X_AXIS]); }
++  static void lcd_move_y() { _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, min_pos[Y_AXIS], max_pos[Y_AXIS]); }
+ #endif
+-static void lcd_move_z() { _lcd_move(PSTR(MSG_MOVE_Z), Z_AXIS, Z_MIN_POS, Z_MAX_POS); }
++static void lcd_move_z() { _lcd_move(PSTR(MSG_MOVE_Z), Z_AXIS, min_pos[Z_AXIS], max_pos[Z_AXIS]); }
+ static void lcd_move_e(
+   #if EXTRUDERS > 1
+     uint8_t e
+@@ -1181,7 +1180,7 @@ static void lcd_move_e(
+     #endif //EXTRUDERS > 1
+     lcd_implementation_drawedit(pos_label, ftostr31(current_position[E_AXIS]));
+   }
+-  if (LCD_CLICKED) lcd_goto_previous_menu();
++  if (LCD_CLICKED) lcd_goto_previous_menu(true);
+   #if EXTRUDERS > 1
+     active_extruder = original_active_extruder;
+   #endif
+@@ -1204,7 +1203,7 @@ static void lcd_move_e(
+  *
+  */
+ 
+-static void lcd_move_menu_axis() {
++static void _lcd_move_menu_axis() {
+   START_MENU();
+   MENU_ITEM(back, MSG_MOVE_AXIS);
+   MENU_ITEM(submenu, MSG_MOVE_X, lcd_move_x);
+@@ -1229,15 +1228,15 @@ static void lcd_move_menu_axis() {
+ 
+ static void lcd_move_menu_10mm() {
+   move_menu_scale = 10.0;
+-  lcd_move_menu_axis();
++  _lcd_move_menu_axis();
+ }
+ static void lcd_move_menu_1mm() {
+   move_menu_scale = 1.0;
+-  lcd_move_menu_axis();
++  _lcd_move_menu_axis();
+ }
+ static void lcd_move_menu_01mm() {
+   move_menu_scale = 0.1;
+-  lcd_move_menu_axis();
++  _lcd_move_menu_axis();
+ }
+ 
+ /**
+@@ -1649,7 +1648,7 @@ static void lcd_control_volumetric_menu() {
+         lcd_implementation_drawedit(PSTR(MSG_CONTRAST), itostr2(lcd_contrast));
+       #endif
+     }
+-    if (LCD_CLICKED) lcd_goto_previous_menu();
++    if (LCD_CLICKED) lcd_goto_previous_menu(true);
+   }
+ #endif // HAS_LCD_CONTRAST
+ 
+@@ -1778,8 +1777,9 @@ static void lcd_control_volumetric_menu() {
+   void menu_edit_ ## _name () { _menu_edit_ ## _name(); } \
+   void menu_edit_callback_ ## _name () { if (_menu_edit_ ## _name ()) (*callbackFunc)(); } \
+   static void _menu_action_setting_edit_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue) { \
++    lcd_save_previous_menu(); \
++    \
+     lcdDrawUpdate = LCD_DRAW_UPDATE_CLEAR_CALL_REDRAW; \
+-    currentMenu = menu_edit_ ## _name; \
+     \
+     editLabel = pstr; \
+     editValue = ptr; \
+@@ -1796,14 +1796,14 @@ static void lcd_control_volumetric_menu() {
+     currentMenu = menu_edit_callback_ ## _name; \
+     callbackFunc = callback; \
+   }
+-menu_edit_type(int, int3, itostr3, 1)
+-menu_edit_type(float, float3, ftostr3, 1)
+-menu_edit_type(float, float32, ftostr32, 100)
+-menu_edit_type(float, float43, ftostr43, 1000)
+-menu_edit_type(float, float5, ftostr5, 0.01)
+-menu_edit_type(float, float51, ftostr51, 10)
+-menu_edit_type(float, float52, ftostr52, 100)
+-menu_edit_type(unsigned long, long5, ftostr5, 0.01)
++menu_edit_type(int, int3, itostr3, 1);
++menu_edit_type(float, float3, ftostr3, 1);
++menu_edit_type(float, float32, ftostr32, 100);
++menu_edit_type(float, float43, ftostr43, 1000);
++menu_edit_type(float, float5, ftostr5, 0.01);
++menu_edit_type(float, float51, ftostr51, 10);
++menu_edit_type(float, float52, ftostr52, 100);
++menu_edit_type(unsigned long, long5, ftostr5, 0.01);
+ 
+ /**
+  *
+@@ -2182,7 +2182,7 @@ void lcd_update() {
+       // Return to Status Screen after a timeout
+       if (defer_return_to_status)
+         return_to_status_ms = ms + LCD_TIMEOUT_TO_STATUS;
+-      else if (currentMenu != lcd_status_screen && millis() > return_to_status_ms) {
++      else if (currentMenu != lcd_status_screen && ms > return_to_status_ms) {
+         lcd_return_to_status();
+       }
+ 
+
+commit 90f6f02aca493c0174998241b64377d47806876c (from fb38d698db5a056d92c68275cf14e4c677e9c0dd)
+Merge: d5f0db2 fb38d69
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 5 15:45:35 2016 -0700
+
+    Merge pull request #3397 from thinkyhead/rc_menu_issues_fixer
+    
+    Revert #3388, clean up lcd_move code
+
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 5d8033e..8ffa091 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -82,6 +82,12 @@
+ #endif
+ 
+ #ifndef DEFAULT_SOURCE_URL
++  /**
++   * The SOURCE_CODE_URL is the location where users will find the Marlin Source
++   * Code which is installed on the device. In most cases —unless the manufacturer
++   * has a distinct Github fork— the Source Code URL should just be the main
++   * Marlin repository.
++   */
+   #define DEFAULT_SOURCE_URL "https://github.com/MarlinFirmware/Marlin"
+ #endif
+ 
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index f3dc84b..3145f78 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -42,9 +42,13 @@
+ #define MSG_MAIN                            "Menu principal"
+ #define MSG_AUTOSTART                       "Demarrage auto"
+ #define MSG_DISABLE_STEPPERS                "Arreter moteurs"
+-#define MSG_AUTO_HOME                       "Home auto."
+-#define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+-#define MSG_SET_HOME_OFFSETS                "Set home offsets"
++#define MSG_AUTO_HOME                       "Origine auto."
++#define MSG_LEVEL_BED_HOMING                "Origine XYZ"
++#define MSG_LEVEL_BED_WAITING               "Cliquer pour commencer"
++#define MSG_LEVEL_BED_DONE                  "Mise a niveau OK!"
++#define MSG_LEVEL_BED_CANCEL                "Annuler"
++#define MSG_SET_HOME_OFFSETS                "Regler decal. origine"
++#define MSG_HOME_OFFSETS_APPLIED            "Decalages appliques"
+ #define MSG_SET_ORIGIN                      "Regler origine"
+ #define MSG_PREHEAT_PLA                     "Prechauffage PLA"
+ #define MSG_PREHEAT_PLA_N                   "Prechauff. PLA "
+@@ -106,8 +110,8 @@
+ #define MSG_TEMPERATURE                     "Temperature"
+ #define MSG_MOTION                          "Mouvement"
+ #define MSG_VOLUMETRIC                      "Filament"
+-#define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+-#define MSG_FILAMENT_DIAM                   "Fil. Dia."
++#define MSG_VOLUMETRIC_ENABLED              "E en mm3"
++#define MSG_FILAMENT_DIAM                   "Diam. Fil."
+ #define MSG_CONTRAST                        "Contraste LCD"
+ #define MSG_STORE_EPROM                     "Sauver config"
+ #define MSG_LOAD_EPROM                      "Lire config"
+@@ -141,7 +145,7 @@
+ #define MSG_CNG_SDCARD                      "Changer de carte"
+ #define MSG_ZPROBE_OUT                      "Z sonde exte. lit"
+ #define MSG_YX_UNHOMED                      "Rev. dans XY av.Z"
+-#define MSG_ZPROBE_ZOFFSET                  "Offset Z"
++#define MSG_ZPROBE_ZOFFSET                  "Decalage Z"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+ #define MSG_BABYSTEP_Z                      "Babystep Z"
+@@ -164,11 +168,11 @@
+ 
+ 
+ #if ENABLED(DELTA_CALIBRATION_MENU)
+-  #define MSG_DELTA_CALIBRATE               "Delta Calibration"
+-  #define MSG_DELTA_CALIBRATE_X             "Calibrate X"
+-  #define MSG_DELTA_CALIBRATE_Y             "Calibrate Y"
+-  #define MSG_DELTA_CALIBRATE_Z             "Calibrate Z"
+-  #define MSG_DELTA_CALIBRATE_CENTER        "Calibrate Center"
++  #define MSG_DELTA_CALIBRATE               "Calibration Delta"
++  #define MSG_DELTA_CALIBRATE_X             "Calibrer X"
++  #define MSG_DELTA_CALIBRATE_Y             "Calibrer Y"
++  #define MSG_DELTA_CALIBRATE_Z             "Calibrer Z"
++  #define MSG_DELTA_CALIBRATE_CENTER        "Calibrer centre"
+ #endif // DELTA_CALIBRATION_MENU
+ 
+ #endif // LANGUAGE_FR_H
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index f711fc5..3863d6d 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -42,12 +42,12 @@
+ #define MSG_AUTOSTART                       "Autostart"
+ #define MSG_DISABLE_STEPPERS                "Disabilita Motori"
+ #define MSG_AUTO_HOME                       "Auto Home"
+-#define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "Click to Begin"
+-#define MSG_LEVEL_BED_DONE                  "Leveling Done!"
+-#define MSG_LEVEL_BED_CANCEL                "Cancel"
++#define MSG_LEVEL_BED_HOMING                "Home assi XYZ"
++#define MSG_LEVEL_BED_WAITING               "Premi per Iniziare"
++#define MSG_LEVEL_BED_DONE                  "Livel. terminato!"
++#define MSG_LEVEL_BED_CANCEL                "Annulla"
+ #define MSG_SET_HOME_OFFSETS                "Setta offset home"
+-#define MSG_HOME_OFFSETS_APPLIED            "Offsets applied"
++#define MSG_HOME_OFFSETS_APPLIED            "Offs. applicato"
+ #define MSG_SET_ORIGIN                      "Imposta Origine"
+ #define MSG_PREHEAT_PLA                     "Preriscalda PLA"
+ #define MSG_PREHEAT_PLA_N                   "Preriscalda PLA "
+@@ -165,6 +165,7 @@
+ #define MSG_BED_HEATING                     "Risc. Piatto.."
+ #define MSG_BED_DONE                        "Risc. Piatto Completo"
+ 
++
+ #if ENABLED(DELTA_CALIBRATION_MENU)
+   #define MSG_DELTA_CALIBRATE               "Calibraz. Delta"
+   #define MSG_DELTA_CALIBRATE_X             "Calibra X"
+

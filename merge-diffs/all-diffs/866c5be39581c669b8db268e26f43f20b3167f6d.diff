@@ -1,0 +1,882 @@
+commit 866c5be39581c669b8db268e26f43f20b3167f6d (from 6e52b0b723a018a37609741b351db86473f37865)
+Merge: 6e52b0b 4fb8013
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 14 19:09:14 2016 -0700
+
+    Merge pull request #3500 from thinkyhead/rc_shrink_menu_macros
+    
+    Reduce redundancy in MENU_ITEM code
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index e34d21b..b68a4e5 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -199,19 +199,25 @@ static void lcd_status_screen();
+    *     menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
+    *
+    */
+-  #define MENU_ITEM(type, label, args...) do { \
++  #define _MENU_ITEM_PART_1(type, label, args...) \
+     if (_menuItemNr == _lineNr) { \
+       itemSelected = encoderLine == _menuItemNr; \
+       if (lcdDrawUpdate) \
+         lcd_implementation_drawmenu_ ## type(itemSelected, _drawLineNr, PSTR(label), ## args); \
+       if (wasClicked && itemSelected) { \
+-        lcd_quick_feedback(); \
++        lcd_quick_feedback()
++
++  #define _MENU_ITEM_PART_2(type, args...) \
+         menu_action_ ## type(args); \
+         return; \
+       } \
+     } \
+-    _menuItemNr++; \
+-  } while(0)
++    _menuItemNr++
++
++  #define MENU_ITEM(type, label, args...) do { \
++      _MENU_ITEM_PART_1(type, label, ## args); \
++      _MENU_ITEM_PART_2(type, ## args); \
++    } while(0)
+ 
+   #if ENABLED(ENCODER_RATE_MULTIPLIER)
+ 
+@@ -221,20 +227,12 @@ static void lcd_status_screen();
+      * MENU_MULTIPLIER_ITEM generates drawing and handling code for a multiplier menu item
+      */
+     #define MENU_MULTIPLIER_ITEM(type, label, args...) do { \
+-      if (_menuItemNr == _lineNr) { \
+-        itemSelected = encoderLine == _menuItemNr; \
+-        if (lcdDrawUpdate) \
+-          lcd_implementation_drawmenu_ ## type(itemSelected, _drawLineNr, PSTR(label), ## args); \
+-        if (wasClicked && itemSelected) { \
+-          lcd_quick_feedback(); \
+-          encoderRateMultiplierEnabled = true; \
+-          lastEncoderMovementMillis = 0; \
+-          menu_action_ ## type(args); \
+-          return; \
+-        } \
+-      } \
+-      _menuItemNr++; \
+-    } while(0)
++        _MENU_ITEM_PART_1(type, label, ## args); \
++        encoderRateMultiplierEnabled = true; \
++        lastEncoderMovementMillis = 0; \
++        _MENU_ITEM_PART_2(type, ## args); \
++      } while(0)
++
+   #endif //ENCODER_RATE_MULTIPLIER
+ 
+   #define MENU_ITEM_DUMMY() do { _menuItemNr++; } while(0)
+
+commit 866c5be39581c669b8db268e26f43f20b3167f6d (from 4fb8013be17d78dd52db0ed4660862d32048c35e)
+Merge: 6e52b0b 4fb8013
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 14 19:09:14 2016 -0700
+
+    Merge pull request #3500 from thinkyhead/rc_shrink_menu_macros
+    
+    Reduce redundancy in MENU_ITEM code
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index eb4c5af..b5af01c 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -775,7 +775,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 09c4b77..dbb2c42 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -283,6 +283,8 @@ int extruder_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DIA);
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(1.0);
++
++float position_shift[3] = { 0 };
+ float home_offset[3] = { 0 };
+ float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+ float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+@@ -496,6 +498,11 @@ void gcode_M114();
+   void print_xyz(const char* prefix, const float xyz[]) {
+     print_xyz(prefix, xyz[X_AXIS], xyz[Y_AXIS], xyz[Z_AXIS]);
+   }
++  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++    void print_xyz(const char* prefix, const vector_3 &xyz) {
++      print_xyz(prefix, xyz.x, xyz.y, xyz.z);
++    }
++  #endif
+   #define DEBUG_POS(PREFIX,VAR) do{ SERIAL_ECHOPGM(PREFIX); print_xyz(" > " STRINGIFY(VAR), VAR); }while(0)
+ #endif
+ 
+@@ -1190,6 +1197,45 @@ XYZ_CONSTS_FROM_CONFIG(signed char, home_dir, HOME_DIR);
+ 
+ #endif //DUAL_X_CARRIAGE
+ 
++/**
++ * Software endstops can be used to monitor the open end of
++ * an axis that has a hardware endstop on the other end. Or
++ * they can prevent axes from moving past endstops and grinding.
++ *
++ * To keep doing their job as the coordinate system changes,
++ * the software endstop positions must be refreshed to remain
++ * at the same positions relative to the machine.
++ */
++static void update_software_endstops(AxisEnum axis) {
++  float offs = home_offset[axis] + position_shift[axis];
++  #if ENABLED(DUAL_X_CARRIAGE)
++    if (axis == X_AXIS) {
++      float dual_max_x = max(extruder_offset[X_AXIS][1], X2_MAX_POS);
++      if (active_extruder != 0) {
++        min_pos[X_AXIS] = X2_MIN_POS + offs;
++        max_pos[X_AXIS] = dual_max_x + offs;
++        return;
++      }
++      else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE) {
++        min_pos[X_AXIS] = base_min_pos(X_AXIS) + offs;
++        max_pos[X_AXIS] = min(base_max_pos(X_AXIS), dual_max_x - duplicate_extruder_x_offset) + offs;
++        return;
++      }
++    }
++    else
++  #endif
++  {
++    min_pos[axis] = base_min_pos(axis) + offs;
++    max_pos[axis] = base_max_pos(axis) + offs;
++  }
++}
++
++static void set_home_offset(AxisEnum axis, float v) {
++  current_position[axis] += v - home_offset[axis];
++  home_offset[axis] = v;
++  update_software_endstops(axis);
++}
++
+ static void set_axis_is_at_home(AxisEnum axis) {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+@@ -1198,21 +1244,16 @@ static void set_axis_is_at_home(AxisEnum axis) {
+     }
+   #endif
+ 
++  position_shift[axis] = 0;
++
+   #if ENABLED(DUAL_X_CARRIAGE)
+-    if (axis == X_AXIS) {
+-      if (active_extruder != 0) {
++    if (axis == X_AXIS && (active_extruder != 0 || dual_x_carriage_mode == DXC_DUPLICATION_MODE)) {
++      if (active_extruder != 0)
+         current_position[X_AXIS] = x_home_pos(active_extruder);
+-                 min_pos[X_AXIS] = X2_MIN_POS;
+-                 max_pos[X_AXIS] = max(extruder_offset[X_AXIS][1], X2_MAX_POS);
+-        return;
+-      }
+-      else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE) {
+-        float xoff = home_offset[X_AXIS];
+-        current_position[X_AXIS] = base_home_pos(X_AXIS) + xoff;
+-                 min_pos[X_AXIS] = base_min_pos(X_AXIS) + xoff;
+-                 max_pos[X_AXIS] = min(base_max_pos(X_AXIS) + xoff, max(extruder_offset[X_AXIS][1], X2_MAX_POS) - duplicate_extruder_x_offset);
+-        return;
+-      }
++      else
++        current_position[X_AXIS] = base_home_pos(X_AXIS) + home_offset[X_AXIS];
++      update_software_endstops(X_AXIS);
++      return;
+     }
+   #endif
+ 
+@@ -1260,8 +1301,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+   #endif
+   {
+     current_position[axis] = base_home_pos(axis) + home_offset[axis];
+-    min_pos[axis] = base_min_pos(axis) + home_offset[axis];
+-    max_pos[axis] = base_max_pos(axis) + home_offset[axis];
++    update_software_endstops(axis);
+ 
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE) && Z_HOME_DIR < 0
+       if (axis == Z_AXIS) {
+@@ -1373,6 +1413,11 @@ static void setup_for_endstop_move() {
+ 
+       static void set_bed_level_equation_lsq(double* plane_equation_coefficients) {
+ 
++        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
++        plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
++
++        //plan_bed_level_matrix.debug("bed level before");
++
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           plan_bed_level_matrix.set_to_identity();
+           if (DEBUGGING(LEVELING)) {
+@@ -1382,17 +1427,8 @@ static void setup_for_endstop_move() {
+           }
+         #endif
+ 
+-        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
+-        // planeNormal.debug("planeNormal");
+-        plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+-        //bedLevel.debug("bedLevel");
+-
+-        //plan_bed_level_matrix.debug("bed level before");
+-        //vector_3 uncorrected_position = plan_get_position();
+-        //uncorrected_position.debug("position before");
+-
+         vector_3 corrected_position = plan_get_position();
+-        //corrected_position.debug("position after");
++ 
+         current_position[X_AXIS] = corrected_position.x;
+         current_position[Y_AXIS] = corrected_position.y;
+         current_position[Z_AXIS] = corrected_position.z;
+@@ -1426,12 +1462,20 @@ static void setup_for_endstop_move() {
+       plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+ 
+       vector_3 corrected_position = plan_get_position();
++
++      #if ENABLED(DEBUG_LEVELING_FEATURE)
++        if (DEBUGGING(LEVELING)) {
++          vector_3 uncorrected_position = corrected_position;
++          DEBUG_POS("set_bed_level_equation_3pts", uncorrected_position);
++        }
++      #endif
++
+       current_position[X_AXIS] = corrected_position.x;
+       current_position[Y_AXIS] = corrected_position.y;
+       current_position[Z_AXIS] = corrected_position.z;
+ 
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("set_bed_level_equation_3pts", current_position);
++        if (DEBUGGING(LEVELING)) DEBUG_POS("set_bed_level_equation_3pts", corrected_position);
+       #endif
+ 
+       sync_plan_position();
+@@ -2465,7 +2509,7 @@ inline void gcode_G28() {
+    */
+   #if ENABLED(MESH_BED_LEVELING)
+     uint8_t mbl_was_active = mbl.active;
+-    mbl.active = 0;
++    mbl.active = false;
+   #endif
+ 
+   setup_for_endstop_move();
+@@ -2799,6 +2843,28 @@ inline void gcode_G28() {
+ 
+   enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet, MeshSetZOffset };
+ 
++  inline void _mbl_goto_xy(float x, float y) {
++    saved_feedrate = feedrate;
++    feedrate = homing_feedrate[X_AXIS];
++
++    #if MIN_Z_HEIGHT_FOR_HOMING > 0
++      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + MIN_Z_HEIGHT_FOR_HOMING;
++      line_to_current_position();
++    #endif
++
++    current_position[X_AXIS] = x + home_offset[X_AXIS];
++    current_position[Y_AXIS] = y + home_offset[Y_AXIS];
++    line_to_current_position();
++
++    #if MIN_Z_HEIGHT_FOR_HOMING > 0
++      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++      line_to_current_position();
++    #endif
++
++    feedrate = saved_feedrate;
++    st_synchronize();
++  }
++
+   /**
+    * G29: Mesh-based Z probe, probes a grid and produces a
+    *      mesh to compensate for variable bed height
+@@ -2866,37 +2932,32 @@ inline void gcode_G28() {
+           SERIAL_PROTOCOLLNPGM("Start mesh probing with \"G29 S1\" first.");
+           return;
+         }
++        // For each G29 S2...
+         if (probe_point == 0) {
+-          // Set Z to a positive value before recording the first Z.
+-          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + home_offset[Z_AXIS];
++          // For the intial G29 S2 make Z a positive value (e.g., 4.0)
++          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+           sync_plan_position();
+         }
+         else {
+-          // For others, save the Z of the previous point, then raise Z again.
+-          ix = (probe_point - 1) % (MESH_NUM_X_POINTS);
+-          iy = (probe_point - 1) / (MESH_NUM_X_POINTS);
+-          if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // zig-zag
+-          mbl.set_z(ix, iy, current_position[Z_AXIS]);
+-          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + home_offset[Z_AXIS];
+-          plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[X_AXIS] / 60, active_extruder);
+-          st_synchronize();
++          // For G29 S2 after adjusting Z.
++          mbl.set_zigzag_z(probe_point - 1, current_position[Z_AXIS]);
+         }
+-        // Is there another point to sample? Move there.
++        // If there's another point to sample, move there with optional lift.
+         if (probe_point < (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS)) {
+-          ix = probe_point % (MESH_NUM_X_POINTS);
+-          iy = probe_point / (MESH_NUM_X_POINTS);
+-          if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // zig-zag
+-          current_position[X_AXIS] = mbl.get_x(ix) + home_offset[X_AXIS];
+-          current_position[Y_AXIS] = mbl.get_y(iy) + home_offset[Y_AXIS];
+-          plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[X_AXIS] / 60, active_extruder);
+-          st_synchronize();
++          mbl.zigzag(probe_point, ix, iy);
++          _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
+           probe_point++;
+         }
+         else {
++          // One last "return to the bed" (as originally coded) at completion
++          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++          line_to_current_position();
++          st_synchronize();
++
+           // After recording the last point, activate the mbl and home
+           SERIAL_PROTOCOLLNPGM("Mesh probing done.");
+           probe_point = -1;
+-          mbl.active = 1;
++          mbl.active = true;
+           enqueue_and_echo_commands_P(PSTR("G28"));
+         }
+         break;
+@@ -3531,7 +3592,14 @@ inline void gcode_G92() {
+   bool didXYZ = false;
+   for (int i = 0; i < NUM_AXIS; i++) {
+     if (code_seen(axis_codes[i])) {
+-      float v = current_position[i] = code_value();
++      float p = current_position[i],
++            v = code_value();
++
++      current_position[i] = v;
++
++      position_shift[i] += v - p; // Offset the coordinate space
++      update_software_endstops((AxisEnum)i);
++
+       if (i == E_AXIS)
+         plan_set_e_position(v);
+       else
+@@ -5020,13 +5088,6 @@ inline void gcode_M205() {
+   if (code_seen('E')) max_e_jerk = code_value();
+ }
+ 
+-static void set_home_offset(AxisEnum axis, float v) {
+-  min_pos[axis] = base_min_pos(axis) + v;
+-  max_pos[axis] = base_max_pos(axis) + v;
+-  current_position[axis] += v - home_offset[axis];
+-  home_offset[axis] = v;
+-}
+-
+ /**
+  * M206: Set Additional Homing Offset (X Y Z). SCARA aliases T=X, P=Y
+  */
+@@ -7284,26 +7345,26 @@ void plan_arc(
+ ) {
+ 
+   float radius = hypot(offset[X_AXIS], offset[Y_AXIS]),
+-        center_axis0 = current_position[X_AXIS] + offset[X_AXIS],
+-        center_axis1 = current_position[Y_AXIS] + offset[Y_AXIS],
++        center_X = current_position[X_AXIS] + offset[X_AXIS],
++        center_Y = current_position[Y_AXIS] + offset[Y_AXIS],
+         linear_travel = target[Z_AXIS] - current_position[Z_AXIS],
+         extruder_travel = target[E_AXIS] - current_position[E_AXIS],
+-        r_axis0 = -offset[X_AXIS],  // Radius vector from center to current location
+-        r_axis1 = -offset[Y_AXIS],
+-        rt_axis0 = target[X_AXIS] - center_axis0,
+-        rt_axis1 = target[Y_AXIS] - center_axis1;
++        r_X = -offset[X_AXIS],  // Radius vector from center to current location
++        r_Y = -offset[Y_AXIS],
++        rt_X = target[X_AXIS] - center_X,
++        rt_Y = target[Y_AXIS] - center_Y;
+ 
+   // CCW angle of rotation between position and target from the circle center. Only one atan2() trig computation required.
+-  float angular_travel = atan2(r_axis0 * rt_axis1 - r_axis1 * rt_axis0, r_axis0 * rt_axis0 + r_axis1 * rt_axis1);
+-  if (angular_travel < 0)  angular_travel += RADIANS(360);
+-  if (clockwise)  angular_travel -= RADIANS(360);
++  float angular_travel = atan2(r_X * rt_Y - r_Y * rt_X, r_X * rt_X + r_Y * rt_Y);
++  if (angular_travel < 0) angular_travel += RADIANS(360);
++  if (clockwise) angular_travel -= RADIANS(360);
+ 
+   // Make a circle if the angular rotation is 0
+-  if (current_position[X_AXIS] == target[X_AXIS] && current_position[Y_AXIS] == target[Y_AXIS] && angular_travel == 0)
+-    angular_travel += RADIANS(360);
++  if (angular_travel == 0 && current_position[X_AXIS] == target[X_AXIS] && current_position[Y_AXIS] == target[Y_AXIS])
++    angular_travel == RADIANS(360);
+ 
+   float mm_of_travel = hypot(angular_travel * radius, fabs(linear_travel));
+-  if (mm_of_travel < 0.001)  return;
++  if (mm_of_travel < 0.001) return;
+   uint16_t segments = floor(mm_of_travel / (MM_PER_ARC_SEGMENT));
+   if (segments == 0) segments = 1;
+ 
+@@ -7342,9 +7403,7 @@ void plan_arc(
+   float sin_T = theta_per_segment;
+ 
+   float arc_target[NUM_AXIS];
+-  float sin_Ti;
+-  float cos_Ti;
+-  float r_axisi;
++  float sin_Ti, cos_Ti, r_new_Y;
+   uint16_t i;
+   int8_t count = 0;
+ 
+@@ -7356,28 +7415,29 @@ void plan_arc(
+ 
+   float feed_rate = feedrate * feedrate_multiplier / 60 / 100.0;
+ 
+-  for (i = 1; i < segments; i++) { // Increment (segments-1)
++  for (i = 1; i < segments; i++) { // Iterate (segments-1) times
+ 
+-    if (count < N_ARC_CORRECTION) {
+-      // Apply vector rotation matrix to previous r_axis0 / 1
+-      r_axisi = r_axis0 * sin_T + r_axis1 * cos_T;
+-      r_axis0 = r_axis0 * cos_T - r_axis1 * sin_T;
+-      r_axis1 = r_axisi;
+-      count++;
++    if (++count < N_ARC_CORRECTION) {
++      // Apply vector rotation matrix to previous r_X / 1
++      r_new_Y = r_X * sin_T + r_Y * cos_T;
++      r_X = r_X * cos_T - r_Y * sin_T;
++      r_Y = r_new_Y;
+     }
+     else {
+       // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments.
+       // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
++      // To reduce stuttering, the sin and cos could be computed at different times.
++      // For now, compute both at the same time.
+       cos_Ti = cos(i * theta_per_segment);
+       sin_Ti = sin(i * theta_per_segment);
+-      r_axis0 = -offset[X_AXIS] * cos_Ti + offset[Y_AXIS] * sin_Ti;
+-      r_axis1 = -offset[X_AXIS] * sin_Ti - offset[Y_AXIS] * cos_Ti;
++      r_X = -offset[X_AXIS] * cos_Ti + offset[Y_AXIS] * sin_Ti;
++      r_Y = -offset[X_AXIS] * sin_Ti - offset[Y_AXIS] * cos_Ti;
+       count = 0;
+     }
+ 
+     // Update arc_target location
+-    arc_target[X_AXIS] = center_axis0 + r_axis0;
+-    arc_target[Y_AXIS] = center_axis1 + r_axis1;
++    arc_target[X_AXIS] = center_X + r_X;
++    arc_target[Y_AXIS] = center_Y + r_Y;
+     arc_target[Z_AXIS] += linear_per_segment;
+     arc_target[E_AXIS] += extruder_per_segment;
+ 
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 3f22b2f..7d5a1b4 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -551,7 +551,7 @@ void Config_ResetDefault() {
+   home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
+ 
+   #if ENABLED(MESH_BED_LEVELING)
+-    mbl.active = 0;
++    mbl.active = false;
+   #endif
+ 
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 763bed2..f4e8e8d 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -758,7 +758,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index cfa4d63..92a9a28 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -755,7 +755,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 85a8e3a..18cb8bd 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -767,7 +767,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 1f4ed19..f735740 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -769,7 +769,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a4c8414..8ec46cf 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -792,7 +792,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ #define ULTIMAKERCONTROLLER // K8200: for Display VM8201 // as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index eeae0bd..68a1d84 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -775,7 +775,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 524e0a7..59b95b5 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -770,7 +770,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 0e7dc09..e9232b6 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -783,7 +783,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index c58bd7f..c6111c2 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -796,7 +796,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index a1fbec4..51269eb 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -767,7 +767,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 5502400..34e86be 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -775,7 +775,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 9d7e62a..37a82b5 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -897,7 +897,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index ce603a6..093f8b8 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -897,7 +897,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index d3cc727..59d9384 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -901,7 +901,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 69d7572..b0a245f 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -894,7 +894,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 75248fb..c7947f9 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -811,7 +811,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index fe797af..bcb7ab0 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -778,7 +778,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 4b7ff44..d7d9cb9 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -769,7 +769,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+-//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
++//#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with a fixed frequency.
+ //#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
+ //#define LCD_FEEDBACK_FREQUENCY_HZ 1000         // this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
+                                                  // 0 to disable buzzer feedback. Test with M300 S<frequency Hz> P<duration ms>
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index 1df1c98..ce20247 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -29,7 +29,7 @@
+ 
+   class mesh_bed_leveling {
+   public:
+-    uint8_t active;
++    bool active;
+     float z_offset;
+     float z_values[MESH_NUM_Y_POINTS][MESH_NUM_X_POINTS];
+ 
+@@ -41,6 +41,18 @@
+     float get_y(int i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
+     void set_z(int ix, int iy, float z) { z_values[iy][ix] = z; }
+ 
++    inline void zigzag(int index, int &ix, int &iy) {
++      ix = index % (MESH_NUM_X_POINTS);
++      iy = index / (MESH_NUM_X_POINTS);
++      if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // Zig zag
++    }
++
++    void set_zigzag_z(int index, float z) {
++      int ix, iy;
++      zigzag(index, ix, iy);
++      set_z(ix, iy, z);
++    }
++
+     int select_x_index(float x) {
+       int i = 1;
+       while (x > get_x(i) && i < MESH_NUM_X_POINTS - 1) i++;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index b182b08..b68a4e5 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -885,14 +885,35 @@ void lcd_cooldown() {
+    */
+ 
+   static int _lcd_level_bed_position;
++  static bool mbl_wait_for_move = false;
++
++  // Utility to go to the next mesh point
++  // A raise is added between points if MIN_Z_HEIGHT_FOR_HOMING is in use
++  // Note: During Manual Bed Leveling the homed Z position is MESH_HOME_SEARCH_Z
++  // Z position will be restored with the final action, a G28
++  inline void _mbl_goto_xy(float x, float y) {
++    mbl_wait_for_move = true;
++    #if MIN_Z_HEIGHT_FOR_HOMING > 0
++      current_position[Z_AXIS] += MIN_Z_HEIGHT_FOR_HOMING;
++      line_to_current(Z_AXIS);
++    #endif
++    current_position[X_AXIS] = x + home_offset[X_AXIS];
++    current_position[Y_AXIS] = y + home_offset[Y_AXIS];
++    line_to_current(manual_feedrate[X_AXIS] <= manual_feedrate[Y_AXIS] ? X_AXIS : Y_AXIS);
++    #if MIN_Z_HEIGHT_FOR_HOMING > 0
++      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++      line_to_current(Z_AXIS);
++    #endif
++    st_synchronize();
++    mbl_wait_for_move = false;
++  }
+ 
+   /**
+-   * MBL Wait for controller movement and clicks:
+-   *   - Movement adjusts the Z axis
+-   *   - Click saves the Z and goes to the next mesh point
++   * 5. MBL Wait for controller movement and clicks:
++   *        - Movement adjusts the Z axis
++   *        - Click saves the Z, goes to the next mesh point
+    */
+   static void _lcd_level_bed_procedure() {
+-    static bool mbl_wait_for_move = false;
+     // Menu handlers may be called in a re-entrant fashion
+     // if they call st_synchronize or plan_buffer_line. So
+     // while waiting for a move we just ignore new input.
+@@ -929,11 +950,7 @@ void lcd_cooldown() {
+     if (LCD_CLICKED) {
+       if (!debounce_click) {
+         debounce_click = true; // ignore multiple "clicks" in a row
+-        int ix = _lcd_level_bed_position % (MESH_NUM_X_POINTS),
+-            iy = _lcd_level_bed_position / (MESH_NUM_X_POINTS);
+-        if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // Zig zag
+-        mbl.set_z(ix, iy, current_position[Z_AXIS]);
+-        _lcd_level_bed_position++;
++        mbl.set_zigzag_z(_lcd_level_bed_position++, current_position[Z_AXIS]);
+         if (_lcd_level_bed_position == (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS)) {
+           lcd_return_to_status();
+           LCD_ALERTMESSAGEPGM(MSG_LEVEL_BED_DONE);
+@@ -944,24 +961,16 @@ void lcd_cooldown() {
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+           line_to_current(Z_AXIS);
+           st_synchronize();
+-          mbl.active = 1;
++          mbl.active = true;
+           enqueue_and_echo_commands_P(PSTR("G28"));
+         }
+         else {
+           #if ENABLED(NEWPANEL)
+             lcd_quick_feedback();
+           #endif
+-          mbl_wait_for_move = true;
+-          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+-          line_to_current(Z_AXIS);
+-          ix = _lcd_level_bed_position % (MESH_NUM_X_POINTS);
+-          iy = _lcd_level_bed_position / (MESH_NUM_X_POINTS);
+-          if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // Zig zag
+-          current_position[X_AXIS] = mbl.get_x(ix);
+-          current_position[Y_AXIS] = mbl.get_y(iy);
+-          line_to_current(manual_feedrate[X_AXIS] <= manual_feedrate[Y_AXIS] ? X_AXIS : Y_AXIS);
+-          st_synchronize();
+-          mbl_wait_for_move = false;
++          int ix, iy;
++          mbl.zigzag(_lcd_level_bed_position, ix, iy);
++          _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
+           encoderPosition = 0;
+         }
+       }
+@@ -971,22 +980,25 @@ void lcd_cooldown() {
+     }
+   }
+ 
++  /**
++   * 4. MBL Display "Click to Begin", wait for click
++   *        Move to the first probe position
++   */
+   static void _lcd_level_bed_homing_done() {
+     if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_WAITING), NULL);
+     lcdDrawUpdate = LCDVIEW_CALL_NO_REDRAW;
++    if (mbl_wait_for_move) return;
+     if (LCD_CLICKED) {
+       current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-      current_position[X_AXIS] = MESH_MIN_X;
+-      current_position[Y_AXIS] = MESH_MIN_Y;
+-      line_to_current(manual_feedrate[X_AXIS] <= manual_feedrate[Y_AXIS] ? X_AXIS : Y_AXIS);
++      _mbl_goto_xy(MESH_MIN_X, MESH_MIN_Y);
+       _lcd_level_bed_position = 0;
+       lcd_goto_menu(_lcd_level_bed_procedure, true);
+     }
+   }
+ 
+   /**
+-   * MBL Move to mesh starting point
++   * 3. MBL Display "Hoing XYZ" - Wait for homing to finish
+    */
+   static void _lcd_level_bed_homing() {
+     if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(MSG_LEVEL_BED_HOMING), NULL);
+@@ -996,7 +1008,7 @@ void lcd_cooldown() {
+   }
+ 
+   /**
+-   * MBL Continue Bed Leveling...
++   * 2. MBL Continue Bed Leveling...
+    */
+   static void _lcd_level_bed_continue() {
+     defer_return_to_status = true;
+@@ -1007,7 +1019,7 @@ void lcd_cooldown() {
+   }
+ 
+   /**
+-   * MBL entry-point
++   * 1. MBL entry-point: "Cancel" or "Level Bed"
+    */
+   static void lcd_level_bed() {
+     START_MENU();
+

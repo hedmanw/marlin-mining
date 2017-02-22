@@ -1,0 +1,138 @@
+commit e40646de428981f348173b4ec5a263a425f08a9c (from 2fce21757615b699320704bdbe866f382b1bd311)
+Merge: 2fce217 5ecc7d9
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Sep 13 18:03:39 2016 -0500
+
+    Merge pull request #4803 from thinkyhead/rc_lcd_button_fix
+    
+    Clear LCD button state, apply timer to all
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 55247c1..f2768a8 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2361,6 +2361,7 @@ void kill_screen(const char* lcd_msg) {
+ 
+   void lcd_quick_feedback() {
+     lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
++    buttons = 0;
+     next_button_update_ms = millis() + 500;
+ 
+     // Buzz and wait. The delay is needed for buttons to settle!
+@@ -2850,20 +2851,26 @@ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+    * Warning: This function is called from interrupt context!
+    */
+   void lcd_buttons_update() {
+-    #if ENABLED(NEWPANEL)
+-      uint8_t newbutton = 0;
+-      #if BUTTON_EXISTS(EN1)
+-        if (BUTTON_PRESSED(EN1)) newbutton |= EN_A;
+-      #endif
+-      #if BUTTON_EXISTS(EN2)
+-        if (BUTTON_PRESSED(EN2)) newbutton |= EN_B;
+-      #endif
+-      #if LCD_HAS_DIRECTIONAL_BUTTONS || BUTTON_EXISTS(ENC)
+-        millis_t now = millis();
+-      #endif
++    millis_t now = millis();
++    if (ELAPSED(now, next_button_update_ms)) {
++
++      #if ENABLED(NEWPANEL)
++        uint8_t newbutton = 0;
++
++        #if BUTTON_EXISTS(EN1)
++          if (BUTTON_PRESSED(EN1)) newbutton |= EN_A;
++        #endif
++
++        #if BUTTON_EXISTS(EN2)
++          if (BUTTON_PRESSED(EN2)) newbutton |= EN_B;
++        #endif
++
++        #if BUTTON_EXISTS(ENC)
++          if (BUTTON_PRESSED(ENC)) newbutton |= EN_C;
++        #endif
++
++        #if LCD_HAS_DIRECTIONAL_BUTTONS
+ 
+-      #if LCD_HAS_DIRECTIONAL_BUTTONS
+-        if (ELAPSED(now, next_button_update_ms)) {
+           if (false) {
+             // for the else-ifs below
+           }
+@@ -2891,23 +2898,21 @@ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+               next_button_update_ms = now + 300;
+             }
+           #endif
+-        }
+-      #endif
+ 
+-      #if BUTTON_EXISTS(ENC)
+-        if (ELAPSED(now, next_button_update_ms) && BUTTON_PRESSED(ENC)) newbutton |= EN_C;
+-      #endif
++        #endif // LCD_HAS_DIRECTIONAL_BUTTONS
+ 
+-      buttons = newbutton;
+-      #if ENABLED(LCD_HAS_SLOW_BUTTONS)
+-        buttons |= slow_buttons;
+-      #endif
+-      #if ENABLED(REPRAPWORLD_KEYPAD)
+-        GET_BUTTON_STATES(buttons_reprapworld_keypad);
+-      #endif
+-    #else
+-      GET_BUTTON_STATES(buttons);
+-    #endif //!NEWPANEL
++        buttons = newbutton;
++        #if ENABLED(LCD_HAS_SLOW_BUTTONS)
++          buttons |= slow_buttons;
++        #endif
++        #if ENABLED(REPRAPWORLD_KEYPAD)
++          GET_BUTTON_STATES(buttons_reprapworld_keypad);
++        #endif
++      #else
++        GET_BUTTON_STATES(buttons);
++      #endif //!NEWPANEL
++
++    } // next_button_update_ms
+ 
+     // Manage encoder rotation
+     #if ENABLED(REVERSE_MENU_DIRECTION) && ENABLED(REVERSE_ENCODER_DIRECTION)
+
+commit e40646de428981f348173b4ec5a263a425f08a9c (from 5ecc7d9f25fddd8d1774d383725fe326d9f7d8b0)
+Merge: 2fce217 5ecc7d9
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Sep 13 18:03:39 2016 -0500
+
+    Merge pull request #4803 from thinkyhead/rc_lcd_button_fix
+    
+    Clear LCD button state, apply timer to all
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index bbc92e9..a93c2e8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3431,7 +3431,7 @@ inline void gcode_G28() {
+       #endif // AUTO_BED_LEVELING_LINEAR
+ 
+       int probePointCounter = 0;
+-      uint8_t zig = auto_bed_leveling_grid_points & 1; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
++      bool zig = auto_bed_leveling_grid_points & 1; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
+ 
+       for (uint8_t yCount = 0; yCount < auto_bed_leveling_grid_points; yCount++) {
+         float yBase = front_probe_bed_position + yGridSpacing * yCount,
+@@ -3451,13 +3451,13 @@ inline void gcode_G28() {
+ 
+         zig = !zig;
+ 
+-        for (uint8_t xCount = xStart; xCount != xStop; xCount += xInc) {
++        for (int8_t xCount = xStart; xCount != xStop; xCount += xInc) {
+           float xBase = left_probe_bed_position + xGridSpacing * xCount,
+                 xProbe = floor(xBase + (xBase < 0 ? 0 : 0.5));
+ 
+           #if ENABLED(DELTA)
+             // Avoid probing outside the round or hexagonal area of a delta printer
+-            if (sq(xProbe) + sq(yProbe) > sq(DELTA_PROBEABLE_RADIUS) + 0.1) continue;
++            if (HYPOT2(xProbe, yProbe) > sq(DELTA_PROBEABLE_RADIUS) + 0.1) continue;
+           #endif
+ 
+           float measured_z = probe_pt(xProbe, yProbe, stow_probe_after_each, verbose_level);
+

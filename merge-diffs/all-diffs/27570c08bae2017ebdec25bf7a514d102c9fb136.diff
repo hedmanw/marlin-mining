@@ -1,0 +1,317 @@
+commit 27570c08bae2017ebdec25bf7a514d102c9fb136 (from 38fa1b1939dfe60ec0129b4992ecea38495be758)
+Merge: 38fa1b1 97e0aed
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Aug 13 20:56:09 2016 -0700
+
+    Merge pull request #4620 from thinkyhead/rc_twibus_further
+    
+    Further refinements of TWIBus
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a829347..5dab1f4 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -842,12 +842,7 @@ void servo_init() {
+   }
+ 
+   void i2c_on_request() {          // just send dummy data for now
+-    static const char *msg = "Hello World!\n";
+-    const char *adr = msg;
+-    char c;
+-    i2c.reset();
+-    while (c = *adr++) i2c.addbyte(c);
+-    i2c.send();
++    i2c.reply("Hello World!\n");
+   }
+ 
+ #endif
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+index cbefbfd..ab04fa3 100644
+--- a/Marlin/twibus.cpp
++++ b/Marlin/twibus.cpp
+@@ -42,38 +42,60 @@ void TWIBus::reset() {
+   this->buffer[0] = 0x00;
+ }
+ 
+-void TWIBus::address(const uint8_t addr) {
+-  this->addr = addr;
++void TWIBus::address(const uint8_t adr) {
++  this->addr = adr;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("address"), this->addr);
++    debug(PSTR("address"), adr);
+   #endif
+ }
+ 
+ void TWIBus::addbyte(const char c) {
+-  if (buffer_s >= sizeof(this->buffer)) return;
++  if (this->buffer_s >= COUNT(this->buffer)) return;
+   this->buffer[this->buffer_s++] = c;
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("addbyte"), c);
++  #endif
++}
++
++void TWIBus::addbytes(char src[], uint8_t bytes) {
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("addbytes"), bytes);
++  #endif
++  while (bytes--) this->addbyte(*src++);
++}
+ 
++void TWIBus::addstring(char str[]) {
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("addbyte"), this->buffer[this->buffer_s - 1]);
++    debug(PSTR("addstring"), str);
+   #endif
++  while (char c = *str++) this->addbyte(c);
+ }
+ 
+ void TWIBus::send() {
+   if (!this->addr) return;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("send()"));
++    debug(PSTR("send"), this->addr);
+   #endif
+ 
+   Wire.beginTransmission(this->addr);
+   Wire.write(this->buffer, this->buffer_s);
+   Wire.endTransmission();
+ 
+-  // Reset the buffer after sending the data
+   this->reset();
+ }
+ 
++void TWIBus::echodata(uint8_t bytes, const char prefix[], uint8_t adr) {
++  SERIAL_ECHO_START;
++  serialprintPGM(prefix);
++  SERIAL_ECHOPAIR(": from:", adr);
++  SERIAL_ECHOPAIR(" bytes:", bytes);
++  SERIAL_ECHOPGM (" data:");
++  while (bytes-- && Wire.available()) SERIAL_CHAR(Wire.read());
++  SERIAL_EOL;
++}
++
+ void TWIBus::reqbytes(const uint8_t bytes) {
+   if (!this->addr) return;
+ 
+@@ -82,34 +104,57 @@ void TWIBus::reqbytes(const uint8_t bytes) {
+   #endif
+ 
+   // requestFrom() is a blocking function
+-  millis_t t = millis() + this->timeout;
+   Wire.requestFrom(this->addr, bytes);
+-  while (Wire.available() < bytes && PENDING(millis(), t)) { /*nada*/ }
+ 
+-  this->relaydata(bytes);
++  // Wait until all bytes arrive, or timeout
++  millis_t t = millis() + this->timeout;
++  while (Wire.available() < bytes && PENDING(millis(), t)) { /*nada*/ }
+ 
+-  // Reset the buffer after sending the data
+-  this->reset();
++  // Simply echo the data to the bus
++  this->echodata(bytes, PSTR("i2c-reply"), this->addr);
+ }
+ 
+-void TWIBus::relaydata(uint8_t bytes) {
+-  SERIAL_ECHO_START;
+-  SERIAL_ECHOPAIR("i2c-reply: from:", this->addr);
+-  SERIAL_ECHOPAIR(" bytes:", bytes);
+-  SERIAL_ECHOPGM (" data:");
+-  while (bytes-- && Wire.available()) SERIAL_CHAR(Wire.read());
+-  SERIAL_EOL;
+-}
++#if I2C_SLAVE_ADDRESS > 0
+ 
+-#if ENABLED(DEBUG_TWIBUS)
++  void TWIBus::receive(uint8_t bytes) {
++    #if ENABLED(DEBUG_TWIBUS)
++      debug(PSTR("receive"), bytes);
++    #endif
++    this->echodata(bytes, PSTR("i2c-receive"), 0);
++  }
++
++  void TWIBus::reply(char str[]/*=NULL*/) {
++    #if ENABLED(DEBUG_TWIBUS)
++      debug(PSTR("reply"), str);
++    #endif
+ 
+-  void TWIBus::debug(const char func[], int32_t val/*=-1*/) {
+-    if (DEBUGGING(INFO)) {
+-      SERIAL_ECHOPGM("TWIBus::");
+-      serialprintPGM(func);
+-      if (val >= 0) SERIAL_ECHOPAIR(": ", val);
+-      SERIAL_EOL;
++    if (str) {
++      this->reset();
++      this->addstring(str);
+     }
++
++    Wire.write(this->buffer, this->buffer_s);
++
++    this->reset();
++  }
++
++#endif
++
++#if ENABLED(DEBUG_TWIBUS)
++
++  void TWIBus::prefix(const char func[]) {
++    SERIAL_ECHOPGM("TWIBus::");
++    serialprintPGM(func);
++    SERIAL_ECHOPGM(": ");
++  }
++  void TWIBus::debug(const char func[], uint32_t adr) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(adr); }
++  }
++  void TWIBus::debug(const char func[], char c) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(c); }
++  }
++  void TWIBus::debug(const char func[], char str[]) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(str); }
+   }
+ 
+ #endif
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+index 083d3a7..89257d3 100644
+--- a/Marlin/twibus.h
++++ b/Marlin/twibus.h
+@@ -62,7 +62,7 @@ class TWIBus {
+ 
+     /**
+      * @brief Number of bytes on buffer
+-     * @description Number of bytes in the buffer waiting to be flushed to the bus.
++     * @description Number of bytes in the buffer waiting to be flushed to the bus
+      */
+     uint8_t buffer_s = 0;
+ 
+@@ -94,7 +94,7 @@ class TWIBus {
+ 
+     /**
+      * @brief Send the buffer data to the bus
+-     * @details Flush the buffer to the bus at the target address.
++     * @details Flush the buffer to the target address
+      */
+     void send();
+ 
+@@ -108,44 +108,56 @@ class TWIBus {
+     void addbyte(const char c);
+ 
+     /**
++     * @brief Add some bytes to the buffer
++     * @details Add bytes to the end of the buffer.
++     *          Concatenates at the buffer size.
++     *
++     * @param src source data address
++     * @param bytes the number of bytes to add
++     */
++    void addbytes(char src[], uint8_t bytes);
++
++    /**
++     * @brief Add a null-terminated string to the buffer
++     * @details Add bytes to the end of the buffer up to a nul.
++     *          Concatenates at the buffer size.
++     *
++     * @param str source string address
++     */
++    void addstring(char str[]);
++
++    /**
+      * @brief Set the target slave address
+-     * @details The target slave address for sending the full packet.
++     * @details The target slave address for sending the full packet
+      *
+-     * @param addr 7-bit integer address
++     * @param adr 7-bit integer address
+      */
+-    void address(const uint8_t addr);
++    void address(const uint8_t adr);
+ 
+     /**
+-     * @brief Request data from the slave device
+-     * @details Request a number of bytes from a slave device.
+-     *          This implementation simply sends the data to serial
+-     *          in a parser-friendly format.
++     * @brief Echo data on the bus to serial
++     * @details Echo some number of bytes from the bus
++     *          to serial in a parser-friendly format.
+      *
+      * @param bytes the number of bytes to request
+      */
+-    void reqbytes(const uint8_t bytes);
++    static void echodata(uint8_t bytes, const char prefix[], uint8_t adr);
+ 
+     /**
+-     * @brief Relay data from the slave device to serial
+-     * @details Relay a number of bytes from the bus to
+-     *          serial in a parser-friendly format.
++     * @brief Request data from the slave device
++     * @details Request a number of bytes from a slave device.
++     *          This implementation simply sends the data to serial
++     *          in a parser-friendly format.
+      *
+      * @param bytes the number of bytes to request
+      */
+-    void relaydata(uint8_t bytes);
++    void reqbytes(const uint8_t bytes);
+ 
+     #if I2C_SLAVE_ADDRESS > 0
+ 
+       /**
+-       * @brief Receive bytes (passively)
+-       * @details Receive bytes sent to our slave address.
+-       *          and simply echo them to serial.
+-       */
+-      inline void receive(uint8_t bytes) { relaydata(bytes); }
+-
+-      /**
+        * @brief Register a slave receive handler
+-       * @details Set a handler to receive data addressed to us.
++       * @details Set a handler to receive data addressed to us
+        *
+        * @param handler A function to handle receiving bytes
+        */
+@@ -153,12 +165,25 @@ class TWIBus {
+ 
+       /**
+        * @brief Register a slave request handler
+-       * @details Set a handler to send data requested from us.
++       * @details Set a handler to send data requested from us
+        *
+        * @param handler A function to handle receiving bytes
+        */
+       inline void onRequest(const twiRequestFunc_t handler) { Wire.onRequest(handler); }
+ 
++      /**
++       * @brief Default handler to receive
++       * @details Receive bytes sent to our slave address
++       *          and simply echo them to serial.
++       */
++      void receive(uint8_t bytes);
++
++      /**
++       * @brief Send a reply to the bus
++       * @details Send the buffer and clear it.
++       */
++      void reply(char str[]=NULL);
++
+     #endif
+ 
+     #if ENABLED(DEBUG_TWIBUS)
+@@ -167,7 +192,11 @@ class TWIBus {
+        * @brief Prints a debug message
+        * @details Prints a simple debug message "TWIBus::function: value"
+        */
+-      static void debug(const char func[], int32_t val = -1);
++      static void prefix(const char func[]);
++      static void debug(const char func[], uint32_t adr);
++      static void debug(const char func[], char c);
++      static void debug(const char func[], char adr[]);
++      static inline void debug(const char func[], uint8_t v) { debug(func, (uint32_t)v); }
+ 
+     #endif
+ };
+

@@ -1,0 +1,128 @@
+commit be3f2dc1d979f0b103aa1b3d4ae9e3372a4f94ce (from 8d396584bf9f2932e38314187b1ef410dc7a66f8)
+Merge: 8d39658 5d81c77
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Mar 18 19:09:05 2015 -0700
+
+    Merge pull request #1636 from AnHardt/warning2
+    
+    lcd_control_retract_menu() is conditional.
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index c05532f..63df967 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -61,7 +61,9 @@ static void lcd_control_volumetric_menu();
+ #ifdef DOGLCD
+ static void lcd_set_contrast();
+ #endif
++#ifdef FWRETRACT
+ static void lcd_control_retract_menu();
++#endif
+ static void lcd_sdcard_menu();
+ 
+ #ifdef DELTA_CALIBRATION_MENU
+
+commit be3f2dc1d979f0b103aa1b3d4ae9e3372a4f94ce (from 5d81c779cced18d533c1ebd0c33efbaa20ae6b5b)
+Merge: 8d39658 5d81c77
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Mar 18 19:09:05 2015 -0700
+
+    Merge pull request #1636 from AnHardt/warning2
+    
+    lcd_control_retract_menu() is conditional.
+
+diff --git a/Documentation/GCodes.md b/Documentation/GCodes.md
+index fde8435..57b95cd 100644
+--- a/Documentation/GCodes.md
++++ b/Documentation/GCodes.md
+@@ -66,7 +66,7 @@
+ *  M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ *  M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+ *  M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+-*  M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
++*  M204 - Set default acceleration: P for Printing moves, R for Retract only (no X, Y, Z) moves and T for Travel (non printing) moves (ex. M204 P800 T3000 R9000) in mm/sec^2
+ *  M205 - advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk, E=maximum E jerk
+ *  M206 - set additional homing offset
+ *  M207 - set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop], stays in mm regardless of M200 setting
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 5ad45ef..afe6d9a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -143,7 +143,7 @@
+ // M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ // M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+ // M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+-// M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) in mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer under-runs and M20 minimum feedrate
++// M204 - Set default acceleration: P for Printing moves, R for Retract only (no X, Y, Z) moves and T for Travel (non printing) moves (ex. M204 P800 T3000 R9000) in mm/sec^2
+ // M205 -  advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk, E=maximum E jerk
+ // M206 - Set additional homing offset
+ // M207 - Set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop], stays in mm regardless of M200 setting
+@@ -357,6 +357,7 @@ int fanSpeed = 0;
+ 
+ #ifdef SCARA
+   float axis_scaling[3] = { 1, 1, 1 };    // Build size scaling, default to 1
++  static float delta[3] = { 0, 0, 0 };		
+ #endif        
+ 
+ bool cancel_heatup = false;
+@@ -383,10 +384,6 @@ const char echomagic[] PROGMEM = "echo:";
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ static float destination[NUM_AXIS] = { 0, 0, 0, 0 };
+ 
+-#ifndef DELTA
+-  static float delta[3] = { 0, 0, 0 };
+-#endif
+-
+ static float offset[3] = { 0, 0, 0 };
+ static bool home_all_axis = true;
+ static float feedrate = 1500.0, next_feedrate, saved_feedrate;
+@@ -1690,7 +1687,7 @@ inline void gcode_G2_G3(bool clockwise) {
+  * G4: Dwell S<seconds> or P<milliseconds>
+  */
+ inline void gcode_G4() {
+-  unsigned long codenum;
++  unsigned long codenum=0;
+ 
+   LCD_MESSAGEPGM(MSG_DWELL);
+ 
+@@ -3525,6 +3522,13 @@ inline void gcode_M203() {
+  *  Also sets minimum segment time in ms (B20000) to prevent buffer under-runs and M20 minimum feedrate
+  */
+ inline void gcode_M204() {
++  if (code_seen('S'))   // Kept for legacy compatibility. Should NOT BE USED for new developments.
++  {
++    acceleration = code_value();
++    travel_acceleration = acceleration;
++    SERIAL_ECHOPAIR("Setting Printing and Travelling Acceleration: ", acceleration );
++    SERIAL_EOL;
++  }
+   if (code_seen('P'))
+   {
+     acceleration = code_value();
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4be9301..63df967 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -404,7 +404,7 @@ static void lcd_main_menu() {
+   END_MENU();
+ }
+ 
+-#ifdef SDSUPPORT
++#if defined( SDSUPPORT ) && defined( MENU_ADDAUTOSTART )
+   static void lcd_autostart_sd() {
+     card.autostart_index = 0;
+     card.setroot();
+@@ -589,10 +589,8 @@ void lcd_cooldown() {
+ static void lcd_prepare_menu() {
+   START_MENU();
+   MENU_ITEM(back, MSG_MAIN, lcd_main_menu);
+-  #ifdef SDSUPPORT
+-    #ifdef MENU_ADDAUTOSTART
+-      MENU_ITEM(function, MSG_AUTOSTART, lcd_autostart_sd);
+-    #endif
++  #if defined( SDSUPPORT ) && defined( MENU_ADDAUTOSTART )
++    MENU_ITEM(function, MSG_AUTOSTART, lcd_autostart_sd);
+   #endif
+   MENU_ITEM(gcode, MSG_DISABLE_STEPPERS, PSTR("M84"));
+   MENU_ITEM(gcode, MSG_AUTO_HOME, PSTR("G28"));
+

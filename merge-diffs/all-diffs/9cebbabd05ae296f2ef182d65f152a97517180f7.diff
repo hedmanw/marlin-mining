@@ -1,0 +1,3013 @@
+commit 9cebbabd05ae296f2ef182d65f152a97517180f7 (from fd642331823fa334f435d51f0bfa8a579489994c)
+Merge: fd64233 5fff8d1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Sep 25 18:50:47 2016 -0500
+
+    Merge pull request #4893 from thinkyhead/rc_stat_led_check
+    
+    Define status LED pins without condition
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 1b5e418..d23c822 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -462,10 +462,13 @@
+   #define HAS_SOLENOID_1 (PIN_EXISTS(SOL1))
+   #define HAS_SOLENOID_2 (PIN_EXISTS(SOL2))
+   #define HAS_SOLENOID_3 (PIN_EXISTS(SOL3))
+-  #define HAS_MICROSTEPS (PIN_EXISTS(X_MS1))
++  #define HAS_MICROSTEPS_X (PIN_EXISTS(X_MS1))
++  #define HAS_MICROSTEPS_Y (PIN_EXISTS(Y_MS1))
++  #define HAS_MICROSTEPS_Z (PIN_EXISTS(Z_MS1))
+   #define HAS_MICROSTEPS_E0 (PIN_EXISTS(E0_MS1))
+   #define HAS_MICROSTEPS_E1 (PIN_EXISTS(E1_MS1))
+   #define HAS_MICROSTEPS_E2 (PIN_EXISTS(E2_MS1))
++  #define HAS_MICROSTEPS (HAS_MICROSTEPS_X || HAS_MICROSTEPS_Y || HAS_MICROSTEPS_Z || HAS_MICROSTEPS_E0 || HAS_MICROSTEPS_E1 || HAS_MICROSTEPS_E2)
+   #define HAS_STEPPER_RESET (PIN_EXISTS(STEPPER_RESET))
+   #define HAS_X_ENABLE (PIN_EXISTS(X_ENABLE))
+   #define HAS_X2_ENABLE (PIN_EXISTS(X2_ENABLE))
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 03e97a1..5d6351f 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -781,7 +781,7 @@ void setup_killpin() {
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+ 
+   void setup_filrunoutpin() {
+-    pinMode(FIL_RUNOUT_PIN, INPUT);
++    SET_INPUT(FIL_RUNOUT_PIN);
+     #if ENABLED(ENDSTOPPULLUP_FIL_RUNOUT)
+       WRITE(FIL_RUNOUT_PIN, HIGH);
+     #endif
+@@ -859,10 +859,9 @@ void servo_init() {
+  */
+ #if HAS_STEPPER_RESET
+   void disableStepperDrivers() {
+-    pinMode(STEPPER_RESET_PIN, OUTPUT);
+-    digitalWrite(STEPPER_RESET_PIN, LOW);  // drive it down to hold in reset motor driver chips
++    OUT_WRITE(STEPPER_RESET_PIN, LOW);  // drive it down to hold in reset motor driver chips
+   }
+-  void enableStepperDrivers() { pinMode(STEPPER_RESET_PIN, INPUT); }  // set to input, which allows it to be pulled high by pullups
++  void enableStepperDrivers() { SET_INPUT(STEPPER_RESET_PIN); }  // set to input, which allows it to be pulled high by pullups
+ #endif
+ 
+ #if ENABLED(EXPERIMENTAL_I2CBUS) && I2C_SLAVE_ADDRESS > 0
+@@ -6514,18 +6513,19 @@ inline void gcode_M503() {
+ inline void gcode_M907() {
+   #if HAS_DIGIPOTSS
+     LOOP_XYZE(i)
+-      if (code_seen(axis_codes[i])) stepper.digipot_current(i, code_value_int());
++    if (code_seen(axis_codes[i])) stepper.digipot_current(i, code_value_int());
+     if (code_seen('B')) stepper.digipot_current(4, code_value_int());
+     if (code_seen('S')) for (int i = 0; i <= 4; i++) stepper.digipot_current(i, code_value_int());
+-  #endif
+-  #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
+-    if (code_seen('X')) stepper.digipot_current(0, code_value_int());
+-  #endif
+-  #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
+-    if (code_seen('Z')) stepper.digipot_current(1, code_value_int());
+-  #endif
+-  #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
+-    if (code_seen('E')) stepper.digipot_current(2, code_value_int());
++  #elif HAS_MOTOR_CURRENT_PWM
++    #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
++      if (code_seen('X')) stepper.digipot_current(0, code_value_int());
++    #endif
++    #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
++      if (code_seen('Z')) stepper.digipot_current(1, code_value_int());
++    #endif
++    #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
++      if (code_seen('E')) stepper.digipot_current(2, code_value_int());
++    #endif
+   #endif
+   #if ENABLED(DIGIPOT_I2C)
+     // this one uses actual amps in floating point
+@@ -8718,8 +8718,8 @@ void prepare_move_to_destination() {
+       bool new_led = (max_temp > 55.0) ? true : (max_temp < 54.0) ? false : red_led;
+       if (new_led != red_led) {
+         red_led = new_led;
+-        digitalWrite(STAT_LED_RED, new_led ? HIGH : LOW);
+-        digitalWrite(STAT_LED_BLUE, new_led ? LOW : HIGH);
++        WRITE(STAT_LED_RED_PIN, new_led ? HIGH : LOW);
++        WRITE(STAT_LED_BLUE_PIN, new_led ? LOW : HIGH);
+       }
+     }
+   }
+@@ -9193,20 +9193,17 @@ void setup() {
+   #endif
+ 
+   #if ENABLED(Z_PROBE_SLED) && PIN_EXISTS(SLED)
+-    pinMode(SLED_PIN, OUTPUT);
+-    digitalWrite(SLED_PIN, LOW); // turn it off
++    OUT_WRITE(SLED_PIN, LOW); // turn it off
+   #endif // Z_PROBE_SLED
+ 
+   setup_homepin();
+ 
+-  #ifdef STAT_LED_RED
+-    pinMode(STAT_LED_RED, OUTPUT);
+-    digitalWrite(STAT_LED_RED, LOW); // turn it off
++  #if PIN_EXISTS(STAT_LED_RED)
++    OUT_WRITE(STAT_LED_RED_PIN, LOW); // turn it off
+   #endif
+ 
+-  #ifdef STAT_LED_BLUE
+-    pinMode(STAT_LED_BLUE, OUTPUT);
+-    digitalWrite(STAT_LED_BLUE, LOW); // turn it off
++  #if PIN_EXISTS(STAT_LED_BLUE)
++    OUT_WRITE(STAT_LED_BLUE_PIN, LOW); // turn it off
+   #endif
+ 
+   lcd_init();
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 7c2526b..b97a72d 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -61,10 +61,6 @@
+   #error "Z_LATE_ENABLE can't be used with COREXZ."
+ #elif defined(X_HOME_RETRACT_MM)
+   #error "[XYZ]_HOME_RETRACT_MM settings have been renamed [XYZ]_HOME_BUMP_MM."
+-#elif defined(BEEPER)
+-  #error "BEEPER is now BEEPER_PIN. Please update your pins definitions."
+-#elif defined(SDCARDDETECT)
+-  #error "SDCARDDETECT is now SD_DETECT_PIN. Please update your pins definitions."
+ #elif defined(SDCARDDETECTINVERTED)
+   #error "SDCARDDETECTINVERTED is now SD_DETECT_INVERTED. Please update your configuration."
+ #elif defined(BTENABLED)
+@@ -143,6 +139,16 @@
+   #error "SCARA is now MORGAN_SCARA. Please update your configuration."
+ #elif defined(AUTO_BED_LEVELING_GRID_POINTS)
+   #error "AUTO_BED_LEVELING_GRID_POINTS is now ABL_GRID_POINTS_X and ABL_GRID_POINTS_Y. Please update your configuration."
++#elif defined(BEEPER)
++  #error "BEEPER is now BEEPER_PIN. Please update your pins definitions."
++#elif defined(SDCARDDETECT)
++  #error "SDCARDDETECT is now SD_DETECT_PIN. Please update your pins definitions."
++#elif defined(STAT_LED_RED) || defined(STAT_LED_BLUE)
++  #error "STAT_LED_RED/STAT_LED_BLUE are now STAT_LED_RED_PIN/STAT_LED_BLUE_PIN. Please update your pins definitions."
++#elif defined(LCD_PIN_BL)
++  #error "LCD_PIN_BL is now LCD_BACKLIGHT_PIN. Please update your pins definitions."
++#elif defined(LCD_PIN_RESET)
++  #error "LCD_PIN_RESET is now LCD_RESET_PIN. Please update your pins definitions."
+ #endif
+ 
+ /**
+@@ -723,6 +729,13 @@
+ #endif
+ 
+ /**
++ * Temperature status LEDs
++ */
++#if ENABLED(TEMP_STAT_LEDS) && !(PIN_EXISTS(STAT_LED_RED) && PIN_EXISTS(STAT_LED_BLUE))
++  #error "TEMP_STAT_LEDS requires STAT_LED_RED_PIN and STAT_LED_BLUE_PIN."
++#endif
++
++/**
+  * Basic 2-nozzle duplication mode
+  */
+ #if ENABLED(DUAL_NOZZLE_DUPLICATION_MODE)
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 190e4ad..900c73b 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -302,16 +302,16 @@ bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+   // set pin modes
+   pinMode(chipSelectPin_, OUTPUT);
+   chipSelectHigh();
+-  pinMode(SPI_MISO_PIN, INPUT);
+-  pinMode(SPI_MOSI_PIN, OUTPUT);
+-  pinMode(SPI_SCK_PIN, OUTPUT);
++  SET_INPUT(SPI_MISO_PIN);
++  SET_OUTPUT(SPI_MOSI_PIN);
++  SET_OUTPUT(SPI_SCK_PIN);
+ 
+   #if DISABLED(SOFTWARE_SPI)
+     // SS must be in output mode even it is not chip select
+-    pinMode(SS_PIN, OUTPUT);
++    SET_OUTPUT(SS_PIN);
+     // set SS high - may be chip select for another SPI device
+     #if SET_SPI_SS_HIGH
+-      digitalWrite(SS_PIN, HIGH);
++      WRITE(SS_PIN, HIGH);
+     #endif  // SET_SPI_SS_HIGH
+     // set SCK rate for initialization commands
+     spiRate_ = SPI_SD_INIT_RATE;
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index 3a608e0..cc90a0f 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -2064,343 +2064,342 @@
+     #define MOSI        DIO10  // 22
+     #define SS          DIO8   // 20
+ 
+-    #define DIO0_PIN        PINA0
+-    #define DIO0_RPORT      PINA
+-    #define DIO0_WPORT      PORTA
+-    #define DIO0_PWM      NULL
+-    #define DIO0_DDR        DDRA
+-
+-    #define DIO1_PIN        PINA1
+-    #define DIO1_RPORT      PINA
+-    #define DIO1_WPORT      PORTA
+-    #define DIO1_PWM      NULL
+-    #define DIO1_DDR        DDRA
+-
+-    #define DIO2_PIN        PINA2
+-    #define DIO2_RPORT      PINA
+-    #define DIO2_WPORT      PORTA
+-    #define DIO2_PWM      NULL
+-    #define DIO2_DDR        DDRA
+-
+-    #define DIO3_PIN        PINA3
+-    #define DIO3_RPORT      PINA
+-    #define DIO3_WPORT      PORTA
+-    #define DIO3_PWM      NULL
+-    #define DIO3_DDR        DDRA
+-
+-    #define DIO4_PIN        PINA4
+-    #define DIO4_RPORT      PINA
+-    #define DIO4_WPORT      PORTA
+-    #define DIO4_PWM      NULL
+-    #define DIO4_DDR        DDRA
+-
+-    #define DIO5_PIN        PINA5
+-    #define DIO5_RPORT      PINA
+-    #define DIO5_WPORT      PORTA
+-    #define DIO5_PWM      NULL
+-    #define DIO5_DDR        DDRA
+-
+-    #define DIO6_PIN        PINA6
+-    #define DIO6_RPORT      PINA
+-    #define DIO6_WPORT      PORTA
+-    #define DIO6_PWM      NULL
+-    #define DIO6_DDR        DDRA
+-
+-    #define DIO7_PIN        PINA7
+-    #define DIO7_RPORT      PINA
+-    #define DIO7_WPORT      PORTA
+-    #define DIO7_PWM      NULL
+-    #define DIO7_DDR        DDRA
+-
+-    #define DIO8_PIN        PINB0
+-    #define DIO8_RPORT      PINB
+-    #define DIO8_WPORT      PORTB
+-    #define DIO8_PWM      NULL
+-    #define DIO8_DDR        DDRB
+-
+-    #define DIO9_PIN        PINB1
+-    #define DIO9_RPORT      PINB
+-    #define DIO9_WPORT      PORTB
+-    #define DIO9_PWM      NULL
+-    #define DIO9_DDR        DDRB
+-
+-    #define DIO10_PIN       PINB2
+-    #define DIO10_RPORT     PINB
+-    #define DIO10_WPORT     PORTB
+-    #define DIO10_PWM     NULL
+-    #define DIO10_DDR       DDRB
+-
+-    #define DIO11_PIN       PINB3
+-    #define DIO11_RPORT     PINB
+-    #define DIO11_WPORT     PORTB
+-    #define DIO11_PWM     NULL
+-    #define DIO11_DDR       DDRB
+-
+-    #define DIO12_PIN       PINB4
+-    #define DIO12_RPORT     PINB
+-    #define DIO12_WPORT     PORTB
+-    #define DIO12_PWM     NULL
+-    #define DIO12_DDR       DDRB
+-
+-    #define DIO13_PIN       PINB5
+-    #define DIO13_RPORT     PINB
+-    #define DIO13_WPORT     PORTB
+-    #define DIO13_PWM     NULL
+-    #define DIO13_DDR       DDRB
+-
+-    #define DIO14_PIN       PINB6
+-    #define DIO14_RPORT     PINB
+-    #define DIO14_WPORT     PORTB
+-    #define DIO14_PWM     NULL
+-    #define DIO14_DDR       DDRB
+-
+-    #define DIO15_PIN       PINB7
+-    #define DIO15_RPORT     PINB
+-    #define DIO15_WPORT     PORTB
+-    #define DIO15_PWM     NULL
+-    #define DIO15_DDR       DDRB
+-
+-    #define DIO16_PIN       PINC0
+-    #define DIO16_RPORT     PINC
+-    #define DIO16_WPORT     PORTC
+-    #define DIO16_PWM     NULL
+-    #define DIO16_DDR       DDRC
+-
+-    #define DIO17_PIN       PINC1
+-    #define DIO17_RPORT     PINC
+-    #define DIO17_WPORT     PORTC
+-    #define DIO17_PWM     NULL
+-    #define DIO17_DDR       DDRC
+-
+-    #define DIO18_PIN       PINC2
+-    #define DIO18_RPORT     PINC
+-    #define DIO18_WPORT     PORTC
+-    #define DIO18_PWM     NULL
+-    #define DIO18_DDR       DDRC
+-
+-    #define DIO19_PIN       PINC3
+-    #define DIO19_RPORT     PINC
+-    #define DIO19_WPORT     PORTC
+-    #define DIO19_PWM     NULL
+-    #define DIO19_DDR       DDRC
+-
+-    #define DIO20_PIN       PINC4
+-    #define DIO20_RPORT     PINC
+-    #define DIO20_WPORT     PORTC
+-    #define DIO20_PWM     NULL
+-    #define DIO20_DDR       DDRC
+-
+-    #define DIO21_PIN       PINC5
+-    #define DIO21_RPORT     PINC
+-    #define DIO21_WPORT     PORTC
+-    #define DIO21_PWM     NULL
+-    #define DIO21_DDR       DDRC
+-
+-    #define DIO22_PIN       PINC6
+-    #define DIO22_RPORT     PINC
+-    #define DIO22_WPORT     PORTC
+-    #define DIO22_PWM     NULL
+-    #define DIO22_DDR       DDRC
+-
+-    #define DIO23_PIN       PINC7
+-    #define DIO23_RPORT     PINC
+-    #define DIO23_WPORT     PORTC
+-    #define DIO23_PWM     NULL
+-    #define DIO23_DDR       DDRC
+-
+-    #define DIO24_PIN       PIND0
+-    #define DIO24_RPORT     PIND
+-    #define DIO24_WPORT     PORTD
+-    #define DIO24_PWM     NULL
+-    #define DIO24_DDR       DDRD
+-
+-    #define DIO25_PIN       PIND1
+-    #define DIO25_RPORT     PIND
+-    #define DIO25_WPORT     PORTD
+-    #define DIO25_PWM     NULL
+-    #define DIO25_DDR       DDRD
+-
+-    #define DIO26_PIN       PIND2
+-    #define DIO26_RPORT     PIND
+-    #define DIO26_WPORT     PORTD
+-    #define DIO26_PWM     NULL
+-    #define DIO26_DDR       DDRD
+-
+-    #define DIO27_PIN       PIND3
+-    #define DIO27_RPORT     PIND
+-    #define DIO27_WPORT     PORTD
+-    #define DIO27_PWM     NULL
+-    #define DIO27_DDR       DDRD
+-
+-    #define DIO28_PIN       PIND4
+-    #define DIO28_RPORT     PIND
+-    #define DIO28_WPORT     PORTD
+-    #define DIO28_PWM     NULL
+-    #define DIO28_DDR       DDRD
+-
+-    #define DIO29_PIN       PIND5
+-    #define DIO29_RPORT     PIND
+-    #define DIO29_WPORT     PORTD
+-    #define DIO29_PWM     NULL
+-    #define DIO29_DDR       DDRD
+-
+-    #define DIO30_PIN       PIND6
+-    #define DIO30_RPORT     PIND
+-    #define DIO30_WPORT     PORTD
+-    #define DIO30_PWM     NULL
+-    #define DIO30_DDR       DDRD
+-
+-    #define DIO31_PIN       PIND7
+-    #define DIO31_RPORT     PIND
+-    #define DIO31_WPORT     PORTD
+-    #define DIO31_PWM     NULL
+-    #define DIO31_DDR       DDRD
+-
+-
+-    #define DIO32_PIN       PINE0
+-    #define DIO32_RPORT     PINE
+-    #define DIO32_WPORT     PORTE
+-    #define DIO32_PWM     NULL
+-    #define DIO32_DDR       DDRE
+-
+-    #define DIO33_PIN       PINE1
+-    #define DIO33_RPORT     PINE
+-    #define DIO33_WPORT     PORTE
+-    #define DIO33_PWM     NULL
+-    #define DIO33_DDR       DDRE
+-
+-    #define DIO34_PIN       PINE2
+-    #define DIO34_RPORT     PINE
+-    #define DIO34_WPORT     PORTE
+-    #define DIO34_PWM     NULL
+-    #define DIO34_DDR       DDRE
+-
+-    #define DIO35_PIN       PINE3
+-    #define DIO35_RPORT     PINE
+-    #define DIO35_WPORT     PORTE
+-    #define DIO35_PWM     NULL
+-    #define DIO35_DDR       DDRE
+-
+-    #define DIO36_PIN       PINE4
+-    #define DIO36_RPORT     PINE
+-    #define DIO36_WPORT     PORTE
+-    #define DIO36_PWM     NULL
+-    #define DIO36_DDR       DDRE
+-
+-    #define DIO37_PIN       PINE5
+-    #define DIO37_RPORT     PINE
+-    #define DIO37_WPORT     PORTE
+-    #define DIO37_PWM     NULL
+-    #define DIO37_DDR       DDRE
+-
+-    #define DIO38_PIN       PINE6
+-    #define DIO38_RPORT     PINE
+-    #define DIO38_WPORT     PORTE
+-    #define DIO38_PWM     NULL
+-    #define DIO38_DDR       DDRE
+-
+-    #define DIO39_PIN       PINE7
+-    #define DIO39_RPORT     PINE
+-    #define DIO39_WPORT     PORTE
+-    #define DIO39_PWM     NULL
+-    #define DIO39_DDR       DDRE
+-
+-    #define AIO0_PIN PINF0
+-    #define AIO0_RPORT PINF
+-    #define AIO0_WPORT PORTF
+-    #define AIO0_PWM      NULL
+-    #define AIO0_DDR DDRF
+-
+-    #define AIO1_PIN PINF1
+-    #define AIO1_RPORT PINF
+-    #define AIO1_WPORT PORTF
+-    #define AIO1_PWM      NULL
+-    #define AIO1_DDR DDRF
+-
+-    #define AIO2_PIN PINF2
+-    #define AIO2_RPORT PINF
+-    #define AIO2_WPORT PORTF
+-    #define AIO2_PWM      NULL
+-    #define AIO2_DDR DDRF
+-
+-    #define AIO3_PIN PINF3
+-    #define AIO3_RPORT PINF
+-    #define AIO3_WPORT PORTF
+-    #define AIO3_PWM      NULL
+-    #define AIO3_DDR DDRF
+-
+-    #define AIO4_PIN PINF4
+-    #define AIO4_RPORT PINF
+-    #define AIO4_WPORT PORTF
+-    #define AIO4_PWM      NULL
+-    #define AIO4_DDR DDRF
+-
+-    #define AIO5_PIN PINF5
+-    #define AIO5_RPORT PINF
+-    #define AIO5_WPORT PORTF
+-    #define AIO5_PWM      NULL
+-    #define AIO5_DDR DDRF
+-
+-    #define AIO6_PIN PINF6
+-    #define AIO6_RPORT PINF
+-    #define AIO6_WPORT PORTF
+-    #define AIO6_PWM      NULL
+-    #define AIO6_DDR DDRF
+-
+-    #define AIO7_PIN PINF7
+-    #define AIO7_RPORT PINF
+-    #define AIO7_WPORT PORTF
+-    #define AIO7_PWM      NULL
+-    #define AIO7_DDR DDRF
+-
+-    #define DIO40_PIN       PINF0
+-    #define DIO40_RPORT     PINF
+-    #define DIO40_WPORT     PORTF
+-    #define DIO40_PWM     NULL
+-    #define DIO40_DDR       DDRF
+-
+-    #define DIO41_PIN       PINF1
+-    #define DIO41_RPORT     PINF
+-    #define DIO41_WPORT     PORTF
+-    #define DIO41_PWM     NULL
+-    #define DIO41_DDR       DDRF
+-
+-    #define DIO42_PIN       PINF2
+-    #define DIO42_RPORT     PINF
+-    #define DIO42_WPORT     PORTF
+-    #define DIO42_PWM     NULL
+-    #define DIO42_DDR       DDRF
+-
+-    #define DIO43_PIN       PINF3
+-    #define DIO43_RPORT     PINF
+-    #define DIO43_WPORT     PORTF
+-    #define DIO43_PWM     NULL
+-    #define DIO43_DDR       DDRF
+-
+-    #define DIO44_PIN       PINF4
+-    #define DIO44_RPORT     PINF
+-    #define DIO44_WPORT     PORTF
+-    #define DIO44_PWM     NULL
+-    #define DIO44_DDR       DDRF
+-
+-    #define DIO45_PIN       PINF5
+-    #define DIO45_RPORT     PINF
+-    #define DIO45_WPORT     PORTF
+-    #define DIO45_PWM     NULL
+-    #define DIO45_DDR       DDRF
+-
+-    #define DIO46_PIN       PINF6
+-    #define DIO46_RPORT     PINF
+-    #define DIO46_WPORT     PORTF
+-    #define DIO46_PWM     NULL
+-    #define DIO46_DDR       DDRF
+-
+-    #define DIO47_PIN       PINF7
+-    #define DIO47_RPORT     PINF
+-    #define DIO47_WPORT     PORTF
+-    #define DIO47_PWM     NULL
+-    #define DIO47_DDR       DDRF
++    #define DIO0_PIN    PINA0
++    #define DIO0_RPORT  PINA
++    #define DIO0_WPORT  PORTA
++    #define DIO0_PWM    NULL
++    #define DIO0_DDR    DDRA
++
++    #define DIO1_PIN    PINA1
++    #define DIO1_RPORT  PINA
++    #define DIO1_WPORT  PORTA
++    #define DIO1_PWM    NULL
++    #define DIO1_DDR    DDRA
++
++    #define DIO2_PIN    PINA2
++    #define DIO2_RPORT  PINA
++    #define DIO2_WPORT  PORTA
++    #define DIO2_PWM    NULL
++    #define DIO2_DDR    DDRA
++
++    #define DIO3_PIN    PINA3
++    #define DIO3_RPORT  PINA
++    #define DIO3_WPORT  PORTA
++    #define DIO3_PWM    NULL
++    #define DIO3_DDR    DDRA
++
++    #define DIO4_PIN    PINA4
++    #define DIO4_RPORT  PINA
++    #define DIO4_WPORT  PORTA
++    #define DIO4_PWM    NULL
++    #define DIO4_DDR    DDRA
++
++    #define DIO5_PIN    PINA5
++    #define DIO5_RPORT  PINA
++    #define DIO5_WPORT  PORTA
++    #define DIO5_PWM    NULL
++    #define DIO5_DDR    DDRA
++
++    #define DIO6_PIN    PINA6
++    #define DIO6_RPORT  PINA
++    #define DIO6_WPORT  PORTA
++    #define DIO6_PWM    NULL
++    #define DIO6_DDR    DDRA
++
++    #define DIO7_PIN    PINA7
++    #define DIO7_RPORT  PINA
++    #define DIO7_WPORT  PORTA
++    #define DIO7_PWM    NULL
++    #define DIO7_DDR    DDRA
++
++    #define DIO8_PIN    PINB0
++    #define DIO8_RPORT  PINB
++    #define DIO8_WPORT  PORTB
++    #define DIO8_PWM    NULL
++    #define DIO8_DDR    DDRB
++
++    #define DIO9_PIN    PINB1
++    #define DIO9_RPORT  PINB
++    #define DIO9_WPORT  PORTB
++    #define DIO9_PWM    NULL
++    #define DIO9_DDR    DDRB
++
++    #define DIO10_PIN   PINB2
++    #define DIO10_RPORT PINB
++    #define DIO10_WPORT PORTB
++    #define DIO10_PWM   NULL
++    #define DIO10_DDR   DDRB
++
++    #define DIO11_PIN   PINB3
++    #define DIO11_RPORT PINB
++    #define DIO11_WPORT PORTB
++    #define DIO11_PWM   NULL
++    #define DIO11_DDR   DDRB
++
++    #define DIO12_PIN   PINB4
++    #define DIO12_RPORT PINB
++    #define DIO12_WPORT PORTB
++    #define DIO12_PWM   NULL
++    #define DIO12_DDR   DDRB
++
++    #define DIO13_PIN   PINB5
++    #define DIO13_RPORT PINB
++    #define DIO13_WPORT PORTB
++    #define DIO13_PWM   NULL
++    #define DIO13_DDR   DDRB
++
++    #define DIO14_PIN   PINB6
++    #define DIO14_RPORT PINB
++    #define DIO14_WPORT PORTB
++    #define DIO14_PWM   NULL
++    #define DIO14_DDR   DDRB
++
++    #define DIO15_PIN   PINB7
++    #define DIO15_RPORT PINB
++    #define DIO15_WPORT PORTB
++    #define DIO15_PWM   NULL
++    #define DIO15_DDR   DDRB
++
++    #define DIO16_PIN   PINC0
++    #define DIO16_RPORT PINC
++    #define DIO16_WPORT PORTC
++    #define DIO16_PWM   NULL
++    #define DIO16_DDR   DDRC
++
++    #define DIO17_PIN   PINC1
++    #define DIO17_RPORT PINC
++    #define DIO17_WPORT PORTC
++    #define DIO17_PWM   NULL
++    #define DIO17_DDR   DDRC
++
++    #define DIO18_PIN   PINC2
++    #define DIO18_RPORT PINC
++    #define DIO18_WPORT PORTC
++    #define DIO18_PWM   NULL
++    #define DIO18_DDR   DDRC
++
++    #define DIO19_PIN   PINC3
++    #define DIO19_RPORT PINC
++    #define DIO19_WPORT PORTC
++    #define DIO19_PWM   NULL
++    #define DIO19_DDR   DDRC
++
++    #define DIO20_PIN   PINC4
++    #define DIO20_RPORT PINC
++    #define DIO20_WPORT PORTC
++    #define DIO20_PWM   NULL
++    #define DIO20_DDR   DDRC
++
++    #define DIO21_PIN   PINC5
++    #define DIO21_RPORT PINC
++    #define DIO21_WPORT PORTC
++    #define DIO21_PWM   NULL
++    #define DIO21_DDR   DDRC
++
++    #define DIO22_PIN   PINC6
++    #define DIO22_RPORT PINC
++    #define DIO22_WPORT PORTC
++    #define DIO22_PWM   NULL
++    #define DIO22_DDR   DDRC
++
++    #define DIO23_PIN   PINC7
++    #define DIO23_RPORT PINC
++    #define DIO23_WPORT PORTC
++    #define DIO23_PWM   NULL
++    #define DIO23_DDR   DDRC
++
++    #define DIO24_PIN   PIND0
++    #define DIO24_RPORT PIND
++    #define DIO24_WPORT PORTD
++    #define DIO24_PWM   NULL
++    #define DIO24_DDR   DDRD
++
++    #define DIO25_PIN   PIND1
++    #define DIO25_RPORT PIND
++    #define DIO25_WPORT PORTD
++    #define DIO25_PWM   NULL
++    #define DIO25_DDR   DDRD
++
++    #define DIO26_PIN   PIND2
++    #define DIO26_RPORT PIND
++    #define DIO26_WPORT PORTD
++    #define DIO26_PWM   NULL
++    #define DIO26_DDR   DDRD
++
++    #define DIO27_PIN   PIND3
++    #define DIO27_RPORT PIND
++    #define DIO27_WPORT PORTD
++    #define DIO27_PWM   NULL
++    #define DIO27_DDR   DDRD
++
++    #define DIO28_PIN   PIND4
++    #define DIO28_RPORT PIND
++    #define DIO28_WPORT PORTD
++    #define DIO28_PWM   NULL
++    #define DIO28_DDR   DDRD
++
++    #define DIO29_PIN   PIND5
++    #define DIO29_RPORT PIND
++    #define DIO29_WPORT PORTD
++    #define DIO29_PWM   NULL
++    #define DIO29_DDR   DDRD
++
++    #define DIO30_PIN   PIND6
++    #define DIO30_RPORT PIND
++    #define DIO30_WPORT PORTD
++    #define DIO30_PWM   NULL
++    #define DIO30_DDR   DDRD
++
++    #define DIO31_PIN   PIND7
++    #define DIO31_RPORT PIND
++    #define DIO31_WPORT PORTD
++    #define DIO31_PWM   NULL
++    #define DIO31_DDR   DDRD
++
++
++    #define DIO32_PIN   PINE0
++    #define DIO32_RPORT PINE
++    #define DIO32_WPORT PORTE
++    #define DIO32_PWM   NULL
++    #define DIO32_DDR   DDRE
++
++    #define DIO33_PIN   PINE1
++    #define DIO33_RPORT PINE
++    #define DIO33_WPORT PORTE
++    #define DIO33_PWM   NULL
++    #define DIO33_DDR   DDRE
++
++    #define DIO34_PIN   PINE2
++    #define DIO34_RPORT PINE
++    #define DIO34_WPORT PORTE
++    #define DIO34_PWM   NULL
++    #define DIO34_DDR   DDRE
++
++    #define DIO35_PIN   PINE3
++    #define DIO35_RPORT PINE
++    #define DIO35_WPORT PORTE
++    #define DIO35_PWM   NULL
++    #define DIO35_DDR   DDRE
++
++    #define DIO36_PIN   PINE4
++    #define DIO36_RPORT PINE
++    #define DIO36_WPORT PORTE
++    #define DIO36_PWM   NULL
++    #define DIO36_DDR   DDRE
++
++    #define DIO37_PIN   PINE5
++    #define DIO37_RPORT PINE
++    #define DIO37_WPORT PORTE
++    #define DIO37_PWM   NULL
++    #define DIO37_DDR   DDRE
++
++    #define DIO38_PIN   PINE6
++    #define DIO38_RPORT PINE
++    #define DIO38_WPORT PORTE
++    #define DIO38_PWM   NULL
++    #define DIO38_DDR   DDRE
++
++    #define DIO39_PIN   PINE7
++    #define DIO39_RPORT PINE
++    #define DIO39_WPORT PORTE
++    #define DIO39_PWM   NULL
++    #define DIO39_DDR   DDRE
++
++    #define AIO0_PIN    PINF0
++    #define AIO0_RPORT  PINF
++    #define AIO0_WPORT  PORTF
++    #define AIO0_PWM    NULL
++    #define AIO0_DDR    DDRF
++
++    #define AIO1_PIN    PINF1
++    #define AIO1_RPORT  PINF
++    #define AIO1_WPORT  PORTF
++    #define AIO1_PWM    NULL
++    #define AIO1_DDR    DDRF
++
++    #define AIO2_PIN    PINF2
++    #define AIO2_RPORT  PINF
++    #define AIO2_WPORT  PORTF
++    #define AIO2_PWM    NULL
++    #define AIO2_DDR    DDRF
++
++    #define AIO3_PIN    PINF3
++    #define AIO3_RPORT  PINF
++    #define AIO3_WPORT  PORTF
++    #define AIO3_PWM    NULL
++    #define AIO3_DDR    DDRF
++
++    #define AIO4_PIN    PINF4
++    #define AIO4_RPORT  PINF
++    #define AIO4_WPORT  PORTF
++    #define AIO4_PWM    NULL
++    #define AIO4_DDR    DDRF
++
++    #define AIO5_PIN    PINF5
++    #define AIO5_RPORT  PINF
++    #define AIO5_WPORT  PORTF
++    #define AIO5_PWM    NULL
++    #define AIO5_DDR    DDRF
++
++    #define AIO6_PIN    PINF6
++    #define AIO6_RPORT  PINF
++    #define AIO6_WPORT  PORTF
++    #define AIO6_PWM    NULL
++    #define AIO6_DDR    DDRF
++
++    #define AIO7_PIN    PINF7
++    #define AIO7_RPORT  PINF
++    #define AIO7_WPORT  PORTF
++    #define AIO7_PWM    NULL
++    #define AIO7_DDR    DDRF
++
++    #define DIO40_PIN   PINF0
++    #define DIO40_RPORT PINF
++    #define DIO40_WPORT PORTF
++    #define DIO40_PWM   NULL
++    #define DIO40_DDR   DDRF
++
++    #define DIO41_PIN   PINF1
++    #define DIO41_RPORT PINF
++    #define DIO41_WPORT PORTF
++    #define DIO41_PWM   NULL
++    #define DIO41_DDR   DDRF
++
++    #define DIO42_PIN   PINF2
++    #define DIO42_RPORT PINF
++    #define DIO42_WPORT PORTF
++    #define DIO42_PWM   NULL
++    #define DIO42_DDR   DDRF
+ 
++    #define DIO43_PIN   PINF3
++    #define DIO43_RPORT PINF
++    #define DIO43_WPORT PORTF
++    #define DIO43_PWM   NULL
++    #define DIO43_DDR   DDRF
++
++    #define DIO44_PIN   PINF4
++    #define DIO44_RPORT PINF
++    #define DIO44_WPORT PORTF
++    #define DIO44_PWM   NULL
++    #define DIO44_DDR   DDRF
++
++    #define DIO45_PIN   PINF5
++    #define DIO45_RPORT PINF
++    #define DIO45_WPORT PORTF
++    #define DIO45_PWM   NULL
++    #define DIO45_DDR   DDRF
++
++    #define DIO46_PIN   PINF6
++    #define DIO46_RPORT PINF
++    #define DIO46_WPORT PORTF
++    #define DIO46_PWM   NULL
++    #define DIO46_DDR   DDRF
++
++    #define DIO47_PIN   PINF7
++    #define DIO47_RPORT PINF
++    #define DIO47_WPORT PORTF
++    #define DIO47_PWM   NULL
++    #define DIO47_DDR   DDRF
+ 
+ 
+     #undef PA0
+@@ -2709,643 +2708,643 @@
+     */
+ 
+     // SPI
+-    #define SCK             DIO21 // 9
+-    #define MISO            DIO23 // 11
+-    #define MOSI            DIO22 // 10
+-    #define SS              DIO20 // 8
+-
+-    #define DIO0_PIN PIND0
+-    #define DIO0_RPORT PIND
+-    #define DIO0_WPORT PORTD
+-    #define DIO0_PWM NULL
+-    #define DIO0_DDR DDRD
+-
+-    #define DIO1_PIN PIND1
+-    #define DIO1_RPORT PIND
+-    #define DIO1_WPORT PORTD
+-    #define DIO1_PWM NULL
+-    #define DIO1_DDR DDRD
+-
+-    #define DIO2_PIN PIND2
+-    #define DIO2_RPORT PIND
+-    #define DIO2_WPORT PORTD
+-    #define DIO2_PWM NULL
+-    #define DIO2_DDR DDRD
+-
+-    #define DIO3_PIN PIND3
+-    #define DIO3_RPORT PIND
+-    #define DIO3_WPORT PORTD
+-    #define DIO3_PWM NULL
+-    #define DIO3_DDR DDRD
+-
+-    #define DIO4_PIN PIND4
+-    #define DIO4_RPORT PIND
+-    #define DIO4_WPORT PORTD
+-    #define DIO4_PWM NULL
+-    #define DIO4_DDR DDRD
+-
+-    #define DIO5_PIN PIND5
+-    #define DIO5_RPORT PIND
+-    #define DIO5_WPORT PORTD
+-    #define DIO5_PWM NULL
+-    #define DIO5_DDR DDRD
+-
+-    #define DIO6_PIN PIND6
+-    #define DIO6_RPORT PIND
+-    #define DIO6_WPORT PORTD
+-    #define DIO6_PWM NULL
+-    #define DIO6_DDR DDRD
+-
+-    #define DIO7_PIN PIND7
+-    #define DIO7_RPORT PIND
+-    #define DIO7_WPORT PORTD
+-    #define DIO7_PWM NULL
+-    #define DIO7_DDR DDRD
+-
+-    #define DIO8_PIN PINE0
+-    #define DIO8_RPORT PINE
+-    #define DIO8_WPORT PORTE
+-    #define DIO8_PWM NULL
+-    #define DIO8_DDR DDRE
+-
+-    #define DIO9_PIN PINE1
+-    #define DIO9_RPORT PINE
+-    #define DIO9_WPORT PORTE
+-    #define DIO9_PWM NULL
+-    #define DIO9_DDR DDRE
+-
+-    #define DIO10_PIN PINC0
++    #define SCK         DIO21 //  9
++    #define MISO        DIO23 // 11
++    #define MOSI        DIO22 // 10
++    #define SS          DIO20 //  8
++
++    #define DIO0_PIN    PIND0
++    #define DIO0_RPORT  PIND
++    #define DIO0_WPORT  PORTD
++    #define DIO0_PWM    NULL
++    #define DIO0_DDR    DDRD
++
++    #define DIO1_PIN    PIND1
++    #define DIO1_RPORT  PIND
++    #define DIO1_WPORT  PORTD
++    #define DIO1_PWM    NULL
++    #define DIO1_DDR    DDRD
++
++    #define DIO2_PIN    PIND2
++    #define DIO2_RPORT  PIND
++    #define DIO2_WPORT  PORTD
++    #define DIO2_PWM    NULL
++    #define DIO2_DDR    DDRD
++
++    #define DIO3_PIN    PIND3
++    #define DIO3_RPORT  PIND
++    #define DIO3_WPORT  PORTD
++    #define DIO3_PWM    NULL
++    #define DIO3_DDR    DDRD
++
++    #define DIO4_PIN    PIND4
++    #define DIO4_RPORT  PIND
++    #define DIO4_WPORT  PORTD
++    #define DIO4_PWM    NULL
++    #define DIO4_DDR    DDRD
++
++    #define DIO5_PIN    PIND5
++    #define DIO5_RPORT  PIND
++    #define DIO5_WPORT  PORTD
++    #define DIO5_PWM    NULL
++    #define DIO5_DDR    DDRD
++
++    #define DIO6_PIN    PIND6
++    #define DIO6_RPORT  PIND
++    #define DIO6_WPORT  PORTD
++    #define DIO6_PWM    NULL
++    #define DIO6_DDR    DDRD
++
++    #define DIO7_PIN    PIND7
++    #define DIO7_RPORT  PIND
++    #define DIO7_WPORT  PORTD
++    #define DIO7_PWM    NULL
++    #define DIO7_DDR    DDRD
++
++    #define DIO8_PIN    PINE0
++    #define DIO8_RPORT  PINE
++    #define DIO8_WPORT  PORTE
++    #define DIO8_PWM    NULL
++    #define DIO8_DDR    DDRE
++
++    #define DIO9_PIN    PINE1
++    #define DIO9_RPORT  PINE
++    #define DIO9_WPORT  PORTE
++    #define DIO9_PWM    NULL
++    #define DIO9_DDR    DDRE
++
++    #define DIO10_PIN   PINC0
+     #define DIO10_RPORT PINC
+     #define DIO10_WPORT PORTC
+-    #define DIO10_PWM NULL
+-    #define DIO10_DDR DDRC
++    #define DIO10_PWM   NULL
++    #define DIO10_DDR   DDRC
+ 
+-    #define DIO11_PIN PINC1
++    #define DIO11_PIN   PINC1
+     #define DIO11_RPORT PINC
+     #define DIO11_WPORT PORTC
+-    #define DIO11_PWM NULL
+-    #define DIO11_DDR DDRC
++    #define DIO11_PWM   NULL
++    #define DIO11_DDR   DDRC
+ 
+-    #define DIO12_PIN PINC2
++    #define DIO12_PIN   PINC2
+     #define DIO12_RPORT PINC
+     #define DIO12_WPORT PORTC
+-    #define DIO12_PWM NULL
+-    #define DIO12_DDR DDRC
++    #define DIO12_PWM   NULL
++    #define DIO12_DDR   DDRC
+ 
+-    #define DIO13_PIN PINC3
++    #define DIO13_PIN   PINC3
+     #define DIO13_RPORT PINC
+     #define DIO13_WPORT PORTC
+-    #define DIO13_PWM NULL
+-    #define DIO13_DDR DDRC
++    #define DIO13_PWM   NULL
++    #define DIO13_DDR   DDRC
+ 
+-    #define DIO14_PIN PINC4
++    #define DIO14_PIN   PINC4
+     #define DIO14_RPORT PINC
+     #define DIO14_WPORT PORTC
+-    #define DIO14_PWM NULL
+-    #define DIO14_DDR DDRC
++    #define DIO14_PWM   NULL
++    #define DIO14_DDR   DDRC
+ 
+-    #define DIO15_PIN PINC5
++    #define DIO15_PIN   PINC5
+     #define DIO15_RPORT PINC
+     #define DIO15_WPORT PORTC
+-    #define DIO15_PWM NULL
+-    #define DIO15_DDR DDRC
++    #define DIO15_PWM   NULL
++    #define DIO15_DDR   DDRC
+ 
+-    #define DIO16_PIN PINC6
++    #define DIO16_PIN   PINC6
+     #define DIO16_RPORT PINC
+     #define DIO16_WPORT PORTC
+-    #define DIO16_PWM NULL
+-    #define DIO16_DDR DDRC
++    #define DIO16_PWM   NULL
++    #define DIO16_DDR   DDRC
+ 
+-    #define DIO17_PIN PINC7
++    #define DIO17_PIN   PINC7
+     #define DIO17_RPORT PINC
+     #define DIO17_WPORT PORTC
+-    #define DIO17_PWM NULL
+-    #define DIO17_DDR DDRC
++    #define DIO17_PWM   NULL
++    #define DIO17_DDR   DDRC
+ 
+-    #define DIO18_PIN PINE6
++    #define DIO18_PIN   PINE6
+     #define DIO18_RPORT PINE
+     #define DIO18_WPORT PORTE
+-    #define DIO18_PWM NULL
+-    #define DIO18_DDR DDRE
++    #define DIO18_PWM   NULL
++    #define DIO18_DDR   DDRE
+ 
+-    #define DIO19_PIN PINE7
++    #define DIO19_PIN   PINE7
+     #define DIO19_RPORT PINE
+     #define DIO19_WPORT PORTE
+-    #define DIO19_PWM NULL
+-    #define DIO19_DDR DDRE
++    #define DIO19_PWM   NULL
++    #define DIO19_DDR   DDRE
+ 
+-    #define DIO20_PIN PINB0
++    #define DIO20_PIN   PINB0
+     #define DIO20_RPORT PINB
+     #define DIO20_WPORT PORTB
+-    #define DIO20_PWM NULL
+-    #define DIO20_DDR DDRB
++    #define DIO20_PWM   NULL
++    #define DIO20_DDR   DDRB
+ 
+-    #define DIO21_PIN PINB1
++    #define DIO21_PIN   PINB1
+     #define DIO21_RPORT PINB
+     #define DIO21_WPORT PORTB
+-    #define DIO21_PWM NULL
+-    #define DIO21_DDR DDRB
++    #define DIO21_PWM   NULL
++    #define DIO21_DDR   DDRB
+ 
+-    #define DIO22_PIN PINB2
++    #define DIO22_PIN   PINB2
+     #define DIO22_RPORT PINB
+     #define DIO22_WPORT PORTB
+-    #define DIO22_PWM NULL
+-    #define DIO22_DDR DDRB
++    #define DIO22_PWM   NULL
++    #define DIO22_DDR   DDRB
+ 
+-    #define DIO23_PIN PINB3
++    #define DIO23_PIN   PINB3
+     #define DIO23_RPORT PINB
+     #define DIO23_WPORT PORTB
+-    #define DIO23_PWM NULL
+-    #define DIO23_DDR DDRB
++    #define DIO23_PWM   NULL
++    #define DIO23_DDR   DDRB
+ 
+-    #define DIO24_PIN PINB4
++    #define DIO24_PIN   PINB4
+     #define DIO24_RPORT PINB
+     #define DIO24_WPORT PORTB
+-    #define DIO24_PWM NULL
+-    #define DIO24_DDR DDRB
++    #define DIO24_PWM   NULL
++    #define DIO24_DDR   DDRB
+ 
+-    #define DIO25_PIN PINB5
++    #define DIO25_PIN   PINB5
+     #define DIO25_RPORT PINB
+     #define DIO25_WPORT PORTB
+-    #define DIO25_PWM NULL
+-    #define DIO25_DDR DDRB
++    #define DIO25_PWM   NULL
++    #define DIO25_DDR   DDRB
+ 
+-    #define DIO26_PIN PINB6
++    #define DIO26_PIN   PINB6
+     #define DIO26_RPORT PINB
+     #define DIO26_WPORT PORTB
+-    #define DIO26_PWM NULL
+-    #define DIO26_DDR DDRB
++    #define DIO26_PWM   NULL
++    #define DIO26_DDR   DDRB
+ 
+-    #define DIO27_PIN PINB7
++    #define DIO27_PIN   PINB7
+     #define DIO27_RPORT PINB
+     #define DIO27_WPORT PORTB
+-    #define DIO27_PWM NULL
+-    #define DIO27_DDR DDRB
++    #define DIO27_PWM   NULL
++    #define DIO27_DDR   DDRB
+ 
+-    #define DIO28_PIN PINA0
++    #define DIO28_PIN   PINA0
+     #define DIO28_RPORT PINA
+     #define DIO28_WPORT PORTA
+-    #define DIO28_PWM NULL
+-    #define DIO28_DDR DDRA
++    #define DIO28_PWM   NULL
++    #define DIO28_DDR   DDRA
+ 
+-    #define DIO29_PIN PINA1
++    #define DIO29_PIN   PINA1
+     #define DIO29_RPORT PINA
+     #define DIO29_WPORT PORTA
+-    #define DIO29_PWM NULL
+-    #define DIO29_DDR DDRA
++    #define DIO29_PWM   NULL
++    #define DIO29_DDR   DDRA
+ 
+-    #define DIO30_PIN PINA2
++    #define DIO30_PIN   PINA2
+     #define DIO30_RPORT PINA
+     #define DIO30_WPORT PORTA
+-    #define DIO30_PWM NULL
+-    #define DIO30_DDR DDRA
++    #define DIO30_PWM   NULL
++    #define DIO30_DDR   DDRA
+ 
+-    #define DIO31_PIN PINA3
++    #define DIO31_PIN   PINA3
+     #define DIO31_RPORT PINA
+     #define DIO31_WPORT PORTA
+-    #define DIO31_PWM NULL
+-    #define DIO31_DDR DDRA
++    #define DIO31_PWM   NULL
++    #define DIO31_DDR   DDRA
+ 
+-    #define DIO32_PIN PINA4
++    #define DIO32_PIN   PINA4
+     #define DIO32_RPORT PINA
+     #define DIO32_WPORT PORTA
+-    #define DIO32_PWM NULL
+-    #define DIO32_DDR DDRA
++    #define DIO32_PWM   NULL
++    #define DIO32_DDR   DDRA
+ 
+-    #define DIO33_PIN PINA5
++    #define DIO33_PIN   PINA5
+     #define DIO33_RPORT PINA
+     #define DIO33_WPORT PORTA
+-    #define DIO33_PWM NULL
+-    #define DIO33_DDR DDRA
++    #define DIO33_PWM   NULL
++    #define DIO33_DDR   DDRA
+ 
+-    #define DIO34_PIN PINA6
++    #define DIO34_PIN   PINA6
+     #define DIO34_RPORT PINA
+     #define DIO34_WPORT PORTA
+-    #define DIO34_PWM NULL
+-    #define DIO34_DDR DDRA
++    #define DIO34_PWM   NULL
++    #define DIO34_DDR   DDRA
+ 
+-    #define DIO35_PIN PINA7
++    #define DIO35_PIN   PINA7
+     #define DIO35_RPORT PINA
+     #define DIO35_WPORT PORTA
+-    #define DIO35_PWM NULL
+-    #define DIO35_DDR DDRA
++    #define DIO35_PWM   NULL
++    #define DIO35_DDR   DDRA
+ 
+-    #define DIO36_PIN PINE4
++    #define DIO36_PIN   PINE4
+     #define DIO36_RPORT PINE
+     #define DIO36_WPORT PORTE
+-    #define DIO36_PWM NULL
+-    #define DIO36_DDR DDRE
++    #define DIO36_PWM   NULL
++    #define DIO36_DDR   DDRE
+ 
+-    #define DIO37_PIN PINE5
++    #define DIO37_PIN   PINE5
+     #define DIO37_RPORT PINE
+     #define DIO37_WPORT PORTE
+-    #define DIO37_PWM NULL
+-    #define DIO37_DDR DDRE
++    #define DIO37_PWM   NULL
++    #define DIO37_DDR   DDRE
+ 
+-    #define DIO38_PIN PINF0
++    #define DIO38_PIN   PINF0
+     #define DIO38_RPORT PINF
+     #define DIO38_WPORT PORTF
+-    #define DIO38_PWM NULL
+-    #define DIO38_DDR DDRF
++    #define DIO38_PWM   NULL
++    #define DIO38_DDR   DDRF
+ 
+-    #define DIO39_PIN PINF1
++    #define DIO39_PIN   PINF1
+     #define DIO39_RPORT PINF
+     #define DIO39_WPORT PORTF
+-    #define DIO39_PWM NULL
+-    #define DIO39_DDR DDRF
++    #define DIO39_PWM   NULL
++    #define DIO39_DDR   DDRF
+ 
+-    #define DIO40_PIN PINF2
++    #define DIO40_PIN   PINF2
+     #define DIO40_RPORT PINF
+     #define DIO40_WPORT PORTF
+-    #define DIO40_PWM NULL
+-    #define DIO40_DDR DDRF
++    #define DIO40_PWM   NULL
++    #define DIO40_DDR   DDRF
+ 
+-    #define DIO41_PIN PINF3
++    #define DIO41_PIN   PINF3
+     #define DIO41_RPORT PINF
+     #define DIO41_WPORT PORTF
+-    #define DIO41_PWM NULL
+-    #define DIO41_DDR DDRF
++    #define DIO41_PWM   NULL
++    #define DIO41_DDR   DDRF
+ 
+-    #define DIO42_PIN PINF4
++    #define DIO42_PIN   PINF4
+     #define DIO42_RPORT PINF
+     #define DIO42_WPORT PORTF
+-    #define DIO42_PWM NULL
+-    #define DIO42_DDR DDRF
++    #define DIO42_PWM   NULL
++    #define DIO42_DDR   DDRF
+ 
+-    #define DIO43_PIN PINF5
++    #define DIO43_PIN   PINF5
+     #define DIO43_RPORT PINF
+     #define DIO43_WPORT PORTF
+-    #define DIO43_PWM NULL
+-    #define DIO43_DDR DDRF
++    #define DIO43_PWM   NULL
++    #define DIO43_DDR   DDRF
+ 
+-    #define DIO44_PIN PINF6
++    #define DIO44_PIN   PINF6
+     #define DIO44_RPORT PINF
+     #define DIO44_WPORT PORTF
+-    #define DIO44_PWM NULL
+-    #define DIO44_DDR DDRF
++    #define DIO44_PWM   NULL
++    #define DIO44_DDR   DDRF
+ 
+-    #define DIO45_PIN PINF7
++    #define DIO45_PIN   PINF7
+     #define DIO45_RPORT PINF
+     #define DIO45_WPORT PORTF
+-    #define DIO45_PWM NULL
+-    #define DIO45_DDR DDRF
+-
+-    #define AIO0_PIN PINF0
+-    #define AIO0_RPORT PINF
+-    #define AIO0_WPORT PORTF
+-    #define AIO0_PWM NULL
+-    #define AIO0_DDR DDRF
+-
+-    #define AIO1_PIN PINF1
+-    #define AIO1_RPORT PINF
+-    #define AIO1_WPORT PORTF
+-    #define AIO1_PWM NULL
+-    #define AIO1_DDR DDRF
+-
+-    #define AIO2_PIN PINF2
+-    #define AIO2_RPORT PINF
+-    #define AIO2_WPORT PORTF
+-    #define AIO2_PWM NULL
+-    #define AIO2_DDR DDRF
+-
+-    #define AIO3_PIN PINF3
+-    #define AIO3_RPORT PINF
+-    #define AIO3_WPORT PORTF
+-    #define AIO3_PWM NULL
+-    #define AIO3_DDR DDRF
+-
+-    #define AIO4_PIN PINF4
+-    #define AIO4_RPORT PINF
+-    #define AIO4_WPORT PORTF
+-    #define AIO4_PWM NULL
+-    #define AIO4_DDR DDRF
+-
+-    #define AIO5_PIN PINF5
+-    #define AIO5_RPORT PINF
+-    #define AIO5_WPORT PORTF
+-    #define AIO5_PWM NULL
+-    #define AIO5_DDR DDRF
+-
+-    #define AIO6_PIN PINF6
+-    #define AIO6_RPORT PINF
+-    #define AIO6_WPORT PORTF
+-    #define AIO6_PWM NULL
+-    #define AIO6_DDR DDRF
+-
+-    #define AIO7_PIN PINF7
+-    #define AIO7_RPORT PINF
+-    #define AIO7_WPORT PORTF
+-    #define AIO7_PWM NULL
+-    #define AIO7_DDR DDRF
++    #define DIO45_PWM   NULL
++    #define DIO45_DDR   DDRF
++
++    #define AIO0_PIN    PINF0
++    #define AIO0_RPORT  PINF
++    #define AIO0_WPORT  PORTF
++    #define AIO0_PWM    NULL
++    #define AIO0_DDR    DDRF
++
++    #define AIO1_PIN    PINF1
++    #define AIO1_RPORT  PINF
++    #define AIO1_WPORT  PORTF
++    #define AIO1_PWM    NULL
++    #define AIO1_DDR    DDRF
++
++    #define AIO2_PIN    PINF2
++    #define AIO2_RPORT  PINF
++    #define AIO2_WPORT  PORTF
++    #define AIO2_PWM    NULL
++    #define AIO2_DDR    DDRF
++
++    #define AIO3_PIN    PINF3
++    #define AIO3_RPORT  PINF
++    #define AIO3_WPORT  PORTF
++    #define AIO3_PWM    NULL
++    #define AIO3_DDR    DDRF
++
++    #define AIO4_PIN    PINF4
++    #define AIO4_RPORT  PINF
++    #define AIO4_WPORT  PORTF
++    #define AIO4_PWM    NULL
++    #define AIO4_DDR    DDRF
++
++    #define AIO5_PIN    PINF5
++    #define AIO5_RPORT  PINF
++    #define AIO5_WPORT  PORTF
++    #define AIO5_PWM    NULL
++    #define AIO5_DDR    DDRF
++
++    #define AIO6_PIN    PINF6
++    #define AIO6_RPORT  PINF
++    #define AIO6_WPORT  PORTF
++    #define AIO6_PWM    NULL
++    #define AIO6_DDR    DDRF
++
++    #define AIO7_PIN    PINF7
++    #define AIO7_RPORT  PINF
++    #define AIO7_WPORT  PORTF
++    #define AIO7_PWM    NULL
++    #define AIO7_DDR    DDRF
+ 
+     //-- Begin not supported by Teensyduino
+     //-- don't use Arduino functions on these pins pinMode/digitalWrite/etc
+-    #define DIO46_PIN PINE2
++    #define DIO46_PIN   PINE2
+     #define DIO46_RPORT PINE
+     #define DIO46_WPORT PORTE
+-    #define DIO46_PWM NULL
+-    #define DIO46_DDR DDRE
++    #define DIO46_PWM   NULL
++    #define DIO46_DDR   DDRE
+ 
+-    #define DIO47_PIN PINE3
++    #define DIO47_PIN   PINE3
+     #define DIO47_RPORT PINE
+     #define DIO47_WPORT PORTE
+-    #define DIO47_PWM NULL
+-    #define DIO47_DDR DDRE
++    #define DIO47_PWM   NULL
++    #define DIO47_DDR   DDRE
+     //-- end not supported by Teensyduino
+ 
+     #undef PA0
+-    #define PA0_PIN PINA0
+-    #define PA0_RPORT PINA
+-    #define PA0_WPORT PORTA
+-    #define PA0_PWM NULL
+-    #define PA0_DDR DDRA
++    #define PA0_PIN     PINA0
++    #define PA0_RPORT   PINA
++    #define PA0_WPORT   PORTA
++    #define PA0_PWM     NULL
++    #define PA0_DDR     DDRA
+     #undef PA1
+-    #define PA1_PIN PINA1
+-    #define PA1_RPORT PINA
+-    #define PA1_WPORT PORTA
+-    #define PA1_PWM NULL
+-    #define PA1_DDR DDRA
++    #define PA1_PIN     PINA1
++    #define PA1_RPORT   PINA
++    #define PA1_WPORT   PORTA
++    #define PA1_PWM     NULL
++    #define PA1_DDR     DDRA
+     #undef PA2
+-    #define PA2_PIN PINA2
+-    #define PA2_RPORT PINA
+-    #define PA2_WPORT PORTA
+-    #define PA2_PWM NULL
+-    #define PA2_DDR DDRA
++    #define PA2_PIN     PINA2
++    #define PA2_RPORT   PINA
++    #define PA2_WPORT   PORTA
++    #define PA2_PWM     NULL
++    #define PA2_DDR     DDRA
+     #undef PA3
+-    #define PA3_PIN PINA3
+-    #define PA3_RPORT PINA
+-    #define PA3_WPORT PORTA
+-    #define PA3_PWM NULL
+-    #define PA3_DDR DDRA
++    #define PA3_PIN     PINA3
++    #define PA3_RPORT   PINA
++    #define PA3_WPORT   PORTA
++    #define PA3_PWM     NULL
++    #define PA3_DDR     DDRA
+     #undef PA4
+-    #define PA4_PIN PINA4
+-    #define PA4_RPORT PINA
+-    #define PA4_WPORT PORTA
+-    #define PA4_PWM NULL
+-    #define PA4_DDR DDRA
++    #define PA4_PIN     PINA4
++    #define PA4_RPORT   PINA
++    #define PA4_WPORT   PORTA
++    #define PA4_PWM     NULL
++    #define PA4_DDR     DDRA
+     #undef PA5
+-    #define PA5_PIN PINA5
+-    #define PA5_RPORT PINA
+-    #define PA5_WPORT PORTA
+-    #define PA5_PWM NULL
+-    #define PA5_DDR DDRA
++    #define PA5_PIN     PINA5
++    #define PA5_RPORT   PINA
++    #define PA5_WPORT   PORTA
++    #define PA5_PWM     NULL
++    #define PA5_DDR     DDRA
+     #undef PA6
+-    #define PA6_PIN PINA6
+-    #define PA6_RPORT PINA
+-    #define PA6_WPORT PORTA
+-    #define PA6_PWM NULL
+-    #define PA6_DDR DDRA
++    #define PA6_PIN     PINA6
++    #define PA6_RPORT   PINA
++    #define PA6_WPORT   PORTA
++    #define PA6_PWM     NULL
++    #define PA6_DDR     DDRA
+     #undef PA7
+-    #define PA7_PIN PINA7
+-    #define PA7_RPORT PINA
+-    #define PA7_WPORT PORTA
+-    #define PA7_PWM NULL
+-    #define PA7_DDR DDRA
++    #define PA7_PIN     PINA7
++    #define PA7_RPORT   PINA
++    #define PA7_WPORT   PORTA
++    #define PA7_PWM     NULL
++    #define PA7_DDR     DDRA
+ 
+     #undef PB0
+-    #define PB0_PIN PINB0
+-    #define PB0_RPORT PINB
+-    #define PB0_WPORT PORTB
+-    #define PB0_PWM NULL
+-    #define PB0_DDR DDRB
++    #define PB0_PIN     PINB0
++    #define PB0_RPORT   PINB
++    #define PB0_WPORT   PORTB
++    #define PB0_PWM     NULL
++    #define PB0_DDR     DDRB
+     #undef PB1
+-    #define PB1_PIN PINB1
+-    #define PB1_RPORT PINB
+-    #define PB1_WPORT PORTB
+-    #define PB1_PWM NULL
+-    #define PB1_DDR DDRB
++    #define PB1_PIN     PINB1
++    #define PB1_RPORT   PINB
++    #define PB1_WPORT   PORTB
++    #define PB1_PWM     NULL
++    #define PB1_DDR     DDRB
+     #undef PB2
+-    #define PB2_PIN PINB2
+-    #define PB2_RPORT PINB
+-    #define PB2_WPORT PORTB
+-    #define PB2_PWM NULL
+-    #define PB2_DDR DDRB
++    #define PB2_PIN     PINB2
++    #define PB2_RPORT   PINB
++    #define PB2_WPORT   PORTB
++    #define PB2_PWM     NULL
++    #define PB2_DDR     DDRB
+     #undef PB3
+-    #define PB3_PIN PINB3
+-    #define PB3_RPORT PINB
+-    #define PB3_WPORT PORTB
+-    #define PB3_PWM NULL
+-    #define PB3_DDR DDRB
++    #define PB3_PIN     PINB3
++    #define PB3_RPORT   PINB
++    #define PB3_WPORT   PORTB
++    #define PB3_PWM     NULL
++    #define PB3_DDR     DDRB
+     #undef PB4
+-    #define PB4_PIN PINB4
+-    #define PB4_RPORT PINB
+-    #define PB4_WPORT PORTB
+-    #define PB4_PWM NULL
+-    #define PB4_DDR DDRB
++    #define PB4_PIN     PINB4
++    #define PB4_RPORT   PINB
++    #define PB4_WPORT   PORTB
++    #define PB4_PWM     NULL
++    #define PB4_DDR     DDRB
+     #undef PB5
+-    #define PB5_PIN PINB5
+-    #define PB5_RPORT PINB
+-    #define PB5_WPORT PORTB
+-    #define PB5_PWM NULL
+-    #define PB5_DDR DDRB
++    #define PB5_PIN     PINB5
++    #define PB5_RPORT   PINB
++    #define PB5_WPORT   PORTB
++    #define PB5_PWM     NULL
++    #define PB5_DDR     DDRB
+     #undef PB6
+-    #define PB6_PIN PINB6
+-    #define PB6_RPORT PINB
+-    #define PB6_WPORT PORTB
+-    #define PB6_PWM NULL
+-    #define PB6_DDR DDRB
++    #define PB6_PIN     PINB6
++    #define PB6_RPORT   PINB
++    #define PB6_WPORT   PORTB
++    #define PB6_PWM     NULL
++    #define PB6_DDR     DDRB
+     #undef PB7
+-    #define PB7_PIN PINB7
+-    #define PB7_RPORT PINB
+-    #define PB7_WPORT PORTB
+-    #define PB7_PWM NULL
+-    #define PB7_DDR DDRB
++    #define PB7_PIN     PINB7
++    #define PB7_RPORT   PINB
++    #define PB7_WPORT   PORTB
++    #define PB7_PWM     NULL
++    #define PB7_DDR     DDRB
+ 
+     #undef PC0
+-    #define PC0_PIN PINC0
+-    #define PC0_RPORT PINC
+-    #define PC0_WPORT PORTC
+-    #define PC0_PWM NULL
+-    #define PC0_DDR DDRC
++    #define PC0_PIN     PINC0
++    #define PC0_RPORT   PINC
++    #define PC0_WPORT   PORTC
++    #define PC0_PWM     NULL
++    #define PC0_DDR     DDRC
+     #undef PC1
+-    #define PC1_PIN PINC1
+-    #define PC1_RPORT PINC
+-    #define PC1_WPORT PORTC
+-    #define PC1_PWM NULL
+-    #define PC1_DDR DDRC
++    #define PC1_PIN     PINC1
++    #define PC1_RPORT   PINC
++    #define PC1_WPORT   PORTC
++    #define PC1_PWM     NULL
++    #define PC1_DDR     DDRC
+     #undef PC2
+-    #define PC2_PIN PINC2
+-    #define PC2_RPORT PINC
+-    #define PC2_WPORT PORTC
+-    #define PC2_PWM NULL
+-    #define PC2_DDR DDRC
++    #define PC2_PIN     PINC2
++    #define PC2_RPORT   PINC
++    #define PC2_WPORT   PORTC
++    #define PC2_PWM     NULL
++    #define PC2_DDR     DDRC
+     #undef PC3
+-    #define PC3_PIN PINC3
+-    #define PC3_RPORT PINC
+-    #define PC3_WPORT PORTC
+-    #define PC3_PWM NULL
+-    #define PC3_DDR DDRC
++    #define PC3_PIN     PINC3
++    #define PC3_RPORT   PINC
++    #define PC3_WPORT   PORTC
++    #define PC3_PWM     NULL
++    #define PC3_DDR     DDRC
+     #undef PC4
+-    #define PC4_PIN PINC4
+-    #define PC4_RPORT PINC
+-    #define PC4_WPORT PORTC
+-    #define PC4_PWM NULL
+-    #define PC4_DDR DDRC
++    #define PC4_PIN     PINC4
++    #define PC4_RPORT   PINC
++    #define PC4_WPORT   PORTC
++    #define PC4_PWM     NULL
++    #define PC4_DDR     DDRC
+     #undef PC5
+-    #define PC5_PIN PINC5
+-    #define PC5_RPORT PINC
+-    #define PC5_WPORT PORTC
+-    #define PC5_PWM NULL
+-    #define PC5_DDR DDRC
++    #define PC5_PIN     PINC5
++    #define PC5_RPORT   PINC
++    #define PC5_WPORT   PORTC
++    #define PC5_PWM     NULL
++    #define PC5_DDR     DDRC
+     #undef PC6
+-    #define PC6_PIN PINC6
+-    #define PC6_RPORT PINC
+-    #define PC6_WPORT PORTC
+-    #define PC6_PWM NULL
+-    #define PC6_DDR DDRC
++    #define PC6_PIN     PINC6
++    #define PC6_RPORT   PINC
++    #define PC6_WPORT   PORTC
++    #define PC6_PWM     NULL
++    #define PC6_DDR     DDRC
+     #undef PC7
+-    #define PC7_PIN PINC7
+-    #define PC7_RPORT PINC
+-    #define PC7_WPORT PORTC
+-    #define PC7_PWM NULL
+-    #define PC7_DDR DDRC
++    #define PC7_PIN     PINC7
++    #define PC7_RPORT   PINC
++    #define PC7_WPORT   PORTC
++    #define PC7_PWM     NULL
++    #define PC7_DDR     DDRC
+ 
+     #undef PD0
+-    #define PD0_PIN PIND0
+-    #define PD0_RPORT PIND
+-    #define PD0_WPORT PORTD
+-    #define PD0_PWM NULL
+-    #define PD0_DDR DDRD
++    #define PD0_PIN     PIND0
++    #define PD0_RPORT   PIND
++    #define PD0_WPORT   PORTD
++    #define PD0_PWM     NULL
++    #define PD0_DDR     DDRD
+     #undef PD1
+-    #define PD1_PIN PIND1
+-    #define PD1_RPORT PIND
+-    #define PD1_WPORT PORTD
+-    #define PD1_PWM NULL
+-    #define PD1_DDR DDRD
++    #define PD1_PIN     PIND1
++    #define PD1_RPORT   PIND
++    #define PD1_WPORT   PORTD
++    #define PD1_PWM     NULL
++    #define PD1_DDR     DDRD
+     #undef PD2
+-    #define PD2_PIN PIND2
+-    #define PD2_RPORT PIND
+-    #define PD2_WPORT PORTD
+-    #define PD2_PWM NULL
+-    #define PD2_DDR DDRD
++    #define PD2_PIN     PIND2
++    #define PD2_RPORT   PIND
++    #define PD2_WPORT   PORTD
++    #define PD2_PWM     NULL
++    #define PD2_DDR     DDRD
+     #undef PD3
+-    #define PD3_PIN PIND3
+-    #define PD3_RPORT PIND
+-    #define PD3_WPORT PORTD
+-    #define PD3_PWM NULL
+-    #define PD3_DDR DDRD
++    #define PD3_PIN     PIND3
++    #define PD3_RPORT   PIND
++    #define PD3_WPORT   PORTD
++    #define PD3_PWM     NULL
++    #define PD3_DDR     DDRD
+     #undef PD4
+-    #define PD4_PIN PIND4
+-    #define PD4_RPORT PIND
+-    #define PD4_WPORT PORTD
+-    #define PD4_PWM NULL
+-    #define PD4_DDR DDRD
++    #define PD4_PIN     PIND4
++    #define PD4_RPORT   PIND
++    #define PD4_WPORT   PORTD
++    #define PD4_PWM     NULL
++    #define PD4_DDR     DDRD
+     #undef PD5
+-    #define PD5_PIN PIND5
+-    #define PD5_RPORT PIND
+-    #define PD5_WPORT PORTD
+-    #define PD5_PWM NULL
+-    #define PD5_DDR DDRD
++    #define PD5_PIN     PIND5
++    #define PD5_RPORT   PIND
++    #define PD5_WPORT   PORTD
++    #define PD5_PWM     NULL
++    #define PD5_DDR     DDRD
+     #undef PD6
+-    #define PD6_PIN PIND6
+-    #define PD6_RPORT PIND
+-    #define PD6_WPORT PORTD
+-    #define PD6_PWM NULL
+-    #define PD6_DDR DDRD
++    #define PD6_PIN     PIND6
++    #define PD6_RPORT   PIND
++    #define PD6_WPORT   PORTD
++    #define PD6_PWM     NULL
++    #define PD6_DDR     DDRD
+     #undef PD7
+-    #define PD7_PIN PIND7
+-    #define PD7_RPORT PIND
+-    #define PD7_WPORT PORTD
+-    #define PD7_PWM NULL
+-    #define PD7_DDR DDRD
++    #define PD7_PIN     PIND7
++    #define PD7_RPORT   PIND
++    #define PD7_WPORT   PORTD
++    #define PD7_PWM     NULL
++    #define PD7_DDR     DDRD
+ 
+     #undef PE0
+-    #define PE0_PIN PINE0
+-    #define PE0_RPORT PINE
+-    #define PE0_WPORT PORTE
+-    #define PE0_PWM NULL
+-    #define PE0_DDR DDRE
++    #define PE0_PIN     PINE0
++    #define PE0_RPORT   PINE
++    #define PE0_WPORT   PORTE
++    #define PE0_PWM     NULL
++    #define PE0_DDR     DDRE
+     #undef PE1
+-    #define PE1_PIN PINE1
+-    #define PE1_RPORT PINE
+-    #define PE1_WPORT PORTE
+-    #define PE1_PWM NULL
+-    #define PE1_DDR DDRE
++    #define PE1_PIN     PINE1
++    #define PE1_RPORT   PINE
++    #define PE1_WPORT   PORTE
++    #define PE1_PWM     NULL
++    #define PE1_DDR     DDRE
+     #undef PE2
+-    #define PE2_PIN PINE2
+-    #define PE2_RPORT PINE
+-    #define PE2_WPORT PORTE
+-    #define PE2_PWM NULL
+-    #define PE2_DDR DDRE
++    #define PE2_PIN     PINE2
++    #define PE2_RPORT   PINE
++    #define PE2_WPORT   PORTE
++    #define PE2_PWM     NULL
++    #define PE2_DDR     DDRE
+     #undef PE3
+-    #define PE3_PIN PINE3
+-    #define PE3_RPORT PINE
+-    #define PE3_WPORT PORTE
+-    #define PE3_PWM NULL
+-    #define PE3_DDR DDRE
++    #define PE3_PIN     PINE3
++    #define PE3_RPORT   PINE
++    #define PE3_WPORT   PORTE
++    #define PE3_PWM     NULL
++    #define PE3_DDR     DDRE
+     #undef PE4
+-    #define PE4_PIN PINE4
+-    #define PE4_RPORT PINE
+-    #define PE4_WPORT PORTE
+-    #define PE4_PWM NULL
+-    #define PE4_DDR DDRE
++    #define PE4_PIN     PINE4
++    #define PE4_RPORT   PINE
++    #define PE4_WPORT   PORTE
++    #define PE4_PWM     NULL
++    #define PE4_DDR     DDRE
+     #undef PE5
+-    #define PE5_PIN PINE5
+-    #define PE5_RPORT PINE
+-    #define PE5_WPORT PORTE
+-    #define PE5_PWM NULL
+-    #define PE5_DDR DDRE
++    #define PE5_PIN     PINE5
++    #define PE5_RPORT   PINE
++    #define PE5_WPORT   PORTE
++    #define PE5_PWM     NULL
++    #define PE5_DDR     DDRE
+     #undef PE6
+-    #define PE6_PIN PINE6
+-    #define PE6_RPORT PINE
+-    #define PE6_WPORT PORTE
+-    #define PE6_PWM NULL
+-    #define PE6_DDR DDRE
++    #define PE6_PIN     PINE6
++    #define PE6_RPORT   PINE
++    #define PE6_WPORT   PORTE
++    #define PE6_PWM     NULL
++    #define PE6_DDR     DDRE
+     #undef PE7
+-    #define PE7_PIN PINE7
+-    #define PE7_RPORT PINE
+-    #define PE7_WPORT PORTE
+-    #define PE7_PWM NULL
+-    #define PE7_DDR DDRE
++    #define PE7_PIN     PINE7
++    #define PE7_RPORT   PINE
++    #define PE7_WPORT   PORTE
++    #define PE7_PWM     NULL
++    #define PE7_DDR     DDRE
+ 
+     #undef PF0
+-    #define PF0_PIN PINF0
+-    #define PF0_RPORT PINF
+-    #define PF0_WPORT PORTF
+-    #define PF0_PWM NULL
+-    #define PF0_DDR DDRF
++    #define PF0_PIN     PINF0
++    #define PF0_RPORT   PINF
++    #define PF0_WPORT   PORTF
++    #define PF0_PWM     NULL
++    #define PF0_DDR     DDRF
+     #undef PF1
+-    #define PF1_PIN PINF1
+-    #define PF1_RPORT PINF
+-    #define PF1_WPORT PORTF
+-    #define PF1_PWM NULL
+-    #define PF1_DDR DDRF
++    #define PF1_PIN     PINF1
++    #define PF1_RPORT   PINF
++    #define PF1_WPORT   PORTF
++    #define PF1_PWM     NULL
++    #define PF1_DDR     DDRF
+     #undef PF2
+-    #define PF2_PIN PINF2
+-    #define PF2_RPORT PINF
+-    #define PF2_WPORT PORTF
+-    #define PF2_PWM NULL
+-    #define PF2_DDR DDRF
++    #define PF2_PIN     PINF2
++    #define PF2_RPORT   PINF
++    #define PF2_WPORT   PORTF
++    #define PF2_PWM     NULL
++    #define PF2_DDR     DDRF
+     #undef PF3
+-    #define PF3_PIN PINF3
+-    #define PF3_RPORT PINF
+-    #define PF3_WPORT PORTF
+-    #define PF3_PWM NULL
+-    #define PF3_DDR DDRF
++    #define PF3_PIN     PINF3
++    #define PF3_RPORT   PINF
++    #define PF3_WPORT   PORTF
++    #define PF3_PWM     NULL
++    #define PF3_DDR     DDRF
+     #undef PF4
+-    #define PF4_PIN PINF4
+-    #define PF4_RPORT PINF
+-    #define PF4_WPORT PORTF
+-    #define PF4_PWM NULL
+-    #define PF4_DDR DDRF
++    #define PF4_PIN     PINF4
++    #define PF4_RPORT   PINF
++    #define PF4_WPORT   PORTF
++    #define PF4_PWM     NULL
++    #define PF4_DDR     DDRF
+     #undef PF5
+-    #define PF5_PIN PINF5
+-    #define PF5_RPORT PINF
+-    #define PF5_WPORT PORTF
+-    #define PF5_PWM NULL
+-    #define PF5_DDR DDRF
++    #define PF5_PIN     PINF5
++    #define PF5_RPORT   PINF
++    #define PF5_WPORT   PORTF
++    #define PF5_PWM     NULL
++    #define PF5_DDR     DDRF
+     #undef PF6
+-    #define PF6_PIN PINF6
+-    #define PF6_RPORT PINF
+-    #define PF6_WPORT PORTF
+-    #define PF6_PWM NULL
+-    #define PF6_DDR DDRF
++    #define PF6_PIN     PINF6
++    #define PF6_RPORT   PINF
++    #define PF6_WPORT   PORTF
++    #define PF6_PWM     NULL
++    #define PF6_DDR     DDRF
+     #undef PF7
+-    #define PF7_PIN PINF7
+-    #define PF7_RPORT PINF
+-    #define PF7_WPORT PORTF
+-    #define PF7_PWM NULL
+-    #define PF7_DDR DDRF
++    #define PF7_PIN     PINF7
++    #define PF7_RPORT   PINF
++    #define PF7_WPORT   PORTF
++    #define PF7_PWM     NULL
++    #define PF7_DDR     DDRF
+ 
+   #endif // AT90USBxx_TEENSYPP_ASSIGNMENTS Teensyduino assignments
+ #endif // __AVR_AT90usbxxx__
+diff --git a/Marlin/pins_A4JP.h b/Marlin/pins_A4JP.h
+index 28db6c8..68549de 100644
+--- a/Marlin/pins_A4JP.h
++++ b/Marlin/pins_A4JP.h
+@@ -104,53 +104,51 @@
+ //
+ // Heaters / Fans
+ //
+-#define HEATER_0_PIN   9
+-#define HEATER_1_PIN   7
+-#define HEATER_BED_PIN 3
++#define HEATER_0_PIN         9
++#define HEATER_1_PIN         7
++#define HEATER_BED_PIN       3
+ 
+-#define FAN_PIN        8
+-#define FAN0_PIN       6
+-#define FAN1_PIN       2
++#define FAN_PIN              8
++#define FAN0_PIN             6
++#define FAN1_PIN             2
+ 
+-#define TEMP_0_PIN     0
+-#define TEMP_BED_PIN   7
++#define TEMP_0_PIN           0
++#define TEMP_BED_PIN         7
+ 
+-#define SDSS          53
+-#define LED_PIN       13
+-#define PS_ON_PIN      4
++#define SDSS                53
++#define LED_PIN             13
++#define PS_ON_PIN            4
+ 
+ //
+ // LCD / Controller
+ //
+-#define LCD_PINS_RS     70 //ext2_5
+-#define LCD_PINS_ENABLE 71 //ext2_7
+-#define LCD_PINS_D4     72 ///////Ext2 9 ?
+-#define LCD_PINS_D5     73 ///////Ext2 11 ?
+-#define LCD_PINS_D6     74 //ext2_13
+-#define LCD_PINS_D7     75 ///////Ext2 15 ?
+-#define BEEPER_PIN      -1
+-
+-#define BTN_HOME        80 //ext_16
+-#define BTN_CENTER      81 //ext_14
+-#define BTN_ENC         BTN_CENTER
+-#define BTN_RIGHT       82 //ext_12
+-#define BTN_LEFT        83 //ext_10
+-#define BTN_UP          84 //ext2_8
+-#define BTN_DOWN        85 //ext2_6
+-
+-#define HOME_PIN        BTN_HOME
++#define LCD_PINS_RS         70 //ext2_5
++#define LCD_PINS_ENABLE     71 //ext2_7
++#define LCD_PINS_D4         72 ///////Ext2 9 ?
++#define LCD_PINS_D5         73 ///////Ext2 11 ?
++#define LCD_PINS_D6         74 //ext2_13
++#define LCD_PINS_D7         75 ///////Ext2 15 ?
++#define BEEPER_PIN          -1
++
++#define BTN_HOME            80 //ext_16
++#define BTN_CENTER          81 //ext_14
++#define BTN_ENC             BTN_CENTER
++#define BTN_RIGHT           82 //ext_12
++#define BTN_LEFT            83 //ext_10
++#define BTN_UP              84 //ext2_8
++#define BTN_DOWN            85 //ext2_6
++
++#define HOME_PIN            BTN_HOME
+ 
+ #if ENABLED(VIKI2) || ENABLED(miniVIKI)
+-  #define BEEPER_PIN 44
++  #define BEEPER_PIN        44
+   // Pins for DOGM SPI LCD Support
+-  #define DOGLCD_A0  70
+-  #define DOGLCD_CS  71
++  #define DOGLCD_A0         70
++  #define DOGLCD_CS         71
+   #define LCD_SCREEN_ROT_180
+ 
+-  #define SD_DETECT_PIN -1 // Pin 72 if using easy adapter board
++  #define SD_DETECT_PIN     -1 // Pin 72 if using easy adapter board
+ 
+-  #if ENABLED(TEMP_STAT_LEDS)
+-    #define STAT_LED_RED      22
+-    #define STAT_LED_BLUE     32
+-  #endif
++  #define STAT_LED_RED_PIN  22
++  #define STAT_LED_BLUE_PIN 32
+ #endif // VIKI2/miniVIKI
+diff --git a/Marlin/pins_AZTEEG_X3.h b/Marlin/pins_AZTEEG_X3.h
+index b33818e..b7d1e72 100644
+--- a/Marlin/pins_AZTEEG_X3.h
++++ b/Marlin/pins_AZTEEG_X3.h
+@@ -41,16 +41,14 @@
+   #define DOGLCD_CS         32
+   #define BTN_ENC           12
+ 
+-  #if ENABLED(TEMP_STAT_LEDS)
+-    #undef STAT_LED_RED
+-    #undef STAT_LED_BLUE
+-    #define STAT_LED_RED    64
+-    #define STAT_LED_BLUE   63
+-  #endif
++  #undef STAT_LED_RED_PIN
++  #undef STAT_LED_BLUE_PIN
++  #define STAT_LED_RED_PIN  64
++  #define STAT_LED_BLUE_PIN 63
+ 
+-#elif ENABLED(TEMP_STAT_LEDS)
++#else
+ 
+-  #define STAT_LED_RED       6
+-  #define STAT_LED_BLUE     11
++  #define STAT_LED_RED_PIN   6
++  #define STAT_LED_BLUE_PIN 11
+ 
+ #endif
+diff --git a/Marlin/pins_AZTEEG_X3_PRO.h b/Marlin/pins_AZTEEG_X3_PRO.h
+index 4bc575a..e59279b 100644
+--- a/Marlin/pins_AZTEEG_X3_PRO.h
++++ b/Marlin/pins_AZTEEG_X3_PRO.h
+@@ -117,6 +117,6 @@
+   #undef SD_DETECT_PIN
+   #define SD_DETECT_PIN    49 // For easy adapter board
+ #else
+-  #define STAT_LED_RED     32
+-  #define STAT_LED_BLUE    35
++  #define STAT_LED_RED_PIN 32
++  #define STAT_LED_BLUE_PIN 35
+ #endif
+diff --git a/Marlin/pins_CNCONTROLS_11.h b/Marlin/pins_CNCONTROLS_11.h
+index 174fb16..cd3ce0a 100644
+--- a/Marlin/pins_CNCONTROLS_11.h
++++ b/Marlin/pins_CNCONTROLS_11.h
+@@ -115,5 +115,5 @@
+ //
+ // Misc. Functions
+ //
+-#define STAT_LED_BLUE      -1
+-#define STAT_LED_RED       31
++#define STAT_LED_BLUE_PIN  -1
++#define STAT_LED_RED_PIN   31
+diff --git a/Marlin/pins_CNCONTROLS_12.h b/Marlin/pins_CNCONTROLS_12.h
+index c3d6945..30809c3 100644
+--- a/Marlin/pins_CNCONTROLS_12.h
++++ b/Marlin/pins_CNCONTROLS_12.h
+@@ -111,8 +111,8 @@
+ //#define UI1              43
+ //#define UI2              37
+ 
+-#define STAT_LED_BLUE      -1
+-#define STAT_LED_RED       10 // TOOL_0_PWM_PIN
++#define STAT_LED_BLUE_PIN  -1
++#define STAT_LED_RED_PIN   10 // TOOL_0_PWM_PIN
+ 
+ //
+ // SD Card
+diff --git a/Marlin/pins_MEGACONTROLLER.h b/Marlin/pins_MEGACONTROLLER.h
+index 2828842..404ab53 100644
+--- a/Marlin/pins_MEGACONTROLLER.h
++++ b/Marlin/pins_MEGACONTROLLER.h
+@@ -134,7 +134,7 @@
+   // Pins for DOGM SPI LCD Support
+   #define DOGLCD_A0        47
+   #define DOGLCD_CS        45
+-  #define LCD_PIN_BL       44  // backlight LED on PA3
++  #define LCD_BACKLIGHT_PIN 44  // backlight LED on PA3
+ 
+   #define KILL_PIN         12
+   // GLCD features
+diff --git a/Marlin/pins_MKS_13.h b/Marlin/pins_MKS_13.h
+index 3b5b242..0457be7 100644
+--- a/Marlin/pins_MKS_13.h
++++ b/Marlin/pins_MKS_13.h
+@@ -120,9 +120,9 @@
+   #define BEEPER_PIN      25
+ 
+   // yellow               RED-LED
+-  #define STAT_LED_RED    16
++  #define STAT_LED_RED_PIN 16
+ 
+   // white                BLUE-LED
+-  #define STAT_LED_BLUE   17
++  #define STAT_LED_BLUE_PIN 17
+ 
+ #endif
+diff --git a/Marlin/pins_PRINTRBOARD.h b/Marlin/pins_PRINTRBOARD.h
+index f2a2bbb..82b2cdc 100644
+--- a/Marlin/pins_PRINTRBOARD.h
++++ b/Marlin/pins_PRINTRBOARD.h
+@@ -131,8 +131,8 @@
+ 
+   #define SDSS 45
+   #define SD_DETECT_PIN -1 // FastIO (Manual says 72 I'm not certain cause I can't test)
+-  #if ENABLED(TEMP_STAT_LEDS)
+-    #define STAT_LED_RED      12 //Non-FastIO
+-    #define STAT_LED_BLUE     10 //Non-FastIO
+-  #endif
++
++  #define STAT_LED_RED_PIN  12 //Non-FastIO
++  #define STAT_LED_BLUE_PIN 10 //Non-FastIO
++
+ #endif
+diff --git a/Marlin/pins_PRINTRBOARD_REVF.h b/Marlin/pins_PRINTRBOARD_REVF.h
+index 1b49f89..548b506 100644
+--- a/Marlin/pins_PRINTRBOARD_REVF.h
++++ b/Marlin/pins_PRINTRBOARD_REVF.h
+@@ -117,21 +117,18 @@
+ 
+ #if ENABLED(VIKI2) || ENABLED(miniVIKI)
+   #define BEEPER_PIN 32 //FastIO
+-  // Pins for DOGM SPI LCD Support
+   #define DOGLCD_A0  42 //Non-FastIO
+   #define DOGLCD_CS  43 //Non-FastIO
+   #define LCD_SCREEN_ROT_180
+ 
+-  //The encoder and click button (FastIO Pins)
++  // (FastIO Pins)
+   #define BTN_EN1 26
+   #define BTN_EN2 27
+   #define BTN_ENC 47
+ 
+   #define SDSS 45
+-  #define SD_DETECT_PIN -1 // FastIO (Manual says 72 I'm not certain cause I can't test)
++  #define SD_DETECT_PIN -1 // FastIO (Manual says 72)
+ 
+-  #if ENABLED(TEMP_STAT_LEDS)
+-    #define STAT_LED_RED      12 //Non-FastIO
+-    #define STAT_LED_BLUE     10 //Non-FastIO
+-  #endif
++  #define STAT_LED_RED_PIN 12 //Non-FastIO
++  #define STAT_LED_BLUE_PIN 10 //Non-FastIO
+ #endif
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index 19778eb..3379e47 100755
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -169,10 +169,8 @@
+ 
+       #define SD_DETECT_PIN -1 // Pin 72 if using easy adapter board
+ 
+-      #if ENABLED(TEMP_STAT_LEDS)
+-        #define STAT_LED_RED      22
+-        #define STAT_LED_BLUE     32
+-      #endif
++      #define STAT_LED_RED_PIN 22
++      #define STAT_LED_BLUE_PIN 32
+ 
+     #else
+ 
+diff --git a/Marlin/pins_RAMPS.h b/Marlin/pins_RAMPS.h
+index 8d5fb41..5685add 100644
+--- a/Marlin/pins_RAMPS.h
++++ b/Marlin/pins_RAMPS.h
+@@ -240,7 +240,7 @@
+       #define KILL_PIN 41
+ 
+       #if ENABLED(BQ_LCD_SMART_CONTROLLER)
+-        #define LCD_PIN_BL 39
++        #define LCD_BACKLIGHT_PIN 39
+       #endif
+ 
+     #elif ENABLED(REPRAPWORLD_GRAPHICAL_LCD)
+@@ -280,10 +280,9 @@
+ 
+       #define KILL_PIN         31
+ 
+-      #if ENABLED(TEMP_STAT_LEDS)
+-        #define STAT_LED_RED   32
+-        #define STAT_LED_BLUE  35
+-      #endif
++      #define STAT_LED_RED_PIN 32
++      #define STAT_LED_BLUE_PIN 35
++
+     #elif ENABLED(ELB_FULL_GRAPHIC_CONTROLLER)
+       #define BTN_EN1 35  // reverse if the encoder turns the wrong way.
+       #define BTN_EN2 37
+@@ -294,13 +293,13 @@
+       #define BEEPER_PIN 23
+       #define DOGLCD_CS 29
+       #define DOGLCD_A0 27
+-      #define LCD_PIN_BL 33
++      #define LCD_BACKLIGHT_PIN 33
+     #elif ENABLED(MINIPANEL)
+       #define BEEPER_PIN 42
+       // Pins for DOGM SPI LCD Support
+       #define DOGLCD_A0  44
+       #define DOGLCD_CS  66
+-      #define LCD_PIN_BL 65 // backlight LED on A11/D65
++      #define LCD_BACKLIGHT_PIN 65 // backlight LED on A11/D65
+       #define SDSS   53
+ 
+       #define KILL_PIN 64
+diff --git a/Marlin/pins_SANGUINOLOLU_11.h b/Marlin/pins_SANGUINOLOLU_11.h
+index a6220c5..15ed6a0 100644
+--- a/Marlin/pins_SANGUINOLOLU_11.h
++++ b/Marlin/pins_SANGUINOLOLU_11.h
+@@ -56,7 +56,7 @@
+ #if IS_MELZI
+   #define LED_PIN          27 // On some broken versions of the Sanguino libraries the pin definitions are wrong, so LED_PIN needs to be 28. But you should upgrade your Sanguino libraries! See #368.
+ #elif MB(STB_11)
+-  #define LCD_PIN_BL       17 // LCD backlight LED
++  #define LCD_BACKLIGHT_PIN 17 // LCD backlight LED
+ #endif
+ 
+ #if ENABLED(Z_PROBE_SLED)
+@@ -173,7 +173,7 @@
+   // Pins for DOGM SPI LCD Support
+   #define DOGLCD_A0             30
+   #define DOGLCD_CS             17
+-  #define LCD_PIN_BL            28 // backlight LED on PA3
++  #define LCD_BACKLIGHT_PIN     28 // backlight LED on PA3
+   // GLCD features
+   #define LCD_CONTRAST           1
+   // Uncomment screen orientation
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 00595e1..06183a7 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -733,19 +733,27 @@ void Stepper::isr() {
+ 
+ void Stepper::init() {
+ 
+-  digipot_init(); //Initialize Digipot Motor Current
+-  microstep_init(); //Initialize Microstepping Pins
++  // Init Digipot Motor Current
++  #if HAS_DIGIPOTSS || HAS_MOTOR_CURRENT_PWM
++    digipot_init();
++  #endif
+ 
+-  // initialise TMC Steppers
++  // Init Microstepping Pins
++  #if HAS_MICROSTEPS
++    microstep_init();
++  #endif
++
++  // Init TMC Steppers
+   #if ENABLED(HAVE_TMCDRIVER)
+     tmc_init();
+   #endif
+-    // initialise L6470 Steppers
++
++  // Init L6470 Steppers
+   #if ENABLED(HAVE_L6470DRIVER)
+     L6470_init();
+   #endif
+ 
+-  // Initialize Dir Pins
++  // Init Dir Pins
+   #if HAS_X_DIR
+     X_DIR_INIT;
+   #endif
+@@ -777,8 +785,7 @@ void Stepper::init() {
+     E3_DIR_INIT;
+   #endif
+ 
+-  //Initialize Enable Pins - steppers default to disabled.
+-
++  // Init Enable Pins - steppers default to disabled.
+   #if HAS_X_ENABLE
+     X_ENABLE_INIT;
+     if (!X_ENABLE_ON) X_ENABLE_WRITE(HIGH);
+@@ -787,7 +794,6 @@ void Stepper::init() {
+       if (!X_ENABLE_ON) X2_ENABLE_WRITE(HIGH);
+     #endif
+   #endif
+-
+   #if HAS_Y_ENABLE
+     Y_ENABLE_INIT;
+     if (!Y_ENABLE_ON) Y_ENABLE_WRITE(HIGH);
+@@ -796,7 +802,6 @@ void Stepper::init() {
+       if (!Y_ENABLE_ON) Y2_ENABLE_WRITE(HIGH);
+     #endif
+   #endif
+-
+   #if HAS_Z_ENABLE
+     Z_ENABLE_INIT;
+     if (!Z_ENABLE_ON) Z_ENABLE_WRITE(HIGH);
+@@ -805,7 +810,6 @@ void Stepper::init() {
+       if (!Z_ENABLE_ON) Z2_ENABLE_WRITE(HIGH);
+     #endif
+   #endif
+-
+   #if HAS_E0_ENABLE
+     E0_ENABLE_INIT;
+     if (!E_ENABLE_ON) E0_ENABLE_WRITE(HIGH);
+@@ -823,9 +827,7 @@ void Stepper::init() {
+     if (!E_ENABLE_ON) E3_ENABLE_WRITE(HIGH);
+   #endif
+ 
+-  //
+-  // Init endstops and pullups here
+-  //
++  // Init endstops and pullups
+   endstops.init();
+ 
+   #define _STEP_INIT(AXIS) AXIS ##_STEP_INIT
+@@ -839,7 +841,7 @@ void Stepper::init() {
+ 
+   #define E_AXIS_INIT(NUM) AXIS_INIT(e## NUM, E## NUM, E)
+ 
+-  // Initialize Step Pins
++  // Init Step Pins
+   #if HAS_X_STEP
+     #if ENABLED(X_DUAL_STEPPER_DRIVERS) || ENABLED(DUAL_X_CARRIAGE)
+       X2_STEP_INIT;
+@@ -1155,143 +1157,167 @@ void Stepper::report_positions() {
+ 
+   // From Arduino DigitalPotControl example
+   void Stepper::digitalPotWrite(int address, int value) {
+-    digitalWrite(DIGIPOTSS_PIN, LOW); // take the SS pin low to select the chip
++    WRITE(DIGIPOTSS_PIN, LOW); // take the SS pin low to select the chip
+     SPI.transfer(address); //  send in the address and value via SPI:
+     SPI.transfer(value);
+-    digitalWrite(DIGIPOTSS_PIN, HIGH); // take the SS pin high to de-select the chip:
++    WRITE(DIGIPOTSS_PIN, HIGH); // take the SS pin high to de-select the chip:
+     //delay(10);
+   }
+ 
+ #endif //HAS_DIGIPOTSS
+ 
+-void Stepper::digipot_init() {
+-  #if HAS_DIGIPOTSS
+-    const uint8_t digipot_motor_current[] = DIGIPOT_MOTOR_CURRENT;
++#if HAS_DIGIPOTSS || HAS_MOTOR_CURRENT_PWM
+ 
+-    SPI.begin();
+-    pinMode(DIGIPOTSS_PIN, OUTPUT);
+-    for (uint8_t i = 0; i < COUNT(digipot_motor_current); i++) {
+-      //digitalPotWrite(digipot_ch[i], digipot_motor_current[i]);
+-      digipot_current(i, digipot_motor_current[i]);
+-    }
+-  #endif
+-  #if HAS_MOTOR_CURRENT_PWM
+-    #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
+-      pinMode(MOTOR_CURRENT_PWM_XY_PIN, OUTPUT);
+-      digipot_current(0, motor_current_setting[0]);
+-    #endif
+-    #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
+-      pinMode(MOTOR_CURRENT_PWM_Z_PIN, OUTPUT);
+-      digipot_current(1, motor_current_setting[1]);
+-    #endif
+-    #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
+-      pinMode(MOTOR_CURRENT_PWM_E_PIN, OUTPUT);
+-      digipot_current(2, motor_current_setting[2]);
+-    #endif
+-    //Set timer5 to 31khz so the PWM of the motor power is as constant as possible. (removes a buzzing noise)
+-    TCCR5B = (TCCR5B & ~(_BV(CS50) | _BV(CS51) | _BV(CS52))) | _BV(CS50);
+-  #endif
+-}
+-
+-void Stepper::digipot_current(uint8_t driver, int current) {
+-  #if HAS_DIGIPOTSS
+-    const uint8_t digipot_ch[] = DIGIPOT_CHANNELS;
+-    digitalPotWrite(digipot_ch[driver], current);
+-  #elif HAS_MOTOR_CURRENT_PWM
+-    #define _WRITE_CURRENT_PWM(P) analogWrite(P, 255L * current / (MOTOR_CURRENT_PWM_RANGE))
+-    switch (driver) {
++  void Stepper::digipot_init() {
++    #if HAS_DIGIPOTSS
++      static const uint8_t digipot_motor_current[] = DIGIPOT_MOTOR_CURRENT;
++      SPI.begin();
++      SET_OUTPUT(DIGIPOTSS_PIN);
++      for (uint8_t i = 0; i < COUNT(digipot_motor_current); i++) {
++        //digitalPotWrite(digipot_ch[i], digipot_motor_current[i]);
++        digipot_current(i, digipot_motor_current[i]);
++      }
++    #elif HAS_MOTOR_CURRENT_PWM
+       #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
+-        case 0: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_XY_PIN); break;
++        SET_OUTPUT(MOTOR_CURRENT_PWM_XY_PIN);
++        digipot_current(0, motor_current_setting[0]);
+       #endif
+       #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
+-        case 1: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_Z_PIN); break;
++        SET_OUTPUT(MOTOR_CURRENT_PWM_Z_PIN);
++        digipot_current(1, motor_current_setting[1]);
+       #endif
+       #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
+-        case 2: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_E_PIN); break;
++        SET_OUTPUT(MOTOR_CURRENT_PWM_E_PIN);
++        digipot_current(2, motor_current_setting[2]);
+       #endif
+-    }
+-  #else
+-    UNUSED(driver);
+-    UNUSED(current);
+-  #endif
+-}
++      //Set timer5 to 31khz so the PWM of the motor power is as constant as possible. (removes a buzzing noise)
++      TCCR5B = (TCCR5B & ~(_BV(CS50) | _BV(CS51) | _BV(CS52))) | _BV(CS50);
++    #endif
++  }
+ 
+-void Stepper::microstep_init() {
+-  #if HAS_MICROSTEPS_E1
+-    pinMode(E1_MS1_PIN, OUTPUT);
+-    pinMode(E1_MS2_PIN, OUTPUT);
+-  #endif
++  void Stepper::digipot_current(uint8_t driver, int current) {
++    #if HAS_DIGIPOTSS
++      const uint8_t digipot_ch[] = DIGIPOT_CHANNELS;
++      digitalPotWrite(digipot_ch[driver], current);
++    #elif HAS_MOTOR_CURRENT_PWM
++      #define _WRITE_CURRENT_PWM(P) analogWrite(P, 255L * current / (MOTOR_CURRENT_PWM_RANGE))
++      switch (driver) {
++        #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
++          case 0: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_XY_PIN); break;
++        #endif
++        #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
++          case 1: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_Z_PIN); break;
++        #endif
++        #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
++          case 2: _WRITE_CURRENT_PWM(MOTOR_CURRENT_PWM_E_PIN); break;
++        #endif
++      }
++    #endif
++  }
+ 
+-  #if HAS_MICROSTEPS
+-    pinMode(X_MS1_PIN, OUTPUT);
+-    pinMode(X_MS2_PIN, OUTPUT);
+-    pinMode(Y_MS1_PIN, OUTPUT);
+-    pinMode(Y_MS2_PIN, OUTPUT);
+-    pinMode(Z_MS1_PIN, OUTPUT);
+-    pinMode(Z_MS2_PIN, OUTPUT);
+-    pinMode(E0_MS1_PIN, OUTPUT);
+-    pinMode(E0_MS2_PIN, OUTPUT);
+-    const uint8_t microstep_modes[] = MICROSTEP_MODES;
+-    for (uint16_t i = 0; i < COUNT(microstep_modes); i++)
+-      microstep_mode(i, microstep_modes[i]);
+-  #endif
+-}
++#endif
+ 
+-/**
+- * Software-controlled Microstepping
+- */
++#if HAS_MICROSTEPS
++
++  /**
++   * Software-controlled Microstepping
++   */
+ 
+-void Stepper::microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2) {
+-  if (ms1 >= 0) switch (driver) {
+-    case 0: digitalWrite(X_MS1_PIN, ms1); break;
+-    case 1: digitalWrite(Y_MS1_PIN, ms1); break;
+-    case 2: digitalWrite(Z_MS1_PIN, ms1); break;
+-    case 3: digitalWrite(E0_MS1_PIN, ms1); break;
++  void Stepper::microstep_init() {
++    SET_OUTPUT(X_MS1_PIN);
++    SET_OUTPUT(X_MS2_PIN);
++    #if HAS_MICROSTEPS_Y
++      SET_OUTPUT(Y_MS1_PIN);
++      SET_OUTPUT(Y_MS2_PIN);
++    #endif
++    #if HAS_MICROSTEPS_Z
++      SET_OUTPUT(Z_MS1_PIN);
++      SET_OUTPUT(Z_MS2_PIN);
++    #endif
++    #if HAS_MICROSTEPS_E0
++      SET_OUTPUT(E0_MS1_PIN);
++      SET_OUTPUT(E0_MS2_PIN);
++    #endif
+     #if HAS_MICROSTEPS_E1
+-      case 4: digitalWrite(E1_MS1_PIN, ms1); break;
++      SET_OUTPUT(E1_MS1_PIN);
++      SET_OUTPUT(E1_MS2_PIN);
+     #endif
++    static const uint8_t microstep_modes[] = MICROSTEP_MODES;
++    for (uint16_t i = 0; i < COUNT(microstep_modes); i++)
++      microstep_mode(i, microstep_modes[i]);
+   }
+-  if (ms2 >= 0) switch (driver) {
+-    case 0: digitalWrite(X_MS2_PIN, ms2); break;
+-    case 1: digitalWrite(Y_MS2_PIN, ms2); break;
+-    case 2: digitalWrite(Z_MS2_PIN, ms2); break;
+-    case 3: digitalWrite(E0_MS2_PIN, ms2); break;
+-    #if PIN_EXISTS(E1_MS2)
+-      case 4: digitalWrite(E1_MS2_PIN, ms2); break;
+-    #endif
++
++  void Stepper::microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2) {
++    if (ms1 >= 0) switch (driver) {
++      case 0: digitalWrite(X_MS1_PIN, ms1); break;
++      #if HAS_MICROSTEPS_Y
++        case 1: digitalWrite(Y_MS1_PIN, ms1); break;
++      #endif
++      #if HAS_MICROSTEPS_Z
++        case 2: digitalWrite(Z_MS1_PIN, ms1); break;
++      #endif
++      #if HAS_MICROSTEPS_E0
++        case 3: digitalWrite(E0_MS1_PIN, ms1); break;
++      #endif
++      #if HAS_MICROSTEPS_E1
++        case 4: digitalWrite(E1_MS1_PIN, ms1); break;
++      #endif
++    }
++    if (ms2 >= 0) switch (driver) {
++      case 0: digitalWrite(X_MS2_PIN, ms2); break;
++      #if HAS_MICROSTEPS_Y
++        case 1: digitalWrite(Y_MS2_PIN, ms2); break;
++      #endif
++      #if HAS_MICROSTEPS_Z
++        case 2: digitalWrite(Z_MS2_PIN, ms2); break;
++      #endif
++      #if HAS_MICROSTEPS_E0
++        case 3: digitalWrite(E0_MS2_PIN, ms2); break;
++      #endif
++      #if HAS_MICROSTEPS_E1
++        case 4: digitalWrite(E1_MS2_PIN, ms2); break;
++      #endif
++    }
+   }
+-}
+ 
+-void Stepper::microstep_mode(uint8_t driver, uint8_t stepping_mode) {
+-  switch (stepping_mode) {
+-    case 1: microstep_ms(driver, MICROSTEP1); break;
+-    case 2: microstep_ms(driver, MICROSTEP2); break;
+-    case 4: microstep_ms(driver, MICROSTEP4); break;
+-    case 8: microstep_ms(driver, MICROSTEP8); break;
+-    case 16: microstep_ms(driver, MICROSTEP16); break;
++  void Stepper::microstep_mode(uint8_t driver, uint8_t stepping_mode) {
++    switch (stepping_mode) {
++      case 1: microstep_ms(driver, MICROSTEP1); break;
++      case 2: microstep_ms(driver, MICROSTEP2); break;
++      case 4: microstep_ms(driver, MICROSTEP4); break;
++      case 8: microstep_ms(driver, MICROSTEP8); break;
++      case 16: microstep_ms(driver, MICROSTEP16); break;
++    }
+   }
+-}
+ 
+-void Stepper::microstep_readings() {
+-  SERIAL_PROTOCOLLNPGM("MS1,MS2 Pins");
+-  SERIAL_PROTOCOLPGM("X: ");
+-  SERIAL_PROTOCOL(digitalRead(X_MS1_PIN));
+-  SERIAL_PROTOCOLLN(digitalRead(X_MS2_PIN));
+-  SERIAL_PROTOCOLPGM("Y: ");
+-  SERIAL_PROTOCOL(digitalRead(Y_MS1_PIN));
+-  SERIAL_PROTOCOLLN(digitalRead(Y_MS2_PIN));
+-  SERIAL_PROTOCOLPGM("Z: ");
+-  SERIAL_PROTOCOL(digitalRead(Z_MS1_PIN));
+-  SERIAL_PROTOCOLLN(digitalRead(Z_MS2_PIN));
+-  SERIAL_PROTOCOLPGM("E0: ");
+-  SERIAL_PROTOCOL(digitalRead(E0_MS1_PIN));
+-  SERIAL_PROTOCOLLN(digitalRead(E0_MS2_PIN));
+-  #if HAS_MICROSTEPS_E1
+-    SERIAL_PROTOCOLPGM("E1: ");
+-    SERIAL_PROTOCOL(digitalRead(E1_MS1_PIN));
+-    SERIAL_PROTOCOLLN(digitalRead(E1_MS2_PIN));
+-  #endif
+-}
++  void Stepper::microstep_readings() {
++    SERIAL_PROTOCOLLNPGM("MS1,MS2 Pins");
++    SERIAL_PROTOCOLPGM("X: ");
++    SERIAL_PROTOCOL(READ(X_MS1_PIN));
++    SERIAL_PROTOCOLLN(READ(X_MS2_PIN));
++    #if HAS_MICROSTEPS_Y
++      SERIAL_PROTOCOLPGM("Y: ");
++      SERIAL_PROTOCOL(READ(Y_MS1_PIN));
++      SERIAL_PROTOCOLLN(READ(Y_MS2_PIN));
++    #endif
++    #if HAS_MICROSTEPS_Z
++      SERIAL_PROTOCOLPGM("Z: ");
++      SERIAL_PROTOCOL(READ(Z_MS1_PIN));
++      SERIAL_PROTOCOLLN(READ(Z_MS2_PIN));
++    #endif
++    #if HAS_MICROSTEPS_E0
++      SERIAL_PROTOCOLPGM("E0: ");
++      SERIAL_PROTOCOL(READ(E0_MS1_PIN));
++      SERIAL_PROTOCOLLN(READ(E0_MS2_PIN));
++    #endif
++    #if HAS_MICROSTEPS_E1
++      SERIAL_PROTOCOLPGM("E1: ");
++      SERIAL_PROTOCOL(READ(E1_MS1_PIN));
++      SERIAL_PROTOCOLLN(READ(E1_MS2_PIN));
++    #endif
++  }
++
++#endif // HAS_MICROSTEPS
+ 
+ #if ENABLED(LIN_ADVANCE)
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 995aaea..a1c62fe 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -239,13 +239,16 @@ class Stepper {
+     //
+     static FORCE_INLINE bool motor_direction(AxisEnum axis) { return TEST(last_direction_bits, axis); }
+ 
+-    #if HAS_DIGIPOTSS
++    #if HAS_DIGIPOTSS || HAS_MOTOR_CURRENT_PWM
+       static void digitalPotWrite(int address, int value);
++      static void digipot_current(uint8_t driver, int current);
++    #endif
++
++    #if HAS_MICROSTEPS
++      static void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2);
++      static void microstep_mode(uint8_t driver, uint8_t stepping);
++      static void microstep_readings();
+     #endif
+-    static void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2);
+-    static void digipot_current(uint8_t driver, int current);
+-    static void microstep_mode(uint8_t driver, uint8_t stepping);
+-    static void microstep_readings();
+ 
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+       static FORCE_INLINE void set_homing_flag(bool state) { performing_homing = state; }
+@@ -380,7 +383,10 @@ class Stepper {
+     }
+ 
+     static void digipot_init();
+-    static void microstep_init();
++
++    #if HAS_MICROSTEPS
++      static void microstep_init();
++    #endif
+ 
+ };
+ 
+diff --git a/Marlin/stepper_dac.cpp b/Marlin/stepper_dac.cpp
+index 6c71b89..25cd7e6 100644
+--- a/Marlin/stepper_dac.cpp
++++ b/Marlin/stepper_dac.cpp
+@@ -52,8 +52,7 @@
+ 
+   int dac_init() {
+     #if PIN_EXISTS(DAC_DISABLE)
+-      pinMode(DAC_DISABLE_PIN, OUTPUT);
+-      digitalWrite(DAC_DISABLE_PIN, LOW);  // set pin low to enable DAC
++      OUT_WRITE(DAC_DISABLE_PIN, LOW);  // set pin low to enable DAC
+     #endif
+ 
+     mcp4728_init();
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index aeed61f..73ed9db 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -220,14 +220,12 @@ void lcd_printPGM(const char* str) {
+ // Initialize or re-initializw the LCD
+ static void lcd_implementation_init() {
+ 
+-  #if defined(LCD_PIN_BL) && LCD_PIN_BL > -1 // Enable LCD backlight
+-    pinMode(LCD_PIN_BL, OUTPUT);
+-    digitalWrite(LCD_PIN_BL, HIGH);
++  #if PIN_EXISTS(LCD_BACKLIGHT) // Enable LCD backlight
++    OUT_WRITE(LCD_BACKLIGHT_PIN, HIGH);
+   #endif
+ 
+-  #if defined(LCD_PIN_RESET) && LCD_PIN_RESET > -1
+-    pinMode(LCD_PIN_RESET, OUTPUT);
+-    digitalWrite(LCD_PIN_RESET, HIGH);
++  #if PIN_EXISTS(LCD_RESET)
++    OUT_WRITE(LCD_RESET_PIN, HIGH);
+   #endif
+ 
+   #if DISABLED(MINIPANEL) // setContrast not working for Mini Panel
+
+commit 9cebbabd05ae296f2ef182d65f152a97517180f7 (from 5fff8d148bd50bf2791ee809932dfad6d2a480b1)
+Merge: fd64233 5fff8d1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Sep 25 18:50:47 2016 -0500
+
+    Merge pull request #4893 from thinkyhead/rc_stat_led_check
+    
+    Define status LED pins without condition
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ced9064..5d6351f 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -128,124 +128,123 @@
+  * M1   - Same as M0
+  * M17  - Enable/Power all stepper motors
+  * M18  - Disable all stepper motors; same as M84
+- * M20  - List SD card
+- * M21  - Init SD card
+- * M22  - Release SD card
+- * M23  - Select SD file (M23 filename.g)
+- * M24  - Start/resume SD print
+- * M25  - Pause SD print
+- * M26  - Set SD position in bytes (M26 S12345)
+- * M27  - Report SD print status
+- * M28  - Start SD write (M28 filename.g)
+- * M29  - Stop SD write
+- * M30  - Delete file from SD (M30 filename.g)
+- * M31  - Output time since last M109 or SD card start to serial
+- * M32  - Select file and start SD print (Can be used _while_ printing from SD card files):
+- *        syntax "M32 /path/filename#", or "M32 S<startpos bytes> !filename#"
+- *        Call gcode file : "M32 P !filename#" and return to caller file after finishing (similar to #include).
++ * M20  - List SD card. (Requires SDSUPPORT)
++ * M21  - Init SD card. (Requires SDSUPPORT)
++ * M22  - Release SD card. (Requires SDSUPPORT)
++ * M23  - Select SD file: "M23 /path/file.gco". (Requires SDSUPPORT)
++ * M24  - Start/resume SD print. (Requires SDSUPPORT)
++ * M25  - Pause SD print. (Requires SDSUPPORT)
++ * M26  - Set SD position in bytes: "M26 S12345". (Requires SDSUPPORT)
++ * M27  - Report SD print status. (Requires SDSUPPORT)
++ * M28  - Start SD write: "M28 /path/file.gco". (Requires SDSUPPORT)
++ * M29  - Stop SD write. (Requires SDSUPPORT)
++ * M30  - Delete file from SD: "M30 /path/file.gco"
++ * M31  - Report time since last M109 or SD card start to serial.
++ * M32  - Select file and start SD print: "M32 [S<bytepos>] !/path/file.gco#". (Requires SDSUPPORT)
++ *        Use P to run other files as sub-programs: "M32 P !filename#"
+  *        The '#' is necessary when calling from within sd files, as it stops buffer prereading
+- * M33  - Get the longname version of a path
+- * M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+- * M48  - Measure Z_Probe repeatability. M48 [P # of points] [X position] [Y position] [V_erboseness #] [E_ngage Probe] [L # of legs of travel]
+- * M75  - Start the print job timer
+- * M76  - Pause the print job timer
+- * M77  - Stop the print job timer
+- * M78  - Show statistical information about the print jobs
+- * M80  - Turn on Power Supply
+- * M81  - Turn off Power Supply
+- * M82  - Set E codes absolute (default)
+- * M83  - Set E codes relative while in Absolute Coordinates (G90) mode
+- * M84  - Disable steppers until next move,
+- *        or use S<seconds> to specify an inactivity timeout, after which the steppers will be disabled.  S0 to disable the timeout.
++ * M33  - Get the longname version of a path. (Requires LONG_FILENAME_HOST_SUPPORT)
++ * M42  - Change pin status via gcode: M42 P<pin> S<value>. LED pin assumed if P is omitted.
++ * M48  - Measure Z Probe repeatability: M48 P<points> X<pos> Y<pos> V<level> E<engage> L<legs>. (Requires Z_MIN_PROBE_REPEATABILITY_TEST)
++ * M75  - Start the print job timer.
++ * M76  - Pause the print job timer.
++ * M77  - Stop the print job timer.
++ * M78  - Show statistical information about the print jobs. (Requires PRINTCOUNTER)
++ * M80  - Turn on Power Supply. (Requires POWER_SUPPLY)
++ * M81  - Turn off Power Supply. (Requires POWER_SUPPLY)
++ * M82  - Set E codes absolute (default).
++ * M83  - Set E codes relative while in Absolute (G90) mode.
++ * M84  - Disable steppers until next move, or use S<seconds> to specify an idle
++ *        duration after which steppers should turn off. S0 disables the timeout.
+  * M85  - Set inactivity shutdown timer with parameter S<seconds>. To disable set zero (default)
+- * M92  - Set planner.axis_steps_per_mm - same syntax as G92
+- * M104 - Set extruder target temp
+- * M105 - Read current temp
+- * M106 - Fan on
+- * M107 - Fan off
+- * M108 - Stop the waiting for heaters in M109, M190, M303. Does not affect the target temperature.
++ * M92  - Set planner.axis_steps_per_mm for one or more axes.
++ * M104 - Set extruder target temp.
++ * M105 - Report current temperatures.
++ * M106 - Fan on.
++ * M107 - Fan off.
++ * M108 - Break out of heating loops (M109, M190, M303). With no controller, breaks out of M0/M1. (Requires EMERGENCY_PARSER)
+  * M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+  *        Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
+  *        IF AUTOTEMP is enabled, S<mintemp> B<maxtemp> F<factor>. Exit autotemp by any M109 without F
+- * M110 - Set the current line number
+- * M111 - Set debug flags with S<mask>. See flag bits defined in enum.h.
+- * M112 - Emergency stop
+- * M113 - Get or set the timeout interval for Host Keepalive "busy" messages
+- * M114 - Output current position to serial port
+- * M115 - Capabilities string
+- * M117 - Display a message on the controller screen
+- * M119 - Output Endstop status to serial port
+- * M120 - Enable endstop detection
+- * M121 - Disable endstop detection
+- * M126 - Solenoid Air Valve Open (BariCUDA support by jmil)
+- * M127 - Solenoid Air Valve Closed (BariCUDA vent to atmospheric pressure by jmil)
+- * M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+- * M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+- * M140 - Set bed target temp
+- * M145 - Set the heatup state H<hotend> B<bed> F<fan speed> for S<material> (0=PLA, 1=ABS)
+- * M149 - Set temperature units
+- * M150 - Set BlinkM Color Output R: Red<0-255> U(!): Green<0-255> B: Blue<0-255> over i2c, G for green does not work.
+- * M163 - Set a single proportion for a mixing extruder. Requires MIXING_EXTRUDER.
+- * M164 - Save the mix as a virtual extruder. Requires MIXING_EXTRUDER and MIXING_VIRTUAL_TOOLS.
+- * M165 - Set the proportions for a mixing extruder. Use parameters ABCDHI to set the mixing factors. Requires MIXING_EXTRUDER.
+- * M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
+- *        Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
++ * M110 - Set the current line number. (Used by host printing)
++ * M111 - Set debug flags: "M111 S<flagbits>". See flag bits defined in enum.h.
++ * M112 - Emergency stop.
++ * M113 - Get or set the timeout interval for Host Keepalive "busy" messages. (Requires HOST_KEEPALIVE_FEATURE)
++ * M114 - Report current position.
++ * M115 - Report capabilities.
++ * M117 - Display a message on the controller screen. (Requires an LCD)
++ * M119 - Report endstops status.
++ * M120 - Enable endstops detection.
++ * M121 - Disable endstops detection.
++ * M126 - Solenoid Air Valve Open. (Requires BARICUDA)
++ * M127 - Solenoid Air Valve Closed. (Requires BARICUDA)
++ * M128 - EtoP Open. (Requires BARICUDA)
++ * M129 - EtoP Closed. (Requires BARICUDA)
++ * M140 - Set bed target temp. S<temp>
++ * M145 - Set heatup values for materials on the LCD. H<hotend> B<bed> F<fan speed> for S<material> (0=PLA, 1=ABS)
++ * M149 - Set temperature units. (Requires TEMPERATURE_UNITS_SUPPORT)
++ * M150 - Set BlinkM Color R<red> U<green> B<blue>. Values 0-255. (Requires BLINKM)
++ * M163 - Set a single proportion for a mixing extruder. (Requires MIXING_EXTRUDER)
++ * M164 - Save the mix as a virtual extruder. (Requires MIXING_EXTRUDER and MIXING_VIRTUAL_TOOLS)
++ * M165 - Set the proportions for a mixing extruder. Use parameters ABCDHI to set the mixing factors. (Requires MIXING_EXTRUDER)
++ * M190 - Sxxx Wait for bed current temp to reach target temp. ** Waits only when heating! **
++ *        Rxxx Wait for bed current temp to reach target temp. ** Waits for heating or cooling. **
+  * M200 - Set filament diameter, D<diameter>, setting E axis units to cubic. (Use S0 to revert to linear units.)
+- * M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+- * M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+- * M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in units/sec
+- * M204 - Set default acceleration: P for Printing moves, R for Retract only (no X, Y, Z) moves and T for Travel (non printing) moves (ex. M204 P800 T3000 R9000) in units/sec^2
++ * M201 - Set max acceleration in units/s^2 for print moves: "M201 X<accel> Y<accel> Z<accel> E<accel>"
++ * M202 - Set max acceleration in units/s^2 for travel moves: "M202 X<accel> Y<accel> Z<accel> E<accel>" ** UNUSED IN MARLIN! **
++ * M203 - Set maximum feedrate: "M203 X<fr> Y<fr> Z<fr> E<fr>" in units/sec.
++ * M204 - Set default acceleration in units/sec^2: P<printing> R<extruder_only> T<travel>
+  * M205 - Set advanced settings. Current units apply:
+             S<print> T<travel> minimum speeds
+             B<minimum segment time>
+             X<max xy jerk>, Z<max Z jerk>, E<max E jerk>
+- * M206 - Set additional homing offset
+- * M207 - Set Retract Length: S<length>, Feedrate: F<units/min>, and Z lift: Z<distance>
+- * M208 - Set Recover (unretract) Additional (!) Length: S<length> and Feedrate: F<units/min>
+- * M209 - Turn Automatic Retract Detection on/off: S<bool> (For slicers that don't support G10/11).
++ * M206 - Set additional homing offset.
++ * M207 - Set Retract Length: S<length>, Feedrate: F<units/min>, and Z lift: Z<distance>. (Requires FWRETRACT)
++ * M208 - Set Recover (unretract) Additional (!) Length: S<length> and Feedrate: F<units/min>. (Requires FWRETRACT)
++ * M209 - Turn Automatic Retract Detection on/off: S<0|1> (For slicers that don't support G10/11). (Requires FWRETRACT)
+           Every normal extrude-only move will be classified as retract depending on the direction.
+- * M211 - Enable, Disable, and/or Report software endstops: [S<bool>]
+- * M218 - Set a tool offset: T<index> X<offset> Y<offset>
+- * M220 - Set Feedrate Percentage: S<percent> ("FR" on your LCD)
+- * M221 - Set Flow Percentage: S<percent>
+- * M226 - Wait until the specified pin reaches the state required: P<pin number> S<pin state>
+- * M240 - Trigger a camera to take a photograph
+- * M250 - Set LCD contrast C<contrast value> (value 0..63)
+- * M280 - Set servo position absolute. P: servo index, S: angle or microseconds
++ * M211 - Enable, Disable, and/or Report software endstops: S<0|1>
++ * M218 - Set a tool offset: "M218 T<index> X<offset> Y<offset>". (Requires 2 or more extruders)
++ * M220 - Set Feedrate Percentage: "M220 S<percent>" (i.e., "FR" on the LCD)
++ * M221 - Set Flow Percentage: "M221 S<percent>"
++ * M226 - Wait until a pin is in a given state: "M226 P<pin> S<state>"
++ * M240 - Trigger a camera to take a photograph. (Requires CHDK or PHOTOGRAPH_PIN)
++ * M250 - Set LCD contrast: "M250 C<contrast>" (0-63). (Requires LCD support)
++ * M280 - Set servo position absolute: "M280 P<index> S<angle|µs>". (Requires servos)
+  * M300 - Play beep sound S<frequency Hz> P<duration ms>
+- * M301 - Set PID parameters P I and D
+- * M302 - Allow cold extrudes, or set the minimum extrude S<temperature>.
+- * M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+- * M304 - Set bed PID parameters P I and D
+- * M380 - Activate solenoid on active extruder
+- * M381 - Disable all solenoids
+- * M400 - Finish all moves
+- * M401 - Lower Z probe if present
+- * M402 - Raise Z probe if present
+- * M404 - Display or set the Nominal Filament Width: [ N<diameter> ]
+- * M405 - Enable Filament Sensor extrusion control. Optional delay between sensor and extruder: D<cm>
+- * M406 - Disable Filament Sensor extrusion control
+- * M407 - Display measured filament diameter in millimeters
+- * M410 - Quickstop. Abort all the planned moves
+- * M420 - Enable/Disable Mesh Leveling (with current values) S1=enable S0=disable
+- * M421 - Set a single Z coordinate in the Mesh Leveling grid. X<units> Y<units> Z<units>
+- * M428 - Set the home_offset logically based on the current_position
+- * M500 - Store parameters in EEPROM
+- * M501 - Read parameters from EEPROM (if you need reset them after you changed them temporarily).
+- * M502 - Revert to the default "factory settings". You still need to store them in EEPROM afterwards if you want to.
+- * M503 - Print the current settings (from memory not from EEPROM). Use S0 to leave off headings.
+- * M540 - Use S[0|1] to enable or disable the stop SD card print on endstop hit (requires ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
+- * M600 - Pause for filament change X[pos] Y[pos] Z[relative lift] E[initial retract] L[later retract distance for removal]
+- * M665 - Set delta configurations: L<diagonal rod> R<delta radius> S<segments/s>
+- * M666 - Set delta endstop adjustment
+- * M605 - Set dual x-carriage movement mode: S<mode> [ X<duplication x-offset> R<duplication temp offset> ]
+- * M851 - Set Z probe's Z offset in current units. (Negative values apply to probes that extend below the nozzle.)
+- * M907 - Set digital trimpot motor current using axis codes.
+- * M908 - Control digital trimpot directly.
+- * M909 - DAC_STEPPER_CURRENT: Print digipot/DAC current value
+- * M910 - DAC_STEPPER_CURRENT: Commit digipot/DAC value to external EEPROM via I2C
+- * M350 - Set microstepping mode.
+- * M351 - Toggle MS1 MS2 pins directly.
++ * M301 - Set PID parameters P I and D. (Requires PIDTEMP)
++ * M302 - Allow cold extrudes, or set the minimum extrude S<temperature>. (Requires PREVENT_COLD_EXTRUSION)
++ * M303 - PID relay autotune S<temperature> sets the target temperature. Default 150C. (Requires PIDTEMP)
++ * M304 - Set bed PID parameters P I and D. (Requires PIDTEMPBED)
++ * M380 - Activate solenoid on active extruder. (Requires EXT_SOLENOID)
++ * M381 - Disable all solenoids. (Requires EXT_SOLENOID)
++ * M400 - Finish all moves.
++ * M401 - Lower Z probe. (Requires a probe)
++ * M402 - Raise Z probe. (Requires a probe)
++ * M404 - Display or set the Nominal Filament Width: "W<diameter>". (Requires FILAMENT_WIDTH_SENSOR)
++ * M405 - Enable Filament Sensor flow control. "M405 D<delay_cm>". (Requires FILAMENT_WIDTH_SENSOR)
++ * M406 - Disable Filament Sensor flow control. (Requires FILAMENT_WIDTH_SENSOR)
++ * M407 - Display measured filament diameter in millimeters. (Requires FILAMENT_WIDTH_SENSOR)
++ * M410 - Quickstop. Abort all planned moves.
++ * M420 - Enable/Disable Mesh Leveling (with current values) S1=enable S0=disable (Requires MESH_BED_LEVELING)
++ * M421 - Set a single Z coordinate in the Mesh Leveling grid. X<units> Y<units> Z<units> (Requires MESH_BED_LEVELING)
++ * M428 - Set the home_offset based on the current_position. Nearest edge applies.
++ * M500 - Store parameters in EEPROM. (Requires EEPROM_SETTINGS)
++ * M501 - Restore parameters from EEPROM. (Requires EEPROM_SETTINGS)
++ * M502 - Revert to the default "factory settings". ** Does not write them to EEPROM! **
++ * M503 - Print the current settings (in memory): "M503 S<verbose>". S0 specifies compact output.
++ * M540 - Enable/disable SD card abort on endstop hit: "M540 S<state>". (Requires ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
++ * M600 - Pause for filament change: "M600 X<pos> Y<pos> Z<raise> E<first_retract> L<later_retract>". (Requires FILAMENT_CHANGE_FEATURE)
++ * M665 - Set delta configurations: "M665 L<diagonal rod> R<delta radius> S<segments/s>" (Requires DELTA)
++ * M666 - Set delta endstop adjustment. (Requires DELTA)
++ * M605 - Set dual x-carriage movement mode: "M605 S<mode> [X<x_offset>] [R<temp_offset>]". (Requires DUAL_X_CARRIAGE)
++ * M851 - Set Z probe's Z offset in current units. (Negative = below the nozzle.)
++ * M907 - Set digital trimpot motor current using axis codes. (Requires a board with digital trimpots)
++ * M908 - Control digital trimpot directly. (Requires DAC_STEPPER_CURRENT or DIGIPOTSS_PIN)
++ * M909 - Print digipot/DAC current value. (Requires DAC_STEPPER_CURRENT)
++ * M910 - Commit digipot/DAC value to external EEPROM via I2C. (Requires DAC_STEPPER_CURRENT)
++ * M350 - Set microstepping mode. (Requires digital microstepping pins.)
++ * M351 - Toggle MS1 MS2 pins directly. (Requires digital microstepping pins.)
+  *
+  * ************ SCARA Specific - This can change to suit future G-code regulations
+  * M360 - SCARA calibration: Move to cal-position ThetaA (0 deg calibration)
+@@ -256,13 +255,13 @@
+  * ************* SCARA End ***************
+  *
+  * ************ Custom codes - This can change to suit future G-code regulations
+- * M100 - Watch Free Memory (For Debugging Only)
+- * M928 - Start SD logging (M928 filename.g) - ended by M29
++ * M100 - Watch Free Memory (For Debugging). (Requires M100_FREE_MEMORY_WATCHER)
++ * M928 - Start SD logging: "M928 filename.gco". Stop with M29. (Requires SDSUPPORT)
+  * M999 - Restart after being stopped by error
+  *
+  * "T" Codes
+  *
+- * T0-T3 - Select a tool by index (usually an extruder) [ F<units/min> ]
++ * T0-T3 - Select an extruder (tool) by index: "T<n> F<units/min>"
+  *
+  */
+ 
+

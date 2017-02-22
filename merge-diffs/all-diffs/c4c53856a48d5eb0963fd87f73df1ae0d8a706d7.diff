@@ -1,0 +1,157 @@
+commit c4c53856a48d5eb0963fd87f73df1ae0d8a706d7 (from 2e3110539bbfbc71db2317d18dbac1bfc875c43b)
+Merge: 2e31105 d5a5042
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Oct 26 21:51:18 2016 -0500
+
+    Merge pull request #5094 from esenapaj/Fix-for-the-PR-#5088
+    
+    Fix for the PR #5088 (Handle M108 in M1 also with ULTIPANEL)
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 19e8b7a..ca8fd49 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -270,7 +270,7 @@ extern bool axis_known_position[XYZ]; // axis[n].is_known
+ extern bool axis_homed[XYZ]; // axis[n].is_homed
+ extern volatile bool wait_for_heatup;
+ 
+-#if ENABLED(EMERGENCY_PARSER) && DISABLED(ULTIPANEL)
++#if ENABLED(ULTIPANEL) || ENABLED(EMERGENCY_PARSER)
+   extern volatile bool wait_for_user;
+ #endif
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2242932..10a7d6f 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -409,7 +409,7 @@ static bool relative_mode = false;
+ volatile bool wait_for_heatup = true;
+ 
+ // For M0/M1, this flag may be cleared (by M108) to exit the wait-for-user loop
+-#if ENABLED(EMERGENCY_PARSER) && DISABLED(ULTIPANEL)
++#if ENABLED(EMERGENCY_PARSER) || ENABLED(ULTIPANEL)
+   volatile bool wait_for_user = false;
+ #endif
+ 
+@@ -4390,7 +4390,7 @@ inline void gcode_G92() {
+   report_current_position();
+ }
+ 
+-#if ENABLED(ULTIPANEL) || ENABLED(EMERGENCY_PARSER)
++#if ENABLED(EMERGENCY_PARSER) || ENABLED(ULTIPANEL)
+ 
+   /**
+    * M0: Unconditional stop - Wait for user button press on LCD
+@@ -4470,7 +4470,9 @@ inline void gcode_G92() {
+ 
+     #endif
+ 
+-ExitM1:
++#if ENABLED(ULTIPANEL)
++  ExitM1:
++#endif
+ 
+     #if ENABLED(EMERGENCY_PARSER)
+       wait_for_user = false;
+@@ -4479,7 +4481,7 @@ ExitM1:
+     KEEPALIVE_STATE(IN_HANDLER);
+   }
+ 
+-#endif // ULTIPANEL || EMERGENCY_PARSER
++#endif // EMERGENCY_PARSER || ULTIPANEL
+ 
+ /**
+  * M17: Enable power on all stepper motors
+@@ -4721,7 +4723,7 @@ inline void gcode_M42() {
+           pin_state[pin - first_pin] = digitalRead(pin);
+       }
+ 
+-      #if ENABLED(EMERGENCY_PARSER) && DISABLED(ULTIPANEL)
++      #if ENABLED(EMERGENCY_PARSER) || ENABLED(ULTIPANEL)
+         wait_for_user = true;
+       #endif
+ 
+@@ -4739,7 +4741,7 @@ inline void gcode_M42() {
+           }
+         }
+ 
+-        #if ENABLED(EMERGENCY_PARSER) && DISABLED(ULTIPANEL)
++        #if ENABLED(EMERGENCY_PARSER) || ENABLED(ULTIPANEL)
+           if (!wait_for_user) break;
+         #endif
+ 
+
+commit c4c53856a48d5eb0963fd87f73df1ae0d8a706d7 (from d5a5042d23d4c56eee3b78feaaffc6c4b1414fe8)
+Merge: 2e31105 d5a5042
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Oct 26 21:51:18 2016 -0500
+
+    Merge pull request #5094 from esenapaj/Fix-for-the-PR-#5088
+    
+    Fix for the PR #5088 (Handle M108 in M1 also with ULTIPANEL)
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ba9bcb6..10a7d6f 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -8312,15 +8312,17 @@ void ok_to_send() {
+     float ratio_x = x / bilinear_grid_spacing[X_AXIS],
+           ratio_y = y / bilinear_grid_spacing[Y_AXIS];
+ 
+-    // Whole unit is the grid box index
+-    const int gridx = constrain(floor(ratio_x), 0, ABL_GRID_POINTS_X - 2),
+-              gridy = constrain(floor(ratio_y), 0, ABL_GRID_POINTS_Y - 2),
+-              nextx = min(gridx + 1, ABL_GRID_POINTS_X - 2),
+-              nexty = min(gridy + 1, ABL_GRID_POINTS_Y - 2);
++    // Whole units for the grid line indices. Constrained within bounds.
++    const int gridx = constrain(floor(ratio_x), 0, ABL_GRID_POINTS_X - 1),
++              gridy = constrain(floor(ratio_y), 0, ABL_GRID_POINTS_Y - 1),
++              nextx = min(gridx + 1, ABL_GRID_POINTS_X - 1),
++              nexty = min(gridy + 1, ABL_GRID_POINTS_Y - 1);
+ 
+     // Subtract whole to get the ratio within the grid box
+-    ratio_x = constrain(ratio_x - gridx, 0.0, 1.0);
+-    ratio_y = constrain(ratio_y - gridy, 0.0, 1.0);
++    ratio_x -= gridx; ratio_y -= gridy;
++
++    // Never less than 0.0. (Over 1.0 is fine due to previous contraints.)
++    NOLESS(ratio_x, 0); NOLESS(ratio_y, 0);
+ 
+     // Z at the box corners
+     const float z1 = bed_level_grid[gridx][gridy],  // left-front
+diff --git a/Marlin/pins_AZTEEG_X3.h b/Marlin/pins_AZTEEG_X3.h
+index 63be892..26f274e 100644
+--- a/Marlin/pins_AZTEEG_X3.h
++++ b/Marlin/pins_AZTEEG_X3.h
+@@ -32,6 +32,9 @@
+ 
+ #include "pins_RAMPS_13.h"
+ 
++//
++// Servos
++//
+ #undef SERVO0_PIN
+ #undef SERVO1_PIN
+ #define SERVO0_PIN  44  // SERVO1 port
+diff --git a/Marlin/pins_RAMPS.h b/Marlin/pins_RAMPS.h
+index 00f9308..e1d9c87 100644
+--- a/Marlin/pins_RAMPS.h
++++ b/Marlin/pins_RAMPS.h
+@@ -344,14 +344,14 @@
+       #else
+         #define BTN_EN1 37
+         #define BTN_EN2 35
+-        #define BTN_ENC 31  // the click
++        #define BTN_ENC 31 // the click
+       #endif
+ 
+       #if ENABLED(G3D_PANEL)
+         #define SD_DETECT_PIN 49
+         #define KILL_PIN 41
+       #else
+-        //        #define SD_DETECT_PIN -1  // Ramps doesn't use this
++        //#define SD_DETECT_PIN -1 // Ramps doesn't use this
+       #endif
+ 
+     #endif
+

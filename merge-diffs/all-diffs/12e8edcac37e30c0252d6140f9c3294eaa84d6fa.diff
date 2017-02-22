@@ -1,0 +1,654 @@
+commit 12e8edcac37e30c0252d6140f9c3294eaa84d6fa (from cf50ba140fdc1c3ef3e21fa7a83a6cc036d61967)
+Merge: cf50ba1 89e832c
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Sun Dec 4 22:27:37 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 6f40bbb..e8b960f 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -170,6 +170,7 @@ const bool Y_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of the endstops. 
+ // For optos H21LOB set to true, for Mendel-Parts newer optos TCST2103 set to false
+ 
++//#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
+ 
+ // For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
+ #define X_ENABLE_ON 0
+@@ -279,8 +280,8 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ #ifdef ADVANCE
+   #define EXTRUDER_ADVANCE_K .3
+ 
+-  #define D_FILAMENT 1.7
+-  #define STEPS_MM_E 65
++  #define D_FILAMENT 2.85
++  #define STEPS_MM_E 836
+   #define EXTRUTION_AREA (0.25 * D_FILAMENT * D_FILAMENT * 3.14159)
+   #define STEPS_PER_CUBIC_MM_E (axis_steps_per_unit[E_AXIS]/ EXTRUTION_AREA)
+ 
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 9985471..226a7d3 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -529,6 +529,8 @@ FORCE_INLINE void process_commands()
+       saved_feedmultiply = feedmultiply;
+       feedmultiply = 100;
+       
++      enable_endstops(true);
++      
+       for(int8_t i=0; i < NUM_AXIS; i++) {
+         destination[i] = current_position[i];
+       }
+@@ -564,6 +566,9 @@ FORCE_INLINE void process_commands()
+         HOMEAXIS(Z);
+ 	current_position[2]=code_value()+add_homeing[2];
+       }       
++      #ifdef ENDSTOPS_ONLY_FOR_HOMING
++        enable_endstops(false);
++      #endif
+       
+       feedrate = saved_feedrate;
+       feedmultiply = saved_feedmultiply;
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 61f27fc..a8f41d3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -200,7 +200,6 @@ void calculate_trapezoid_for_block(block_t *block, float entry_factor, float exi
+   
+  // block->accelerate_until = accelerate_steps;
+  // block->decelerate_after = accelerate_steps+plateau_steps;
+-  
+   CRITICAL_SECTION_START;  // Fill variables used by the stepper in a critical section
+   if(block->busy == false) { // Don't update variables if block is busy.
+     block->accelerate_until = accelerate_steps;
+@@ -484,7 +483,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   // Bail if this is a zero-length block
+   if (block->step_event_count <=dropsegments) { return; };
+ 
+-  // Compute direction bits for this block
++  // Compute direction bits for this block 
+   block->direction_bits = 0;
+   if (target[X_AXIS] < position[X_AXIS]) { block->direction_bits |= (1<<X_AXIS); }
+   if (target[Y_AXIS] < position[Y_AXIS]) { block->direction_bits |= (1<<Y_AXIS); }
+@@ -725,7 +724,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+     else {
+       long acc_dist = estimate_acceleration_distance(0, block->nominal_rate, block->acceleration_st);
+       float advance = (STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K) * 
+-        (current_speed[E_AXIS] * current_speed[E_AXIS] * EXTRUTION_AREA * EXTRUTION_AREA / 3600.0)*65536;
++        (current_speed[E_AXIS] * current_speed[E_AXIS] * EXTRUTION_AREA * EXTRUTION_AREA)*256;
+       block->advance = advance;
+       if(acc_dist == 0) {
+         block->advance_rate = 0;
+@@ -734,6 +733,13 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+         block->advance_rate = advance / (float)acc_dist;
+       }
+     }
++    /*
++    SERIAL_ECHO_START;
++    SERIAL_ECHOPGM("advance :");
++    SERIAL_ECHO(block->advance/256.0);
++    SERIAL_ECHOPGM("advance rate :");
++    SERIAL_ECHOLN(block->advance_rate/256.0);
++    */
+   #endif // ADVANCE
+ 
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index e0b7678..9cf8ddd 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -56,9 +56,9 @@ static long counter_x,       // Counter variables for the bresenham line tracer
+ volatile static unsigned long step_events_completed; // The number of step events executed in the current block
+ #ifdef ADVANCE
+   static long advance_rate, advance, final_advance = 0;
+-  static short old_advance = 0;
++  static long old_advance = 0;
+ #endif
+-static short e_steps;
++static long e_steps;
+ static unsigned char busy = false; // TRUE when SIG_OUTPUT_COMPARE1A is being serviced. Used to avoid retriggering that handler.
+ static long acceleration_time, deceleration_time;
+ //static unsigned long accelerate_until, decelerate_after, acceleration_rate, initial_rate, final_rate, nominal_rate;
+@@ -79,13 +79,20 @@ static bool old_y_max_endstop=false;
+ static bool old_z_min_endstop=false;
+ static bool old_z_max_endstop=false;
+ 
++static bool check_endstops = true;
++
+ volatile long count_position[NUM_AXIS] = { 0, 0, 0, 0};
+ volatile char count_direction[NUM_AXIS] = { 1, 1, 1, 1};
+ 
+ //===========================================================================
+ //=============================functions         ============================
+ //===========================================================================
+-  
++
++#ifdef ENDSTOPS_ONLY_FOR_HOMING
++  #define CHECK_ENDSTOPS  if(check_endstops)
++#else
++  #define CHECK_ENDSTOPS
++#endif
+ 
+ // intRes = intIn1 * intIn2 >> 16
+ // uses:
+@@ -191,6 +198,11 @@ void endstops_hit_on_purpose()
+   endstop_z_hit=false;
+ }
+ 
++void enable_endstops(bool check)
++{
++  check_endstops = check;
++}
++
+ //         __________________________
+ //        /|                        |\     _________________         ^
+ //       / |                        | \   /|               |\        |
+@@ -254,6 +266,9 @@ FORCE_INLINE void trapezoid_generator_reset() {
+   #ifdef ADVANCE
+     advance = current_block->initial_advance;
+     final_advance = current_block->final_advance;
++    // Do E steps + advance steps
++    e_steps += ((advance >>8) - old_advance);
++    old_advance = advance >>8;  
+   #endif
+   deceleration_time = 0;
+   // step_rate to timer interval
+@@ -261,6 +276,17 @@ FORCE_INLINE void trapezoid_generator_reset() {
+   acceleration_time = calc_timer(acc_step_rate);
+   OCR1A = acceleration_time;
+   OCR1A_nominal = calc_timer(current_block->nominal_rate);
++  
++//    SERIAL_ECHO_START;
++//    SERIAL_ECHOPGM("advance :");
++//    SERIAL_ECHO(current_block->advance/256.0);
++//    SERIAL_ECHOPGM("advance rate :");
++//    SERIAL_ECHO(current_block->advance_rate/256.0);
++//    SERIAL_ECHOPGM("initial advance :");
++//  SERIAL_ECHO(current_block->initial_advance/256.0);
++//    SERIAL_ECHOPGM("final advance :");
++//    SERIAL_ECHOLN(current_block->final_advance/256.0);
++    
+ }
+ 
+ // "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.  
+@@ -295,82 +321,100 @@ ISR(TIMER1_COMPA_vect)
+     if ((out_bits & (1<<X_AXIS)) != 0) {   // -direction
+       WRITE(X_DIR_PIN, INVERT_X_DIR);
+       count_direction[X_AXIS]=-1;
+-      #if X_MIN_PIN > -1
+-        bool x_min_endstop=(READ(X_MIN_PIN) != X_ENDSTOPS_INVERTING);
+-        if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0)) {
+-          endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-          endstop_x_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_x_min_endstop = x_min_endstop;
+-      #endif
++      CHECK_ENDSTOPS
++      {
++        #if X_MIN_PIN > -1
++          bool x_min_endstop=(READ(X_MIN_PIN) != X_ENDSTOPS_INVERTING);
++          if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0)) {
++            endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++            endstop_x_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_x_min_endstop = x_min_endstop;
++        #endif
++      }
+     }
+     else { // +direction 
+       WRITE(X_DIR_PIN,!INVERT_X_DIR);
+       count_direction[X_AXIS]=1;
+-      #if X_MAX_PIN > -1
+-        bool x_max_endstop=(READ(X_MAX_PIN) != X_ENDSTOPS_INVERTING);
+-        if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0)){
+-          endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-          endstop_x_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_x_max_endstop = x_max_endstop;
+-      #endif
++      CHECK_ENDSTOPS 
++      {
++        #if X_MAX_PIN > -1
++          bool x_max_endstop=(READ(X_MAX_PIN) != X_ENDSTOPS_INVERTING);
++          if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0)){
++            endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++            endstop_x_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_x_max_endstop = x_max_endstop;
++        #endif
++      }
+     }
+ 
+     if ((out_bits & (1<<Y_AXIS)) != 0) {   // -direction
+       WRITE(Y_DIR_PIN,INVERT_Y_DIR);
+       count_direction[Y_AXIS]=-1;
+-      #if Y_MIN_PIN > -1
+-        bool y_min_endstop=(READ(Y_MIN_PIN) != Y_ENDSTOPS_INVERTING);
+-        if(y_min_endstop && old_y_min_endstop && (current_block->steps_y > 0)) {
+-          endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-          endstop_y_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_y_min_endstop = y_min_endstop;
+-      #endif
++      CHECK_ENDSTOPS
++      {
++        #if Y_MIN_PIN > -1
++          bool y_min_endstop=(READ(Y_MIN_PIN) != Y_ENDSTOPS_INVERTING);
++          if(y_min_endstop && old_y_min_endstop && (current_block->steps_y > 0)) {
++            endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
++            endstop_y_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_y_min_endstop = y_min_endstop;
++        #endif
++      }
+     }
+     else { // +direction
+     WRITE(Y_DIR_PIN,!INVERT_Y_DIR);
+       count_direction[Y_AXIS]=1;
+-      #if Y_MAX_PIN > -1
+-        bool y_max_endstop=(READ(Y_MAX_PIN) != Y_ENDSTOPS_INVERTING);
+-        if(y_max_endstop && old_y_max_endstop && (current_block->steps_y > 0)){
+-          endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-          endstop_y_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_y_max_endstop = y_max_endstop;
+-      #endif
++      CHECK_ENDSTOPS
++      {
++        #if Y_MAX_PIN > -1
++          bool y_max_endstop=(READ(Y_MAX_PIN) != Y_ENDSTOPS_INVERTING);
++          if(y_max_endstop && old_y_max_endstop && (current_block->steps_y > 0)){
++            endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
++            endstop_y_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_y_max_endstop = y_max_endstop;
++        #endif
++      }
+     }
+ 
+     if ((out_bits & (1<<Z_AXIS)) != 0) {   // -direction
+       WRITE(Z_DIR_PIN,INVERT_Z_DIR);
+       count_direction[Z_AXIS]=-1;
+-      #if Z_MIN_PIN > -1
+-        bool z_min_endstop=(READ(Z_MIN_PIN) != Z_ENDSTOPS_INVERTING);
+-        if(z_min_endstop && old_z_min_endstop && (current_block->steps_z > 0)) {
+-          endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-          endstop_z_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_z_min_endstop = z_min_endstop;
+-      #endif
++      CHECK_ENDSTOPS
++      {
++        #if Z_MIN_PIN > -1
++          bool z_min_endstop=(READ(Z_MIN_PIN) != Z_ENDSTOPS_INVERTING);
++          if(z_min_endstop && old_z_min_endstop && (current_block->steps_z > 0)) {
++            endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
++            endstop_z_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_z_min_endstop = z_min_endstop;
++        #endif
++      }
+     }
+     else { // +direction
+       WRITE(Z_DIR_PIN,!INVERT_Z_DIR);
+-        count_direction[Z_AXIS]=1;
+-      #if Z_MAX_PIN > -1
+-        bool z_max_endstop=(READ(Z_MAX_PIN) != Z_ENDSTOPS_INVERTING);
+-        if(z_max_endstop && old_z_max_endstop && (current_block->steps_z > 0)) {
+-          endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-          endstop_z_hit=true;
+-          step_events_completed = current_block->step_event_count;
+-        }
+-        old_z_max_endstop = z_max_endstop;
+-      #endif
++      count_direction[Z_AXIS]=1;
++      CHECK_ENDSTOPS
++      {
++        #if Z_MAX_PIN > -1
++          bool z_max_endstop=(READ(Z_MAX_PIN) != Z_ENDSTOPS_INVERTING);
++          if(z_max_endstop && old_z_max_endstop && (current_block->steps_z > 0)) {
++            endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
++            endstop_z_hit=true;
++            step_events_completed = current_block->step_event_count;
++          }
++          old_z_max_endstop = z_max_endstop;
++        #endif
++      }
+     }
+ 
+     #ifndef ADVANCE
+@@ -383,6 +427,9 @@ ISR(TIMER1_COMPA_vect)
+         count_direction[E_AXIS]=-1;
+       }
+     #endif //!ADVANCE
++    
++
++    
+     for(int8_t i=0; i < step_loops; i++) { // Take multiple steps per interrupt (For high speed moves) 
+       MSerial.checkRx(); // Check for serial chars. 
+       
+@@ -391,19 +438,12 @@ ISR(TIMER1_COMPA_vect)
+       if (counter_e > 0) {
+         counter_e -= current_block->step_event_count;
+         if ((out_bits & (1<<E_AXIS)) != 0) { // - direction
+-          CRITICAL_SECTION_START;
+           e_steps--;
+-          CRITICAL_SECTION_END;
+         }
+         else {
+-          CRITICAL_SECTION_START;
+           e_steps++;
+-          CRITICAL_SECTION_END;
+         }
+       }    
+-      // Do E steps + advance steps
+-      e_steps += ((advance >> 16) - old_advance);
+-      old_advance = advance >> 16;  
+       #endif //ADVANCE
+       
+       counter_x += current_block->steps_x;
+@@ -462,6 +502,11 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance += advance_rate;
+         }
++        //if(advance > current_block->advance) advance = current_block->advance;
++        // Do E steps + advance steps
++        e_steps += ((advance >>8) - old_advance);
++        old_advance = advance >>8;  
++        
+       #endif
+     } 
+     else if (step_events_completed > (unsigned long int)current_block->decelerate_after) {   
+@@ -486,8 +531,10 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance -= advance_rate;
+         }
+-        if(advance < final_advance)
+-          advance = final_advance;
++        if(advance < final_advance) advance = final_advance;
++        // Do E steps + advance steps
++        e_steps += ((advance >>8) - old_advance);
++        old_advance = advance >>8;  
+       #endif //ADVANCE
+     }
+     else {
+@@ -508,7 +555,7 @@ ISR(TIMER1_COMPA_vect)
+   // Timer 0 is shared with millies
+   ISR(TIMER0_COMPA_vect)
+   {
+-    old_OCR0A += 25; // ~10kHz interrupt
++    old_OCR0A += 52; // ~10kHz interrupt (250000 / 26 = 9615kHz)
+     OCR0A = old_OCR0A;
+     // Set E direction (Depends on E direction + advance)
+     for(unsigned char i=0; i<4;) {
+@@ -520,7 +567,7 @@ ISR(TIMER1_COMPA_vect)
+         e_steps++;
+         WRITE(E_STEP_PIN, HIGH);
+       } 
+-      if (e_steps > 0) {
++      else if (e_steps > 0) {
+         WRITE(E_DIR_PIN,!INVERT_E_DIR);
+         e_steps--;
+         WRITE(E_STEP_PIN, HIGH);
+@@ -649,6 +696,13 @@ void st_init()
+     e_steps = 0;
+     TIMSK0 |= (1<<OCIE0A);
+   #endif //ADVANCE
++  
++  #ifdef ENDSTOPS_ONLY_FOR_HOMING
++    enable_endstops(false);
++  #else
++    enable_endstops(true);
++  #endif
++  
+   sei();
+ }
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index e11f5e5..fd388ca 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -44,6 +44,8 @@ void st_wake_up();
+ void checkHitEndstops(); //call from somwhere to create an serial error message with the locations the endstops where hit, in case they were triggered
+ void endstops_hit_on_purpose(); //avoid creation of the message, i.e. after homeing and before a routine call of checkHitEndstops();
+ 
++void enable_endstops(bool check); // Enable/disable endstop checking
++
+ void checkStepperErrors(); //Print errors detected by the stepper
+ 
+ void finishAndDisableSteppers();
+
+commit 12e8edcac37e30c0252d6140f9c3294eaa84d6fa (from 89e832c2959b1fb6761c25f07702010ddcde5971)
+Merge: cf50ba1 89e832c
+Author: Bernhard <bkubicek@x201.(none)>
+Date:   Sun Dec 4 22:27:37 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index 1099d08..8680a5f 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -39,7 +39,7 @@ template <class T> int EEPROM_readAnything(int &ee, T& value)
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+ #define EEPROM_VERSION "V04"  
+ 
+-FORCE_INLINE void StoreSettings() 
++inline void EEPROM_StoreSettings() 
+ {
+ #ifdef EEPROM_SETTINGS
+   char ver[4]= "000";
+@@ -72,7 +72,64 @@ FORCE_INLINE void StoreSettings()
+ #endif //EEPROM_SETTINGS
+ }
+ 
+-FORCE_INLINE void RetrieveSettings(bool def=false)
++
++inline void EEPROM_printSettings()
++{  // if def=true, the default values will be used
++  #ifdef EEPROM_SETTINGS  
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Steps per unit:");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M92 X",axis_steps_per_unit[0]);
++      SERIAL_ECHOPAIR(" Y",axis_steps_per_unit[1]);
++      SERIAL_ECHOPAIR(" Z",axis_steps_per_unit[2]);
++      SERIAL_ECHOPAIR(" E",axis_steps_per_unit[3]);
++      SERIAL_ECHOLN("");
++      
++    SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M203 X",max_feedrate[0]);
++      SERIAL_ECHOPAIR(" Y",max_feedrate[1] ); 
++      SERIAL_ECHOPAIR(" Z", max_feedrate[2] ); 
++      SERIAL_ECHOPAIR(" E", max_feedrate[3]);
++      SERIAL_ECHOLN("");
++    SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M201 X" ,max_acceleration_units_per_sq_second[0] ); 
++      SERIAL_ECHOPAIR(" Y" , max_acceleration_units_per_sq_second[1] ); 
++      SERIAL_ECHOPAIR(" Z" ,max_acceleration_units_per_sq_second[2] );
++      SERIAL_ECHOPAIR(" E" ,max_acceleration_units_per_sq_second[3]);
++      SERIAL_ECHOLN("");
++    SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Acceleration: S=acceleration, T=retract acceleration");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M204 S",acceleration ); 
++      SERIAL_ECHOPAIR(" T" ,retract_acceleration);
++      SERIAL_ECHOLN("");
++    SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum xY jerk (mm/s),  Z=maximum Z jerk (mm/s)");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M205 S",minimumfeedrate ); 
++      SERIAL_ECHOPAIR(" T" ,mintravelfeedrate ); 
++      SERIAL_ECHOPAIR(" B" ,minsegmenttime ); 
++      SERIAL_ECHOPAIR(" X" ,max_xy_jerk ); 
++      SERIAL_ECHOPAIR(" Z" ,max_z_jerk);
++      SERIAL_ECHOLN(""); 
++    #ifdef PIDTEMP
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("PID settings:");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("   M301 P",Kp); 
++      SERIAL_ECHOPAIR(" I" ,Ki/PID_dT); 
++      SERIAL_ECHOPAIR(" D" ,Kd*PID_dT);
++      SERIAL_ECHOLN(""); 
++    #endif
++  #endif
++} 
++
++
++inline void EEPROM_RetrieveSettings(bool def=false)
+ {  // if def=true, the default values will be used
+   #ifdef EEPROM_SETTINGS
+     int i=EEPROM_OFFSET;
+@@ -125,55 +182,7 @@ FORCE_INLINE void RetrieveSettings(bool def=false)
+       SERIAL_ECHOLN("Using Default settings:");
+     }
+   #ifdef EEPROM_CHITCHAT
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Steps per unit:");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M92 X",axis_steps_per_unit[0]);
+-      SERIAL_ECHOPAIR(" Y",axis_steps_per_unit[1]);
+-      SERIAL_ECHOPAIR(" Z",axis_steps_per_unit[2]);
+-      SERIAL_ECHOPAIR(" E",axis_steps_per_unit[3]);
+-      SERIAL_ECHOLN("");
+-      
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M203 X",max_feedrate[0]);
+-      SERIAL_ECHOPAIR(" Y",max_feedrate[1] ); 
+-      SERIAL_ECHOPAIR(" Z", max_feedrate[2] ); 
+-      SERIAL_ECHOPAIR(" E", max_feedrate[3]);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M201 X" ,max_acceleration_units_per_sq_second[0] ); 
+-      SERIAL_ECHOPAIR(" Y" , max_acceleration_units_per_sq_second[1] ); 
+-      SERIAL_ECHOPAIR(" Z" ,max_acceleration_units_per_sq_second[2] );
+-      SERIAL_ECHOPAIR(" E" ,max_acceleration_units_per_sq_second[3]);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Acceleration: S=acceleration, T=retract acceleration");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M204 S",acceleration ); 
+-      SERIAL_ECHOPAIR(" T" ,retract_acceleration);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum xY jerk (mm/s),  Z=maximum Z jerk (mm/s)");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M205 S",minimumfeedrate ); 
+-      SERIAL_ECHOPAIR(" T" ,mintravelfeedrate ); 
+-      SERIAL_ECHOPAIR(" B" ,minsegmenttime ); 
+-      SERIAL_ECHOPAIR(" X" ,max_xy_jerk ); 
+-      SERIAL_ECHOPAIR(" Z" ,max_z_jerk);
+-      SERIAL_ECHOLN(""); 
+-    #ifdef PIDTEMP
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("PID settings:");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("   M301 P",Kp); 
+-      SERIAL_ECHOPAIR(" I" ,Ki/PID_dT); 
+-      SERIAL_ECHOPAIR(" D" ,Kd*PID_dT);
+-      SERIAL_ECHOLN(""); 
+-    #endif
++    EEPROM_printSettings();
+   #endif
+ }  
+ 
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 0a51b1e..226a7d3 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -112,6 +112,7 @@
+ // M500 - stores paramters in EEPROM
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).  
+ // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
++// M503 - print the current settings (from memory not from eeprom)
+ 
+ //Stepper Movement Variables
+ 
+@@ -236,7 +237,7 @@ void setup()
+     fromsd[i] = false;
+   }
+   
+-  RetrieveSettings(); // loads data from EEPROM if available
++  EEPROM_RetrieveSettings(); // loads data from EEPROM if available
+ 
+   for(int8_t i=0; i < NUM_AXIS; i++)
+   {
+@@ -1039,17 +1040,22 @@ FORCE_INLINE void process_commands()
+     break;
+     case 500: // Store settings in EEPROM
+     {
+-        StoreSettings();
++        EEPROM_StoreSettings();
+     }
+     break;
+     case 501: // Read settings from EEPROM
+     {
+-      RetrieveSettings();
++      EEPROM_RetrieveSettings();
+     }
+     break;
+     case 502: // Revert to default settings
+     {
+-      RetrieveSettings(true);
++      EEPROM_RetrieveSettings(true);
++    }
++    break;
++    case 503: // print settings currently in memory
++    {
++      EEPROM_printSettings();
+     }
+     break;
+ 
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 65ba86f..88f8f32 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -1402,7 +1402,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        StoreSettings();
++        EEPROM_StoreSettings();
+       }
+     }break;
+     case ItemC_load:
+@@ -1416,7 +1416,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        RetrieveSettings();
++        EEPROM_RetrieveSettings();
+       }
+     }break;
+     case ItemC_failsafe:
+@@ -1430,7 +1430,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        RetrieveSettings(true);
++        EEPROM_RetrieveSettings(true);
+       }
+     }break;
+     default:   
+

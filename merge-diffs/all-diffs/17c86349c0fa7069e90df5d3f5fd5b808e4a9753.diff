@@ -1,0 +1,263 @@
+commit 17c86349c0fa7069e90df5d3f5fd5b808e4a9753 (from b4c37a676f4469d93c6e4a151434afb43e97603b)
+Merge: b4c37a6 9a1dfd0
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 12 18:50:26 2016 -0700
+
+    Merge pull request #4020 from thinkyhead/rc_test_M600
+    
+    Fix Travis test for FILAMENTCHANGEENABLE
+
+diff --git a/.travis.yml b/.travis.yml
+index ed31e34..15b6991 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -134,7 +134,8 @@ script:
+   # Enable FILAMENTCHANGEENABLE
+   #
+   - restore_configs
+-  - opt_enable FILAMENTCHANGEENABLE ULTIMAKERCONTROLLER
++  - opt_enable ULTIMAKERCONTROLLER
++  - opt_enable_adv FILAMENTCHANGEENABLE
+   - build_marlin
+   #
+   # Enable filament sensor
+
+commit 17c86349c0fa7069e90df5d3f5fd5b808e4a9753 (from 9a1dfd0f5f38bce495af27d2e160d91718b799ea)
+Merge: b4c37a6 9a1dfd0
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 12 18:50:26 2016 -0700
+
+    Merge pull request #4020 from thinkyhead/rc_test_M600
+    
+    Fix Travis test for FILAMENTCHANGEENABLE
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 4f018c0..4fe165e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -487,6 +487,11 @@ static bool send_ok[BUFSIZE];
+ 
+ #if HAS_SERVOS
+   Servo servo[NUM_SERVOS];
++  #define MOVE_SERVO(I, P) servo[I].move(P)
++  #define SERVO_ENDSTOP_EXISTS(I) (servo_endstop_id[I] >= 0)
++  #define MOVE_SERVO_ENDSTOP(I, J) MOVE_SERVO(servo_endstop_id[I], servo_endstop_angle[I][J])
++  #define DEPLOY_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 0)
++  #define STOW_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 1)
+ #endif
+ 
+ #ifdef CHDK
+@@ -760,8 +765,8 @@ void servo_init() {
+      *
+      */
+     for (int i = 0; i < 3; i++)
+-      if (servo_endstop_id[i] >= 0)
+-        servo[servo_endstop_id[i]].move(servo_endstop_angle[i][1]);
++      if (SERVO_ENDSTOP_EXISTS(i))
++        STOW_SERVO_ENDSTOP(i);
+ 
+   #endif // HAS_SERVO_ENDSTOPS
+ 
+@@ -1825,7 +1830,8 @@ static void setup_for_endstop_move() {
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+ 
+       // Engage Z Servo endstop if enabled
+-      if (servo_endstop_id[Z_AXIS] >= 0) servo[servo_endstop_id[Z_AXIS]].move(servo_endstop_angle[Z_AXIS][0]);
++      if (SERVO_ENDSTOP_EXISTS(Z_AXIS)
++        DEPLOY_SERVO_ENDSTOP(Z_AXIS);
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+       feedrate = Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE;
+@@ -1921,7 +1927,7 @@ static void setup_for_endstop_move() {
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+ 
+       // Retract Z Servo endstop if enabled
+-      if (servo_endstop_id[Z_AXIS] >= 0) {
++      if (SERVO_ENDSTOP_EXISTS(Z_AXIS)) {
+ 
+         #if Z_RAISE_AFTER_PROBING > 0
+           if (doRaise) {
+@@ -1931,7 +1937,7 @@ static void setup_for_endstop_move() {
+         #endif
+ 
+         // Change the Z servo angle
+-        servo[servo_endstop_id[Z_AXIS]].move(servo_endstop_angle[Z_AXIS][1]);
++        STOW_SERVO_ENDSTOP(Z_AXIS);
+       }
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+@@ -2288,8 +2294,8 @@ static void homeaxis(AxisEnum axis) {
+ 
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+       // Engage an X, Y (or Z) Servo endstop if enabled
+-      if (_Z_SERVO_TEST && servo_endstop_id[axis] >= 0) {
+-        servo[servo_endstop_id[axis]].move(servo_endstop_angle[axis][0]);
++      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
++        DEPLOY_SERVO_ENDSTOP(axis);
+         if (_Z_SERVO_SUBTEST) endstops.z_probe_enabled = true;
+       }
+     #endif
+@@ -2419,7 +2425,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+     // Retract X, Y (or Z) Servo endstop if enabled
+     #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      if (_Z_SERVO_TEST && servo_endstop_id[axis] >= 0) {
++      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
+         // Raise the servo probe before stow outside ABL context.
+         // This is a workaround to allow use of a Servo Probe without
+         // ABL until more global probe handling is implemented.
+@@ -2438,7 +2444,7 @@ static void homeaxis(AxisEnum axis) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> SERVO_ENDSTOPS > Stow with servo.move()");
+         #endif
+-        servo[servo_endstop_id[axis]].move(servo_endstop_angle[axis][1]);
++        STOW_SERVO_ENDSTOP(axis);
+         if (_Z_SERVO_SUBTEST) endstops.enable_z_probe(false);
+       }
+ 
+@@ -5673,7 +5679,7 @@ inline void gcode_M226() {
+     if (code_seen('S')) {
+       servo_position = code_value_int();
+       if (servo_index >= 0 && servo_index < NUM_SERVOS)
+-        servo[servo_index].move(servo_position);
++        MOVE_SERVO(servo_index, servo_position);
+       else {
+         SERIAL_ERROR_START;
+         SERIAL_ERROR("Servo ");
+@@ -6680,6 +6686,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+ 
+           offset_vec.apply_rotation(planner.bed_level_matrix.transpose(planner.bed_level_matrix));
+ 
++          // Adjust the current position
+           current_position[X_AXIS] += offset_vec.x;
+           current_position[Y_AXIS] += offset_vec.y;
+           current_position[Z_AXIS] += offset_vec.z;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 1f58183..0c8ccc0 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -91,8 +91,13 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+ 
+   int8_t encoderDiff; // updated from interrupt context and added to encoderPosition every LCD update
+ 
+-  int8_t manual_move_axis = (int8_t)NO_AXIS;
+   millis_t manual_move_start_time = 0;
++  int8_t manual_move_axis = (int8_t)NO_AXIS;
++  #if EXTRUDERS > 1
++    int8_t manual_move_e_index = 0;
++  #else
++    #define manual_move_e_index 0
++  #endif
+ 
+   bool encoderRateMultiplierEnabled;
+   int32_t lastEncoderMovementMillis;
+@@ -1208,9 +1213,9 @@ static void lcd_status_screen() {
+     if (manual_move_axis != (int8_t)NO_AXIS && millis() >= manual_move_start_time && !planner.is_full()) {
+       #if ENABLED(DELTA)
+         calculate_delta(current_position);
+-        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, active_extruder);
++        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, manual_move_e_index);
+       #else
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, active_extruder);
++        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, manual_move_e_index);
+       #endif
+       manual_move_axis = (int8_t)NO_AXIS;
+     }
+@@ -1220,7 +1225,14 @@ static void lcd_status_screen() {
+    * Set a flag that lcd_update() should start a move
+    * to "current_position" after a short delay.
+    */
+-  inline void manual_move_to_current(AxisEnum axis) {
++  inline void manual_move_to_current(AxisEnum axis
++    #if EXTRUDERS > 1
++      , int8_t eindex=-1
++    #endif
++  ) {
++    #if EXTRUDERS > 1
++      if (axis == E_AXIS) manual_move_e_index = eindex >= 0 ? eindex : active_extruder;
++    #endif
+     manual_move_start_time = millis() + 500UL; // 1/2 second delay
+     manual_move_axis = (int8_t)axis;
+   }
+@@ -1233,7 +1245,7 @@ static void lcd_status_screen() {
+ 
+   float move_menu_scale;
+ 
+-  static void _lcd_move(const char* name, AxisEnum axis, float min, float max) {
++  static void _lcd_move_xyz(const char* name, AxisEnum axis, float min, float max) {
+     ENCODER_DIRECTION_NORMAL();
+     if (encoderPosition) {
+       refresh_cmd_timeout();
+@@ -1250,27 +1262,27 @@ static void lcd_status_screen() {
+   #if ENABLED(DELTA)
+     static float delta_clip_radius_2 =  (DELTA_PRINTABLE_RADIUS) * (DELTA_PRINTABLE_RADIUS);
+     static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - a*a); }
+-    static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, max(sw_endstop_min[X_AXIS], -clip), min(sw_endstop_max[X_AXIS], clip)); }
+-    static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, max(sw_endstop_min[Y_AXIS], -clip), min(sw_endstop_max[Y_AXIS], clip)); }
++    static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS, max(sw_endstop_min[X_AXIS], -clip), min(sw_endstop_max[X_AXIS], clip)); }
++    static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS, max(sw_endstop_min[Y_AXIS], -clip), min(sw_endstop_max[Y_AXIS], clip)); }
+   #else
+-    static void lcd_move_x() { _lcd_move(PSTR(MSG_MOVE_X), X_AXIS, sw_endstop_min[X_AXIS], sw_endstop_max[X_AXIS]); }
+-    static void lcd_move_y() { _lcd_move(PSTR(MSG_MOVE_Y), Y_AXIS, sw_endstop_min[Y_AXIS], sw_endstop_max[Y_AXIS]); }
++    static void lcd_move_x() { _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS, sw_endstop_min[X_AXIS], sw_endstop_max[X_AXIS]); }
++    static void lcd_move_y() { _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS, sw_endstop_min[Y_AXIS], sw_endstop_max[Y_AXIS]); }
+   #endif
+-  static void lcd_move_z() { _lcd_move(PSTR(MSG_MOVE_Z), Z_AXIS, sw_endstop_min[Z_AXIS], sw_endstop_max[Z_AXIS]); }
++  static void lcd_move_z() { _lcd_move_xyz(PSTR(MSG_MOVE_Z), Z_AXIS, sw_endstop_min[Z_AXIS], sw_endstop_max[Z_AXIS]); }
+   static void lcd_move_e(
+     #if EXTRUDERS > 1
+-      uint8_t e
++      int8_t eindex = -1
+     #endif
+   ) {
+     ENCODER_DIRECTION_NORMAL();
+-    #if EXTRUDERS > 1
+-      unsigned short original_active_extruder = active_extruder;
+-      active_extruder = e;
+-    #endif
+     if (encoderPosition) {
+       current_position[E_AXIS] += float((int32_t)encoderPosition) * move_menu_scale;
+       encoderPosition = 0;
+-      manual_move_to_current(E_AXIS);
++      manual_move_to_current(E_AXIS
++        #if EXTRUDERS > 1
++          , eindex
++        #endif
++      );
+       lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+     }
+     if (lcdDrawUpdate) {
+@@ -1292,9 +1304,6 @@ static void lcd_status_screen() {
+       lcd_implementation_drawedit(pos_label, ftostr41sign(current_position[E_AXIS]));
+     }
+     if (LCD_CLICKED) lcd_goto_previous_menu(true);
+-    #if EXTRUDERS > 1
+-      active_extruder = original_active_extruder;
+-    #endif
+   }
+ 
+   #if EXTRUDERS > 1
+@@ -2311,18 +2320,12 @@ void lcd_update() {
+           u8g.setColorIndex(dot_color); // Set color for the alive dot
+           u8g.drawPixel(127, 63); // draw alive dot
+           u8g.setColorIndex(1); // black on white
+-          #if ENABLED(ULTIPANEL)
+-            (*currentScreen)();
+-          #else
+-            lcd_status_screen();
+-          #endif
++          (*currentScreen)();
+         } while (u8g.nextPage());
++      #elif ENABLED(ULTIPANEL)
++        (*currentScreen)();
+       #else
+-        #if ENABLED(ULTIPANEL)
+-          (*currentScreen)();
+-        #else
+-          lcd_status_screen();
+-        #endif
++        lcd_status_screen();
+       #endif
+     }
+ 
+

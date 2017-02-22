@@ -1,0 +1,206 @@
+commit 82b0014f5eebf492310c93b551162b15c65ea077 (from 5cbed13f4174f6922dd6a9f6b13ac2bd18c1120a)
+Merge: 5cbed13 51e42a2
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Sep 20 17:13:52 2016 -0500
+
+    Merge pull request #4856 from thinkyhead/rc_bltouch_update
+    
+    Fix and extend BLTouch support
+
+diff --git a/Marlin/Conditionals_LCD.h b/Marlin/Conditionals_LCD.h
+index 21bfdd4..a5c5dc4 100644
+--- a/Marlin/Conditionals_LCD.h
++++ b/Marlin/Conditionals_LCD.h
+@@ -318,6 +318,7 @@
+ 
+   /**
+    * The BLTouch Probe emulates a servo probe
++   * and uses "special" angles for its state.
+    */
+   #if ENABLED(BLTOUCH)
+     #ifndef Z_ENDSTOP_SERVO_NR
+@@ -326,12 +327,22 @@
+     #ifndef NUM_SERVOS
+       #define NUM_SERVOS (Z_ENDSTOP_SERVO_NR + 1)
+     #endif
+-    #undef Z_SERVO_ANGLES
+-    #define Z_SERVO_ANGLES {10,90} // For BLTouch 10=deploy, 90=retract
+     #undef DEACTIVATE_SERVOS_AFTER_MOVE
++    #undef Z_SERVO_ANGLES
++    #define Z_SERVO_ANGLES { BLTOUCH_DEPLOY, BLTOUCH_STOW }
++
++    #define BLTOUCH_DEPLOY    10
++    #define BLTOUCH_STOW   90
++    #define BLTOUCH_SELFTEST 120
++    #define BLTOUCH_RELEASE  160
++    #define _TEST_BLTOUCH(P) (READ(P##_PIN) != P##_ENDSTOP_INVERTING)
++
+     #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+       #undef Z_MIN_ENDSTOP_INVERTING
+       #define Z_MIN_ENDSTOP_INVERTING false
++      #define TEST_BLTOUCH() _TEST_BLTOUCH(Z_MIN)
++    #else
++      #define TEST_BLTOUCH() _TEST_BLTOUCH(Z_MIN_PROBE)
+     #endif
+   #endif
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 63dfcf7..31058d7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1866,6 +1866,12 @@ static void clean_up_after_endstop_or_probe_move() {
+   #define DEPLOY_PROBE() set_probe_deployed(true)
+   #define STOW_PROBE() set_probe_deployed(false)
+ 
++  #if ENABLED(BLTOUCH)
++    FORCE_INLINE void set_bltouch_deployed(const bool &deploy) {
++      servo[Z_ENDSTOP_SERVO_NR].move(deploy ? BLTOUCH_DEPLOY : BLTOUCH_STOW);
++    }
++  #endif
++
+   // returns false for ok and true for failure
+   static bool set_probe_deployed(bool deploy) {
+ 
+@@ -1881,9 +1887,9 @@ static void clean_up_after_endstop_or_probe_move() {
+     // Make room for probe
+     do_probe_raise(_Z_PROBE_DEPLOY_HEIGHT);
+ 
+-    // Check BLTOUCH probe status for an error
++    // When deploying make sure BLTOUCH is not already triggered
+     #if ENABLED(BLTOUCH)
+-      if (servo[Z_ENDSTOP_SERVO_NR].read() == BLTouchState_Error) { stop(); return true; }
++      if (deploy && TEST_BLTOUCH()) { stop(); return true; }
+     #endif
+ 
+     #if ENABLED(Z_PROBE_SLED)
+@@ -1911,7 +1917,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+           dock_sled(!deploy);
+ 
+-        #elif HAS_Z_SERVO_ENDSTOP
++        #elif HAS_Z_SERVO_ENDSTOP && DISABLED(BLTOUCH)
+ 
+           servo[Z_ENDSTOP_SERVO_NR].move(z_servo_angle[deploy ? 0 : 1]);
+ 
+@@ -1948,9 +1954,19 @@ static void clean_up_after_endstop_or_probe_move() {
+       if (DEBUGGING(LEVELING)) DEBUG_POS(">>> do_probe_move", current_position);
+     #endif
+ 
++    // Deploy BLTouch at the start of any probe
++    #if ENABLED(BLTOUCH)
++      set_bltouch_deployed(true);
++    #endif
++
+     // Move down until probe triggered
+     do_blocking_move_to_z(LOGICAL_Z_POSITION(z), MMM_TO_MMS(fr_mm_m));
+ 
++    // Retract BLTouch immediately after a probe
++    #if ENABLED(BLTOUCH)
++      set_bltouch_deployed(false);
++    #endif
++
+     // Clear endstop flags
+     endstops.hit_on_purpose();
+ 
+@@ -2182,11 +2198,21 @@ static void clean_up_after_endstop_or_probe_move() {
+  */
+ 
+ static void do_homing_move(AxisEnum axis, float where, float fr_mm_s = 0.0) {
++
++  #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
++    set_bltouch_deployed(true);
++  #endif
++
+   current_position[axis] = 0;
+   sync_plan_position();
+   current_position[axis] = where;
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis], active_extruder);
+   stepper.synchronize();
++
++  #if HOMING_Z_WITH_PROBE && ENABLED(BLTOUCH)
++    set_bltouch_deployed(false);
++  #endif
++
+   endstops.hit_on_purpose();
+ }
+ 
+diff --git a/Marlin/enum.h b/Marlin/enum.h
+index 34e0223..18db5a6 100644
+--- a/Marlin/enum.h
++++ b/Marlin/enum.h
+@@ -124,15 +124,6 @@ enum TempState {
+   };
+ #endif
+ 
+-#if ENABLED(BLTOUCH)
+-  enum BLTouchState {
+-    BLTouchState_Deploy   = 10,
+-    BLTouchState_Stow     = 90,
+-    BLTouchState_Selftest = 120,
+-    BLTouchState_Error    = 160
+-  };
+-#endif
+-
+ #if ENABLED(FILAMENT_CHANGE_FEATURE)
+   enum FilamentChangeMenuResponse {
+     FILAMENT_CHANGE_RESPONSE_WAIT_FOR,
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index a84d1ac..c5ee084 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -366,8 +366,11 @@
+ #ifndef MSG_ZPROBE_OUT
+   #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+ #endif
+-#ifndef MSG_RESET_BLTOUCH
+-  #define MSG_RESET_BLTOUCH                   "Reset BLTouch"
++#ifndef MSG_BLTOUCH_RESET
++  #define MSG_BLTOUCH_SELFTEST                "BLTouch Self-Test"
++#endif
++#ifndef MSG_BLTOUCH_RESET
++  #define MSG_BLTOUCH_RESET                   "Reset BLTouch"
+ #endif
+ #ifndef MSG_HOME
+   #define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 5240c30..b4214de 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -31,8 +31,7 @@
+ #include "utility.h"
+ 
+ #if ENABLED(BLTOUCH)
+-  #include "servo.h"
+-  extern Servo servo[NUM_SERVOS];
++  #include "endstops.h"
+ #endif
+ 
+ #if ENABLED(PRINTCOUNTER)
+@@ -593,8 +592,8 @@ void kill_screen(const char* lcd_msg) {
+     MENU_ITEM(back, MSG_WATCH);
+ 
+     #if ENABLED(BLTOUCH)
+-      if (servo[Z_ENDSTOP_SERVO_NR].read() == BLTouchState_Error)
+-        MENU_ITEM(gcode, MSG_RESET_BLTOUCH, "M280 S90 P" STRINGIFY(Z_ENDSTOP_SERVO_NR));
++      if (!endstops.z_probe_enabled && TEST_BLTOUCH())
++        MENU_ITEM(gcode, MSG_BLTOUCH_RESET, PSTR("M280 P" STRINGIFY(Z_ENDSTOP_SERVO_NR) " S" STRINGIFY(BLTOUCH_RESET)));
+     #endif
+ 
+     if (planner.movesplanned() || IS_SD_PRINTING) {
+@@ -1251,6 +1250,15 @@ void kill_screen(const char* lcd_msg) {
+     MENU_ITEM(function, MSG_COOLDOWN, lcd_cooldown);
+ 
+     //
++    // BLTouch Self-Test and Reset
++    //
++    #if ENABLED(BLTOUCH)
++      MENU_ITEM(gcode, MSG_BLTOUCH_TEST, PSTR("M280 P" STRINGIFY(Z_ENDSTOP_SERVO_NR) " S" STRINGIFY(BLTOUCH_SELFTEST)));
++      if (!endstops.z_probe_enabled && TEST_BLTOUCH())
++        MENU_ITEM(gcode, MSG_BLTOUCH_RESET, PSTR("M280 P" STRINGIFY(Z_ENDSTOP_SERVO_NR) " S" STRINGIFY(BLTOUCH_RESET)));
++    #endif
++
++    //
+     // Switch power on/off
+     //
+     #if HAS_POWER_SWITCH
+

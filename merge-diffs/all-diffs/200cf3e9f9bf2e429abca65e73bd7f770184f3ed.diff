@@ -1,0 +1,448 @@
+commit 200cf3e9f9bf2e429abca65e73bd7f770184f3ed (from 818f8b93d34b7cffd28243c92fbf2fbdd2ada374)
+Merge: 818f8b9 84ff78c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Dec 5 06:06:13 2016 -0600
+
+    Merge pull request #5381 from thinkyhead/rc_fix_fade_factor
+    
+    Properly apply fade_factor to MBL
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8593b20..c02c02c 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2224,11 +2224,15 @@ static void clean_up_after_endstop_or_probe_move() {
+   void set_bed_leveling_enabled(bool enable=true) {
+     #if ENABLED(MESH_BED_LEVELING)
+ 
+-      if (!enable && mbl.active())
+-        current_position[Z_AXIS] +=
+-          mbl.get_z(RAW_CURRENT_POSITION(X_AXIS), RAW_CURRENT_POSITION(Y_AXIS)) - (MESH_HOME_SEARCH_Z);
++      if (enable != mbl.active()) {
+ 
+-      mbl.set_active(enable && mbl.has_mesh()); // was set_has_mesh(). Is this not correct?
++        if (!enable)
++          planner.apply_leveling(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS]);
++
++        mbl.set_active(enable && mbl.has_mesh());
++
++        if (enable) planner.unapply_leveling(current_position);
++      }
+ 
+     #elif HAS_ABL
+ 
+@@ -3162,8 +3166,10 @@ inline void gcode_G4() {
+     #elif ENABLED(MESH_BED_LEVELING)
+       SERIAL_ECHOPGM("Mesh Bed Leveling");
+       if (mbl.active()) {
++        float lz = current_position[Z_AXIS];
++        planner.apply_leveling(current_position[X_AXIS], current_position[Y_AXIS], lz);
+         SERIAL_ECHOLNPGM(" (enabled)");
+-        SERIAL_ECHOPAIR("MBL Adjustment Z", mbl.get_z(RAW_CURRENT_POSITION(X_AXIS), RAW_CURRENT_POSITION(Y_AXIS)));
++        SERIAL_ECHOPAIR("MBL Adjustment Z", lz);
+       }
+       SERIAL_EOL;
+     #endif
+@@ -3321,13 +3327,15 @@ inline void gcode_G28() {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("MBL was active");
+       #endif
+-      // Save known Z position if already homed
++      // Use known Z position if already homed
+       if (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS]) {
++        set_bed_leveling_enabled(false);
+         pre_home_z = current_position[Z_AXIS];
+-        pre_home_z += mbl.get_z(RAW_CURRENT_POSITION(X_AXIS), RAW_CURRENT_POSITION(Y_AXIS));
+       }
+-      mbl.set_active(false);
+-      current_position[Z_AXIS] = pre_home_z;
++      else {
++        mbl.set_active(false);
++        current_position[Z_AXIS] = pre_home_z;
++      }
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) DEBUG_POS("Set Z to pre_home_z", current_position);
+       #endif
+@@ -3703,8 +3711,8 @@ inline void gcode_G28() {
+ 
+       case MeshReset:
+         if (mbl.active()) {
+-          current_position[Z_AXIS] +=
+-            mbl.get_z(RAW_CURRENT_POSITION(X_AXIS), RAW_CURRENT_POSITION(Y_AXIS)) - MESH_HOME_SEARCH_Z;
++          current_position[Z_AXIS] -= MESH_HOME_SEARCH_Z;
++          planner.apply_leveling(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS]);
+           mbl.reset();
+           SYNC_PLAN_POSITION_KINEMATIC();
+         }
+@@ -7640,9 +7648,12 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+                 #if ENABLED(DEBUG_LEVELING_FEATURE)
+                   if (DEBUGGING(LEVELING)) SERIAL_ECHOPAIR("Z before MBL: ", current_position[Z_AXIS]);
+                 #endif
+-                float xpos = RAW_CURRENT_POSITION(X_AXIS),
+-                      ypos = RAW_CURRENT_POSITION(Y_AXIS);
+-                current_position[Z_AXIS] += mbl.get_z(xpos + xydiff[X_AXIS], ypos + xydiff[Y_AXIS]) - mbl.get_z(xpos, ypos);
++                float x2 = current_position[X_AXIS] + xydiff[X_AXIS],
++                      y2 = current_position[Y_AXIS] + xydiff[Y_AXIS],
++                      z1 = current_position[Z_AXIS], z2 = z1;
++                planner.apply_leveling(current_position[X_AXIS], current_position[Y_AXIS], z1);
++                planner.apply_leveling(x2, y2, z2);
++                current_position[Z_AXIS] += z2 - z1;
+                 #if ENABLED(DEBUG_LEVELING_FEATURE)
+                   if (DEBUGGING(LEVELING))
+                     SERIAL_ECHOLNPAIR(" after: ", current_position[Z_AXIS]);
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index 0e66bb8..217cd60 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -36,54 +36,58 @@
+ 
+     void reset();
+ 
+-    static FORCE_INLINE float get_probe_x(int8_t i) { return MESH_MIN_X + (MESH_X_DIST) * i; }
+-    static FORCE_INLINE float get_probe_y(int8_t i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
+-    void set_z(const int8_t px, const int8_t py, const float z) { z_values[py][px] = z; }
++    static FORCE_INLINE float get_probe_x(const int8_t i) { return MESH_MIN_X + (MESH_X_DIST) * i; }
++    static FORCE_INLINE float get_probe_y(const int8_t i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
++    void set_z(const int8_t px, const int8_t py, const float &z) { z_values[py][px] = z; }
+ 
+-    bool active()                 { return TEST(status, MBL_STATUS_ACTIVE_BIT); }
+-    void set_active(bool onOff)   { if (onOff) SBI(status, MBL_STATUS_ACTIVE_BIT); else CBI(status, MBL_STATUS_ACTIVE_BIT); }
+-    bool has_mesh()               { return TEST(status, MBL_STATUS_HAS_MESH_BIT); }
+-    void set_has_mesh(bool onOff) { if (onOff) SBI(status, MBL_STATUS_HAS_MESH_BIT); else CBI(status, MBL_STATUS_HAS_MESH_BIT); }
++    bool active() const                 { return TEST(status, MBL_STATUS_ACTIVE_BIT); }
++    void set_active(const bool onOff)   { onOff ? SBI(status, MBL_STATUS_ACTIVE_BIT) : CBI(status, MBL_STATUS_ACTIVE_BIT); }
++    bool has_mesh() const               { return TEST(status, MBL_STATUS_HAS_MESH_BIT); }
++    void set_has_mesh(const bool onOff) { onOff ? SBI(status, MBL_STATUS_HAS_MESH_BIT) : CBI(status, MBL_STATUS_HAS_MESH_BIT); }
+ 
+-    inline void zigzag(int8_t index, int8_t &px, int8_t &py) {
++    inline void zigzag(const int8_t index, int8_t &px, int8_t &py) const {
+       px = index % (MESH_NUM_X_POINTS);
+       py = index / (MESH_NUM_X_POINTS);
+       if (py & 1) px = (MESH_NUM_X_POINTS - 1) - px; // Zig zag
+     }
+ 
+-    void set_zigzag_z(int8_t index, float z) {
++    void set_zigzag_z(const int8_t index, const float &z) {
+       int8_t px, py;
+       zigzag(index, px, py);
+       set_z(px, py, z);
+     }
+ 
+-    int8_t cell_index_x(float x) {
++    int8_t cell_index_x(const float &x) const {
+       int8_t cx = (x - (MESH_MIN_X)) * (1.0 / (MESH_X_DIST));
+       return constrain(cx, 0, (MESH_NUM_X_POINTS) - 2);
+     }
+ 
+-    int8_t cell_index_y(float y) {
++    int8_t cell_index_y(const float &y) const {
+       int8_t cy = (y - (MESH_MIN_Y)) * (1.0 / (MESH_Y_DIST));
+       return constrain(cy, 0, (MESH_NUM_Y_POINTS) - 2);
+     }
+ 
+-    int8_t probe_index_x(float x) {
++    int8_t probe_index_x(const float &x) const {
+       int8_t px = (x - (MESH_MIN_X) + (MESH_X_DIST) * 0.5) * (1.0 / (MESH_X_DIST));
+       return (px >= 0 && px < (MESH_NUM_X_POINTS)) ? px : -1;
+     }
+ 
+-    int8_t probe_index_y(float y) {
++    int8_t probe_index_y(const float &y) const {
+       int8_t py = (y - (MESH_MIN_Y) + (MESH_Y_DIST) * 0.5) * (1.0 / (MESH_Y_DIST));
+       return (py >= 0 && py < (MESH_NUM_Y_POINTS)) ? py : -1;
+     }
+ 
+-    float calc_z0(float a0, float a1, float z1, float a2, float z2) {
+-      float delta_z = (z2 - z1) / (a2 - a1);
+-      float delta_a = a0 - a1;
++    float calc_z0(const float &a0, const float &a1, const float &z1, const float &a2, const float &z2) const {
++      const float delta_z = (z2 - z1) / (a2 - a1);
++      const float delta_a = a0 - a1;
+       return z1 + delta_a * delta_z;
+     }
+ 
+-    float get_z(float x0, float y0) {
++    float get_z(const float &x0, const float &y0
++      #if ENABLED(ENABLE_LEVELING_FADE_HEIGHT)
++        , const float &factor
++      #endif
++    ) const {
+       int8_t cx = cell_index_x(x0),
+              cy = cell_index_y(y0);
+       if (cx < 0 || cy < 0) return z_offset;
+@@ -96,7 +100,12 @@
+       float z0 = calc_z0(y0,
+                          get_probe_y(cy), z1,
+                          get_probe_y(cy + 1), z2);
+-      return z0 + z_offset;
++
++      #if ENABLED(ENABLE_LEVELING_FADE_HEIGHT)
++        return z0 * factor + z_offset;
++      #else
++        return z0 + z_offset;
++      #endif
+     }
+   };
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ea9dcf2..80cfb55 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -559,7 +559,7 @@ void Planner::check_axes_activity() {
+     #if ENABLED(MESH_BED_LEVELING)
+ 
+       if (mbl.active())
+-        lz += mbl.get_z(RAW_X_POSITION(lx), RAW_Y_POSITION(ly)) * z_fade_factor;
++        lz += mbl.get_z(RAW_X_POSITION(lx), RAW_Y_POSITION(ly), z_fade_factor);
+ 
+     #elif ABL_PLANAR
+ 
+@@ -595,7 +595,7 @@ void Planner::check_axes_activity() {
+ 
+       if (mbl.active()) {
+         #if ENABLED(ENABLE_LEVELING_FADE_HEIGHT)
+-          const float c = mbl.get_z(RAW_X_POSITION(logical[X_AXIS]), RAW_Y_POSITION(logical[Y_AXIS]));
++          const float c = mbl.get_z(RAW_X_POSITION(logical[X_AXIS]), RAW_Y_POSITION(logical[Y_AXIS]), 1.0);
+           logical[Z_AXIS] = (z_fade_height * (RAW_Z_POSITION(logical[Z_AXIS]) - c)) / (z_fade_height - c);
+         #else
+           logical[Z_AXIS] -= mbl.get_z(RAW_X_POSITION(logical[X_AXIS]), RAW_Y_POSITION(logical[Y_AXIS]));
+
+commit 200cf3e9f9bf2e429abca65e73bd7f770184f3ed (from 84ff78c1e304933b016a0dc166f1df60cf672a96)
+Merge: 818f8b9 84ff78c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Dec 5 06:06:13 2016 -0600
+
+    Merge pull request #5381 from thinkyhead/rc_fix_fade_factor
+    
+    Properly apply fade_factor to MBL
+
+diff --git a/Marlin/duration_t.h b/Marlin/duration_t.h
+index 926fc13..1123b4b 100644
+--- a/Marlin/duration_t.h
++++ b/Marlin/duration_t.h
+@@ -145,15 +145,22 @@ struct duration_t {
+    *  99:59
+    *  11d 12:33
+    */
+-  void toDigital(char *buffer, bool with_days=false) const {
++  uint8_t toDigital(char *buffer, bool with_days=false) const {
+     uint16_t h = uint16_t(this->hour()),
+              m = uint16_t(this->minute() % 60UL);
+-    if (with_days)
+-      sprintf_P(buffer, PSTR("%ud %02u:%02u"), this->day(), h, m);
+-    else if (h < 100)
++    if (with_days) {
++      uint16_t d = this->day();
++      sprintf_P(buffer, PSTR("%ud %02u:%02u"), d, h, m);
++      return d >= 10 ? 8 : 7;
++    }
++    else if (h < 100) {
+       sprintf_P(buffer, PSTR("%02u:%02u"), h % 24, m);
+-    else
++      return 5;
++    }
++    else {
+       sprintf_P(buffer, PSTR("%u:%02u"), h, m);
++      return 6;
++    }
+   }
+ };
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index a7104d4..73f7832 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2328,9 +2328,9 @@ void kill_screen(const char* lcd_msg) {
+    *   bool _menu_edit_int3();
+    *   void menu_edit_int3(); // edit int (interactively)
+    *   void menu_edit_callback_int3(); // edit int (interactively) with callback on completion
+-   *   void _menu_action_setting_edit_int3(const char* pstr, int* ptr, int minValue, int maxValue);
+-   *   void menu_action_setting_edit_int3(const char* pstr, int* ptr, int minValue, int maxValue);
+-   *   void menu_action_setting_edit_callback_int3(const char* pstr, int* ptr, int minValue, int maxValue, screenFunc_t callback); // edit int with callback
++   *   void _menu_action_setting_edit_int3(const char * const pstr, int * const ptr, const int minValue, const int maxValue);
++   *   void menu_action_setting_edit_int3(const char * const pstr, int * const ptr, const int minValue, const int maxValue);
++   *   void menu_action_setting_edit_callback_int3(const char * const pstr, int * const ptr, const int minValue, const int maxValue, const screenFunc_t callback); // edit int with callback
+    *
+    * You can then use one of the menu macros to present the edit interface:
+    *   MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_percentage, 10, 999)
+@@ -2343,51 +2343,52 @@ void kill_screen(const char* lcd_msg) {
+    *
+    *       menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
+    */
+-  #define menu_edit_type(_type, _name, _strFunc, scale) \
++  #define menu_edit_type(_type, _name, _strFunc, _scale) \
+     bool _menu_edit_ ## _name () { \
+       ENCODER_DIRECTION_NORMAL(); \
+       if ((int32_t)encoderPosition < 0) encoderPosition = 0; \
+       if ((int32_t)encoderPosition > maxEditValue) encoderPosition = maxEditValue; \
+       if (lcdDrawUpdate) \
+-        lcd_implementation_drawedit(editLabel, _strFunc(((_type)((int32_t)encoderPosition + minEditValue)) / scale)); \
++        lcd_implementation_drawedit(editLabel, _strFunc(((_type)((int32_t)encoderPosition + minEditValue)) * (1.0 / _scale))); \
+       if (lcd_clicked) { \
+-        *((_type*)editValue) = ((_type)((int32_t)encoderPosition + minEditValue)) / scale; \
++        *((_type*)editValue) = ((_type)((int32_t)encoderPosition + minEditValue)) * (1.0 / _scale); \
+         lcd_goto_previous_menu(); \
+       } \
+       return lcd_clicked; \
+     } \
+     void menu_edit_ ## _name () { _menu_edit_ ## _name(); } \
+     void menu_edit_callback_ ## _name () { if (_menu_edit_ ## _name ()) (*callbackFunc)(); } \
+-    void _menu_action_setting_edit_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue) { \
++    void _menu_action_setting_edit_ ## _name (const char * const pstr, _type* const ptr, const _type minValue, const _type maxValue) { \
+       lcd_save_previous_screen(); \
+       \
+       lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; \
+       \
+       editLabel = pstr; \
+       editValue = ptr; \
+-      minEditValue = minValue * scale; \
+-      maxEditValue = maxValue * scale - minEditValue; \
+-      encoderPosition = (*ptr) * scale - minEditValue; \
++      minEditValue = minValue * _scale; \
++      maxEditValue = maxValue * _scale - minEditValue; \
++      encoderPosition = (*ptr) * _scale - minEditValue; \
+     } \
+-    void menu_action_setting_edit_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue) { \
++    void menu_action_setting_edit_ ## _name (const char * const pstr, _type * const ptr, const _type minValue, const _type maxValue) { \
+       _menu_action_setting_edit_ ## _name(pstr, ptr, minValue, maxValue); \
+       currentScreen = menu_edit_ ## _name; \
+     }\
+-    void menu_action_setting_edit_callback_ ## _name (const char* pstr, _type* ptr, _type minValue, _type maxValue, screenFunc_t callback) { \
++    void menu_action_setting_edit_callback_ ## _name (const char * const pstr, _type * const ptr, const _type minValue, const _type maxValue, const screenFunc_t callback) { \
+       _menu_action_setting_edit_ ## _name(pstr, ptr, minValue, maxValue); \
+       currentScreen = menu_edit_callback_ ## _name; \
+       callbackFunc = callback; \
+-    }
+-
+-  menu_edit_type(int, int3, itostr3, 1)
+-  menu_edit_type(float, float3, ftostr3, 1)
+-  menu_edit_type(float, float32, ftostr32, 100)
+-  menu_edit_type(float, float43, ftostr43sign, 1000)
+-  menu_edit_type(float, float5, ftostr5rj, 0.01)
+-  menu_edit_type(float, float51, ftostr51sign, 10)
+-  menu_edit_type(float, float52, ftostr52sign, 100)
+-  menu_edit_type(float, float62, ftostr62sign, 100)
+-  menu_edit_type(unsigned long, long5, ftostr5rj, 0.01)
++    } \
++    typedef void _name
++
++  menu_edit_type(int, int3, itostr3, 1);
++  menu_edit_type(float, float3, ftostr3, 1.0);
++  menu_edit_type(float, float32, ftostr32, 100.0);
++  menu_edit_type(float, float43, ftostr43sign, 1000.0);
++  menu_edit_type(float, float5, ftostr5rj, 0.01);
++  menu_edit_type(float, float51, ftostr51sign, 10.0);
++  menu_edit_type(float, float52, ftostr52sign, 100.0);
++  menu_edit_type(float, float62, ftostr62sign, 100.0);
++  menu_edit_type(unsigned long, long5, ftostr5rj, 0.01);
+ 
+   /**
+    *
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index 50956b6..0b943ba 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -452,8 +452,14 @@ static void lcd_implementation_status_screen() {
+     // Progress bar frame
+     //
+ 
+-    if (PAGE_CONTAINS(49, 52 - (TALL_FONT_CORRECTION)))
+-      u8g.drawFrame(54, 49, 73, 4 - (TALL_FONT_CORRECTION));  // 49-52 (or 49-51)
++    #define PROGRESS_BAR_X 54
++    #define PROGRESS_BAR_WIDTH (LCD_PIXEL_WIDTH - PROGRESS_BAR_X)
++
++    if (PAGE_CONTAINS(49, 52 - (TALL_FONT_CORRECTION)))       // 49-52 (or 49-51)
++      u8g.drawFrame(
++        PROGRESS_BAR_X, 49,
++        PROGRESS_BAR_WIDTH, 4 - (TALL_FONT_CORRECTION)
++      );
+ 
+     if (IS_SD_PRINTING) {
+ 
+@@ -461,8 +467,11 @@ static void lcd_implementation_status_screen() {
+       // Progress bar solid part
+       //
+ 
+-      if (PAGE_CONTAINS(50, 51 - (TALL_FONT_CORRECTION)))
+-        u8g.drawBox(55, 50, (unsigned int)(71 * card.percentDone() * 0.01), 2 - (TALL_FONT_CORRECTION));
++      if (PAGE_CONTAINS(50, 51 - (TALL_FONT_CORRECTION)))     // 50-51 (or just 50)
++        u8g.drawBox(
++          PROGRESS_BAR_X + 1, 50,
++          (unsigned int)((PROGRESS_BAR_WIDTH - 2) * card.percentDone() * 0.01), 2 - (TALL_FONT_CORRECTION)
++        );
+ 
+       //
+       // SD Percent Complete
+@@ -483,9 +492,9 @@ static void lcd_implementation_status_screen() {
+     //
+ 
+     #if DISABLED(DOGM_SD_PERCENT)
+-      #define SD_DURATION_X 71
++      #define SD_DURATION_X (PROGRESS_BAR_X + (PROGRESS_BAR_WIDTH / 2) - len * (DOG_CHAR_WIDTH / 2))
+     #else
+-      #define SD_DURATION_X 89
++      #define SD_DURATION_X (LCD_PIXEL_WIDTH - len * DOG_CHAR_WIDTH)
+     #endif
+ 
+     if (PAGE_CONTAINS(41, 48)) {
+@@ -493,9 +502,8 @@ static void lcd_implementation_status_screen() {
+       char buffer[10];
+       duration_t elapsed = print_job_timer.duration();
+       bool has_days = (elapsed.value > 60*60*24L);
+-      elapsed.toDigital(buffer, has_days);
+-
+-      u8g.setPrintPos(SD_DURATION_X + (has_days ? 0 : 9), 48);
++      uint8_t len = elapsed.toDigital(buffer, has_days);
++      u8g.setPrintPos(SD_DURATION_X, 48);
+       lcd_print(buffer);
+     }
+ 
+@@ -749,11 +757,12 @@ static void lcd_implementation_status_screen() {
+   #define lcd_implementation_drawmenu_setting_edit_callback_bool(sel, row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(sel, row, pstr, (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+ 
+   void lcd_implementation_drawedit(const char* const pstr, const char* const value=NULL) {
+-    const uint8_t labellen = lcd_strlen_P(pstr), vallen = lcd_strlen(value);
+-    uint8_t lcd_width, char_width,
+-            rows = (labellen > LCD_WIDTH - 2 - vallen) ? 2 : 1;
++    const uint8_t labellen = lcd_strlen_P(pstr),
++                  vallen = lcd_strlen(value),
++                  rows = (labellen > LCD_WIDTH - 2 - vallen) ? 2 : 1;
+ 
+     #if ENABLED(USE_BIG_EDIT_FONT)
++      uint8_t lcd_width, char_width;
+       if (labellen <= LCD_WIDTH_EDIT - 1) {
+         if (labellen >= LCD_WIDTH_EDIT - vallen) rows = 2;
+         lcd_width = LCD_WIDTH_EDIT + 1;
+@@ -766,8 +775,8 @@ static void lcd_implementation_status_screen() {
+         lcd_setFont(FONT_MENU);
+       }
+     #else
+-      lcd_width = LCD_WIDTH - (START_COL);
+-      char_width = DOG_CHAR_WIDTH;
++      constexpr uint8_t lcd_width = LCD_WIDTH - (START_COL),
++                        char_width = DOG_CHAR_WIDTH;
+     #endif
+ 
+     // Center either one or two rows
+diff --git a/Marlin/ultralcd_impl_HD44780.h b/Marlin/ultralcd_impl_HD44780.h
+index 8f97b28..a5efb0e 100644
+--- a/Marlin/ultralcd_impl_HD44780.h
++++ b/Marlin/ultralcd_impl_HD44780.h
+@@ -733,12 +733,12 @@ static void lcd_implementation_status_screen() {
+ 
+     #endif // LCD_WIDTH >= 20 && SDSUPPORT
+ 
+-    lcd.setCursor(LCD_WIDTH - 6, 2);
+-    lcd.print(LCD_STR_CLOCK[0]);
+-
+     char buffer[10];
+     duration_t elapsed = print_job_timer.duration();
+-    elapsed.toDigital(buffer);
++    uint8_t len = elapsed.toDigital(buffer);
++
++    lcd.setCursor(LCD_WIDTH - len - 1, 2);
++    lcd.print(LCD_STR_CLOCK[0]);
+     lcd_print(buffer);
+ 
+   #endif // LCD_HEIGHT > 3
+

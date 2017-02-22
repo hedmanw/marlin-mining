@@ -1,0 +1,1359 @@
+commit 27b80b1dd174a0c1062c67d3a5a3d9b29473942f (from f9e3347d6f2a5caf313538c19b1d8b8593e26384)
+Merge: f9e3347 14a0372
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Aug 21 06:44:00 2016 -0500
+
+    Merge pull request #4667 from thinkyhead/rc_M211_sw_endstop_switch
+    
+    M211: Enable/Disable Software Endstops
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index e5bbdb7..581f078 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -103,11 +103,7 @@ FORCE_INLINE void serial_echopair_P(const char* s_P, void *v) { serial_echopair_
+ 
+ // Things to write to serial from Program memory. Saves 400 to 2k of RAM.
+ FORCE_INLINE void serialprintPGM(const char* str) {
+-  char ch;
+-  while ((ch = pgm_read_byte(str))) {
+-    MYSERIAL.write(ch);
+-    str++;
+-  }
++  while (char ch = pgm_read_byte(str++)) MYSERIAL.write(ch);
+ }
+ 
+ void idle(
+@@ -245,8 +241,6 @@ void enqueue_and_echo_command_now(const char* cmd); // enqueue now, only return
+ void enqueue_and_echo_commands_P(const char* cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
+ void clear_command_queue();
+ 
+-void clamp_to_software_endstops(float target[3]);
+-
+ extern millis_t previous_cmd_ms;
+ inline void refresh_cmd_timeout() { previous_cmd_ms = millis(); }
+ 
+@@ -268,15 +262,25 @@ extern bool volumetric_enabled;
+ extern int flow_percentage[EXTRUDERS]; // Extrusion factor for each extruder
+ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in millimeters), typically around 1.75 or 2.85, 0 disables the volumetric calculations for the extruder.
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+-extern bool axis_known_position[3]; // axis[n].is_known
+-extern bool axis_homed[3]; // axis[n].is_homed
++extern bool axis_known_position[XYZ]; // axis[n].is_known
++extern bool axis_homed[XYZ]; // axis[n].is_homed
+ extern volatile bool wait_for_heatup;
+ 
+ extern float current_position[NUM_AXIS];
+-extern float position_shift[3];
+-extern float home_offset[3];
+-extern float sw_endstop_min[3];
+-extern float sw_endstop_max[3];
++extern float position_shift[XYZ];
++extern float home_offset[XYZ];
++
++// Software Endstops
++void update_software_endstops(AxisEnum axis);
++#if ENABLED(min_software_endstops) || ENABLED(max_software_endstops)
++  extern bool soft_endstops_enabled;
++  void clamp_to_software_endstops(float target[XYZ]);
++#else
++  #define soft_endstops_enabled false
++  #define clamp_to_software_endstops(x) NOOP
++#endif
++extern float soft_endstop_min[XYZ];
++extern float soft_endstop_max[XYZ];
+ 
+ #define LOGICAL_POSITION(POS, AXIS) (POS + home_offset[AXIS] + position_shift[AXIS])
+ #define RAW_POSITION(POS, AXIS)     (POS - home_offset[AXIS] - position_shift[AXIS])
+@@ -295,25 +299,25 @@ float code_value_temp_abs();
+ float code_value_temp_diff();
+ 
+ #if ENABLED(DELTA)
+-  extern float delta[3];
+-  extern float endstop_adj[3]; // axis[n].endstop_adj
++  extern float delta[ABC];
++  extern float endstop_adj[ABC]; // axis[n].endstop_adj
+   extern float delta_radius;
+   extern float delta_diagonal_rod;
+   extern float delta_segments_per_second;
+   extern float delta_diagonal_rod_trim_tower_1;
+   extern float delta_diagonal_rod_trim_tower_2;
+   extern float delta_diagonal_rod_trim_tower_3;
+-  void inverse_kinematics(const float cartesian[3]);
++  void inverse_kinematics(const float cartesian[XYZ]);
+   void recalc_delta_settings(float radius, float diagonal_rod);
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+     extern int delta_grid_spacing[2];
+-    void adjust_delta(float cartesian[3]);
++    void adjust_delta(float cartesian[XYZ]);
+   #endif
+ #elif ENABLED(SCARA)
+-  extern float delta[3];
+-  extern float axis_scaling[3];  // Build size scaling
+-  void inverse_kinematics(const float cartesian[3]);
+-  void forward_kinematics_SCARA(float f_scara[3]);
++  extern float delta[ABC];
++  extern float axis_scaling[ABC];  // Build size scaling
++  void inverse_kinematics(const float cartesian[XYZ]);
++  void forward_kinematics_SCARA(float f_scara[ABC]);
+ #endif
+ 
+ #if ENABLED(Z_DUAL_ENDSTOPS)
+@@ -379,7 +383,6 @@ extern uint8_t active_extruder;
+   extern float mixing_factor[MIXING_STEPPERS];
+ #endif
+ 
+-void update_software_endstops(AxisEnum axis);
+ void calculate_volumetric_multipliers();
+ 
+ // Buzzer
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 9548a53..702c930 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -205,6 +205,7 @@
+  * M208 - Set Recover (unretract) Additional (!) Length: S<length> and Feedrate: F<units/min>
+  * M209 - Turn Automatic Retract Detection on/off: S<bool> (For slicers that don't support G10/11).
+           Every normal extrude-only move will be classified as retract depending on the direction.
++ * M211 - Enable, Disable, and/or Report software endstops: [S<bool>]
+  * M218 - Set a tool offset: T<index> X<offset> Y<offset>
+  * M220 - Set Feedrate Percentage: S<percent> ("FR" on your LCD)
+  * M221 - Set Flow Percentage: S<percent>
+@@ -285,8 +286,8 @@ uint8_t marlin_debug_flags = DEBUG_NONE;
+ 
+ float current_position[NUM_AXIS] = { 0.0 };
+ static float destination[NUM_AXIS] = { 0.0 };
+-bool axis_known_position[3] = { false };
+-bool axis_homed[3] = { false };
++bool axis_known_position[XYZ] = { false };
++bool axis_homed[XYZ] = { false };
+ 
+ static long gcode_N, gcode_LastN, Stopped_gcode_LastN = 0;
+ 
+@@ -326,15 +327,18 @@ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DI
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(1.0);
+ 
+ // The distance that XYZ has been offset by G92. Reset by G28.
+-float position_shift[3] = { 0 };
++float position_shift[XYZ] = { 0 };
+ 
+ // This offset is added to the configured home position.
+ // Set by M206, M428, or menu item. Saved to EEPROM.
+-float home_offset[3] = { 0 };
++float home_offset[XYZ] = { 0 };
+ 
+-// Software Endstops. Default to configured limits.
+-float sw_endstop_min[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+-float sw_endstop_max[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
++// Software Endstops are based on the configured limits.
++#if ENABLED(min_software_endstops) || ENABLED(max_software_endstops)
++  bool soft_endstops_enabled = true;
++#endif
++float soft_endstop_min[XYZ] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS },
++      soft_endstop_max[XYZ] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ 
+ #if FAN_COUNT > 0
+   int fanSpeeds[FAN_COUNT] = { 0 };
+@@ -458,11 +462,11 @@ static uint8_t target_extruder;
+   #define TOWER_2 Y_AXIS
+   #define TOWER_3 Z_AXIS
+ 
+-  float delta[3];
+-  float cartesian_position[3] = { 0 };
++  float delta[ABC];
++  float cartesian_position[XYZ] = { 0 };
+   #define SIN_60 0.8660254037844386
+   #define COS_60 0.5
+-  float endstop_adj[3] = { 0 };
++  float endstop_adj[ABC] = { 0 };
+   // these are the default values, can be overriden with M665
+   float delta_radius = DELTA_RADIUS;
+   float delta_tower1_x = -SIN_60 * (delta_radius + DELTA_RADIUS_TRIM_TOWER_1); // front left tower
+@@ -491,8 +495,8 @@ static uint8_t target_extruder;
+ 
+ #if ENABLED(SCARA)
+   float delta_segments_per_second = SCARA_SEGMENTS_PER_SECOND;
+-  float delta[3];
+-  float axis_scaling[3] = { 1, 1, 1 };    // Build size scaling, default to 1
++  float delta[ABC];
++  float axis_scaling[ABC] = { 1, 1, 1 };    // Build size scaling, default to 1
+ #endif
+ 
+ #if ENABLED(FILAMENT_WIDTH_SENSOR)
+@@ -1411,7 +1415,7 @@ DEFINE_PGM_READ_ANY(float,       float);
+ DEFINE_PGM_READ_ANY(signed char, byte);
+ 
+ #define XYZ_CONSTS_FROM_CONFIG(type, array, CONFIG) \
+-  static const PROGMEM type array##_P[3] =        \
++  static const PROGMEM type array##_P[XYZ] =        \
+       { X_##CONFIG, Y_##CONFIG, Z_##CONFIG };     \
+   static inline type array(int axis)          \
+   { return pgm_read_any(&array##_P[axis]); }
+@@ -1477,21 +1481,21 @@ void update_software_endstops(AxisEnum axis) {
+     if (axis == X_AXIS) {
+       float dual_max_x = max(hotend_offset[X_AXIS][1], X2_MAX_POS);
+       if (active_extruder != 0) {
+-        sw_endstop_min[X_AXIS] = X2_MIN_POS + offs;
+-        sw_endstop_max[X_AXIS] = dual_max_x + offs;
++        soft_endstop_min[X_AXIS] = X2_MIN_POS + offs;
++        soft_endstop_max[X_AXIS] = dual_max_x + offs;
+         return;
+       }
+       else if (dual_x_carriage_mode == DXC_DUPLICATION_MODE) {
+-        sw_endstop_min[X_AXIS] = base_min_pos(X_AXIS) + offs;
+-        sw_endstop_max[X_AXIS] = min(base_max_pos(X_AXIS), dual_max_x - duplicate_extruder_x_offset) + offs;
++        soft_endstop_min[X_AXIS] = base_min_pos(X_AXIS) + offs;
++        soft_endstop_max[X_AXIS] = min(base_max_pos(X_AXIS), dual_max_x - duplicate_extruder_x_offset) + offs;
+         return;
+       }
+     }
+     else
+   #endif
+   {
+-    sw_endstop_min[axis] = base_min_pos(axis) + offs;
+-    sw_endstop_max[axis] = base_max_pos(axis) + offs;
++    soft_endstop_min[axis] = base_min_pos(axis) + offs;
++    soft_endstop_max[axis] = base_max_pos(axis) + offs;
+   }
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -1499,16 +1503,15 @@ void update_software_endstops(AxisEnum axis) {
+       SERIAL_ECHOPAIR("For ", axis_codes[axis]);
+       SERIAL_ECHOPAIR(" axis:\n home_offset = ", home_offset[axis]);
+       SERIAL_ECHOPAIR("\n position_shift = ", position_shift[axis]);
+-      SERIAL_ECHOPAIR("\n sw_endstop_min = ", sw_endstop_min[axis]);
+-      SERIAL_ECHOPAIR("\n sw_endstop_max = ", sw_endstop_max[axis]);
++      SERIAL_ECHOPAIR("\n soft_endstop_min = ", soft_endstop_min[axis]);
++      SERIAL_ECHOPAIR("\n soft_endstop_max = ", soft_endstop_max[axis]);
+       SERIAL_EOL;
+     }
+   #endif
+ 
+   #if ENABLED(DELTA)
+-    if (axis == Z_AXIS) {
+-      delta_clip_start_height = sw_endstop_max[axis] - delta_safe_distance_from_top();
+-    }
++    if (axis == Z_AXIS)
++      delta_clip_start_height = soft_endstop_max[axis] - delta_safe_distance_from_top();
+   #endif
+ 
+ }
+@@ -1552,7 +1555,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+ 
+     if (axis == X_AXIS || axis == Y_AXIS) {
+ 
+-      float homeposition[3];
++      float homeposition[XYZ];
+       LOOP_XYZ(i) homeposition[i] = LOGICAL_POSITION(base_home_pos(i), i);
+ 
+       // SERIAL_ECHOPGM("homeposition[x]= "); SERIAL_ECHO(homeposition[0]);
+@@ -1574,8 +1577,8 @@ static void set_axis_is_at_home(AxisEnum axis) {
+        * SCARA home positions are based on configuration since the actual
+        * limits are determined by the inverse kinematic transform.
+        */
+-      sw_endstop_min[axis] = base_min_pos(axis); // + (delta[axis] - base_home_pos(axis));
+-      sw_endstop_max[axis] = base_max_pos(axis); // + (delta[axis] - base_home_pos(axis));
++      soft_endstop_min[axis] = base_min_pos(axis); // + (delta[axis] - base_home_pos(axis));
++      soft_endstop_max[axis] = base_max_pos(axis); // + (delta[axis] - base_home_pos(axis));
+     }
+     else
+   #endif
+@@ -3323,7 +3326,7 @@ inline void gcode_G28() {
+     switch (state) {
+       case MeshReport:
+         if (mbl.has_mesh()) {
+-          SERIAL_PROTOCOLPAIR("State: ", mbl.active() ? "On" : "Off");
++          SERIAL_PROTOCOLPAIR("State: ", mbl.active() ? MSG_ON : MSG_OFF);
+           SERIAL_PROTOCOLLNPGM("\nNum X,Y: " STRINGIFY(MESH_NUM_X_POINTS) "," STRINGIFY(MESH_NUM_Y_POINTS));
+           SERIAL_PROTOCOLLNPGM("Z search height: " STRINGIFY(MESH_HOME_SEARCH_Z));
+           SERIAL_PROTOCOLPGM("Z offset: "); SERIAL_PROTOCOL_F(mbl.z_offset, 5);
+@@ -5554,24 +5557,40 @@ inline void gcode_M206() {
+    */
+   inline void gcode_M209() {
+     if (code_seen('S')) {
+-      int t = code_value_int();
+-      switch (t) {
+-        case 0:
+-          autoretract_enabled = false;
+-          break;
+-        case 1:
+-          autoretract_enabled = true;
+-          break;
+-        default:
+-          unknown_command_error();
+-          return;
+-      }
++      autoretract_enabled = code_value_bool();
+       for (int i = 0; i < EXTRUDERS; i++) retracted[i] = false;
+     }
+   }
+ 
+ #endif // FWRETRACT
+ 
++/**
++ * M211: Enable, Disable, and/or Report software endstops
++ *
++ * Usage: M211 S1 to enable, M211 S0 to disable, M211 alone for report
++ */
++inline void gcode_M211() {
++  SERIAL_ECHO_START;
++  #if ENABLED(min_software_endstops) || ENABLED(max_software_endstops)
++    if (code_seen('S')) soft_endstops_enabled = code_value_bool();
++  #endif
++  #if ENABLED(min_software_endstops) || ENABLED(max_software_endstops)
++    SERIAL_ECHOPGM(MSG_SOFT_ENDSTOPS ": ");
++    serialprintPGM(soft_endstops_enabled ? PSTR(MSG_ON) : PSTR(MSG_OFF));
++  #else
++    SERIAL_ECHOPGM(MSG_SOFT_ENDSTOPS ": " MSG_OFF);
++  #endif
++  SERIAL_ECHOPGM("  " MSG_SOFT_MIN ": ");
++  SERIAL_ECHOPAIR(    MSG_X, soft_endstop_min[X_AXIS]);
++  SERIAL_ECHOPAIR(" " MSG_Y, soft_endstop_min[Y_AXIS]);
++  SERIAL_ECHOPAIR(" " MSG_Z, soft_endstop_min[Z_AXIS]);
++  SERIAL_ECHOPGM("  " MSG_SOFT_MAX ": ");
++  SERIAL_ECHOPAIR(    MSG_X, soft_endstop_max[X_AXIS]);
++  SERIAL_ECHOPAIR(" " MSG_Y, soft_endstop_max[Y_AXIS]);
++  SERIAL_ECHOPAIR(" " MSG_Z, soft_endstop_max[Z_AXIS]);
++  SERIAL_EOL;
++}
++
+ #if HOTENDS > 1
+ 
+   /**
+@@ -6175,7 +6194,7 @@ inline void gcode_M428() {
+   bool err = false;
+   LOOP_XYZ(i) {
+     if (axis_homed[i]) {
+-      float base = (current_position[i] > (sw_endstop_min[i] + sw_endstop_max[i]) * 0.5) ? base_home_pos(i) : 0,
++      float base = (current_position[i] > (soft_endstop_min[i] + soft_endstop_max[i]) * 0.5) ? base_home_pos(i) : 0,
+             diff = current_position[i] - LOGICAL_POSITION(base, i);
+       if (diff > -20 && diff < 20) {
+         set_home_offset((AxisEnum)i, home_offset[i] - diff);
+@@ -6499,8 +6518,7 @@ inline void gcode_M503() {
+     stepper.synchronize();
+     extruder_duplication_enabled = code_seen('S') && code_value_int() == 2;
+     SERIAL_ECHO_START;
+-    SERIAL_ECHOPAIR(MSG_DUPLICATION_MODE, extruder_duplication_enabled ? MSG_ON : MSG_OFF);
+-    SERIAL_EOL;
++    SERIAL_ECHOLNPAIR(MSG_DUPLICATION_MODE, extruder_duplication_enabled ? MSG_ON : MSG_OFF);
+   }
+ 
+ #endif // M605
+@@ -7495,6 +7513,10 @@ void process_next_command() {
+           break;
+       #endif // FWRETRACT
+ 
++      case 211: // M211 - Enable, Disable, and/or Report software endstops
++        gcode_M211();
++        break;
++
+       #if HOTENDS > 1
+         case 218: // M218 - Set a tool offset: T<index> X<offset> Y<offset>
+           gcode_M218();
+@@ -7749,18 +7771,22 @@ void ok_to_send() {
+   SERIAL_EOL;
+ }
+ 
+-void clamp_to_software_endstops(float target[3]) {
+-  if (min_software_endstops) {
+-    NOLESS(target[X_AXIS], sw_endstop_min[X_AXIS]);
+-    NOLESS(target[Y_AXIS], sw_endstop_min[Y_AXIS]);
+-    NOLESS(target[Z_AXIS], sw_endstop_min[Z_AXIS]);
+-  }
+-  if (max_software_endstops) {
+-    NOMORE(target[X_AXIS], sw_endstop_max[X_AXIS]);
+-    NOMORE(target[Y_AXIS], sw_endstop_max[Y_AXIS]);
+-    NOMORE(target[Z_AXIS], sw_endstop_max[Z_AXIS]);
++#if ENABLED(min_software_endstops) || ENABLED(max_software_endstops)
++
++  void clamp_to_software_endstops(float target[XYZ]) {
++    #if ENABLED(min_software_endstops)
++      NOLESS(target[X_AXIS], soft_endstop_min[X_AXIS]);
++      NOLESS(target[Y_AXIS], soft_endstop_min[Y_AXIS]);
++      NOLESS(target[Z_AXIS], soft_endstop_min[Z_AXIS]);
++    #endif
++    #if ENABLED(max_software_endstops)
++      NOMORE(target[X_AXIS], soft_endstop_max[X_AXIS]);
++      NOMORE(target[Y_AXIS], soft_endstop_max[Y_AXIS]);
++      NOMORE(target[Z_AXIS], soft_endstop_max[Z_AXIS]);
++    #endif
+   }
+-}
++
++#endif
+ 
+ #if ENABLED(DELTA)
+ 
+@@ -7776,9 +7802,9 @@ void clamp_to_software_endstops(float target[3]) {
+     delta_diagonal_rod_2_tower_3 = sq(diagonal_rod + delta_diagonal_rod_trim_tower_3);
+   }
+ 
+-  void inverse_kinematics(const float in_cartesian[3]) {
++  void inverse_kinematics(const float in_cartesian[XYZ]) {
+ 
+-    const float cartesian[3] = {
++    const float cartesian[XYZ] = {
+       RAW_X_POSITION(in_cartesian[X_AXIS]),
+       RAW_Y_POSITION(in_cartesian[Y_AXIS]),
+       RAW_Z_POSITION(in_cartesian[Z_AXIS])
+@@ -7808,7 +7834,7 @@ void clamp_to_software_endstops(float target[3]) {
+   }
+ 
+   float delta_safe_distance_from_top() {
+-    float cartesian[3] = {
++    float cartesian[XYZ] = {
+       LOGICAL_X_POSITION(0),
+       LOGICAL_Y_POSITION(0),
+       LOGICAL_Z_POSITION(0)
+@@ -7889,20 +7915,20 @@ void clamp_to_software_endstops(float target[3]) {
+     cartesian_position[Z_AXIS] = z1             + ex[2]*Xnew + ey[2]*Ynew - ez[2]*Znew;
+   };
+ 
+-  void forward_kinematics_DELTA(float point[3]) {
+-    forward_kinematics_DELTA(point[X_AXIS], point[Y_AXIS], point[Z_AXIS]);
++  void forward_kinematics_DELTA(float point[ABC]) {
++    forward_kinematics_DELTA(point[A_AXIS], point[B_AXIS], point[C_AXIS]);
+   }
+ 
+   void set_cartesian_from_steppers() {
+-    forward_kinematics_DELTA(stepper.get_axis_position_mm(X_AXIS),
+-                             stepper.get_axis_position_mm(Y_AXIS),
+-                             stepper.get_axis_position_mm(Z_AXIS));
++    forward_kinematics_DELTA(stepper.get_axis_position_mm(A_AXIS),
++                             stepper.get_axis_position_mm(B_AXIS),
++                             stepper.get_axis_position_mm(C_AXIS));
+   }
+ 
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+     // Adjust print surface height by linear interpolation over the bed_level array.
+-    void adjust_delta(float cartesian[3]) {
++    void adjust_delta(float cartesian[XYZ]) {
+       if (delta_grid_spacing[X_AXIS] == 0 || delta_grid_spacing[Y_AXIS] == 0) return; // G29 not done!
+ 
+       int half = (AUTO_BED_LEVELING_GRID_POINTS - 1) / 2;
+@@ -8375,8 +8401,8 @@ void prepare_move_to_destination() {
+ 
+ #if ENABLED(SCARA)
+ 
+-  void forward_kinematics_SCARA(float f_scara[3]) {
+-    // Perform forward kinematics, and place results in delta[3]
++  void forward_kinematics_SCARA(float f_scara[ABC]) {
++    // Perform forward kinematics, and place results in delta[]
+     // The maths and first version has been done by QHARLEY . Integrated into masterbranch 06/2014 and slightly restructured by Joachim Cerny in June 2014
+ 
+     float x_sin, x_cos, y_sin, y_cos;
+@@ -8401,9 +8427,9 @@ void prepare_move_to_destination() {
+     //SERIAL_ECHOPGM(" delta[Y_AXIS]="); SERIAL_ECHOLN(delta[Y_AXIS]);
+   }
+ 
+-  void inverse_kinematics(const float cartesian[3]) {
++  void inverse_kinematics(const float cartesian[XYZ]) {
+     // Inverse kinematics.
+-    // Perform SCARA IK and place results in delta[3].
++    // Perform SCARA IK and place results in delta[].
+     // The maths and first version were done by QHARLEY.
+     // Integrated, tweaked by Joachim Cerny in June 2014.
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 002e957..052cfe8 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -157,6 +157,9 @@
+ #define MSG_ENDSTOP_OPEN                    "open"
+ #define MSG_HOTEND_OFFSET                   "Hotend offsets:"
+ #define MSG_DUPLICATION_MODE                "Duplication mode: "
++#define MSG_SOFT_ENDSTOPS                   "Soft endstops"
++#define MSG_SOFT_MIN                        "Min"
++#define MSG_SOFT_MAX                        "Max"
+ 
+ #define MSG_SD_CANT_OPEN_SUBDIR             "Cannot open subdir "
+ #define MSG_SD_INIT_FAIL                    "SD init fail"
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index c070569..3512728 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -24,6 +24,9 @@
+ #define MACROS_H
+ 
+ #define NUM_AXIS 4
++#define XYZE 4
++#define ABC  3
++#define XYZ  3
+ 
+ #define FORCE_INLINE __attribute__((always_inline)) inline
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ed0f3aa..d0f2d4c 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -968,7 +968,7 @@ void Planner::check_axes_activity() {
+     float junction_deviation = 0.1;
+ 
+     // Compute path unit vector
+-    double unit_vec[3];
++    double unit_vec[XYZ];
+ 
+     unit_vec[X_AXIS] = delta_mm[X_AXIS] * inverse_millimeters;
+     unit_vec[Y_AXIS] = delta_mm[Y_AXIS] * inverse_millimeters;
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 88e8cd5..18ebed9 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -122,7 +122,7 @@ unsigned short Stepper::acc_step_rate; // needed for deceleration start point
+ uint8_t Stepper::step_loops, Stepper::step_loops_nominal;
+ unsigned short Stepper::OCR1A_nominal;
+ 
+-volatile long Stepper::endstops_trigsteps[3];
++volatile long Stepper::endstops_trigsteps[XYZ];
+ 
+ #if ENABLED(X_DUAL_STEPPER_DRIVERS)
+   #define X_APPLY_DIR(v,Q) do{ X_DIR_WRITE(v); X2_DIR_WRITE((v) != INVERT_X2_VS_X_DIR); }while(0)
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 1dd1531..177ccf1 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -128,7 +128,7 @@ class Stepper {
+     static uint8_t step_loops, step_loops_nominal;
+     static unsigned short OCR1A_nominal;
+ 
+-    static volatile long endstops_trigsteps[3];
++    static volatile long endstops_trigsteps[XYZ];
+     static volatile long endstops_stepsTotal, endstops_stepsDone;
+ 
+     #if HAS_MOTOR_CURRENT_PWM
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 7050499..b3775ba 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -95,7 +95,7 @@ unsigned char Temperature::soft_pwm_bed;
+ #endif
+ 
+ #if ENABLED(BABYSTEPPING)
+-  volatile int Temperature::babystepsTodo[3] = { 0 };
++  volatile int Temperature::babystepsTodo[XYZ] = { 0 };
+ #endif
+ 
+ #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_TEMP_PERIOD > 0
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 0e54aeb..f545975 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1327,30 +1327,42 @@ void kill_screen(const char* lcd_msg) {
+    *
+    */
+ 
+-  static void _lcd_move_xyz(const char* name, AxisEnum axis, float min, float max) {
++  static void _lcd_move_xyz(const char* name, AxisEnum axis) {
+     if (LCD_CLICKED) { lcd_goto_previous_menu(true); return; }
+     ENCODER_DIRECTION_NORMAL();
+     if (encoderPosition) {
+       refresh_cmd_timeout();
++
++      // Limit to software endstops, if enabled
++      float min = (soft_endstops_enabled && min_software_endstops) ? soft_endstop_min[axis] : current_position[axis] - 1000,
++            max = (soft_endstops_enabled && max_software_endstops) ? soft_endstop_max[axis] : current_position[axis] + 1000;
++
++      // Get the new position
+       current_position[axis] += float((int32_t)encoderPosition) * move_menu_scale;
+-      if (min_software_endstops) NOLESS(current_position[axis], min);
+-      if (max_software_endstops) NOMORE(current_position[axis], max);
+-      encoderPosition = 0;
++
++      // Delta limits XY based on the current offset from center
++      // This assumes the center is 0,0
++      #if ENABLED(DELTA)
++        if (axis != Z_AXIS) {
++          max = sqrt(sq(DELTA_PRINTABLE_RADIUS) - sq(current_position[Y_AXIS - axis]));
++          min = -max;
++        }
++      #endif
++
++      // Limit only when trying to move towards the limit
++      if ((int32_t)encoderPosition < 0) NOLESS(current_position[axis], min);
++      if ((int32_t)encoderPosition > 0) NOMORE(current_position[axis], max);
++
+       manual_move_to_current(axis);
++
++      encoderPosition = 0;
+       lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+     }
+     if (lcdDrawUpdate) lcd_implementation_drawedit(name, ftostr41sign(current_position[axis]));
+   }
+-  #if ENABLED(DELTA)
+-    static float delta_clip_radius_2 =  (DELTA_PRINTABLE_RADIUS) * (DELTA_PRINTABLE_RADIUS);
+-    static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - sq(a)); }
+-    static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS, max(sw_endstop_min[X_AXIS], -clip), min(sw_endstop_max[X_AXIS], clip)); }
+-    static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS, max(sw_endstop_min[Y_AXIS], -clip), min(sw_endstop_max[Y_AXIS], clip)); }
+-  #else
+-    static void lcd_move_x() { _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS, sw_endstop_min[X_AXIS], sw_endstop_max[X_AXIS]); }
+-    static void lcd_move_y() { _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS, sw_endstop_min[Y_AXIS], sw_endstop_max[Y_AXIS]); }
+-  #endif
+-  static void lcd_move_z() { _lcd_move_xyz(PSTR(MSG_MOVE_Z), Z_AXIS, sw_endstop_min[Z_AXIS], sw_endstop_max[Z_AXIS]); }
++  static void lcd_move_x() { _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS); }
++  static void lcd_move_y() { _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS); }
++  static void lcd_move_z() { _lcd_move_xyz(PSTR(MSG_MOVE_Z), Z_AXIS); }
+   static void _lcd_move_e(
+     #if E_MANUAL > 1
+       int8_t eindex=-1
+
+commit 27b80b1dd174a0c1062c67d3a5a3d9b29473942f (from 14a03727e14c14fcd8df14766577aaf3034dd0d4)
+Merge: f9e3347 14a0372
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Aug 21 06:44:00 2016 -0500
+
+    Merge pull request #4667 from thinkyhead/rc_M211_sw_endstop_switch
+    
+    M211: Enable/Disable Software Endstops
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 6e0f10f..8e65b6d 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -522,11 +522,11 @@
+   #define HAS_THERMALLY_PROTECTED_BED (HAS_TEMP_BED && HAS_HEATER_BED && ENABLED(THERMAL_PROTECTION_BED))
+ 
+   /**
+-   * This value is used by M109 when trying to calculate a ballpark safe margin
+-   * to prevent wait-forever situation.
++   * This setting is also used by M109 when trying to calculate
++   * a ballpark safe margin to prevent wait-forever situation.
+    */
+   #ifndef EXTRUDE_MINTEMP
+-   #define EXTRUDE_MINTEMP 170
++    #define EXTRUDE_MINTEMP 170
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 9d87aec..cadfed0 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8097606..702c930 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -5863,7 +5863,7 @@ inline void gcode_M226() {
+ 
+ #endif // HAS_LCD_CONTRAST
+ 
+-#if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++#if ENABLED(PREVENT_COLD_EXTRUSION)
+ 
+   /**
+    * M302: Allow cold extrudes, or set the minimum extrude temperature
+@@ -5898,7 +5898,7 @@ inline void gcode_M226() {
+     }
+   }
+ 
+-#endif // PREVENT_DANGEROUS_EXTRUDE
++#endif // PREVENT_COLD_EXTRUSION
+ 
+ /**
+  * M303: PID relay autotune
+@@ -7571,11 +7571,11 @@ void process_next_command() {
+           break;
+       #endif // HAS_LCD_CONTRAST
+ 
+-      #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++      #if ENABLED(PREVENT_COLD_EXTRUSION)
+         case 302: // allow cold extrudes, or set the minimum extrude temperature
+           gcode_M302();
+           break;
+-      #endif // PREVENT_DANGEROUS_EXTRUDE
++      #endif // PREVENT_COLD_EXTRUSION
+ 
+       case 303: // M303 PID autotune
+         gcode_M303();
+@@ -8147,7 +8147,7 @@ void mesh_line_to_destination(float fr_mm_s, uint8_t x_splits = 0xff, uint8_t y_
+ 
+ #endif // !DELTA && !SCARA
+ 
+-#if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++#if ENABLED(PREVENT_COLD_EXTRUSION)
+ 
+   inline void prevent_dangerous_extrude(float& curr_e, float& dest_e) {
+     if (DEBUGGING(DRYRUN)) return;
+@@ -8168,7 +8168,7 @@ void mesh_line_to_destination(float fr_mm_s, uint8_t x_splits = 0xff, uint8_t y_
+     }
+   }
+ 
+-#endif // PREVENT_DANGEROUS_EXTRUDE
++#endif // PREVENT_COLD_EXTRUSION
+ 
+ /**
+  * Prepare a single move and get ready for the next one
+@@ -8180,7 +8180,7 @@ void prepare_move_to_destination() {
+   clamp_to_software_endstops(destination);
+   refresh_cmd_timeout();
+ 
+-  #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++  #if ENABLED(PREVENT_COLD_EXTRUSION)
+     prevent_dangerous_extrude(current_position[E_AXIS], destination[E_AXIS]);
+   #endif
+ 
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 2aa6341..ad49dd0 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -135,6 +135,8 @@
+   #error "Z_RAISE_PROBE_DEPLOY_STOW and Z_RAISE_BETWEEN_PROBINGS are now Z_PROBE_DEPLOY_HEIGHT and Z_PROBE_TRAVEL_HEIGHT Please update your configuration."
+ #elif !defined(MIN_SEGMENTS_FOR_MOVE)
+   #error "\"dropsegments\" is replaced with MIN_SEGMENTS_FOR_MOVE (and increases by 1). Please update Configuration_adv.h."
++#elif defined(PREVENT_DANGEROUS_EXTRUDE)
++  #error "PREVENT_DANGEROUS_EXTRUDE is now PREVENT_COLD_EXTRUSION. Please update your configuration."
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index cf042af..3b0b5e1 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
++#define EXTRUDE_MINTEMP 170
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
+ #define PREVENT_LENGTHY_EXTRUDE
+-
+-#define EXTRUDE_MINTEMP 18
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 5cc35ad..eaa0619 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -329,14 +329,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index bc1f778..221ad3d 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -327,14 +327,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 74b9159..0ea368e 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -339,14 +339,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 440316a..cd81a92 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -341,14 +341,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 3268a52..b0e114b 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -364,14 +364,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 70dbcc0..ff54d8f 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
++#define EXTRUDE_MINTEMP 170
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
+ #define PREVENT_LENGTHY_EXTRUDE
+-
+-#define EXTRUDE_MINTEMP 160
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 8985296..497ef45 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
++#define EXTRUDE_MINTEMP 170
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
+ #define PREVENT_LENGTHY_EXTRUDE
+-
+-#define EXTRUDE_MINTEMP 160
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 684eba9..795f4b9 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 1ff1626..cb4642e 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -344,14 +344,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 148c508..f5147bf 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -355,14 +355,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-//#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
++#define EXTRUDE_MINTEMP 170
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
+ #define PREVENT_LENGTHY_EXTRUDE
+-
+-#define EXTRUDE_MINTEMP 150
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index bd940ba..fd9002b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -368,14 +368,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 61c96d3..cd9d938 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -339,14 +339,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 2c5ca20..701ab83 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 97af6ab..bc0ab35 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index a9800b9..f73a72f 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 26a776c..b5f25bc 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -347,14 +347,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 0521a87..edde713 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -336,14 +336,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 283bfeb..4046d2e 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -345,14 +345,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index c6f7cf3..b310d3c 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -350,14 +350,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 714474a..9125d9a 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -337,14 +337,16 @@
+ 
+ // @section extruder
+ 
+-//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+-//can be software-disabled for whatever purposes by
+-#define PREVENT_DANGEROUS_EXTRUDE
+-//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
+-#define PREVENT_LENGTHY_EXTRUDE
+-
++// This option prevents extrusion if the temperature is below EXTRUDE_MINTEMP.
++// It also enables the M302 command to set the minimum extrusion temperature
++// or to allow moving the extruder regardless of the hotend temperature.
++// *** IT IS HIGHLY RECOMMENDED TO LEAVE THIS OPTION ENABLED! ***
++#define PREVENT_COLD_EXTRUSION
+ #define EXTRUDE_MINTEMP 170
+-#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++// This option prevents a single extrusion longer than EXTRUDE_MAXLENGTH.
++#define PREVENT_LENGTHY_EXTRUDE
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH)
+ 
+ //===========================================================================
+ //======================== Thermal Runaway Protection =======================
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ac4947b..d0f2d4c 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -573,7 +573,7 @@ void Planner::check_axes_activity() {
+ 
+   long de = target[E_AXIS] - position[E_AXIS];
+ 
+-  #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++  #if ENABLED(PREVENT_COLD_EXTRUSION)
+     if (de) {
+       if (thermalManager.tooColdToExtrude(extruder)) {
+         position[E_AXIS] = target[E_AXIS]; // Behave as if the move really took place, but ignore E part
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 5a73762..b3775ba 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -108,7 +108,7 @@ unsigned char Temperature::soft_pwm_bed;
+   millis_t Temperature::watch_bed_next_ms = 0;
+ #endif
+ 
+-#if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++#if ENABLED(PREVENT_COLD_EXTRUSION)
+   bool Temperature::allow_cold_extrude = false;
+   float Temperature::extrude_min_temp = EXTRUDE_MINTEMP;
+ #endif
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index a66014a..fe6e522 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -121,7 +121,7 @@ class Temperature {
+       static millis_t watch_bed_next_ms;
+     #endif
+ 
+-    #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++    #if ENABLED(PREVENT_COLD_EXTRUSION)
+       static bool allow_cold_extrude;
+       static float extrude_min_temp;
+       static bool tooColdToExtrude(uint8_t e) {
+

@@ -1,0 +1,1464 @@
+commit 0d3fc7dd890105fe6dfd299bb2479ebede52970d (from 627f9d5285ec6cae8c5dda0ccd904e92acd8cd9e)
+Merge: 627f9d5 0009725
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Oct 22 10:59:17 2016 -0500
+
+    Merge pull request #5059 from gcormier/fixbaby
+    
+    Set defer delay back to false when exiting babystepping.
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 132fa7d..ece18bb 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -671,7 +671,7 @@ void kill_screen(const char* lcd_msg) {
+     long babysteps_done = 0;
+ 
+     static void _lcd_babystep(const AxisEnum axis, const char* msg) {
+-      if (LCD_CLICKED) { lcd_goto_previous_menu(true); return; }
++      if (LCD_CLICKED) { defer_return_to_status = false; lcd_goto_previous_menu(true); return; }
+       ENCODER_DIRECTION_NORMAL();
+       if (encoderPosition) {
+         int babystep_increment = (int32_t)encoderPosition * BABYSTEP_MULTIPLICATOR;
+
+commit 0d3fc7dd890105fe6dfd299bb2479ebede52970d (from 00097256375145a04efb67f8ececa471d4105ae1)
+Merge: 627f9d5 0009725
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Oct 22 10:59:17 2016 -0500
+
+    Merge pull request #5059 from gcormier/fixbaby
+    
+    Set defer delay back to false when exiting babystepping.
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 2a11156..6b63fc3 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 97bd980..a0a65f9 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e0ec569..7527eb5 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2316,7 +2316,8 @@ static void clean_up_after_endstop_or_probe_move() {
+     //                                : ((c < b) ? b : (a < c) ? a : c);
+   }
+ 
+-  #define EXTRAPOLATE_FROM_EDGE
++  //Enable this if your SCARA uses 180° of total area
++  //#define EXTRAPOLATE_FROM_EDGE
+ 
+   #if ENABLED(EXTRAPOLATE_FROM_EDGE)
+     #if ABL_GRID_POINTS_X < ABL_GRID_POINTS_Y
+@@ -3622,9 +3623,10 @@ inline void gcode_G28() {
+           }
+         }
+         else {
+-          SERIAL_PROTOCOLLNPGM("X not entered.");
++          SERIAL_CHAR('X'); SERIAL_PROTOCOLLNPGM(" not entered.");
+           return;
+         }
++
+         if (code_seen('Y')) {
+           py = code_value_int() - 1;
+           if (py < 0 || py >= MESH_NUM_Y_POINTS) {
+@@ -3633,14 +3635,15 @@ inline void gcode_G28() {
+           }
+         }
+         else {
+-          SERIAL_PROTOCOLLNPGM("Y not entered.");
++          SERIAL_CHAR('Y'); SERIAL_PROTOCOLLNPGM(" not entered.");
+           return;
+         }
++
+         if (code_seen('Z')) {
+           mbl.z_values[py][px] = code_value_axis_units(Z_AXIS);
+         }
+         else {
+-          SERIAL_PROTOCOLLNPGM("Z not entered.");
++          SERIAL_CHAR('Z'); SERIAL_PROTOCOLLNPGM(" not entered.");
+           return;
+         }
+         break;
+@@ -3650,7 +3653,7 @@ inline void gcode_G28() {
+           mbl.z_offset = code_value_axis_units(Z_AXIS);
+         }
+         else {
+-          SERIAL_PROTOCOLLNPGM("Z not entered.");
++          SERIAL_CHAR('Z'); SERIAL_PROTOCOLLNPGM(" not entered.");
+           return;
+         }
+         break;
+@@ -9736,7 +9739,9 @@ void setup() {
+       safe_delay(BOOTSCREEN_TIMEOUT);
+     #elif ENABLED(ULTRA_LCD)
+       bootscreen();
+-      lcd_init();
++      #if DISABLED(SDSUPPORT)
++        lcd_init();
++      #endif
+     #endif
+   #endif
+ 
+diff --git a/Marlin/dac_mcp4728.cpp b/Marlin/dac_mcp4728.cpp
+index 18dd7e3..2124a80 100644
+--- a/Marlin/dac_mcp4728.cpp
++++ b/Marlin/dac_mcp4728.cpp
+@@ -31,6 +31,7 @@
+  */
+ 
+ #include "dac_mcp4728.h"
++#include "enum.h"
+ 
+ #if ENABLED(DAC_STEPPER_CURRENT)
+ 
+@@ -69,9 +70,9 @@ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value) {
+ uint8_t mcp4728_eepromWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+   Wire.write(SEQWRITE);
+-  for (uint8_t channel = 0; channel < COUNT(mcp4728_values); channel++) {
+-    Wire.write(DAC_STEPPER_VREF << 7 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
+-    Wire.write(lowByte(mcp4728_values[channel]));
++  LOOP_XYZE(i) {
++    Wire.write(DAC_STEPPER_VREF << 7 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[i]));
++    Wire.write(lowByte(mcp4728_values[i]));
+   }
+   return Wire.endTransmission();
+ }
+@@ -119,7 +120,7 @@ uint16_t mcp4728_getDrvPct(uint8_t channel) { return uint16_t(100.0 * mcp4728_va
+  * Receives all Drive strengths as 0-100 percent values, updates
+  * DAC Values array and calls fastwrite to update the DAC.
+  */
+-void mcp4728_setDrvPct(int16_t pct[XYZE]) {
++void mcp4728_setDrvPct(uint16_t pct[XYZE]) {
+   LOOP_XYZE(i) mcp4728_values[i] = 0.01 * pct[i] * (DAC_STEPPER_MAX);
+   mcp4728_fastWrite();
+ }
+@@ -131,9 +132,9 @@ void mcp4728_setDrvPct(int16_t pct[XYZE]) {
+  */
+ uint8_t mcp4728_fastWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  for (uint8_t channel = 0; channel < COUNT(mcp4728_values); channel++) {
+-    Wire.write(highByte(mcp4728_values[channel]));
+-    Wire.write(lowByte(mcp4728_values[channel]));
++  LOOP_XYZE(i) {
++    Wire.write(highByte(mcp4728_values[i]));
++    Wire.write(lowByte(mcp4728_values[i]));
+   }
+   return Wire.endTransmission();
+ }
+diff --git a/Marlin/dac_mcp4728.h b/Marlin/dac_mcp4728.h
+index b2c9ec7..a1e3e35 100644
+--- a/Marlin/dac_mcp4728.h
++++ b/Marlin/dac_mcp4728.h
+@@ -60,7 +60,7 @@ uint16_t mcp4728_getValue(uint8_t channel);
+ uint8_t mcp4728_fastWrite();
+ uint8_t mcp4728_simpleCommand(byte simpleCommand);
+ uint16_t mcp4728_getDrvPct(uint8_t channel);
+-void mcp4728_setDrvPct(int16_t pct[XYZE]);
++void mcp4728_setDrvPct(uint16_t pct[XYZE]);
+ 
+ #endif
+ #endif // DAC_MCP4728_H
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index ffc8c69..4faf8a6 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -233,15 +233,15 @@ void Endstops::M119() {
+ // Check endstops - Called from ISR!
+ void Endstops::update() {
+ 
++  #define _ENDSTOP(AXIS, MINMAX) AXIS ##_## MINMAX
+   #define _ENDSTOP_PIN(AXIS, MINMAX) AXIS ##_## MINMAX ##_PIN
+   #define _ENDSTOP_INVERTING(AXIS, MINMAX) AXIS ##_## MINMAX ##_ENDSTOP_INVERTING
+   #define _ENDSTOP_HIT(AXIS) SBI(endstop_hit_bits, _ENDSTOP(AXIS, MIN))
+-  #define _ENDSTOP(AXIS, MINMAX) AXIS ##_## MINMAX
+ 
+   // UPDATE_ENDSTOP_BIT: set the current endstop bits for an endstop to its status
+   #define UPDATE_ENDSTOP_BIT(AXIS, MINMAX) SET_BIT(current_endstop_bits, _ENDSTOP(AXIS, MINMAX), (READ(_ENDSTOP_PIN(AXIS, MINMAX)) != _ENDSTOP_INVERTING(AXIS, MINMAX)))
+-  // COPY_BIT: copy the value of COPY_BIT to BIT in bits
+-  #define COPY_BIT(bits, COPY_BIT, BIT) SET_BIT(bits, BIT, TEST(bits, COPY_BIT))
++  // COPY_BIT: copy the value of SRC_BIT to DST_BIT in DST
++  #define COPY_BIT(DST, SRC_BIT, DST_BIT) SET_BIT(DST, DST_BIT, TEST(DST, SRC_BIT))
+ 
+   #define _UPDATE_ENDSTOP(AXIS,MINMAX,CODE) do { \
+       UPDATE_ENDSTOP_BIT(AXIS, MINMAX); \
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 318e15d..fcb7ee6 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 115200
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 115200
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 951d5df..98e4912 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index d5940af..3683a40 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -475,7 +475,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index dfcabe6..4138656 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 6f39cf5..cf5585a 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -475,7 +475,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index d461704..d5ebeff 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 115200
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 115200
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -484,7 +484,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 6e8d66f..fb337fc 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 945425e..d8835d0 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -486,7 +486,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index e15be72..e5c46ae 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index f9c1aad..0c9aab1 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -121,7 +121,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -130,6 +129,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -509,7 +509,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index b2c6fd4..0985448 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -507,9 +507,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 93693ba..5851622 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index 50fd0e0..ebb9e83 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 138651f..4fd1a9f 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index b08323e..16517f8 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 419e1ab..7310bf6 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 115200
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 115200
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -490,7 +490,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 8dbc685..ad70111 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 9768a23..38686f7 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -146,7 +146,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -155,6 +154,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -507,7 +507,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   400    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 51f6cb5..3312340 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 9ec1e6e..11cccd8 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -513,7 +513,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 096d97e..28eab90 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -509,9 +509,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 9c9a0aa..6010d6d 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 115200
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 115200
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -484,7 +484,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 6e8d66f..fb337fc 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 1.75
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index d7e4535..aa764bb 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -492,7 +492,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 9255cf5..934ac34 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -537,7 +537,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index c5b8101..e22c36c 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -503,9 +503,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 7c53722..5a647e6 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -537,7 +537,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 870c67c..d8da99e 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -503,9 +503,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index bb7fe14..2b0a385 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -537,7 +537,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 870c67c..d8da99e 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -503,9 +503,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 5adc2f6..c5df135 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -120,7 +120,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 115200
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -129,6 +128,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 115200
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -533,7 +533,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 5c68f33..8f80d13 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -508,9 +508,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index c5f2ca0..81f6aa8 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -107,7 +107,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -116,6 +115,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -543,7 +543,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 0a12114..698f927 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -503,9 +503,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 8c202ae..891ac9c 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -495,7 +495,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index dc08d5b..d1a0f66 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index e356a50..883f7df 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -114,7 +114,6 @@
+  */
+ #define SERIAL_PORT 0
+ 
+-#define BAUDRATE 250000
+ /**
+  * This setting determines the communication speed of the printer.
+  *
+@@ -123,6 +122,7 @@
+  *
+  * :[2400,9600,19200,38400,57600,115200,250000]
+  */
++#define BAUDRATE 250000
+ 
+ // Enable the Bluetooth serial interface on AT90USB devices
+ //#define BLUETOOTH
+@@ -488,7 +488,7 @@
+ #define DEFAULT_TRAVEL_ACCELERATION   500    // X, Y, Z acceleration for travel (non printing) moves
+ 
+ /**
+- * Defult Jerk (mm/s)
++ * Default Jerk (mm/s)
+  *
+  * "Jerk" specifies the minimum speed change that requires acceleration.
+  * When changing speed and direction, if the difference is less than the
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index dc57f52..f680703 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -501,9 +501,20 @@
+   #define D_FILAMENT 2.85
+ #endif
+ 
+-// Implementation of a linear pressure control
+-// Assumption: advance = k * (delta velocity)
+-// K=0 means advance disabled. A good value for a gregs wade extruder will be around K=75
++/**
++ * Implementation of linear pressure control
++ *
++ * Assumption: advance = k * (delta velocity)
++ * K=0 means advance disabled.
++ * To get a rough start value for calibration, measure your "free filament length"
++ * between the hobbed bolt and the nozzle (in cm). Use the formula below that fits
++ * your setup, where L is the "free filament length":
++ *
++ * Filament diameter           |   1.75mm  |    3.0mm   |
++ * ----------------------------|-----------|------------|
++ * Stiff filament (PLA)        | K=47*L/10 | K=139*L/10 |
++ * Softer filament (ABS, nGen) | K=88*L/10 | K=260*L/10 |
++ */
+ //#define LIN_ADVANCE
+ 
+ #if ENABLED(LIN_ADVANCE)
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index 2bc8a8d..0b64e67 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -160,7 +160,7 @@
+ #define MSG_ERR_MINTEMP                     LCD_STR_THERMOMETER " UNTERSCHRITTEN"
+ #define MSG_ERR_MAXTEMP_BED                 "BETT " LCD_STR_THERMOMETER " ÜBERSCHRITTEN"
+ #define MSG_ERR_MINTEMP_BED                 "BETT " LCD_STR_THERMOMETER " UNTERSCHRITTEN"
+-#define MSG_ERR_Z_HOMING                    "G28 Z Forbidden"
++#define MSG_ERR_Z_HOMING                    "G28 Z verboten"
+ #define MSG_HALTED                          "DRUCKER STOPP"
+ #define MSG_PLEASE_RESET                    "Bitte Resetten"
+ #define MSG_SHORT_DAY                       "t" // One character only
+@@ -209,22 +209,22 @@
+ 
+ #if LCD_HEIGHT >= 4
+   #define MSG_FILAMENT_CHANGE_INIT_1          "Warte auf den"
+-  #define MSG_FILAMENT_CHANGE_INIT_2          "Start zum "
+-  #define MSG_FILAMENT_CHANGE_INIT_3          "Filament wechsel"
++  #define MSG_FILAMENT_CHANGE_INIT_2          "Start des "
++  #define MSG_FILAMENT_CHANGE_INIT_3          "Filamentwechsels"
+   #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Warte auf das"
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "herrausnehmen"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "Herausnehmen"
+   #define MSG_FILAMENT_CHANGE_UNLOAD_3        "des Filaments"
+-  #define MSG_FILAMENT_CHANGE_INSERT_1        "Fädel Filament"
++  #define MSG_FILAMENT_CHANGE_INSERT_1        "Fädle Filament"
+   #define MSG_FILAMENT_CHANGE_INSERT_2        "ein und drücke"
+   #define MSG_FILAMENT_CHANGE_INSERT_3        "den Knopf..."
+   #define MSG_FILAMENT_CHANGE_LOAD_1          "Warte auf das"
+-  #define MSG_FILAMENT_CHANGE_LOAD_2          "laden des"
++  #define MSG_FILAMENT_CHANGE_LOAD_2          "Laden des"
+   #define MSG_FILAMENT_CHANGE_LOAD_3          "Filaments"
+   #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Warte auf das"
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "Extruden des"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "Extrudieren des"
+   #define MSG_FILAMENT_CHANGE_EXTRUDE_3       "Filaments"
+   #define MSG_FILAMENT_CHANGE_RESUME_1        "Warte auf das"
+-  #define MSG_FILAMENT_CHANGE_RESUME_2        "fortfahren des"
++  #define MSG_FILAMENT_CHANGE_RESUME_2        "Fortsetzen des"
+   #define MSG_FILAMENT_CHANGE_RESUME_3        "Druckes"
+ #else // LCD_HEIGHT < 4
+   #define MSG_FILAMENT_CHANGE_INIT_1          "Bitte warten..."
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index aabba58..cfc23df 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -1021,8 +1021,8 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+   }
+   else {
+     #define LIMIT_ACCEL(AXIS) do{ \
+-      const uint32_t comp = max_acceleration_steps_per_s2[AXIS] * block->step_event_count; \
+-      if (accel * block->steps[AXIS] > comp) accel = comp / block->steps[AXIS]; \
++      if (max_acceleration_steps_per_s2[AXIS] < (accel * block->steps[AXIS]) / block->step_event_count) \
++        accel = (max_acceleration_steps_per_s2[AXIS] * block->step_event_count) / block->steps[AXIS]; \
+     }while(0)
+ 
+     // Start with print or travel acceleration
+@@ -1206,7 +1206,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     // This leads to an enormous number of advance steps due to a huge e_acceleration.
+     // The math is correct, but you don't want a retract move done with advance!
+     // So this situation is filtered out here.
+-    if (!block->steps[E_AXIS] || (!block->steps[X_AXIS] && !block->steps[Y_AXIS] && !block->steps[Z_AXIS]) || stepper.get_advance_k() == 0 || (uint32_t) block->steps[E_AXIS] == block->step_event_count) {
++    if (!block->steps[E_AXIS] || (!block->steps[X_AXIS] && !block->steps[Y_AXIS]) || stepper.get_advance_k() == 0 || (uint32_t) block->steps[E_AXIS] == block->step_event_count) {
+       block->use_advance_lead = false;
+     }
+     else {
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index e3167a1..bacf224 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -569,9 +569,6 @@ void Stepper::isr() {
+ 
+     #if ENABLED(LIN_ADVANCE)
+ 
+-      if (current_block->use_advance_lead)
+-        current_estep_rate[TOOL_E_INDEX] = ((uint32_t)acc_step_rate * current_block->e_speed_multiplier8) >> 8;
+-
+       if (current_block->use_advance_lead) {
+         #if ENABLED(MIXING_EXTRUDER)
+           MIXING_STEPPERS_LOOP(j)
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 8465572..731dae9 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1001,14 +1001,11 @@ void Temperature::init() {
+ 
+   #if ENABLED(HEATER_0_USES_MAX6675)
+ 
+-    #if DISABLED(SDSUPPORT)
+-      OUT_WRITE(SCK_PIN, LOW);
+-      OUT_WRITE(MOSI_PIN, HIGH);
+-      SET_INPUT(MISO_PIN);
+-      WRITE(MISO_PIN,1);
+-    #else
+-      OUT_WRITE(SS_PIN, HIGH);
+-    #endif
++    OUT_WRITE(SCK_PIN, LOW);
++    OUT_WRITE(MOSI_PIN, HIGH);
++    SET_INPUT(MISO_PIN);
++    WRITE(MISO_PIN, HIGH);
++    OUT_WRITE(SS_PIN, HIGH);
+ 
+     OUT_WRITE(MAX6675_SS, HIGH);
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 5fdc024..ece18bb 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -689,11 +689,11 @@ void kill_screen(const char* lcd_msg) {
+     #if ENABLED(BABYSTEP_XY)
+       static void _lcd_babystep_x() { _lcd_babystep(X_AXIS, PSTR(MSG_BABYSTEPPING_X)); }
+       static void _lcd_babystep_y() { _lcd_babystep(Y_AXIS, PSTR(MSG_BABYSTEPPING_Y)); }
+-      static void lcd_babystep_x() { babysteps_done = 0; lcd_goto_screen(_lcd_babystep_x); }
+-      static void lcd_babystep_y() { babysteps_done = 0; lcd_goto_screen(_lcd_babystep_y); }
++      static void lcd_babystep_x() { lcd_goto_screen(_lcd_babystep_x); babysteps_done = 0; defer_return_to_status = true; }
++      static void lcd_babystep_y() { lcd_goto_screen(_lcd_babystep_y); babysteps_done = 0; defer_return_to_status = true; }
+     #endif
+     static void _lcd_babystep_z() { _lcd_babystep(Z_AXIS, PSTR(MSG_BABYSTEPPING_Z)); }
+-    static void lcd_babystep_z() { babysteps_done = 0; lcd_goto_screen(_lcd_babystep_z); }
++    static void lcd_babystep_z() { lcd_goto_screen(_lcd_babystep_z); babysteps_done = 0; defer_return_to_status = true; }
+ 
+   #endif //BABYSTEPPING
+ 
+@@ -1038,13 +1038,13 @@ void kill_screen(const char* lcd_msg) {
+     // Note: During Manual Bed Leveling the homed Z position is MESH_HOME_SEARCH_Z
+     // Z position will be restored with the final action, a G28
+     inline void _mbl_goto_xy(float x, float y) {
+-      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + Z_HOMING_HEIGHT;
++      current_position[Z_AXIS] = LOGICAL_Z_POSITION(MESH_HOME_SEARCH_Z + Z_HOMING_HEIGHT);
+       line_to_current(Z_AXIS);
+-      current_position[X_AXIS] = x + home_offset[X_AXIS];
+-      current_position[Y_AXIS] = y + home_offset[Y_AXIS];
++      current_position[X_AXIS] = LOGICAL_X_POSITION(x);
++      current_position[Y_AXIS] = LOGICAL_Y_POSITION(y);
+       line_to_current(manual_feedrate_mm_m[X_AXIS] <= manual_feedrate_mm_m[Y_AXIS] ? X_AXIS : Y_AXIS);
+       #if Z_HOMING_HEIGHT > 0
+-        current_position[Z_AXIS] = MESH_HOME_SEARCH_Z; // How do condition and action match?
++        current_position[Z_AXIS] = LOGICAL_Z_POSITION(MESH_HOME_SEARCH_Z);
+         line_to_current(Z_AXIS);
+       #endif
+       stepper.synchronize();
+

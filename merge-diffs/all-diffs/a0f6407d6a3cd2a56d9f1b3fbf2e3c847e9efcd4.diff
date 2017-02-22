@@ -1,0 +1,3976 @@
+commit a0f6407d6a3cd2a56d9f1b3fbf2e3c847e9efcd4 (from c6c37abd4101658ea9af1c4d8c282ff190de0479)
+Merge: c6c37ab 754b13d
+Author: Richard Wackerbarth <rkw@dataplex.net>
+Date:   Thu Nov 12 00:04:18 2015 -0600
+
+    Merge corrections from dev branch (PR#2704)
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 5da249f..c4fa028 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -853,11 +853,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+index bd81bf5..ad23a06 100644
+--- a/Marlin/MarlinSerial.cpp
++++ b/Marlin/MarlinSerial.cpp
+@@ -78,7 +78,8 @@ void MarlinSerial::begin(long baud) {
+   if (useU2X) {
+     M_UCSRxA = BIT(M_U2Xx);
+     baud_setting = (F_CPU / 4 / baud - 1) / 2;
+-  } else {
++  }
++  else {
+     M_UCSRxA = 0;
+     baud_setting = (F_CPU / 8 / baud - 1) / 2;
+   }
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 066845a..4d29ebc 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -45,13 +45,16 @@
+ #include "stepper.h"
+ #include "temperature.h"
+ #include "cardreader.h"
+-#include "watchdog.h"
+ #include "configuration_store.h"
+ #include "language.h"
+ #include "pins_arduino.h"
+ #include "math.h"
+ #include "buzzer.h"
+ 
++#if ENABLED(USE_WATCHDOG)
++  #include "watchdog.h"
++#endif
++
+ #if ENABLED(BLINKM)
+   #include "blinkm.h"
+   #include "Wire.h"
+@@ -681,7 +684,11 @@ void setup() {
+ 
+   tp_init();    // Initialize temperature loop
+   plan_init();  // Initialize planner;
+-  watchdog_init();
++
++  #if ENABLED(USE_WATCHDOG)
++    watchdog_init();
++  #endif
++
+   st_init();    // Initialize stepper, this enables interrupts!
+   setup_photpin();
+   servo_init();
+@@ -827,8 +834,10 @@ void get_command() {
+         fromsd[cmd_queue_index_w] = false;
+       #endif
+ 
+-      char *npos = strchr(command, 'N');
+-      char *apos = strchr(command, '*');
++      while (*command == ' ') command++; // skip any leading spaces
++      char* npos = (*command == 'N') ? command : NULL; // Require the N parameter to start the line
++      char* apos = strchr(command, '*');
++
+       if (npos) {
+ 
+         boolean M110 = strstr_P(command, PSTR("M110")) != NULL;
+@@ -1688,7 +1697,8 @@ static void setup_for_endstop_move() {
+       if (a < b) {
+         if (b < c) median = b;
+         if (c < a) median = a;
+-      } else {  // b <= a
++      }
++      else {  // b <= a
+         if (c < b) median = b;
+         if (a < c) median = a;
+       }
+@@ -1783,7 +1793,8 @@ static void setup_for_endstop_move() {
+       #endif
+       do_blocking_move_to_x(X_MAX_POS + SLED_DOCKING_OFFSET + offset - 1);  // Dock sled a bit closer to ensure proper capturing
+       digitalWrite(SLED_PIN, LOW); // turn off magnet
+-    } else {
++    }
++    else {
+       float z_loc = current_position[Z_AXIS];
+       if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
+       do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], z_loc); // this also updates current_position
+@@ -2696,7 +2707,8 @@ inline void gcode_G28() {
+             SERIAL_PROTOCOLPGM("X out of range (1-" STRINGIFY(MESH_NUM_X_POINTS) ").\n");
+             return;
+           }
+-        } else {
++        }
++        else {
+           SERIAL_PROTOCOLPGM("X not entered.\n");
+           return;
+         }
+@@ -2706,7 +2718,8 @@ inline void gcode_G28() {
+             SERIAL_PROTOCOLPGM("Y out of range (1-" STRINGIFY(MESH_NUM_Y_POINTS) ").\n");
+             return;
+           }
+-        } else {
++        }
++        else {
+           SERIAL_PROTOCOLPGM("Y not entered.\n");
+           return;
+         }
+@@ -4653,13 +4666,8 @@ inline void gcode_M220() {
+ inline void gcode_M221() {
+   if (code_seen('S')) {
+     int sval = code_value();
+-    if (code_seen('T')) {
+-      if (setTargetedHotend(221)) return;
+-      extruder_multiplier[target_extruder] = sval;
+-    }
+-    else {
+-      extruder_multiplier[active_extruder] = sval;
+-    }
++    if (setTargetedHotend(221)) return;
++    extruder_multiplier[target_extruder] = sval;
+   }
+ }
+ 
+@@ -6381,25 +6389,29 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+     x_splits ^= BIT(ix);
+-  } else if (ix < pix && (x_splits) & BIT(pix)) {
++  }
++  else if (ix < pix && (x_splits) & BIT(pix)) {
+     nx = mbl.get_x(pix);
+     normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+     x_splits ^= BIT(pix);
+-  } else if (iy > piy && (y_splits) & BIT(iy)) {
++  }
++  else if (iy > piy && (y_splits) & BIT(iy)) {
+     ny = mbl.get_y(iy);
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+     y_splits ^= BIT(iy);
+-  } else if (iy < piy && (y_splits) & BIT(piy)) {
++  }
++  else if (iy < piy && (y_splits) & BIT(piy)) {
+     ny = mbl.get_y(piy);
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+     y_splits ^= BIT(piy);
+-  } else {
++  }
++  else {
+     // Already split on a border
+     plan_buffer_line(x, y, z, e, feed_rate, extruder);
+     set_current_to_destination();
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 5063d74..dbb025f 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -192,11 +192,13 @@ uint32_t Sd2Card::cardSize() {
+     uint8_t c_size_mult = (csd.v1.c_size_mult_high << 1)
+                           | csd.v1.c_size_mult_low;
+     return (uint32_t)(c_size + 1) << (c_size_mult + read_bl_len - 7);
+-  } else if (csd.v2.csd_ver == 1) {
++  }
++  else if (csd.v2.csd_ver == 1) {
+     uint32_t c_size = ((uint32_t)csd.v2.c_size_high << 16)
+                       | (csd.v2.c_size_mid << 8) | csd.v2.c_size_low;
+     return (c_size + 1) << 10;
+-  } else {
++  }
++  else {
+     error(SD_CARD_ERROR_BAD_CSD);
+     return 0;
+   }
+diff --git a/Marlin/Sd2PinMap.h b/Marlin/Sd2PinMap.h
+index 7496ae6..94dbd6d 100644
+--- a/Marlin/Sd2PinMap.h
++++ b/Marlin/Sd2PinMap.h
+@@ -396,7 +396,8 @@ static inline __attribute__((always_inline))
+   bool getPinMode(uint8_t pin) {
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     return (*digitalPinMap[pin].ddr >> digitalPinMap[pin].bit) & 1;
+-  } else {
++  }
++  else {
+     return badPinNumber();
+   }
+ }
+@@ -405,10 +406,12 @@ static inline __attribute__((always_inline))
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     if (mode) {
+       *digitalPinMap[pin].ddr |= BIT(digitalPinMap[pin].bit);
+-    } else {
++    }
++    else {
+       *digitalPinMap[pin].ddr &= ~BIT(digitalPinMap[pin].bit);
+     }
+-  } else {
++  }
++  else {
+     badPinNumber();
+   }
+ }
+@@ -416,7 +419,8 @@ static inline __attribute__((always_inline))
+   bool fastDigitalRead(uint8_t pin) {
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     return (*digitalPinMap[pin].pin >> digitalPinMap[pin].bit) & 1;
+-  } else {
++  }
++  else {
+     return badPinNumber();
+   }
+ }
+@@ -425,10 +429,12 @@ static inline __attribute__((always_inline))
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     if (value) {
+       *digitalPinMap[pin].port |= BIT(digitalPinMap[pin].bit);
+-    } else {
++    }
++    else {
+       *digitalPinMap[pin].port &= ~BIT(digitalPinMap[pin].bit);
+     }
+-  } else {
++  }
++  else {
+     badPinNumber();
+   }
+ }
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index e88c06f..3fcd649 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -410,7 +410,7 @@ void Config_RetrieveSettings() {
+ 
+     EEPROM_READ_VAR(i, dummy); // bedKp
+     if (dummy != DUMMY_PID_VALUE) {
+-      bedKp = dummy;
++      bedKp = dummy; UNUSED(bedKp);
+       EEPROM_READ_VAR(i, bedKi);
+       EEPROM_READ_VAR(i, bedKd);
+     }
+@@ -540,7 +540,7 @@ void Config_ResetDefault() {
+     #if ENABLED(PID_PARAMS_PER_EXTRUDER)
+       for (int e = 0; e < EXTRUDERS; e++)
+     #else
+-      int e = 0; // only need to write once
++      int e = 0; UNUSED(e); // only need to write once
+     #endif
+     {
+       PID_PARAM(Kp, e) = DEFAULT_Kp;
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index 8fc1c31..3d00134 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -852,11 +852,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 355ca83..4e2cbf9 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -197,18 +197,20 @@ char lcd_printPGM(const char* str) {
+ /* Warning: This function is called from interrupt context */
+ static void lcd_implementation_init() {
+ 
+-  #if ENABLED(LCD_PIN_BL) // Enable LCD backlight
++  #if defined(LCD_PIN_BL) && LCD_PIN_BL > -1 // Enable LCD backlight
+     pinMode(LCD_PIN_BL, OUTPUT);
+     digitalWrite(LCD_PIN_BL, HIGH);
+   #endif
+ 
+-  #if ENABLED(LCD_PIN_RESET)
++  #if defined(LCD_PIN_RESET) && LCD_PIN_RESET > -1
+     pinMode(LCD_PIN_RESET, OUTPUT);
+     digitalWrite(LCD_PIN_RESET, HIGH);
+   #endif
++
+   #if DISABLED(MINIPANEL) // setContrast not working for Mini Panel
+     u8g.setContrast(lcd_contrast);
+   #endif
++
+   // FIXME: remove this workaround
+   // Uncomment this if you have the first generation (V1.10) of STBs board
+   // pinMode(17, OUTPUT); // Enable LCD backlight
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index bf5eeb2..a3ffe29 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -725,7 +725,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -835,11 +835,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index a64eba4..09adeae 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -366,7 +366,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+   #define FILAMENT_RUNOUT_SCRIPT "M600"
+ #endif
+-  
++
+ //===========================================================================
+ //=========================== Manual Bed Leveling ===========================
+ //===========================================================================
+@@ -459,7 +459,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+                                                                             // Useful to retract a deployable Z probe.
+-                                                                           
++
+   //#define Z_PROBE_SLED // Turn on if you have a Z probe mounted on a sled like those designed by Charles Bell.
+   //#define SLED_DOCKING_OFFSET 5 // The extra distance the X axis must travel to pickup the sled. 0 should be fine but you can push it further if you'd like.
+ 
+@@ -799,11 +799,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 8ae05cf..139c1fc 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index b61cf19..519f3c7 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -79,7 +79,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Added for BQ
+ #define SOURCE_CODE_URL "http://www.bq.com/gb/downloads-prusa-i3-hephestos.html"
+- 
++
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+ //#define MACHINE_UUID "00000000-0000-0000-0000-000000000000"
+@@ -734,7 +734,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -844,11 +844,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 5d25cd6..9722db6 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index ffa2ba9..66af2bb 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -730,7 +730,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -840,11 +840,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index d51ed24..77717bc 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 7834101..630830f 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -742,7 +742,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -852,11 +852,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index d4a0b84..7cd0f00 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -732,7 +732,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -842,11 +842,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 264a404..f933c68 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -137,7 +137,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -336,8 +336,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -461,7 +461,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -474,56 +474,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -534,67 +534,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 7e0e31d..068f93b 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -37,16 +37,16 @@ Here are some standard links for getting your machine calibrated:
+ // QHARLEYS Autobedlevelling has not been ported, because Marlin has now Bed-levelling
+ // You might need Z-Min endstop on SCARA-Printer to use this feature. Actually untested!
+ // Uncomment to use Morgan scara mode
+-#define SCARA  
++#define SCARA
+ #define SCARA_SEGMENTS_PER_SECOND 200 // If movement is choppy try lowering this value
+ // Length of inner support arm
+ #define Linkage_1 150 //mm      Preprocessor cannot handle decimal point...
+-// Length of outer support arm     Measure arm lengths precisely and enter 
+-#define Linkage_2 150 //mm    
++// Length of outer support arm     Measure arm lengths precisely and enter
++#define Linkage_2 150 //mm
+ 
+-// SCARA tower offset (position of Tower relative to bed zero position) 
++// SCARA tower offset (position of Tower relative to bed zero position)
+ // This needs to be reasonably accurate as it defines the printbed position in the SCARA space.
+-#define SCARA_offset_x 100 //mm   
++#define SCARA_offset_x 100 //mm
+ #define SCARA_offset_y -56 //mm
+ #define SCARA_RAD2DEG 57.2957795  // to convert RAD to degrees
+ 
+@@ -750,7 +750,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -860,11 +860,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 2fa8065..2a2ba71 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 9610488..1c42c65 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -761,7 +761,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -871,11 +871,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index ffc126f..abbc596 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -469,7 +469,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -482,56 +482,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -542,67 +542,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index d677558..f0666e7 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -733,7 +733,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -843,11 +843,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 2036af0..a19cf4d 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 048e8b0..e3cf3a3 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -742,7 +742,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -852,11 +852,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 6108b4e..1565375 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -867,7 +867,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -977,11 +977,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 3dc7c22..b80ae83 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -345,8 +345,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -467,7 +467,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -480,56 +480,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -540,67 +540,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 84f18c0..6776940 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -872,7 +872,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -982,11 +982,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 2426f2b..8212e76 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -345,8 +345,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -468,7 +468,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -481,56 +481,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -541,67 +541,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 0313d99..4167bd4 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -872,7 +872,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -982,11 +982,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index ee24378..ef31f06 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -344,8 +344,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -467,7 +467,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -480,56 +480,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -540,67 +540,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index eb4f597..b47dab6 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -862,7 +862,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -972,11 +972,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 372328b..31541c9 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -149,7 +149,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -348,8 +348,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -471,7 +471,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -484,56 +484,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -544,67 +544,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index d2870e8..bc74b6d 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -590,7 +590,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // default settings
+ 
+ #define DEFAULT_AXIS_STEPS_PER_UNIT   {400, 400, 400, 163}     // default steps per unit for ***** MakiBox A6 *****
+-#define DEFAULT_MAX_FEEDRATE          {60, 60, 20, 45}         // (mm/sec)    
++#define DEFAULT_MAX_FEEDRATE          {60, 60, 20, 45}         // (mm/sec)
+ #define DEFAULT_MAX_ACCELERATION      {2000,2000,30,10000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for skeinforge 40+, for older versions raise them a lot.
+ 
+ #define DEFAULT_ACCELERATION          3000    // X, Y, Z and E acceleration in mm/s^2 for printing moves
+@@ -744,7 +744,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -854,11 +854,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index ef9c9c1..4e62ab8 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -342,8 +342,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -465,7 +465,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -478,56 +478,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -538,67 +538,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 7d0f113..2636192 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -581,7 +581,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define DEFAULT_AXIS_STEPS_PER_UNIT   {81.26, 80.01, 2561, 599.14} // Michel TVRR old
+ //#define DEFAULT_AXIS_STEPS_PER_UNIT   {71.1, 71.1, 2560, 739.65} // Michel TVRR
+ #define DEFAULT_AXIS_STEPS_PER_UNIT   {71.1, 71.1, 2560, 600} // David TVRR
+-#define DEFAULT_MAX_FEEDRATE          {500, 500, 5, 45}    // (mm/sec) David TVRR   
++#define DEFAULT_MAX_FEEDRATE          {500, 500, 5, 45}    // (mm/sec) David TVRR
+ #define DEFAULT_MAX_ACCELERATION      {9000,9000,100,10000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for Skeinforge 40+, for older versions raise them a lot.
+ 
+ /* MICHEL: This has an impact on the "ripples" in print walls */
+@@ -737,7 +737,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
+ //#define LCD_I2C_VIKI
+-  
++
+ // SSD1306 OLED generic display support
+ // ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
+ //#define U8GLIB_SSD1306
+@@ -847,11 +847,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
+ //#define FILAMENT_LCD_DISPLAY
+ 
+-
+-
+-
+-
+-
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index c1c9313..f5b6a7e 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -145,7 +145,7 @@
+ #if ENABLED(Z_DUAL_STEPPER_DRIVERS)
+ 
+   // Z_DUAL_ENDSTOPS is a feature to enable the use of 2 endstops for both Z steppers - Let's call them Z stepper and Z2 stepper.
+-  // That way the machine is capable to align the bed during home, since both Z steppers are homed. 
++  // That way the machine is capable to align the bed during home, since both Z steppers are homed.
+   // There is also an implementation of M666 (software endstops adjustment) to this feature.
+   // After Z homing, this adjustment is applied to just one of the steppers in order to align the bed.
+   // One just need to home the Z axis and measure the distance difference between both Z axis and apply the math: Z adjust = Z - Z2.
+@@ -343,8 +343,8 @@
+   // save 3120 bytes of PROGMEM by commenting out #define USE_BIG_EDIT_FONT
+   // we don't have a big font for Cyrillic, Kana
+   //#define USE_BIG_EDIT_FONT
+- 
+-  // If you have spare 2300Byte of progmem and want to use a 
++
++  // If you have spare 2300Byte of progmem and want to use a
+   // smaller font on the Info-screen uncomment the next line.
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+@@ -466,7 +466,7 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have TMC26X motor drivers. 
++ * enable this section if you have TMC26X motor drivers.
+  * you need to import the TMC26XStepper library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -479,56 +479,56 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+   #define X_MAX_CURRENT 1000  //in mA
+   #define X_SENSE_RESISTOR 91 //in mOhms
+   #define X_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define X2_IS_TMC
+   #define X2_MAX_CURRENT 1000  //in mA
+   #define X2_SENSE_RESISTOR 91 //in mOhms
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y_IS_TMC
+   #define Y_MAX_CURRENT 1000  //in mA
+   #define Y_SENSE_RESISTOR 91 //in mOhms
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Y2_IS_TMC
+   #define Y2_MAX_CURRENT 1000  //in mA
+   #define Y2_SENSE_RESISTOR 91 //in mOhms
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define Y2_MICROSTEPS 16     //number of microsteps
++
+ //#define Z_IS_TMC
+   #define Z_MAX_CURRENT 1000  //in mA
+   #define Z_SENSE_RESISTOR 91 //in mOhms
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define Z2_IS_TMC
+   #define Z2_MAX_CURRENT 1000  //in mA
+   #define Z2_SENSE_RESISTOR 91 //in mOhms
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E0_IS_TMC
+   #define E0_MAX_CURRENT 1000  //in mA
+   #define E0_SENSE_RESISTOR 91 //in mOhms
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  
++
+ //#define E1_IS_TMC
+   #define E1_MAX_CURRENT 1000  //in mA
+   #define E1_SENSE_RESISTOR 91 //in mOhms
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E1_MICROSTEPS 16     //number of microsteps
++
+ //#define E2_IS_TMC
+   #define E2_MAX_CURRENT 1000  //in mA
+   #define E2_SENSE_RESISTOR 91 //in mOhms
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+-  
++  #define E2_MICROSTEPS 16     //number of microsteps
++
+ //#define E3_IS_TMC
+   #define E3_MAX_CURRENT 1000  //in mA
+   #define E3_SENSE_RESISTOR 91 //in mOhms
+-  #define E3_MICROSTEPS 16     //number of microsteps   
++  #define E3_MICROSTEPS 16     //number of microsteps
+ 
+ #endif
+ 
+ /******************************************************************************\
+- * enable this section if you have L6470  motor drivers. 
++ * enable this section if you have L6470  motor drivers.
+  * you need to import the L6470 library into the arduino IDE for this
+  ******************************************************************************/
+ 
+@@ -539,67 +539,64 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ 
+ //#define X_IS_L6470
+   #define X_MICROSTEPS 16     //number of microsteps
+-  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define X2_IS_L6470
+   #define X2_MICROSTEPS 16     //number of microsteps
+-  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define X2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define X2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define X2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y_IS_L6470
+   #define Y_MICROSTEPS 16     //number of microsteps
+-  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Y_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Y2_IS_L6470
+-  #define Y2_MICROSTEPS 16     //number of microsteps 
+-  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Y2_MICROSTEPS 16     //number of microsteps
++  #define Y2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Y2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+-  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall 
+-  
++  #define Y2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
++
+ //#define Z_IS_L6470
+   #define Z_MICROSTEPS 16     //number of microsteps
+-  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define Z2_IS_L6470
+   #define Z2_MICROSTEPS 16     //number of microsteps
+-  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define Z2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define Z2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define Z2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E0_IS_L6470
+   #define E0_MICROSTEPS 16     //number of microsteps
+-  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E0_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E0_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E0_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E1_IS_L6470
+-  #define E1_MICROSTEPS 16     //number of microsteps 
+   #define E1_MICROSTEPS 16     //number of microsteps
+-  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E1_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E1_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E1_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E2_IS_L6470
+-  #define E2_MICROSTEPS 16     //number of microsteps 
+   #define E2_MICROSTEPS 16     //number of microsteps
+-  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E2_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E2_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E2_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ //#define E3_IS_L6470
+-  #define E3_MICROSTEPS 16     //number of microsteps   
+   #define E3_MICROSTEPS 16     //number of microsteps
+-  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high    
++  #define E3_K_VAL 50          // 0 - 255, Higher values, are higher power. Be carefull not to go too high
+   #define E3_OVERCURRENT 2000  //maxc current in mA. If the current goes over this value, the driver will switch off
+   #define E3_STALLCURRENT 1500 //current in mA where the driver will detect a stall
+-  
++
+ #endif
+ 
+ #include "Conditionals.h"
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index 76012d5..5871e22 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -30,15 +30,15 @@
+ 
+ #define _WRITE_C(IO, v)   do { if (v) { \
+                                          CRITICAL_SECTION_START; \
+-                                         {DIO ##  IO ## _WPORT |= MASK(DIO ## IO ## _PIN); }\
++                                         {DIO ##  IO ## _WPORT |= MASK(DIO ## IO ## _PIN); } \
+                                          CRITICAL_SECTION_END; \
+-                                       }\
+-                                       else {\
++                                       } \
++                                       else { \
+                                          CRITICAL_SECTION_START; \
+-                                         {DIO ##  IO ## _WPORT &= ~MASK(DIO ## IO ## _PIN); }\
++                                         {DIO ##  IO ## _WPORT &= ~MASK(DIO ## IO ## _PIN); } \
+                                          CRITICAL_SECTION_END; \
+-                                       }\
+-                                     }\
++                                       } \
++                                     } \
+                                      while (0)
+ 
+ #define _WRITE(IO, v)  do {  if (&(DIO ##  IO ## _RPORT) >= (uint8_t *)0x100) {_WRITE_C(IO, v); } else {_WRITE_NC(IO, v); }; } while (0)
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 8e2d108..b2d9160 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -439,10 +439,12 @@ void check_axes_activity() {
+           // Just starting up fan - run at full power.
+           fan_kick_end = ms + FAN_KICKSTART_TIME;
+           tail_fan_speed = 255;
+-        } else if (fan_kick_end > ms)
++        }
++        else if (fan_kick_end > ms)
+           // Fan still spinning up.
+           tail_fan_speed = 255;
+-        } else {
++        }
++        else {
+           fan_kick_end = 0;
+         }
+     #endif //FAN_KICKSTART_TIME
+diff --git a/Marlin/qr_solve.cpp b/Marlin/qr_solve.cpp
+index f968590..1e085c9 100644
+--- a/Marlin/qr_solve.cpp
++++ b/Marlin/qr_solve.cpp
+@@ -494,7 +494,8 @@ double dnrm2(int n, double x[], int incx)
+         if (scale < absxi) {
+           ssq = 1.0 + ssq * (scale / absxi) * (scale / absxi);
+           scale = absxi;
+-        } else
++        }
++        else
+           ssq = ssq + (absxi / scale) * (absxi / scale);
+       }
+       ix += incx;
+@@ -1023,7 +1024,7 @@ void dqrlss(double a[], int lda, int m, int n, int kr, double b[], double x[],
+ 
+   if (kr != 0) {
+     job = 110;
+-    info = dqrsl(a, lda, m, kr, qraux, b, rsd, rsd, x, rsd, rsd, job);
++    info = dqrsl(a, lda, m, kr, qraux, b, rsd, rsd, x, rsd, rsd, job); UNUSED(info);
+   }
+ 
+   for (i = 0; i < n; i++)
+@@ -1404,7 +1405,8 @@ void dscal(int n, double sa, double x[], int incx)
+       x[i + 3] = sa * x[i + 3];
+       x[i + 4] = sa * x[i + 4];
+     }
+-  } else {
++  }
++  else {
+     if (0 <= incx)
+       ix = 0;
+     else
+@@ -1486,15 +1488,10 @@ void dswap(int n, double x[], int incx, double y[], int incy)
+       x[i + 2] = y[i + 2];
+       y[i + 2] = temp;
+     }
+-  } else {
+-    if (0 <= incx)
+-      ix = 0;
+-    else
+-      ix = (- n + 1) * incx;
+-    if (0 <= incy)
+-      iy = 0;
+-    else
+-      iy = (- n + 1) * incy;
++  }
++  else {
++    ix = (incx >= 0) ? 0 : (-n + 1) * incx;
++    iy = (incy >= 0) ? 0 : (-n + 1) * incy;
+     for (i = 0; i < n; i++) {
+       temp = x[ix];
+       x[ix] = y[iy];
+@@ -1566,7 +1563,7 @@ void qr_solve(double x[], int m, int n, double a[], double b[])
+   tol = r8_epsilon() / r8mat_amax(m, n, a_qr);
+   itask = 1;
+ 
+-  ind = dqrls(a_qr, lda, m, n, tol, &kr, b, x, r, jpvt, qraux, itask);
++  ind = dqrls(a_qr, lda, m, n, tol, &kr, b, x, r, jpvt, qraux, itask); UNUSED(ind);
+ }
+ /******************************************************************************/
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index e5639c5..327b644 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -139,11 +139,13 @@ volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
+       if (Z_HOME_DIR > 0) {\
+         if (!(TEST(old_endstop_bits, Z_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z_motor) Z_STEP_WRITE(v); \
+         if (!(TEST(old_endstop_bits, Z2_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z2_motor) Z2_STEP_WRITE(v); \
+-      } else {\
++      } \
++      else { \
+         if (!(TEST(old_endstop_bits, Z_MIN) && (count_direction[Z_AXIS] < 0)) && !locked_z_motor) Z_STEP_WRITE(v); \
+         if (!(TEST(old_endstop_bits, Z2_MIN) && (count_direction[Z_AXIS] < 0)) && !locked_z2_motor) Z2_STEP_WRITE(v); \
+       } \
+-    } else { \
++    } \
++    else { \
+       Z_STEP_WRITE(v); \
+       Z2_STEP_WRITE(v); \
+     }
+@@ -397,7 +399,7 @@ inline void update_endstops() {
+               COPY_BIT(current_endstop_bits, Z_MIN, Z2_MIN);
+             #endif
+ 
+-            byte z_test = TEST_ENDSTOP(Z_MIN) << 0 + TEST_ENDSTOP(Z2_MIN) << 1; // bit 0 for Z, bit 1 for Z2
++            byte z_test = TEST_ENDSTOP(Z_MIN) | (TEST_ENDSTOP(Z2_MIN) << 1); // bit 0 for Z, bit 1 for Z2
+ 
+             if (z_test && current_block->steps[Z_AXIS] > 0) { // z_test = Z_MIN || Z2_MIN
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+@@ -433,7 +435,7 @@ inline void update_endstops() {
+               COPY_BIT(current_endstop_bits, Z_MAX, Z2_MAX);
+             #endif
+ 
+-            byte z_test = TEST_ENDSTOP(Z_MAX) << 0 + TEST_ENDSTOP(Z2_MAX) << 1; // bit 0 for Z, bit 1 for Z2
++            byte z_test = TEST_ENDSTOP(Z_MAX) | (TEST_ENDSTOP(Z2_MAX) << 1); // bit 0 for Z, bit 1 for Z2
+ 
+             if (z_test && current_block->steps[Z_AXIS] > 0) {  // t_test = Z_MAX || Z2_MAX
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 40d1a4b..3a8c6a8 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -21,11 +21,13 @@
+ #include "Marlin.h"
+ #include "ultralcd.h"
+ #include "temperature.h"
+-#include "watchdog.h"
+ #include "language.h"
+-
+ #include "Sd2PinMap.h"
+ 
++#if ENABLED(USE_WATCHDOG)
++  #include "watchdog.h"
++#endif
++
+ //===========================================================================
+ //================================== macros =================================
+ //===========================================================================
+@@ -207,7 +209,7 @@ void PID_autotune(float temp, int extruder, int ncycles) {
+ 
+   long bias, d;
+   float Ku, Tu;
+-  float Kp, Ki, Kd;
++  float Kp = 0, Ki = 0, Kd = 0;
+   float max = 0, min = 10000;
+ 
+   #if HAS_AUTO_FAN
+@@ -511,7 +513,8 @@ float get_pid_output(int e) {
+             if (e_position > last_position[e]) {
+               lpq[lpq_ptr++] = e_position - last_position[e];
+               last_position[e] = e_position;
+-            } else {
++            }
++            else {
+               lpq[lpq_ptr++] = 0;
+             }
+             if (lpq_ptr >= lpq_len) lpq_ptr = 0;
+@@ -818,8 +821,11 @@ static void updateTemperaturesFromRawValues() {
+   #if HAS_FILAMENT_SENSOR
+     filament_width_meas = analog2widthFil();
+   #endif
+-  //Reset the watchdog after we know we have a temperature measurement.
+-  watchdog_reset();
++
++  #if ENABLED(USE_WATCHDOG)
++    // Reset the watchdog after we know we have a temperature measurement.
++    watchdog_reset();
++  #endif
+ 
+   CRITICAL_SECTION_START;
+   temp_meas_ready = false;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 54c1bfc..1a0ee8a 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -475,53 +475,51 @@ void lcd_set_home_offsets() {
+ #endif //BABYSTEPPING
+ 
+ /**
+- *
+- * "Tune" submenu
+- *
++ * Watch temperature callbacks
+  */
++#if TEMP_SENSOR_0 != 0
++  void watch_temp_callback_E0() { start_watching_heater(0); }
++#endif
++#if EXTRUDERS > 1 && TEMP_SENSOR_1 != 0
++  void watch_temp_callback_E1() { start_watching_heater(1); }
++  #if EXTRUDERS > 2 && TEMP_SENSOR_2 != 0
++    void watch_temp_callback_E2() { start_watching_heater(2); }
++    #if EXTRUDERS > 3 && TEMP_SENSOR_3 != 0
++      void watch_temp_callback_E3() { start_watching_heater(3); }
++    #endif // EXTRUDERS > 3
++  #endif // EXTRUDERS > 2
++#endif // EXTRUDERS > 1
+ 
+-static void lcd_tune_menu() {
+-  START_MENU();
+-
+-  //
+-  // ^ Main
+-  //
+-  MENU_ITEM(back, MSG_MAIN, lcd_main_menu);
+-
+-  //
+-  // Speed:
+-  //
+-  MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_multiplier, 10, 999);
+-
++/**
++ * Items shared between Tune and Temperature menus
++ */
++static void nozzle_bed_fan_menu_items(uint8_t &encoderLine, uint8_t &_lineNr, uint8_t &_drawLineNr, uint8_t &_menuItemNr, bool &wasClicked, bool &itemSelected) {
+   //
+   // Nozzle:
+-  // Nozzle 1:
+-  // Nozzle 2:
+-  // Nozzle 3:
+-  // Nozzle 4:
++  // Nozzle [1-4]:
+   //
+   #if EXTRUDERS == 1
+     #if TEMP_SENSOR_0 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15);
++      MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_NOZZLE, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15, watch_temp_callback_E0);
+     #endif
+   #else //EXTRUDERS > 1
+     #if TEMP_SENSOR_0 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N1, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15);
++      MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_NOZZLE MSG_N1, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15, watch_temp_callback_E0);
+     #endif
+     #if TEMP_SENSOR_1 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N2, &target_temperature[1], 0, HEATER_1_MAXTEMP - 15);
++      MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_NOZZLE MSG_N2, &target_temperature[1], 0, HEATER_1_MAXTEMP - 15, watch_temp_callback_E1);
+     #endif
+     #if EXTRUDERS > 2
+       #if TEMP_SENSOR_2 != 0
+-        MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N3, &target_temperature[2], 0, HEATER_2_MAXTEMP - 15);
++        MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_NOZZLE MSG_N3, &target_temperature[2], 0, HEATER_2_MAXTEMP - 15, watch_temp_callback_E2);
+       #endif
+       #if EXTRUDERS > 3
+         #if TEMP_SENSOR_3 != 0
+-          MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N4, &target_temperature[3], 0, HEATER_3_MAXTEMP - 15);
++          MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_NOZZLE MSG_N4, &target_temperature[3], 0, HEATER_3_MAXTEMP - 15, watch_temp_callback_E3);
+         #endif
+-      #endif //EXTRUDERS > 3
+-    #endif //EXTRUDERS > 2
+-  #endif //EXTRUDERS > 1
++      #endif // EXTRUDERS > 3
++    #endif // EXTRUDERS > 2
++  #endif // EXTRUDERS > 1
+ 
+   //
+   // Bed:
+@@ -534,11 +532,29 @@ static void lcd_tune_menu() {
+   // Fan Speed:
+   //
+   MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
++}
++
++
++/**
++ *
++ * "Tune" submenu
++ *
++ */
++static void lcd_tune_menu() {
++  START_MENU();
+ 
+   //
+-  // Flow:
++  // ^ Main
++  //
++  MENU_ITEM(back, MSG_MAIN, lcd_main_menu);
++
++  //
++  // Speed:
+   //
+-  MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[active_extruder], 10, 999);
++  MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_multiplier, 10, 999);
++
++  // Nozzle, Bed, and Fan Control
++  nozzle_bed_fan_menu_items(encoderLine, _lineNr, _drawLineNr, _menuItemNr, wasClicked, itemSelected);
+ 
+   //
+   // Flow:
+@@ -550,6 +566,7 @@ static void lcd_tune_menu() {
+   #if EXTRUDERS == 1
+     MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[0], 10, 999);
+   #else // EXTRUDERS > 1
++    MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[active_extruder], 10, 999);
+     MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N1, &extruder_multiplier[0], 10, 999);
+     MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N2, &extruder_multiplier[1], 10, 999);
+     #if EXTRUDERS > 2
+@@ -1002,44 +1019,8 @@ static void lcd_control_temperature_menu() {
+   //
+   MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
+ 
+-  //
+-  // Nozzle
+-  // Nozzle 1, Nozzle 2, Nozzle 3, Nozzle 4
+-  //
+-  #if EXTRUDERS == 1
+-    #if TEMP_SENSOR_0 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15);
+-    #endif
+-  #else //EXTRUDERS > 1
+-    #if TEMP_SENSOR_0 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N1, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15);
+-    #endif
+-    #if TEMP_SENSOR_1 != 0
+-      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N2, &target_temperature[1], 0, HEATER_1_MAXTEMP - 15);
+-    #endif
+-    #if EXTRUDERS > 2
+-      #if TEMP_SENSOR_2 != 0
+-        MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N3, &target_temperature[2], 0, HEATER_2_MAXTEMP - 15);
+-      #endif
+-      #if EXTRUDERS > 3
+-        #if TEMP_SENSOR_3 != 0
+-          MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_NOZZLE MSG_N4, &target_temperature[3], 0, HEATER_3_MAXTEMP - 15);
+-        #endif
+-      #endif // EXTRUDERS > 3
+-    #endif // EXTRUDERS > 2
+-  #endif // EXTRUDERS > 1
+-
+-  //
+-  // Bed
+-  //
+-  #if TEMP_SENSOR_BED != 0
+-    MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_BED, &target_temperature_bed, 0, BED_MAXTEMP - 15);
+-  #endif
+-
+-  //
+-  // Fan Speed
+-  //
+-  MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
++  // Nozzle, Bed, and Fan Control
++  nozzle_bed_fan_menu_items(encoderLine, _lineNr, _drawLineNr, _menuItemNr, wasClicked, itemSelected);
+ 
+   //
+   // Autotemp, Min, Max, Fact
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 6c2828c..ccb09b4 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -716,8 +716,8 @@ static void lcd_implementation_status_screen() {
+       lcd.print(ftostr12ns(filament_width_meas));
+       lcd_printPGM(PSTR(" V"));
+       lcd.print(itostr3(100.0 * volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]));
+-  	  lcd.print('%');
+-  	  return;
++      lcd.print('%');
++      return;
+     }
+ 
+   #endif // FILAMENT_LCD_DISPLAY
+diff --git a/Marlin/utf_mapper.h b/Marlin/utf_mapper.h
+index 7642536..6367be6 100644
+--- a/Marlin/utf_mapper.h
++++ b/Marlin/utf_mapper.h
+@@ -123,14 +123,17 @@
+ #endif // SIMULATE_ROMFONT
+ 
+ #if ENABLED(MAPPER_NON)
+-  char charset_mapper(char c){
++
++  char charset_mapper(char c) {
+     HARDWARE_CHAR_OUT( c );
+     return 1;
+   }
++
+ #elif ENABLED(MAPPER_C2C3)
+-  uint8_t utf_hi_char; // UTF-8 high part
+-  bool seen_c2 = false;
+-  char charset_mapper(char c){
++
++  char charset_mapper(char c) {
++    static uint8_t utf_hi_char; // UTF-8 high part
++    static bool seen_c2 = false;
+     uint8_t d = c;
+     if ( d >= 0x80 ) { // UTF-8 handling
+       if ( (d >= 0xc0) && (!seen_c2) ) {
+@@ -138,16 +141,16 @@
+         seen_c2 = true;
+         return 0;
+       }
+-      else if (seen_c2){
++      else if (seen_c2) {
+         d &= 0x3f;
+         #ifndef MAPPER_ONE_TO_ONE
+-          HARDWARE_CHAR_OUT( (char) pgm_read_byte_near( utf_recode + d + ( utf_hi_char << 6 ) - 0x20 ) );
++          HARDWARE_CHAR_OUT((char)pgm_read_byte_near(utf_recode + d + (utf_hi_char << 6) - 0x20));
+         #else
+-          HARDWARE_CHAR_OUT( (char) (0x80 + ( utf_hi_char << 6 ) + d) ) ;
++          HARDWARE_CHAR_OUT((char)(0x80 + (utf_hi_char << 6) + d)) ;
+         #endif
+       }
+       else {
+-          HARDWARE_CHAR_OUT('?');
++        HARDWARE_CHAR_OUT('?');
+       }
+     }
+     else {
+@@ -156,96 +159,116 @@
+     seen_c2 = false;
+     return 1;
+   }
++
+ #elif ENABLED(MAPPER_D0D1_MOD)
+-  uint8_t utf_hi_char; // UTF-8 high part
+-  bool seen_d5 = false;
+-  char charset_mapper(char c){
++
++  char charset_mapper(char c) {
+     // it is a Russian alphabet translation
+     // except 0401 --> 0xa2 = Ё, 0451 --> 0xb5 = ё
++    static uint8_t utf_hi_char; // UTF-8 high part
++    static bool seen_d5 = false;
+     uint8_t d = c;
+-    if ( d >= 0x80 ) { // UTF-8 handling
+-      if ((d >= 0xd0) && (!seen_d5)) {
++    if (d >= 0x80) { // UTF-8 handling
++      if (d >= 0xd0 && !seen_d5) {
+         utf_hi_char = d - 0xd0;
+         seen_d5 = true;
+         return 0;
+-      } else if (seen_d5) {
+-          d &= 0x3f;
+-          if ( !utf_hi_char && ( d == 1 )) {
+-            HARDWARE_CHAR_OUT((char) 0xa2 ); // Ё
+-        } else if ((utf_hi_char == 1) && (d == 0x11)) {
+-            HARDWARE_CHAR_OUT((char) 0xb5 ); // ё
+-          } else {
+-            HARDWARE_CHAR_OUT((char) pgm_read_byte_near( utf_recode + d + ( utf_hi_char << 6 ) - 0x10 ) );
+-          }
++      }
++      else if (seen_d5) {
++        d &= 0x3f;
++        if (!utf_hi_char && d == 1) {
++          HARDWARE_CHAR_OUT((char) 0xa2); // Ё
++        }
++        else if (utf_hi_char == 1 && d == 0x11) {
++          HARDWARE_CHAR_OUT((char)0xb5); // ё
+         }
+         else {
+-          HARDWARE_CHAR_OUT('?');
++          HARDWARE_CHAR_OUT((char)pgm_read_byte_near(utf_recode + d + (utf_hi_char << 6) - 0x10));
+         }
+-    } else {
++      }
++      else {
++        HARDWARE_CHAR_OUT('?');
++      }
++    }
++    else {
+       HARDWARE_CHAR_OUT((char) c );
+     }
+     seen_d5 = false;
+     return 1;
+   }
++
+ #elif ENABLED(MAPPER_D0D1)
+-  uint8_t utf_hi_char; // UTF-8 high part
+-  bool seen_d5 = false;
++
+   char charset_mapper(char c) {
++    static uint8_t utf_hi_char; // UTF-8 high part
++    static bool seen_d5 = false;
+     uint8_t d = c;
+-    if ( d >= 0x80u ) { // UTF-8 handling
+-      if ((d >= 0xd0u) && (!seen_d5)) {
++    if (d >= 0x80u) { // UTF-8 handling
++      if (d >= 0xd0u && !seen_d5) {
+         utf_hi_char = d - 0xd0u;
+         seen_d5 = true;
+         return 0;
+-      } else if (seen_d5) {
+-          d &= 0x3fu;
++      }
++      else if (seen_d5) {
++        d &= 0x3fu;
+         #ifndef MAPPER_ONE_TO_ONE
+-          HARDWARE_CHAR_OUT( (char) pgm_read_byte_near( utf_recode + d + ( utf_hi_char << 6 ) - 0x20 ) );
++          HARDWARE_CHAR_OUT((char)pgm_read_byte_near(utf_recode + d + (utf_hi_char << 6) - 0x20));
+         #else
+-          HARDWARE_CHAR_OUT( (char) (0xa0u + ( utf_hi_char << 6 ) + d ) ) ;
++          HARDWARE_CHAR_OUT((char)(0xa0u + (utf_hi_char << 6) + d)) ;
+         #endif
+-      } else {
++      }
++      else {
+         HARDWARE_CHAR_OUT('?');
+       }
+-    } else {
++    }
++    else {
+       HARDWARE_CHAR_OUT((char) c );
+     }
+     seen_d5 = false;
+     return 1;
+   }
++
+ #elif ENABLED(MAPPER_E382E383)
+-  uint8_t utf_hi_char; // UTF-8 high part
+-  bool seen_e3 = false;
+-  bool seen_82_83 = false;
+-  char charset_mapper(char c){
++
++  char charset_mapper(char c) {
++    static uint8_t utf_hi_char; // UTF-8 high part
++    static bool seen_e3 = false;
++    static bool seen_82_83 = false;
+     uint8_t d = c;
+-    if ( d >= 0x80 ) { // UTF-8 handling
+-      if ( (d == 0xe3) && (seen_e3 == false)) {
++    if (d >= 0x80) { // UTF-8 handling
++      if (d == 0xe3 && !seen_e3) {
+         seen_e3 = true;
+         return 0;      // eat 0xe3
+-      } else if ( (d >= 0x82) && (seen_e3 == true) && (seen_82_83 == false)) {
++      }
++      else if (d >= 0x82 && seen_e3 && !seen_82_83) {
+         utf_hi_char = d - 0x82;
+         seen_82_83 = true;
+         return 0;
+-      } else if ((seen_e3 == true) && (seen_82_83 == true)){
++      }
++      else if (seen_e3 && seen_82_83) {
+         d &= 0x3f;
+         #ifndef MAPPER_ONE_TO_ONE
+-          HARDWARE_CHAR_OUT( (char) pgm_read_byte_near( utf_recode + d + ( utf_hi_char << 6 ) - 0x20 ) );
++          HARDWARE_CHAR_OUT((char)pgm_read_byte_near(utf_recode + d + (utf_hi_char << 6) - 0x20));
+         #else
+-          HARDWARE_CHAR_OUT( (char) (0x80 + ( utf_hi_char << 6 ) + d ) ) ;
++          HARDWARE_CHAR_OUT((char)(0x80 + (utf_hi_char << 6) + d)) ;
+         #endif
+-      } else {
++      }
++      else {
+         HARDWARE_CHAR_OUT((char) '?' );
+       }
+-    } else {
++    }
++    else {
+       HARDWARE_CHAR_OUT((char) c );
+     }
+     seen_e3 = false;
+     seen_82_83 = false;
+     return 1;
+   }
++
+ #else
++
+   #error "You have to define one of the DISPLAY_INPUT_CODE_MAPPERs in your language_xx.h file" // should not occur because (en) will set.
++
+ #endif // code mappers
+ 
+ #endif // UTF_MAPPER_H
+diff --git a/Marlin/watchdog.cpp b/Marlin/watchdog.cpp
+index c30cb54..e763279 100644
+--- a/Marlin/watchdog.cpp
++++ b/Marlin/watchdog.cpp
+@@ -1,25 +1,14 @@
+ #include "Marlin.h"
+ 
+ #if ENABLED(USE_WATCHDOG)
+-#include <avr/wdt.h>
+ 
+ #include "watchdog.h"
+-#include "ultralcd.h"
+ 
+-//===========================================================================
+-//============================ private variables ============================
+-//===========================================================================
+-
+-//===========================================================================
+-//================================ functions ================================
+-//===========================================================================
+-
+-
+-/// intialise watch dog with a 4 sec interrupt time
++// Initialize watchdog with a 4 sec interrupt time
+ void watchdog_init() {
+   #if ENABLED(WATCHDOG_RESET_MANUAL)
+-    //We enable the watchdog timer, but only for the interrupt.
+-    //Take care, as this requires the correct order of operation, with interrupts disabled. See the datasheet of any AVR chip for details.
++    // We enable the watchdog timer, but only for the interrupt.
++    // Take care, as this requires the correct order of operation, with interrupts disabled. See the datasheet of any AVR chip for details.
+     wdt_reset();
+     _WD_CONTROL_REG = _BV(_WD_CHANGE_BIT) | _BV(WDE);
+     _WD_CONTROL_REG = _BV(WDIE) | WDTO_4S;
+@@ -28,23 +17,18 @@ void watchdog_init() {
+   #endif
+ }
+ 
+-/// reset watchdog. MUST be called every 1s after init or avr will reset.
+-void watchdog_reset() {
+-  wdt_reset();
+-}
+-
+ //===========================================================================
+ //=================================== ISR ===================================
+ //===========================================================================
+ 
+-//Watchdog timer interrupt, called if main program blocks >1sec and manual reset is enabled.
++// Watchdog timer interrupt, called if main program blocks >1sec and manual reset is enabled.
+ #if ENABLED(WATCHDOG_RESET_MANUAL)
+-ISR(WDT_vect) {
+-  SERIAL_ERROR_START;
+-  SERIAL_ERRORLNPGM("Something is wrong, please turn off the printer.");
+-  kill(PSTR("ERR:Please Reset")); //kill blocks //16 characters so it fits on a 16x2 display
+-  while (1); //wait for user or serial reset
+-}
+-#endif//RESET_MANUAL
+-
+-#endif//USE_WATCHDOG
++  ISR(WDT_vect) {
++    SERIAL_ERROR_START;
++    SERIAL_ERRORLNPGM("Something is wrong, please turn off the printer.");
++    kill(PSTR("ERR:Please Reset")); //kill blocks //16 characters so it fits on a 16x2 display
++    while (1); //wait for user or serial reset
++  }
++#endif //WATCHDOG_RESET_MANUAL
++
++#endif //USE_WATCHDOG
+diff --git a/Marlin/watchdog.h b/Marlin/watchdog.h
+index 6416f13..c8a671f 100644
+--- a/Marlin/watchdog.h
++++ b/Marlin/watchdog.h
+@@ -2,16 +2,13 @@
+ #define WATCHDOG_H
+ 
+ #include "Marlin.h"
++#include <avr/wdt.h>
+ 
+-#if ENABLED(USE_WATCHDOG)
+-  // initialize watch dog with a 1 sec interrupt time
+-  void watchdog_init();
+-  // pad the dog/reset watchdog. MUST be called at least every second after the first watchdog_init or AVR will go into emergency procedures..
+-  void watchdog_reset();
+-#else
+-  //If we do not have a watchdog, then we can have empty functions which are optimized away.
+-  FORCE_INLINE void watchdog_init() {};
+-  FORCE_INLINE void watchdog_reset() {};
+-#endif
++// Initialize watchdog with a 4 second interrupt time
++void watchdog_init();
++
++// Reset watchdog. MUST be called at least every 4 seconds after the
++// first watchdog_init or AVR will go into emergency procedures.
++inline void watchdog_reset() { wdt_reset(); }
+ 
+ #endif
+

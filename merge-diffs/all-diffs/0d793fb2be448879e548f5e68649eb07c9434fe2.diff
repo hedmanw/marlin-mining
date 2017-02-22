@@ -1,0 +1,233 @@
+commit 0d793fb2be448879e548f5e68649eb07c9434fe2 (from 663d2463dcf2504866c72dd463c90260ffede8f5)
+Merge: 663d246 664b299
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jun 2 17:25:51 2016 -0700
+
+    Merge pull request #3939 from thinkyhead/rc_resume_get_position
+    
+    set_current_position_from_planner() after stepper.quick_stop()
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index d5bd54f..ab85ab5 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -227,6 +227,10 @@ void reset_bed_level();
+ void prepare_move();
+ void kill(const char*);
+ 
++#if DISABLED(DELTA) && DISABLED(SCARA)
++  void set_current_position_from_planner();
++#endif
++
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+   void handle_filament_runout();
+ #endif
+@@ -253,6 +257,7 @@ inline bool IsStopped() { return !Running; }
+ bool enqueue_and_echo_command(const char* cmd, bool say_ok=false); //put a single ASCII command at the end of the current buffer or return false when it is full
+ void enqueue_and_echo_command_now(const char* cmd); // enqueue now, only return when the command has been enqueued
+ void enqueue_and_echo_commands_P(const char* cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
++void clear_command_queue();
+ 
+ void clamp_to_software_endstops(float target[3]);
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 6ddd0d2..1feb42d 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -552,7 +552,7 @@ static void report_current_position();
+       if (DEBUGGING(LEVELING)) DEBUG_POS("sync_plan_position_delta", current_position);
+     #endif
+     calculate_delta(current_position);
+-    planner.set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
++    planner.set_position_mm(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
+   }
+ #endif
+ 
+@@ -613,6 +613,11 @@ void enqueue_and_echo_commands_P(const char* pgcode) {
+   drain_queued_commands_P(); // first command executed asap (when possible)
+ }
+ 
++void clear_command_queue() {
++  cmd_queue_index_r = cmd_queue_index_w;
++  commands_in_queue = 0;
++}
++
+ /**
+  * Once a new command is in the ring buffer, call this to commit it
+  */
+@@ -1448,9 +1453,9 @@ inline void sync_plan_position() {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("sync_plan_position", current_position);
+   #endif
+-  planner.set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++  planner.set_position_mm(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ }
+-inline void sync_plan_position_e() { planner.set_e_position(current_position[E_AXIS]); }
++inline void sync_plan_position_e() { planner.set_e_position_mm(current_position[E_AXIS]); }
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
+@@ -1607,7 +1612,7 @@ static void setup_for_endstop_move() {
+ 
+       // Tell the planner where we ended up - Get this from the stepper handler
+       zPosition = stepper.get_axis_position_mm(Z_AXIS);
+-      planner.set_position(
++      planner.set_position_mm(
+         current_position[X_AXIS], current_position[Y_AXIS], zPosition,
+         current_position[E_AXIS]
+       );
+@@ -3593,7 +3598,7 @@ inline void gcode_G28() {
+          * Get the current Z position and send it to the planner.
+          *
+          * >> (z_tmp - real_z) : The rotated current Z minus the uncorrected Z
+-         * (most recent planner.set_position/sync_plan_position)
++         * (most recent planner.set_position_mm/sync_plan_position)
+          *
+          * >> zprobe_zoffset : Z distance from nozzle to Z probe
+          * (set by default, M851, EEPROM, or Menu)
+@@ -5889,13 +5894,35 @@ inline void gcode_M400() { stepper.synchronize(); }
+ 
+ #endif // FILAMENT_WIDTH_SENSOR
+ 
++#if DISABLED(DELTA) && DISABLED(SCARA)
++  void set_current_position_from_planner() {
++    stepper.synchronize();
++    #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++      vector_3 pos = planner.adjusted_position(); // values directly from steppers...
++      current_position[X_AXIS] = pos.x;
++      current_position[Y_AXIS] = pos.y;
++      current_position[Z_AXIS] = pos.z;
++    #else
++      current_position[X_AXIS] = stepper.get_axis_position_mm(X_AXIS);
++      current_position[Y_AXIS] = stepper.get_axis_position_mm(Y_AXIS);
++      current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
++    #endif
++    sync_plan_position();                       // ...re-apply to planner position
++  }
++#endif
++
+ /**
+  * M410: Quickstop - Abort all planned moves
+  *
+  * This will stop the carriages mid-move, so most likely they
+  * will be out of sync with the stepper position after this.
+  */
+-inline void gcode_M410() { stepper.quick_stop(); }
++inline void gcode_M410() {
++  stepper.quick_stop();
++  #if DISABLED(DELTA) && DISABLED(SCARA)
++    set_current_position_from_planner();
++  #endif
++}
+ 
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+@@ -7436,7 +7463,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+     if (active_extruder_parked) {
+       if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && active_extruder == 0) {
+         // move duplicate extruder into correct duplication position.
+-        planner.set_position(inactive_extruder_x_pos, current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++        planner.set_position_mm(inactive_extruder_x_pos, current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+         planner.buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset,
+                          current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate[X_AXIS], 1);
+         sync_plan_position();
+@@ -7989,7 +8016,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+                          (EXTRUDER_RUNOUT_SPEED) / 60. * (EXTRUDER_RUNOUT_ESTEPS) / planner.axis_steps_per_unit[E_AXIS], active_extruder);
+       current_position[E_AXIS] = oldepos;
+       destination[E_AXIS] = oldedes;
+-      planner.set_e_position(oldepos);
++      planner.set_e_position_mm(oldepos);
+       previous_cmd_ms = ms; // refresh_cmd_timeout()
+       stepper.synchronize();
+       switch (active_extruder) {
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index f5dea69..945b615 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -187,6 +187,9 @@ void Endstops::report_state() {
+         card.sdprinting = false;
+         card.closefile();
+         stepper.quick_stop();
++        #if DISABLED(DELTA) && DISABLED(SCARA)
++          set_current_position_from_planner();
++        #endif
+         thermalManager.disable_all_heaters(); // switch off all heaters.
+       }
+     #endif
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 3627f27..d38f2d3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -1114,9 +1114,9 @@ void Planner::check_axes_activity() {
+  * On CORE machines stepper ABC will be translated from the given XYZ.
+  */
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(MESH_BED_LEVELING)
+-  void Planner::set_position(float x, float y, float z, const float& e)
++  void Planner::set_position_mm(float x, float y, float z, const float& e)
+ #else
+-  void Planner::set_position(const float& x, const float& y, const float& z, const float& e)
++  void Planner::set_position_mm(const float& x, const float& y, const float& z, const float& e)
+ #endif // AUTO_BED_LEVELING_FEATURE || MESH_BED_LEVELING
+   {
+     #if ENABLED(MESH_BED_LEVELING)
+@@ -1138,7 +1138,7 @@ void Planner::check_axes_activity() {
+ /**
+  * Directly set the planner E position (hence the stepper E position).
+  */
+-void Planner::set_e_position(const float& e) {
++void Planner::set_e_position_mm(const float& e) {
+   position[E_AXIS] = lround(e * axis_steps_per_unit[E_AXIS]);
+   stepper.set_e_position(position[E_AXIS]);
+ }
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index b263e2d..96e580d 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -216,19 +216,19 @@ class Planner {
+        *
+        * Clears previous speed values.
+        */
+-      static void set_position(float x, float y, float z, const float& e);
++      static void set_position_mm(float x, float y, float z, const float& e);
+ 
+     #else
+ 
+       static void buffer_line(const float& x, const float& y, const float& z, const float& e, float feed_rate, const uint8_t extruder);
+-      static void set_position(const float& x, const float& y, const float& z, const float& e);
++      static void set_position_mm(const float& x, const float& y, const float& z, const float& e);
+ 
+     #endif // AUTO_BED_LEVELING_FEATURE || MESH_BED_LEVELING
+ 
+     /**
+      * Set the E position (mm) of the planner (and the E stepper)
+      */
+-    static void set_e_position(const float& e);
++    static void set_e_position_mm(const float& e);
+ 
+     /**
+      * Does the buffer have any blocks queued?
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 98b5fa6..1a0071d 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -482,6 +482,10 @@ inline void line_to_current(AxisEnum axis) {
+ 
+   static void lcd_sdcard_stop() {
+     stepper.quick_stop();
++    #if DISABLED(DELTA) && DISABLED(SCARA)
++      set_current_position_from_planner();
++    #endif
++    clear_command_queue();
+     card.sdprinting = false;
+     card.closefile();
+     print_job_timer.stop();
+@@ -1037,7 +1041,7 @@ void lcd_cooldown() {
+     if (LCD_CLICKED) {
+       _lcd_level_bed_position = 0;
+       current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+-      planner.set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++      planner.set_position_mm(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       lcd_goto_menu(_lcd_level_goto_next_point, true);
+     }
+   }
+

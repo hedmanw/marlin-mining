@@ -1,0 +1,296 @@
+commit fef0e8ba869e648ceba1196e39d42066095705c5 (from 9e5d5a3b7c886710a10d6e0d391e4a30d28a41e2)
+Merge: 9e5d5a3 192ac2d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 12 04:09:22 2016 -0700
+
+    Merge pull request #4610 from thinkyhead/rc_sd_pause_and_stop
+    
+    Fix stopSDPrint so it works when paused
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 9579d3d..28c3250 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -60,35 +60,34 @@
+   #include "stopwatch.h"
+ #endif
+ 
+-#define SERIAL_CHAR(x) MYSERIAL.write(x)
+-#define SERIAL_EOL SERIAL_CHAR('\n')
+-
+-#define SERIAL_PROTOCOLCHAR(x) SERIAL_CHAR(x)
+-#define SERIAL_PROTOCOL(x) MYSERIAL.print(x)
+-#define SERIAL_PROTOCOL_F(x,y) MYSERIAL.print(x,y)
+-#define SERIAL_PROTOCOLPGM(x) serialprintPGM(PSTR(x))
+-#define SERIAL_PROTOCOLLN(x) do{ MYSERIAL.print(x); SERIAL_EOL; }while(0)
+-#define SERIAL_PROTOCOLLNPGM(x) do{ serialprintPGM(PSTR(x "\n")); }while(0)
+-
+-#define SERIAL_PROTOCOLPAIR(name, value) SERIAL_ECHOPAIR(name, value)
+-#define SERIAL_PROTOCOLLNPAIR(name, value) do{ SERIAL_ECHOPAIR(name, value); SERIAL_EOL; }while(0)
+-
+-extern const char errormagic[] PROGMEM;
+ extern const char echomagic[] PROGMEM;
++extern const char errormagic[] PROGMEM;
+ 
+-#define SERIAL_ERROR_START serialprintPGM(errormagic)
+-#define SERIAL_ERROR(x) SERIAL_PROTOCOL(x)
+-#define SERIAL_ERRORPGM(x) SERIAL_PROTOCOLPGM(x)
+-#define SERIAL_ERRORLN(x) SERIAL_PROTOCOLLN(x)
+-#define SERIAL_ERRORLNPGM(x) SERIAL_PROTOCOLLNPGM(x)
+-
+-#define SERIAL_ECHO_START serialprintPGM(echomagic)
+-#define SERIAL_ECHO(x) SERIAL_PROTOCOL(x)
+-#define SERIAL_ECHOPGM(x) SERIAL_PROTOCOLPGM(x)
+-#define SERIAL_ECHOLN(x) SERIAL_PROTOCOLLN(x)
+-#define SERIAL_ECHOLNPGM(x) SERIAL_PROTOCOLLNPGM(x)
++#define SERIAL_CHAR(x) (MYSERIAL.write(x))
++#define SERIAL_EOL SERIAL_CHAR('\n')
+ 
+-#define SERIAL_ECHOPAIR(name,value) (serial_echopair_P(PSTR(name),(value)))
++#define SERIAL_PROTOCOLCHAR(x)              SERIAL_CHAR(x)
++#define SERIAL_PROTOCOL(x)                  (MYSERIAL.print(x))
++#define SERIAL_PROTOCOL_F(x,y)              (MYSERIAL.print(x,y))
++#define SERIAL_PROTOCOLPGM(x)               (serialprintPGM(PSTR(x)))
++#define SERIAL_PROTOCOLLN(x)                do{ MYSERIAL.print(x); SERIAL_EOL; }while(0)
++#define SERIAL_PROTOCOLLNPGM(x)             (serialprintPGM(PSTR(x "\n")))
++#define SERIAL_PROTOCOLPAIR(name, value)    (serial_echopair_P(PSTR(name),(value)))
++#define SERIAL_PROTOCOLLNPAIR(name, value)  do{ SERIAL_PROTOCOLPAIR(name, value); SERIAL_EOL; }while(0)
++
++#define SERIAL_ECHO_START             (serialprintPGM(echomagic))
++#define SERIAL_ECHO(x)                 SERIAL_PROTOCOL(x)
++#define SERIAL_ECHOPGM(x)              SERIAL_PROTOCOLPGM(x)
++#define SERIAL_ECHOLN(x)               SERIAL_PROTOCOLLN(x)
++#define SERIAL_ECHOLNPGM(x)            SERIAL_PROTOCOLLNPGM(x)
++#define SERIAL_ECHOPAIR(name,value)    SERIAL_PROTOCOLPAIR(name, value)
++#define SERIAL_ECHOLNPAIR(name, value) SERIAL_PROTOCOLLNPAIR(name, value)
++
++#define SERIAL_ERROR_START            (serialprintPGM(errormagic))
++#define SERIAL_ERROR(x)                SERIAL_PROTOCOL(x)
++#define SERIAL_ERRORPGM(x)             SERIAL_PROTOCOLPGM(x)
++#define SERIAL_ERRORLN(x)              SERIAL_PROTOCOLLN(x)
++#define SERIAL_ERRORLNPGM(x)           SERIAL_PROTOCOLLNPGM(x)
+ 
+ void serial_echopair_P(const char* s_P, const char *v);
+ void serial_echopair_P(const char* s_P, char v);
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index a0cdadc..319665a 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -32,12 +32,9 @@
+ #if ENABLED(SDSUPPORT)
+ 
+ CardReader::CardReader() {
++  sdprinting = cardOK = saving = logging = false;
+   filesize = 0;
+   sdpos = 0;
+-  sdprinting = false;
+-  cardOK = false;
+-  saving = false;
+-  logging = false;
+   workDirDepth = 0;
+   file_subcall_ctr = 0;
+   memset(workDirParents, 0, sizeof(workDirParents));
+@@ -276,19 +273,12 @@ void CardReader::openAndPrintFile(const char *name) {
+ }
+ 
+ void CardReader::startFileprint() {
+-  if (cardOK)
+-    sdprinting = true;
+-}
+-
+-void CardReader::pauseSDPrint() {
+-  if (sdprinting) sdprinting = false;
++  if (cardOK) sdprinting = true;
+ }
+ 
+ void CardReader::stopSDPrint() {
+-  if (sdprinting) {
+-    sdprinting = false;
+-    file.close();
+-  }
++  sdprinting = false;
++  if (isFileOpen()) file.close();
+ }
+ 
+ void CardReader::openLogFile(char* name) {
+@@ -310,8 +300,11 @@ void CardReader::getAbsFilename(char *t) {
+ }
+ 
+ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
++
+   if (!cardOK) return;
+-  if (file.isOpen()) { //replacing current file by new file, or subfile call
++
++  uint8_t doing = 0;
++  if (isFileOpen()) { //replacing current file by new file, or subfile call
+     if (push_current) {
+       if (file_subcall_ctr > SD_PROCEDURE_DEPTH - 1) {
+         SERIAL_ERROR_START;
+@@ -321,40 +314,39 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+         return;
+       }
+ 
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPGM("SUBROUTINE CALL target:\"");
+-      SERIAL_ECHO(name);
+-      SERIAL_ECHOPGM("\" parent:\"");
+-
+-      //store current filename and position
++      // Store current filename and position
+       getAbsFilename(proc_filenames[file_subcall_ctr]);
+ 
+-      SERIAL_ECHO(proc_filenames[file_subcall_ctr]);
+-      SERIAL_ECHOPGM("\" pos");
+-      SERIAL_ECHOLN(sdpos);
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("SUBROUTINE CALL target:\"", name);
++      SERIAL_ECHOPAIR("\" parent:\"", proc_filenames[file_subcall_ctr]);
++      SERIAL_ECHOLNPAIR("\" pos", sdpos);
+       filespos[file_subcall_ctr] = sdpos;
+       file_subcall_ctr++;
+     }
+     else {
+-     SERIAL_ECHO_START;
+-     SERIAL_ECHOPGM("Now doing file: ");
+-     SERIAL_ECHOLN(name);
++      doing = 1;
+     }
+-    file.close();
+   }
+-  else { //opening fresh file
+-    file_subcall_ctr = 0; //resetting procedure depth in case user cancels print while in procedure
++  else { // Opening fresh file
++    doing = 2;
++    file_subcall_ctr = 0; // Reset procedure depth in case user cancels print while in procedure
++  }
++
++  if (doing) {
+     SERIAL_ECHO_START;
+-    SERIAL_ECHOPGM("Now fresh file: ");
+-    SERIAL_ECHOLN(name);
++    SERIAL_ECHOPGM("Now ");
++    SERIAL_ECHO(doing == 1 ? "doing" : "fresh");
++    SERIAL_ECHOLNPAIR(" file: ", name);
+   }
+-  sdprinting = false;
++
++  stopSDPrint();
+ 
+   SdFile myDir;
+   curDir = &root;
+   char *fname = name;
+-
+   char *dirname_start, *dirname_end;
++
+   if (name[0] == '/') {
+     dirname_start = &name[1];
+     while (dirname_start != NULL) {
+@@ -425,8 +417,7 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+ void CardReader::removeFile(char* name) {
+   if (!cardOK) return;
+ 
+-  file.close();
+-  sdprinting = false;
++  stopSDPrint();
+ 
+   SdFile myDir;
+   curDir = &root;
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 8c22e58..b0ed92b 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -51,7 +51,6 @@ public:
+   void release();
+   void openAndPrintFile(const char *name);
+   void startFileprint();
+-  void pauseSDPrint();
+   void stopSDPrint();
+   void getStatus();
+   void printingHasFinished();
+@@ -70,6 +69,7 @@ public:
+   void updir();
+   void setroot();
+ 
++  FORCE_INLINE void pauseSDPrint() { sdprinting = false; }
+   FORCE_INLINE bool isFileOpen() { return file.isOpen(); }
+   FORCE_INLINE bool eof() { return sdpos >= filesize; }
+   FORCE_INLINE int16_t get() { sdpos = file.curPosition(); return (int16_t)file.read(); }
+
+commit fef0e8ba869e648ceba1196e39d42066095705c5 (from 192ac2dfd759da68c8333559de8568b8f0416aba)
+Merge: 9e5d5a3 192ac2d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 12 04:09:22 2016 -0700
+
+    Merge pull request #4610 from thinkyhead/rc_sd_pause_and_stop
+    
+    Fix stopSDPrint so it works when paused
+
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index 51baa41..ee2e6f1 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -46,7 +46,7 @@
+ #define MSG_AUTO_HOME_Y                     "Home asse Y"
+ #define MSG_AUTO_HOME_Z                     "Home asse Z"
+ #define MSG_LEVEL_BED_HOMING                "Home assi XYZ"
+-#define MSG_LEVEL_BED_WAITING               "Premi per Iniziare"
++#define MSG_LEVEL_BED_WAITING               "Premi per iniziare"
+ #define MSG_LEVEL_BED_NEXT_POINT            "Punto successivo"
+ #define MSG_LEVEL_BED_DONE                  "Livel. terminato!"
+ #define MSG_LEVEL_BED_CANCEL                "Annulla"
+@@ -77,11 +77,19 @@
+ #define MSG_MOVE_01MM                       "Muovi di 0.1mm"
+ #define MSG_MOVE_1MM                        "Muovi di   1mm"
+ #define MSG_MOVE_10MM                       "Muovi di  10mm"
+-#define MSG_SPEED                           "Velocità"
++#if ENABLED(DOGLCD)
++  #define MSG_SPEED                         "Velocità"
++#else
++  #define MSG_SPEED                         "Velocita"
++#endif
+ #define MSG_BED_Z                           "piatto Z"
+ #define MSG_NOZZLE                          "Ugello"
+ #define MSG_BED                             "Piatto"
+-#define MSG_FAN_SPEED                       "Velocità ventola"
++#if ENABLED(DOGLCD)
++  #define MSG_FAN_SPEED                     "Velocità ventola"
++#else
++  #define MSG_FAN_SPEED                     "Velocita ventola"
++#endif
+ #define MSG_FLOW                            "Flusso"
+ #define MSG_CONTROL                         "Controllo"
+ #define MSG_MIN                             LCD_STR_THERMOMETER " Min"
+@@ -147,7 +155,7 @@
+ #define MSG_CNG_SDCARD                      "Cambia SD-Card"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+ #define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+-#define MSG_FIRST                           "first"
++#define MSG_FIRST                           "prima"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+@@ -186,13 +194,21 @@
+   #define MSG_INFO_PRINT_COUNT              "Contat. stampa"
+   #define MSG_INFO_COMPLETED_PRINTS         "Completati"
+   #define MSG_INFO_PRINT_TIME               "Tempo totale"
+-  #define MSG_INFO_PRINT_LONGEST            "Lavoro piu lungo"
++  #if ENABLED(DOGLCD)
++    #define MSG_INFO_PRINT_LONGEST          "Lavoro più lungo"
++  #else
++    #define MSG_INFO_PRINT_LONGEST          "Lavoro piu lungo"
++  #endif
+   #define MSG_INFO_PRINT_FILAMENT           "Totale estruso"
+ #else
+   #define MSG_INFO_PRINT_COUNT              "Stampe"
+   #define MSG_INFO_COMPLETED_PRINTS         "Completati"
+   #define MSG_INFO_PRINT_TIME               "Durata"
+-  #define MSG_INFO_PRINT_LONGEST            "Piu lungo"
++  #if ENABLED(DOGLCD)
++    #define MSG_INFO_PRINT_LONGEST          "Più lungo"
++  #else
++    #define MSG_INFO_PRINT_LONGEST          "Piu lungo"
++  #endif
+   #define MSG_INFO_PRINT_FILAMENT           "Estruso"
+ #endif
+ #define MSG_INFO_MIN_TEMP                   "Temp min"
+

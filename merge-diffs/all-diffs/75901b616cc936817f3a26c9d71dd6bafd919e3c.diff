@@ -1,0 +1,449 @@
+commit 75901b616cc936817f3a26c9d71dd6bafd919e3c (from 608092458941f30b073d000e03abe8027dff5e8b)
+Merge: 6080924 c5e51f6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jul 14 12:14:15 2016 -0700
+
+    Merge pull request #4287 from thinkyhead/rc_long_print_times
+    
+    Allow stopwatch and printcounter to go over 18:12:15
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 95b8a5c..615d89e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1169,14 +1169,6 @@ inline void get_serial_commands() {
+       ) {
+         if (card_eof) {
+           SERIAL_PROTOCOLLNPGM(MSG_FILE_PRINTED);
+-          print_job_timer.stop();
+-          char time[30];
+-          millis_t t = print_job_timer.duration();
+-          int hours = t / 60 / 60, minutes = (t / 60) % 60;
+-          sprintf_P(time, PSTR("%i " MSG_END_HOUR " %i " MSG_END_MINUTE), hours, minutes);
+-          SERIAL_ECHO_START;
+-          SERIAL_ECHOLN(time);
+-          lcd_setstatus(time, true);
+           card.printingHasFinished();
+           card.checkautostart(true);
+         }
+@@ -3949,12 +3941,22 @@ inline void gcode_M17() {
+  */
+ inline void gcode_M31() {
+   millis_t t = print_job_timer.duration();
+-  int min = t / 60, sec = t % 60;
+-  char time[30];
+-  sprintf_P(time, PSTR("%i min, %i sec"), min, sec);
++  int d = int(t / 60 / 60 / 24),
++      h = int(t / 60 / 60) % 60,
++      m = int(t / 60) % 60,
++      s = int(t % 60);
++  char time[18];                                          // 123456789012345678
++  if (d)
++    sprintf_P(time, PSTR("%id %ih %im %is"), d, h, m, s); // 99d 23h 59m 59s
++  else
++    sprintf_P(time, PSTR("%ih %im %is"), h, m, s);        // 23h 59m 59s
++
++  lcd_setstatus(time);
++
+   SERIAL_ECHO_START;
++  SERIAL_ECHOPGM(MSG_PRINT_TIME " ");
+   SERIAL_ECHOLN(time);
+-  lcd_setstatus(time);
++
+   thermalManager.autotempShutdown();
+ }
+ 
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index c7e1604..dd6ff9f 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -602,19 +602,19 @@ void CardReader::updir() {
+ 
+ void CardReader::printingHasFinished() {
+   stepper.synchronize();
++  file.close();
+   if (file_subcall_ctr > 0) { // Heading up to a parent file that called current as a procedure.
+-    file.close();
+     file_subcall_ctr--;
+     openFile(proc_filenames[file_subcall_ctr], true, true);
+     setIndex(filespos[file_subcall_ctr]);
+     startFileprint();
+   }
+   else {
+-    file.close();
+     sdprinting = false;
+     if (SD_FINISHED_STEPPERRELEASE)
+       enqueue_and_echo_commands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+-    thermalManager.autotempShutdown();
++    print_job_timer.stop();
++    enqueue_and_echo_commands_P(PSTR("M31"));
+   }
+ }
+ 
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 6d6acb1..be45fb6 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -386,7 +386,7 @@ static void lcd_implementation_status_screen() {
+     }
+ 
+     u8g.setPrintPos(80,48);
+-    uint16_t time = print_job_timer.duration() / 60;
++    millis_t time = print_job_timer.duration() / 60;
+     if (time != 0) {
+       lcd_print(itostr2(time/60));
+       lcd_print(':');
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index 461c41a..f8e4cec 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -209,13 +209,13 @@
+ #define MSG_INFO_BAUDRATE                   "Rychlost"
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+ #if LCD_WIDTH > 19
+-  #define MSG_INFO_PRINT_COUNT              "Pocet tisku "
+-  #define MSG_INFO_FINISHED_PRINTS          "Dokonceno   "
+-  #define MSG_INFO_PRINT_TIME               "Celkovy cas "
++  #define MSG_INFO_PRINT_COUNT              "Pocet tisku"
++  #define MSG_INFO_COMPLETED_PRINTS         "Dokonceno  "
++  #define MSG_INFO_PRINT_TIME               "Celkovy cas"
+ #else
+-  #define MSG_INFO_PRINT_COUNT              "Tisky    "
+-  #define MSG_INFO_FINISHED_PRINTS          "Hotovo   "
+-  #define MSG_INFO_PRINT_TIME               "Cas      "
++  #define MSG_INFO_PRINT_COUNT              "Tisky "
++  #define MSG_INFO_COMPLETED_PRINTS         "Hotovo"
++  #define MSG_INFO_PRINT_TIME               "Cas   "
+ #endif
+ #define MSG_INFO_MIN_TEMP                   "Teplota min"
+ #define MSG_INFO_MAX_TEMP                   "Teplota max"
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index f828c4a..f9e2644 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -179,9 +179,16 @@
+ #define MSG_INFO_EXTRUDERS                  "Extruders"
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protokol"
+-#define MSG_INFO_TOTAL_PRINTS               "Gesamte Drucke"
+-#define MSG_INFO_FINISHED_PRINTS            "Beendete Drucke"
+-#define MSG_INFO_PRINT_TIME                 "Gesamte Druckzeit"
++
++#if LCD_WIDTH > 19
++  #define MSG_INFO_TOTAL_PRINTS             "Gesamte Drucke   "
++  #define MSG_INFO_COMPLETED_PRINTS         "Beendete Drucke  "
++  #define MSG_INFO_PRINT_TIME               "Gesamte Druckzeit"
++#else
++  #define MSG_INFO_PRINT_COUNT              "Prints   "
++  #define MSG_INFO_COMPLETED_PRINTS         "Completed"
++  #define MSG_INFO_PRINT_TIME               "Duration "
++#endif
+ #define MSG_INFO_MIN_TEMP                   "Min Temp"
+ #define MSG_INFO_MAX_TEMP                   "Max Temp"
+ #define MSG_INFO_PSU                        "Stromversorgung"
+diff --git a/Marlin/language_el.h b/Marlin/language_el.h
+index b3ec534..f0d94db 100644
+--- a/Marlin/language_el.h
++++ b/Marlin/language_el.h
+@@ -198,6 +198,7 @@
+ #define MSG_DELTA_CALIBRATE_Y               "Βαθμονόμηση Y"
+ #define MSG_DELTA_CALIBRATE_Z               "Βαθμονόμηση Z"
+ #define MSG_DELTA_CALIBRATE_CENTER          "Βαθμονόμηση κέντρου"
++
+ #define MSG_INFO_MENU                       "About Printer"
+ #define MSG_INFO_PRINTER_MENU               "Printer Info"
+ #define MSG_INFO_STATS_MENU                 "Printer Stats"
+@@ -206,42 +207,50 @@
+ #define MSG_INFO_EXTRUDERS                  "Extruders"
+ #define MSG_INFO_BAUDRATE                   "Baud"
+ #define MSG_INFO_PROTOCOL                   "Protocol"
+-#define MSG_INFO_TOTAL_PRINTS               "Total Prints"
+-#define MSG_INFO_FINISHED_PRINTS            "Finished Prints"
+-#define MSG_INFO_PRINT_TIME                 "Total Print Time"
++
++#if LCD_WIDTH > 19
++  #define MSG_INFO_PRINT_COUNT              "Print Count"
++  #define MSG_INFO_COMPLETED_PRINTS         "Completed  "
++  #define MSG_INFO_PRINT_TIME               "Total Time "
++#else
++  #define MSG_INFO_PRINT_COUNT              "Prints   "
++  #define MSG_INFO_COMPLETED_PRINTS         "Completed"
++  #define MSG_INFO_PRINT_TIME               "Duration "
++#endif
+ #define MSG_INFO_MIN_TEMP                   "Min Temp"
+ #define MSG_INFO_MAX_TEMP                   "Max Temp"
+ #define MSG_INFO_PSU                        "Power Supply"
++
+ #define MSG_FILAMENT_CHANGE_HEADER          "CHANGE FILAMENT"
+ #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extrude more"
+ #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Resume print"
+ 
+ #if LCD_HEIGHT >= 4
+-  #define MSG_FILAMENT_CHANGE_INIT_1          "Wait for start"
+-  #define MSG_FILAMENT_CHANGE_INIT_2          "of the filament"
+-  #define MSG_FILAMENT_CHANGE_INIT_3          "change"
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Wait for"
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament unload"
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_3        ""
+-  #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert filament"
+-  #define MSG_FILAMENT_CHANGE_INSERT_2        "and press button"
+-  #define MSG_FILAMENT_CHANGE_INSERT_3        "to continue..."
+-  #define MSG_FILAMENT_CHANGE_LOAD_1          "Wait for"
+-  #define MSG_FILAMENT_CHANGE_LOAD_2          "filament load"
+-  #define MSG_FILAMENT_CHANGE_LOAD_3          ""
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Wait for"
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrude"
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_3       ""
+-  #define MSG_FILAMENT_CHANGE_RESUME_1        "Wait for print"
+-  #define MSG_FILAMENT_CHANGE_RESUME_2        "to resume"
+-  #define MSG_FILAMENT_CHANGE_RESUME_3        ""
++  #define MSG_FILAMENT_CHANGE_INIT_1        "Wait for start"
++  #define MSG_FILAMENT_CHANGE_INIT_2        "of the filament"
++  #define MSG_FILAMENT_CHANGE_INIT_3        "change"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1      "Wait for"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_2      "filament unload"
++  #define MSG_FILAMENT_CHANGE_UNLOAD_3      ""
++  #define MSG_FILAMENT_CHANGE_INSERT_1      "Insert filament"
++  #define MSG_FILAMENT_CHANGE_INSERT_2      "and press button"
++  #define MSG_FILAMENT_CHANGE_INSERT_3      "to continue..."
++  #define MSG_FILAMENT_CHANGE_LOAD_1        "Wait for"
++  #define MSG_FILAMENT_CHANGE_LOAD_2        "filament load"
++  #define MSG_FILAMENT_CHANGE_LOAD_3        ""
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1     "Wait for"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_2     "filament extrude"
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_3     ""
++  #define MSG_FILAMENT_CHANGE_RESUME_1      "Wait for print"
++  #define MSG_FILAMENT_CHANGE_RESUME_2      "to resume"
++  #define MSG_FILAMENT_CHANGE_RESUME_3      ""
+ #else // LCD_HEIGHT < 4
+-  #define MSG_FILAMENT_CHANGE_INIT_1          "Please wait..."
+-  #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Ejecting..."
+-  #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert and Click"
+-  #define MSG_FILAMENT_CHANGE_LOAD_1          "Loading..."
+-  #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extruding..."
+-  #define MSG_FILAMENT_CHANGE_RESUME_1        "Resuming..."
++  #define MSG_FILAMENT_CHANGE_INIT_1        "Please wait..."
++  #define MSG_FILAMENT_CHANGE_UNLOAD_1      "Ejecting..."
++  #define MSG_FILAMENT_CHANGE_INSERT_1      "Insert and Click"
++  #define MSG_FILAMENT_CHANGE_LOAD_1        "Loading..."
++  #define MSG_FILAMENT_CHANGE_EXTRUDE_1     "Extruding..."
++  #define MSG_FILAMENT_CHANGE_RESUME_1      "Resuming..."
+ #endif
+ 
+ #endif // LANGUAGE_EL_H
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index ef60220..27444ae 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -488,12 +488,18 @@
+ #ifndef MSG_PLEASE_RESET
+   #define MSG_PLEASE_RESET                    "Please reset"
+ #endif
++#ifndef MSG_END_DAY
++  #define MSG_END_DAY                         "days"
++#endif
+ #ifndef MSG_END_HOUR
+   #define MSG_END_HOUR                        "hours"
+ #endif
+ #ifndef MSG_END_MINUTE
+   #define MSG_END_MINUTE                      "minutes"
+ #endif
++#ifndef MSG_PRINT_TIME
++  #define MSG_PRINT_TIME                      "Print time"
++#endif
+ #ifndef MSG_HEATING
+   #define MSG_HEATING                         "Heating..."
+ #endif
+@@ -521,6 +527,7 @@
+ #ifndef MSG_DELTA_CALIBRATE_CENTER
+   #define MSG_DELTA_CALIBRATE_CENTER          "Calibrate Center"
+ #endif
++
+ #ifndef MSG_INFO_MENU
+   #define MSG_INFO_MENU                       "About Printer"
+ #endif
+@@ -548,20 +555,20 @@
+ 
+ #if LCD_WIDTH > 19
+   #ifndef MSG_INFO_PRINT_COUNT
+-    #define MSG_INFO_PRINT_COUNT              "Print Count "
++    #define MSG_INFO_PRINT_COUNT              "Print Count"
+   #endif
+-  #ifndef MSG_INFO_FINISHED_PRINTS
+-    #define MSG_INFO_FINISHED_PRINTS          "Finished    "
++  #ifndef MSG_INFO_COMPLETED_PRINTS
++    #define MSG_INFO_COMPLETED_PRINTS         "Completed  "
+   #endif
+   #ifndef MSG_INFO_PRINT_TIME
+-    #define MSG_INFO_PRINT_TIME               "Total Time  "
++    #define MSG_INFO_PRINT_TIME               "Total Time "
+   #endif
+ #else
+   #ifndef MSG_INFO_PRINT_COUNT
+     #define MSG_INFO_PRINT_COUNT              "Prints   "
+   #endif
+-  #ifndef MSG_INFO_FINISHED_PRINTS
+-    #define MSG_INFO_FINISHED_PRINTS          "Finished "
++  #ifndef MSG_INFO_COMPLETED_PRINTS
++    #define MSG_INFO_COMPLETED_PRINTS         "Completed"
+   #endif
+   #ifndef MSG_INFO_PRINT_TIME
+     #define MSG_INFO_PRINT_TIME               "Duration "
+diff --git a/Marlin/printcounter.cpp b/Marlin/printcounter.cpp
+index 78e3630..6e875fa 100644
+--- a/Marlin/printcounter.cpp
++++ b/Marlin/printcounter.cpp
+@@ -27,12 +27,12 @@ PrintCounter::PrintCounter(): super() {
+   this->loadStats();
+ }
+ 
+-uint16_t PrintCounter::deltaDuration() {
++millis_t PrintCounter::deltaDuration() {
+   #if ENABLED(DEBUG_PRINTCOUNTER)
+     PrintCounter::debug(PSTR("deltaDuration"));
+   #endif
+ 
+-  uint16_t tmp = this->lastDuration;
++  millis_t tmp = this->lastDuration;
+   this->lastDuration = this->duration();
+   return this->lastDuration - tmp;
+ }
+@@ -88,12 +88,12 @@ void PrintCounter::showStats() {
+   SERIAL_ECHO(this->data.totalPrints - this->data.finishedPrints
+     - ((this->isRunning() || this->isPaused()) ? 1 : 0)); // Removes 1 from failures with an active counter
+ 
+-  uint32_t t = this->data.printTime / 60;
++  millis_t t = this->data.printTime / 60; // minutes from seconds
+   SERIAL_ECHOPGM(", Total print time: ");
+-  SERIAL_ECHO(t / 60);
++  SERIAL_ECHO(t / 60); // hours
+ 
+   SERIAL_ECHOPGM("h ");
+-  SERIAL_ECHO(t % 60);
++  SERIAL_ECHO(t % 60); // minutes
+ 
+   SERIAL_ECHOPGM("min");
+ 
+@@ -110,10 +110,10 @@ void PrintCounter::showStats() {
+ void PrintCounter::tick() {
+   if (!this->isRunning()) return;
+ 
+-  static uint32_t update_before = millis(),
++  static millis_t update_before = millis(),
+                   eeprom_before = millis();
+ 
+-  uint32_t now = millis();
++  millis_t now = millis();
+ 
+   // Trying to get the amount of calculations down to the bare min
+   const static uint16_t i = this->updateInterval * 1000;
+@@ -128,8 +128,7 @@ void PrintCounter::tick() {
+   }
+ 
+   // Trying to get the amount of calculations down to the bare min
+-  const static uint32_t j = this->saveInterval * 1000;
+-
++  const static millis_t j = this->saveInterval * 1000;
+   if (now - eeprom_before >= j) {
+     eeprom_before = now;
+     this->saveStats();
+diff --git a/Marlin/printcounter.h b/Marlin/printcounter.h
+index d6ac80b..c7742a0 100644
+--- a/Marlin/printcounter.h
++++ b/Marlin/printcounter.h
+@@ -35,8 +35,8 @@ struct printStatistics {    // 13 bytes
+   //const uint8_t magic;    // Magic header, it will always be 0x16
+   uint16_t totalPrints;     // Number of prints
+   uint16_t finishedPrints;  // Number of complete prints
+-  uint32_t printTime;       // Total printing time
+-  uint32_t longestPrint;    // Longest print job - not in use
++  millis_t printTime;       // Total printing time
++  millis_t longestPrint;    // Longest print job - not in use
+ };
+ 
+ class PrintCounter: public Stopwatch {
+@@ -74,7 +74,7 @@ class PrintCounter: public Stopwatch {
+      * @details Stores the timestamp of the last deltaDuration(), this is
+      * required due to the updateInterval cycle.
+      */
+-    uint16_t lastDuration;
++    millis_t lastDuration;
+ 
+     /**
+      * @brief Stats were loaded from EERPROM
+@@ -90,7 +90,7 @@ class PrintCounter: public Stopwatch {
+      * used internally for print statistics accounting is not intended to be a
+      * user callable function.
+      */
+-    uint16_t deltaDuration();
++    millis_t deltaDuration();
+ 
+   public:
+     /**
+diff --git a/Marlin/stopwatch.cpp b/Marlin/stopwatch.cpp
+index 7a9e90d..042dbfc 100644
+--- a/Marlin/stopwatch.cpp
++++ b/Marlin/stopwatch.cpp
+@@ -88,9 +88,9 @@ bool Stopwatch::isPaused() {
+   return (this->state == STOPWATCH_PAUSED) ? true : false;
+ }
+ 
+-uint16_t Stopwatch::duration() {
++millis_t Stopwatch::duration() {
+   return (((this->isRunning()) ? millis() : this->stopTimestamp)
+-          - this->startTimestamp) / 1000 + this->accumulator;
++          - this->startTimestamp) / 1000UL + this->accumulator;
+ }
+ 
+ #if ENABLED(DEBUG_STOPWATCH)
+diff --git a/Marlin/stopwatch.h b/Marlin/stopwatch.h
+index f5ce233..173b5ef 100644
+--- a/Marlin/stopwatch.h
++++ b/Marlin/stopwatch.h
+@@ -42,9 +42,9 @@ enum StopwatchState {
+ class Stopwatch {
+   private:
+     StopwatchState state;
+-    uint16_t accumulator;
+-    uint32_t startTimestamp;
+-    uint32_t stopTimestamp;
++    millis_t accumulator;
++    millis_t startTimestamp;
++    millis_t stopTimestamp;
+ 
+   public:
+     /**
+@@ -101,7 +101,7 @@ class Stopwatch {
+      * @details Returns the total number of seconds the timer has been running.
+      * @return the delta since starting the stopwatch
+      */
+-    uint16_t duration();
++    millis_t duration();
+ 
+     #if ENABLED(DEBUG_STOPWATCH)
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 94a7110..09c1410 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1967,13 +1967,13 @@ void kill_screen(const char* lcd_msg) {
+         print_job_counter.loadStats();
+         printStatistics stats = print_job_counter.getStats();
+ 
+-        char printTime[6];
+-        sprintf(printTime, "%02d:%02d", int(stats.printTime / 3600), int(stats.printTime / 60) % 60);
++        char timeString[8];
++        sprintf_P(timeString, PSTR("%i:%02i"), int(stats.printTime / 60 / 60), int(stats.printTime / 60) % 60);
+ 
+-        START_SCREEN();
+-        STATIC_ITEM(MSG_INFO_PRINT_COUNT ": ", false, false, itostr3left(stats.totalPrints));        // Print Count : 999
+-        STATIC_ITEM(MSG_INFO_FINISHED_PRINTS ": ", false, false, itostr3left(stats.finishedPrints)); // Finished    : 666
+-        STATIC_ITEM(MSG_INFO_PRINT_TIME ": ", false, false, printTime);                              // Total Time  : 12:34
++        START_SCREEN();                                                                              // 12345678901234567890
++        STATIC_ITEM(MSG_INFO_PRINT_COUNT ": ", false, false, itostr3left(stats.totalPrints));        // Print Count: 999
++        STATIC_ITEM(MSG_INFO_COMPLETED_PRINTS": ", false, false, itostr3left(stats.finishedPrints)); // Completed  : 666
++        STATIC_ITEM(MSG_INFO_PRINT_TIME ": ", false, false, timeString);                             // Total Time : 123:45
+         END_SCREEN();
+       }
+     #endif // PRINTCOUNTER
+

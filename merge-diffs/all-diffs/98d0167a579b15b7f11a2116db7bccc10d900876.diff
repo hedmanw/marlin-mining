@@ -1,0 +1,908 @@
+commit 98d0167a579b15b7f11a2116db7bccc10d900876 (from 9f42b1a075f305cf7b24d79524772199b3548bd1)
+Merge: 9f42b1a 2ee4e4f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jul 7 16:53:55 2016 -0700
+
+    Merge pull request #4226 from thinkyhead/rc_emergency_command_parser
+    
+    MarlinSerial emergency-command parser (with M108)
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 1c6aa9a..6b8a682 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -284,6 +284,12 @@
+     #define HardwareSerial_h // trick to disable the standard HWserial
+   #endif
+ 
++  #if ENABLED(EMERGENCY_PARSER)
++    #define EMERGENCY_PARSER_CAPABILITIES " EMERGENCY_CODES:M108,M112,M410"
++  #else
++    #define EMERGENCY_PARSER_CAPABILITIES ""
++  #endif
++
+   #include "Arduino.h"
+ 
+   /**
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 3a673a6..93ca693 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 616a8bf..5c69883 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -230,9 +230,7 @@ void ok_to_send();
+ void reset_bed_level();
+ void kill(const char*);
+ 
+-#if DISABLED(DELTA) && DISABLED(SCARA)
+-  void set_current_position_from_planner();
+-#endif
++void quickstop_stepper();
+ 
+ #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+   void handle_filament_runout();
+@@ -288,6 +286,7 @@ extern float sw_endstop_min[3]; // axis[n].sw_endstop_min
+ extern float sw_endstop_max[3]; // axis[n].sw_endstop_max
+ extern bool axis_known_position[3]; // axis[n].is_known
+ extern bool axis_homed[3]; // axis[n].is_homed
++extern volatile bool wait_for_heatup;
+ 
+ // GCode support for external objects
+ bool code_seen(char);
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+index e6362fc..c87f31b 100644
+--- a/Marlin/MarlinSerial.cpp
++++ b/Marlin/MarlinSerial.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "Marlin.h"
+ #include "MarlinSerial.h"
++#include "stepper.h"
+ 
+ #ifndef USBCON
+ // this next line disables the entire HardwareSerial.cpp,
+@@ -54,6 +55,10 @@ FORCE_INLINE void store_char(unsigned char c) {
+       rx_buffer.head = i;
+     }
+   CRITICAL_SECTION_END;
++
++  #if ENABLED(EMERGENCY_PARSER)
++    emergency_parser(c);
++  #endif
+ }
+ 
+ 
+@@ -310,3 +315,104 @@ MarlinSerial customizedSerial;
+ #if defined(USBCON) && ENABLED(BLUETOOTH)
+   HardwareSerial bluetoothSerial;
+ #endif
++
++#if ENABLED(EMERGENCY_PARSER)
++
++  // Currently looking for: M108, M112, M410
++  // If you alter the parser please don't forget to update the capabilities in Conditionals.h
++
++  void emergency_parser(unsigned char c) {
++
++    enum e_parser_state {
++      state_RESET,
++      state_N,
++      state_M,
++      state_M1,
++      state_M10,
++      state_M108,
++      state_M11,
++      state_M112,
++      state_M4,
++      state_M41,
++      state_M410,
++      state_IGNORE // to '\n'
++    };
++
++    static e_parser_state state = state_RESET;
++
++    switch (state) {
++      case state_RESET:
++        switch (c) {
++          case ' ': break;
++          case 'N': state = state_N;      break;
++          case 'M': state = state_M;      break;
++          default: state = state_IGNORE;
++        }
++        break;
++
++      case state_N:
++        switch (c) {
++          case '0': case '1': case '2':
++          case '3': case '4': case '5':
++          case '6': case '7': case '8':
++          case '9': case '-': case ' ':   break;
++          case 'M': state = state_M;      break;
++          default:  state = state_IGNORE;
++        }
++        break;
++
++      case state_M:
++        switch (c) {
++          case ' ': break;
++          case '1': state = state_M1;     break;
++          case '4': state = state_M4;     break;
++          default: state = state_IGNORE;
++        }
++        break;
++
++      case state_M1:
++        switch (c) {
++          case '0': state = state_M10;    break;
++          case '1': state = state_M11;    break;
++          default: state = state_IGNORE;
++        }
++        break;
++
++      case state_M10:
++        state = (c == '8') ? state_M108 : state_IGNORE;
++        break;
++
++      case state_M11:
++        state = (c == '2') ? state_M112 : state_IGNORE;
++        break;
++
++      case state_M4:
++        state = (c == '1') ? state_M41 : state_IGNORE;
++        break;
++
++      case state_M41:
++        state = (c == '0') ? state_M410 : state_IGNORE;
++        break;
++
++      case state_IGNORE:
++        if (c == '\n') state = state_RESET;
++        break;
++
++      default:
++        if (c == '\n') {
++          switch (state) {
++            case state_M108:
++              wait_for_heatup = false;
++              break;
++            case state_M112:
++              kill(PSTR(MSG_KILLED));
++              break;
++            case state_M410:
++              quickstop_stepper();
++              break;
++          }
++          state = state_RESET;
++        }
++    }
++  }
++#endif
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+index 34d2346..b27b981 100644
+--- a/Marlin/MarlinSerial.h
++++ b/Marlin/MarlinSerial.h
+@@ -101,6 +101,11 @@ struct ring_buffer {
+   extern ring_buffer rx_buffer;
+ #endif
+ 
++#if ENABLED(EMERGENCY_PARSER)
++  #include "language.h"
++  void emergency_parser(unsigned char c);
++#endif
++
+ class MarlinSerial { //: public Stream
+ 
+   public:
+@@ -141,6 +146,10 @@ class MarlinSerial { //: public Stream
+             rx_buffer.head = i;
+           }
+         CRITICAL_SECTION_END;
++
++        #if ENABLED(EMERGENCY_PARSER)
++          emergency_parser(c);
++        #endif
+       }
+     }
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0d582f3..8b419b9 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -160,7 +160,7 @@
+  * M105 - Read current temp
+  * M106 - Fan on
+  * M107 - Fan off
+- * M108 - Cancel heatup and wait for the hotend and bed, this G-code is asynchronously handled in the get_serial_commands() parser
++ * M108 - Stop the waiting for heaters in M109, M190, M303. Does not affect the target temperature.
+  * M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+  *        Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
+  *        IF AUTOTEMP is enabled, S<mintemp> B<maxtemp> F<factor>. Exit autotemp by any M109 without F
+@@ -332,7 +332,7 @@ uint8_t active_extruder = 0;
+ // Relative Mode. Enable with G91, disable with G90.
+ static bool relative_mode = false;
+ 
+-bool wait_for_heatup = true;
++volatile bool wait_for_heatup = true;
+ 
+ const char errormagic[] PROGMEM = "Error:";
+ const char echomagic[] PROGMEM = "echo:";
+@@ -1105,9 +1105,12 @@ inline void get_serial_commands() {
+         }
+       }
+ 
+-      // If command was e-stop process now
+-      if (strcmp(command, "M112") == 0) kill(PSTR(MSG_KILLED));
+-      if (strcmp(command, "M108") == 0) wait_for_heatup = false;
++      #if DISABLED(EMERGENCY_PARSER)
++        // If command was e-stop process now
++        if (strcmp(command, "M108") == 0) wait_for_heatup = false;
++        if (strcmp(command, "M112") == 0) kill(PSTR(MSG_KILLED));
++        if (strcmp(command, "M410") == 0) { quickstop_stepper(); }
++      #endif
+ 
+       #if defined(NO_TIMEOUTS) && NO_TIMEOUTS > 0
+         last_command_time = ms;
+@@ -4535,10 +4538,29 @@ inline void gcode_M105() {
+ 
+ #endif // FAN_COUNT > 0
+ 
+-/**
+- * M108: Cancel heatup and wait for the hotend and bed, this G-code is asynchronously handled in the get_serial_commands() parser
+- */
+-inline void gcode_M108() { wait_for_heatup = false; }
++#if DISABLED(EMERGENCY_PARSER)
++
++  /**
++   * M108: Stop the waiting for heaters in M109, M190, M303. Does not affect the target temperature.
++   */
++  inline void gcode_M108() { wait_for_heatup = false; }
++
++
++  /**
++   * M112: Emergency Stop
++   */
++  inline void gcode_M112() { kill(PSTR(MSG_KILLED)); }
++
++
++  /**
++   * M410: Quickstop - Abort all planned moves
++   *
++   * This will stop the carriages mid-move, so most likely they
++   * will be out of sync with the stepper position after this.
++   */
++  inline void gcode_M410() { quickstop_stepper(); }
++
++#endif
+ 
+ /**
+  * M109: Sxxx Wait for extruder(s) to reach temperature. Waits only when heating.
+@@ -4810,11 +4832,6 @@ inline void gcode_M111() {
+   SERIAL_EOL;
+ }
+ 
+-/**
+- * M112: Emergency Stop
+- */
+-inline void gcode_M112() { kill(PSTR(MSG_KILLED)); }
+-
+ #if ENABLED(HOST_KEEPALIVE_FEATURE)
+ 
+   /**
+@@ -5970,8 +5987,9 @@ inline void gcode_M400() { stepper.synchronize(); }
+ 
+ #endif // FILAMENT_WIDTH_SENSOR
+ 
+-#if DISABLED(DELTA) && DISABLED(SCARA)
+-  void set_current_position_from_planner() {
++void quickstop_stepper() {
++  stepper.quick_stop();
++  #if DISABLED(DELTA) && DISABLED(SCARA)
+     stepper.synchronize();
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+       vector_3 pos = planner.adjusted_position(); // values directly from steppers...
+@@ -5984,23 +6002,9 @@ inline void gcode_M400() { stepper.synchronize(); }
+       current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
+     #endif
+     sync_plan_position();                       // ...re-apply to planner position
+-  }
+-#endif
+-
+-/**
+- * M410: Quickstop - Abort all planned moves
+- *
+- * This will stop the carriages mid-move, so most likely they
+- * will be out of sync with the stepper position after this.
+- */
+-inline void gcode_M410() {
+-  stepper.quick_stop();
+-  #if DISABLED(DELTA) && DISABLED(SCARA)
+-    set_current_position_from_planner();
+   #endif
+ }
+ 
+-
+ #if ENABLED(MESH_BED_LEVELING)
+ 
+   /**
+@@ -6955,9 +6959,21 @@ void process_next_command() {
+         gcode_M111();
+         break;
+ 
+-      case 112: // M112: Emergency Stop
+-        gcode_M112();
+-        break;
++      #if DISABLED(EMERGENCY_PARSER)
++
++        case 108: // M108: Cancel Waiting
++          gcode_M108();
++          break;
++
++        case 112: // M112: Emergency Stop
++          gcode_M112();
++          break;
++
++        case 410: // M410 quickstop - Abort all the planned moves.
++          gcode_M410();
++          break;
++
++      #endif
+ 
+       #if ENABLED(HOST_KEEPALIVE_FEATURE)
+ 
+@@ -6976,10 +6992,6 @@ void process_next_command() {
+         KEEPALIVE_STATE(NOT_BUSY);
+         return; // "ok" already printed
+ 
+-      case 108:
+-        gcode_M108();
+-        break;
+-
+       case 109: // M109: Wait for temperature
+         gcode_M109();
+         break;
+@@ -7263,10 +7275,6 @@ void process_next_command() {
+           break;
+       #endif // ENABLED(FILAMENT_WIDTH_SENSOR)
+ 
+-      case 410: // M410 quickstop - Abort all the planned moves.
+-        gcode_M410();
+-        break;
+-
+       #if ENABLED(MESH_BED_LEVELING)
+         case 420: // M420 Enable/Disable Mesh Bed Leveling
+           gcode_M420();
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index b075cd4..3200982 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -579,6 +579,13 @@
+ #endif
+ 
+ /**
++ * emergency-command parser
++ */
++#if ENABLED(EMERGENCY_PARSER) && ENABLED(USBCON)
++  #error "EMERGENCY_PARSER does not work on boards with AT90USB processors (USBCON)."
++#endif
++
++ /**
+  * Warnings for old configurations
+  */
+ #if WATCH_TEMP_PERIOD > 500
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 81a080e..3bfb67a 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -186,10 +186,7 @@ void Endstops::report_state() {
+       if (stepper.abort_on_endstop_hit) {
+         card.sdprinting = false;
+         card.closefile();
+-        stepper.quick_stop();
+-        #if DISABLED(DELTA) && DISABLED(SCARA)
+-          set_current_position_from_planner();
+-        #endif
++        quickstop_stepper();
+         thermalManager.disable_all_heaters(); // switch off all heaters.
+       }
+     #endif
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index d176352..e1848a3 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index ffad119..b46c497 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 8956c41..48c0c4b 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 704b20c..bfd8b9a 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 1a00bb3..9476e5b 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -526,6 +526,12 @@ const unsigned int dropsegments = 2; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index 29b759d..1c73ae0 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 26
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index e1280f2..bf798bb 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 8
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 475e033..f743b66 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 1a6ab80..a4309db 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -528,6 +528,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 8956c41..48c0c4b 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 894e861..a19e75b 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -522,6 +522,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index fba0096..fcd0d9f 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -522,6 +522,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 7265b76..d634ce5 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -521,6 +521,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 69eb9ce..f508233 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -526,6 +526,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index f224fd6..7969668 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -522,6 +522,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 857f320..f266d27 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 69ee6e0..ade737a 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -520,6 +520,12 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
++// Enable an emergency-command parser to intercept certain commands as they
++// enter the serial receive buffer, so they cannot be blocked.
++// Currently handles M108, M112, M410
++// Does not work on boards using AT90USB (USBCON) processors!
++//#define EMERGENCY_PARSER
++
+ // Bad Serial-connections can miss a received command by sending an 'ok'
+ // Therefore some clients abort after 30 seconds in a timeout.
+ // Some other clients start sending commands while receiving a 'wait'.
+diff --git a/Marlin/language.h b/Marlin/language.h
+index eb378fe..03c063d 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -128,7 +128,7 @@
+ #define MSG_INVALID_EXTRUDER                "Invalid extruder"
+ #define MSG_INVALID_SOLENOID                "Invalid solenoid"
+ #define MSG_ERR_NO_THERMISTORS              "No thermistors - no temperature"
+-#define MSG_M115_REPORT                     "FIRMWARE_NAME:Marlin " DETAILED_BUILD_VERSION " SOURCE_CODE_URL:" SOURCE_CODE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
++#define MSG_M115_REPORT                     "FIRMWARE_NAME:Marlin " DETAILED_BUILD_VERSION " SOURCE_CODE_URL:" SOURCE_CODE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID EMERGENCY_PARSER_CAPABILITIES "\n"
+ #define MSG_COUNT_X                         " Count X: "
+ #define MSG_COUNT_A                         " Count A: "
+ #define MSG_ERR_KILLED                      "Printer halted. kill() called!"
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index a011b77..fb9b40c 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -238,8 +238,10 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+       soft_pwm_bed = bias = d = (MAX_BED_POWER) / 2;
+     #endif
+ 
++    wait_for_heatup = true;
++
+     // PID Tuning loop
+-    for (;;) {
++    while (wait_for_heatup) {
+ 
+       millis_t ms = millis();
+ 
+@@ -421,6 +423,7 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+       }
+       lcd_update();
+     }
++    if (!wait_for_heatup) disable_all_heaters();
+   }
+ 
+ #endif // HAS_PID_HEATING
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index ca0db6d..87104d8 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -556,14 +556,11 @@ static void lcd_status_screen() {
+     static void lcd_sdcard_stop() {
+       card.stopSDPrint();
+       clear_command_queue();
+-      stepper.quick_stop();
++      quickstop_stepper();
+       print_job_timer.stop();
+       thermalManager.autotempShutdown();
+       wait_for_heatup = false;
+       lcd_setstatus(MSG_PRINT_ABORTED, true);
+-      #if DISABLED(DELTA) && DISABLED(SCARA)
+-        set_current_position_from_planner();
+-      #endif // !DELTA && !SCARA
+     }
+ 
+   #endif //SDSUPPORT
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index cc0a10f..40b0960 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -95,8 +95,6 @@
+   extern int absPreheatHPBTemp;
+   extern int absPreheatFanSpeed;
+ 
+-  extern bool wait_for_heatup;
+-
+   #if ENABLED(FILAMENT_LCD_DISPLAY)
+     extern millis_t previous_lcd_status_ms;
+   #endif
+
+commit 98d0167a579b15b7f11a2116db7bccc10d900876 (from 2ee4e4f79120e5f530a70650704cdec94b6b0376)
+Merge: 9f42b1a 2ee4e4f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jul 7 16:53:55 2016 -0700
+
+    Merge pull request #4226 from thinkyhead/rc_emergency_command_parser
+    
+    MarlinSerial emergency-command parser (with M108)
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index fffff44..8b419b9 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -573,19 +573,19 @@ void serial_echopair_P(const char* s_P, unsigned long v) { serialprintPGM(s_P);
+ static void report_current_position();
+ 
+ #if ENABLED(DEBUG_LEVELING_FEATURE)
+-  void print_xyz(const char* prefix, const float x, const float y, const float z) {
+-    SERIAL_ECHO(prefix);
+-    SERIAL_ECHOPAIR(": (", x);
++  void print_xyz(const char* suffix, const float x, const float y, const float z) {
++    SERIAL_ECHOPAIR("(", x);
+     SERIAL_ECHOPAIR(", ", y);
+     SERIAL_ECHOPAIR(", ", z);
+-    SERIAL_ECHOLNPGM(")");
++    SERIAL_ECHOLNPGM(") ");
++    SERIAL_ECHO(suffix);
+   }
+-  void print_xyz(const char* prefix, const float xyz[]) {
+-    print_xyz(prefix, xyz[X_AXIS], xyz[Y_AXIS], xyz[Z_AXIS]);
++  void print_xyz(const char* suffix, const float xyz[]) {
++    print_xyz(suffix, xyz[X_AXIS], xyz[Y_AXIS], xyz[Z_AXIS]);
+   }
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    void print_xyz(const char* prefix, const vector_3 &xyz) {
+-      print_xyz(prefix, xyz.x, xyz.y, xyz.z);
++    void print_xyz(const char* suffix, const vector_3 &xyz) {
++      print_xyz(suffix, xyz.x, xyz.y, xyz.z);
+     }
+   #endif
+   #define DEBUG_POS(PREFIX,VAR) do{ SERIAL_ECHOPGM(PREFIX); print_xyz(" > " STRINGIFY(VAR), VAR); }while(0)
+@@ -2917,41 +2917,43 @@ inline void gcode_G28() {
+ 
+     #elif defined(MIN_Z_HEIGHT_FOR_HOMING) && MIN_Z_HEIGHT_FOR_HOMING > 0
+ 
+-      // Raise Z before homing, if specified
+-      destination[Z_AXIS] = (current_position[Z_AXIS] += MIN_Z_HEIGHT_FOR_HOMING);
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) {
+-          SERIAL_ECHOPAIR("Raise Z (before homing) to ", destination[Z_AXIS]);
+-          SERIAL_EOL;
+-        }
+-      #endif
++      // Raise Z before homing X or Y, if specified
++      if (home_all_axis || homeX || homeY) {
++        float z_dest = home_offset[Z_AXIS] + MIN_Z_HEIGHT_FOR_HOMING;
++        if (z_dest > current_position[Z_AXIS]) {
+ 
+-      feedrate = homing_feedrate[Z_AXIS];
++          #if ENABLED(DEBUG_LEVELING_FEATURE)
++            if (DEBUGGING(LEVELING)) {
++              SERIAL_ECHOPAIR("Raise Z (before homing) to ", z_dest);
++              SERIAL_EOL;
++            }
++          #endif
+ 
+-      #if HAS_BED_PROBE
+-        do_blocking_move_to_z(destination[Z_AXIS]);
+-      #else
+-        line_to_z(destination[Z_AXIS]);
+-        stepper.synchronize();
+-      #endif
++          feedrate = homing_feedrate[Z_AXIS];
+ 
+-    #endif // MIN_Z_HEIGHT_FOR_HOMING
++          #if HAS_BED_PROBE
++            do_blocking_move_to_z(z_dest);
++          #else
++            line_to_z(z_dest);
++            stepper.synchronize();
++          #endif
+ 
+-    #if ENABLED(QUICK_HOME)
++          destination[Z_AXIS] = current_position[Z_AXIS] = z_dest;
++        }
++      }
+ 
+-      bool quick_homed = home_all_axis || (homeX && homeY);
+-      if (quick_homed) quick_home_xy();
++    #endif // MIN_Z_HEIGHT_FOR_HOMING
+ 
+-    #else
++    #if ENABLED(QUICK_HOME)
+ 
+-      const bool quick_homed = false;
++      if (home_all_axis || (homeX && homeY)) quick_home_xy();
+ 
+     #endif
+ 
+     #if ENABLED(HOME_Y_BEFORE_X)
+ 
+       // Home Y
+-      if (!quick_homed && (home_all_axis || homeY)) {
++      if (home_all_axis || homeY) {
+         HOMEAXIS(Y);
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) DEBUG_POS("> homeY", current_position);
+@@ -2961,7 +2963,7 @@ inline void gcode_G28() {
+     #endif
+ 
+     // Home X
+-    if (!quick_homed && (home_all_axis || homeX)) {
++    if (home_all_axis || homeX) {
+       #if ENABLED(DUAL_X_CARRIAGE)
+         int tmp_extruder = active_extruder;
+         extruder_duplication_enabled = false;
+@@ -2984,7 +2986,7 @@ inline void gcode_G28() {
+ 
+     #if DISABLED(HOME_Y_BEFORE_X)
+       // Home Y
+-      if (!quick_homed && (home_all_axis || homeY)) {
++      if (home_all_axis || homeY) {
+         HOMEAXIS(Y);
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) DEBUG_POS("> homeY", current_position);
+

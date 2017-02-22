@@ -1,0 +1,262 @@
+commit d2da14459f440cdcde97f747d61b2fa47d84ad73 (from 2cb5df8a563ce0aa126929e9b6cb67caafac425f)
+Merge: 2cb5df8 e7cf566
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 10 20:11:27 2016 -0500
+
+    Merge pull request #4993 from thinkyhead/rc_planner_deps
+    
+    Sort out some header dependencies
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 49aab9c..19e8b7a 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -394,11 +394,6 @@ extern uint8_t active_extruder;
+ 
+ void calculate_volumetric_multipliers();
+ 
+-// Buzzer
+-#if HAS_BUZZER && DISABLED(LCD_USE_I2C_BUZZER)
+-  #include "buzzer.h"
+-#endif
+-
+ /**
+  * Blocking movement and shorthand functions
+  */
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 14843d4..e0ec569 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -33,20 +33,6 @@
+ 
+ #include "Marlin.h"
+ 
+-#if HAS_ABL
+-  #include "vector_3.h"
+-#endif
+-
+-#if ENABLED(AUTO_BED_LEVELING_LINEAR)
+-  #include "qr_solve.h"
+-#elif ENABLED(MESH_BED_LEVELING)
+-  #include "mesh_bed_leveling.h"
+-#endif
+-
+-#if ENABLED(BEZIER_CURVE_SUPPORT)
+-  #include "planner_bezier.h"
+-#endif
+-
+ #include "ultralcd.h"
+ #include "planner.h"
+ #include "stepper.h"
+@@ -61,6 +47,23 @@
+ #include "duration_t.h"
+ #include "types.h"
+ 
++#if HAS_ABL
++  #include "vector_3.h"
++  #if ENABLED(AUTO_BED_LEVELING_LINEAR)
++    #include "qr_solve.h"
++  #endif
++#elif ENABLED(MESH_BED_LEVELING)
++  #include "mesh_bed_leveling.h"
++#endif
++
++#if ENABLED(BEZIER_CURVE_SUPPORT)
++  #include "planner_bezier.h"
++#endif
++
++#if HAS_BUZZER && DISABLED(LCD_USE_I2C_BUZZER)
++  #include "buzzer.h"
++#endif
++
+ #if ENABLED(USE_WATCHDOG)
+   #include "watchdog.h"
+ #endif
+@@ -457,13 +460,17 @@ static uint8_t target_extruder;
+ #endif
+ 
+ #if ENABLED(AUTO_BED_LEVELING_BILINEAR)
+-  #define ADJUST_DELTA(V) \
+-    if (planner.abl_enabled) { \
+-      const float zadj = bilinear_z_offset(V); \
+-      delta[A_AXIS] += zadj; \
+-      delta[B_AXIS] += zadj; \
+-      delta[C_AXIS] += zadj; \
+-    }
++  #if ENABLED(DELTA)
++    #define ADJUST_DELTA(V) \
++      if (planner.abl_enabled) { \
++        const float zadj = bilinear_z_offset(V); \
++        delta[A_AXIS] += zadj; \
++        delta[B_AXIS] += zadj; \
++        delta[C_AXIS] += zadj; \
++      }
++  #else
++    #define ADJUST_DELTA(V) if (planner.abl_enabled) { delta[Z_AXIS] += bilinear_z_offset(V); }
++  #endif
+ #elif IS_KINEMATIC
+   #define ADJUST_DELTA(V) NOOP
+ #endif
+@@ -2218,8 +2225,8 @@ static void clean_up_after_endstop_or_probe_move() {
+     #elif HAS_ABL
+ 
+       if (enable != planner.abl_enabled) {
+-        planner.abl_enabled = !planner.abl_enabled;
+-        if (!planner.abl_enabled)
++        planner.abl_enabled = enable;
++        if (!enable)
+           set_current_from_steppers_for_axis(
+             #if ABL_PLANAR
+               ALL_AXES
+@@ -4560,7 +4567,9 @@ inline void gcode_M31() {
+   SERIAL_ECHO_START;
+   SERIAL_ECHOLNPAIR("Print time: ", buffer);
+ 
+-  thermalManager.autotempShutdown();
++  #if ENABLED(AUTOTEMP)
++    thermalManager.autotempShutdown();
++  #endif
+ }
+ 
+ #if ENABLED(SDSUPPORT)
+@@ -8814,9 +8823,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+       // For non-interpolated delta calculate every segment
+       for (uint16_t s = segments + 1; --s;) {
+         DELTA_NEXT(segment_distance[i]);
+-        DELTA_IK();
+-        ADJUST_DELTA(DELTA_VAR);
+-        planner.buffer_line(delta[A_AXIS], delta[B_AXIS], delta[C_AXIS], DELTA_VAR[E_AXIS], _feedrate_mm_s, active_extruder);
++        planner.buffer_line_kinematic(DELTA_VAR, _feedrate_mm_s, active_extruder);
+       }
+ 
+     #endif
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 319665a..67dd537 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -24,7 +24,6 @@
+ 
+ #include "ultralcd.h"
+ #include "stepper.h"
+-#include "temperature.h"
+ #include "language.h"
+ 
+ #include "Marlin.h"
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 785c6ac..80b20c4 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -34,21 +34,12 @@
+ 
+ #include "types.h"
+ #include "enum.h"
+-#include "MarlinConfig.h"
++#include "Marlin.h"
+ 
+ #if HAS_ABL
+   #include "vector_3.h"
+ #endif
+ 
+-class Planner;
+-extern Planner planner;
+-
+-#if IS_KINEMATIC
+-  // for inline buffer_line_kinematic
+-  extern float delta[ABC];
+-  void inverse_kinematics(const float logical[XYZ]);
+-#endif
+-
+ /**
+  * struct block_t
+  *
+@@ -207,17 +198,11 @@ class Planner {
+ 
+     static bool is_full() { return (block_buffer_tail == BLOCK_MOD(block_buffer_head + 1)); }
+ 
+-    #if HAS_ABL || ENABLED(MESH_BED_LEVELING)
++    #if PLANNER_LEVELING
++
+       #define ARG_X float lx
+       #define ARG_Y float ly
+       #define ARG_Z float lz
+-    #else
+-      #define ARG_X const float &lx
+-      #define ARG_Y const float &ly
+-      #define ARG_Z const float &lz
+-    #endif
+-
+-    #if PLANNER_LEVELING
+ 
+       /**
+        * Apply leveling to transform a cartesian position
+@@ -227,6 +212,12 @@ class Planner {
+       static void apply_leveling(float logical[XYZ]) { apply_leveling(logical[X_AXIS], logical[Y_AXIS], logical[Z_AXIS]); }
+       static void unapply_leveling(float logical[XYZ]);
+ 
++    #else
++
++      #define ARG_X const float &lx
++      #define ARG_Y const float &ly
++      #define ARG_Z const float &lz
++
+     #endif
+ 
+     /**
+@@ -402,4 +393,6 @@ class Planner {
+ 
+ };
+ 
++extern Planner planner;
++
+ #endif // PLANNER_H
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 974e05d..072364e 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -372,15 +372,15 @@ class Temperature {
+      */
+     static void updatePID();
+ 
+-    static void autotempShutdown() {
+-      #if ENABLED(AUTOTEMP)
++    #if ENABLED(AUTOTEMP)
++      static void autotempShutdown() {
+         if (planner.autotemp_enabled) {
+           planner.autotemp_enabled = false;
+           if (degTargetHotend(EXTRUDER_IDX) > planner.autotemp_min)
+             setTargetHotend(0, EXTRUDER_IDX);
+         }
+-      #endif
+-    }
++      }
++    #endif
+ 
+     #if ENABLED(BABYSTEPPING)
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index b0b77e6..458e3a3 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -30,6 +30,10 @@
+ #include "configuration_store.h"
+ #include "utility.h"
+ 
++#if HAS_BUZZER && DISABLED(LCD_USE_I2C_BUZZER)
++  #include "buzzer.h"
++#endif
++
+ #if ENABLED(BLTOUCH)
+   #include "endstops.h"
+ #endif
+@@ -581,7 +585,9 @@ void kill_screen(const char* lcd_msg) {
+       clear_command_queue();
+       quickstop_stepper();
+       print_job_timer.stop();
+-      thermalManager.autotempShutdown();
++      #if ENABLED(AUTOTEMP)
++        thermalManager.autotempShutdown();
++      #endif
+       wait_for_heatup = false;
+       lcd_setstatus(MSG_PRINT_ABORTED, true);
+     }
+

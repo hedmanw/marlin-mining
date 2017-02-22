@@ -1,0 +1,698 @@
+commit 6e5572228db9a366719265e8a8f70760e579c477 (from 5146694452e0e46112b9b3119c25cfa2b4206897)
+Merge: 5146694 27ad381
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 07:53:11 2015 -0700
+
+    Merge pull request #2064 from thinkyhead/wait_before_g28
+    
+    Split up prepare_move by type
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 03531d1..c62ba91 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -205,7 +205,7 @@ void enable_all_steppers();
+ void disable_all_steppers();
+ 
+ void FlushSerialRequestResend();
+-void ClearToSend();
++void ok_to_send();
+ 
+ void get_coordinates();
+ #ifdef DELTA
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8dc884e..293298e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -363,6 +363,7 @@ bool target_direction;
+ #endif
+ 
+ #ifdef SCARA
++  float delta_segments_per_second = SCARA_SEGMENTS_PER_SECOND;
+   static float delta[3] = { 0 };
+   float axis_scaling[3] = { 1, 1, 1 };    // Build size scaling, default to 1
+ #endif
+@@ -1712,7 +1713,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+ #ifdef FWRETRACT
+ 
+-  void retract(bool retracting, bool swapretract = false) {
++  void retract(bool retracting, bool swapping=false) {
+ 
+     if (retracting == retracted[active_extruder]) return;
+ 
+@@ -1723,7 +1724,7 @@ static void homeaxis(AxisEnum axis) {
+     if (retracting) {
+ 
+       feedrate = retract_feedrate * 60;
+-      current_position[E_AXIS] += (swapretract ? retract_length_swap : retract_length) / volumetric_multiplier[active_extruder];
++      current_position[E_AXIS] += (swapping ? retract_length_swap : retract_length) / volumetric_multiplier[active_extruder];
+       plan_set_e_position(current_position[E_AXIS]);
+       prepare_move();
+ 
+@@ -1750,7 +1751,7 @@ static void homeaxis(AxisEnum axis) {
+       }
+ 
+       feedrate = retract_recover_feedrate * 60;
+-      float move_e = swapretract ? retract_length_swap + retract_recover_length_swap : retract_length + retract_recover_length;
++      float move_e = swapping ? retract_length_swap + retract_recover_length_swap : retract_length + retract_recover_length;
+       current_position[E_AXIS] -= move_e / volumetric_multiplier[active_extruder];
+       plan_set_e_position(current_position[E_AXIS]);
+       prepare_move();
+@@ -1792,7 +1793,7 @@ inline void gcode_G0_G1() {
+     #endif //FWRETRACT
+ 
+     prepare_move();
+-    //ClearToSend();
++    //ok_to_send();
+   }
+ }
+ 
+@@ -1814,7 +1815,7 @@ inline void gcode_G4() {
+   millis_t codenum = 0;
+ 
+   if (code_seen('P')) codenum = code_value_long(); // milliseconds to wait
+-  if (code_seen('S')) codenum = code_value_long() * 1000; // seconds to wait
++  if (code_seen('S')) codenum = code_value() * 1000; // seconds to wait
+ 
+   st_synchronize();
+   refresh_cmd_timeout();
+@@ -2681,7 +2682,7 @@ inline void gcode_G92() {
+       hasP = codenum > 0;
+     }
+     if (code_seen('S')) {
+-      codenum = code_value_short() * 1000UL; // seconds to wait
++      codenum = code_value() * 1000; // seconds to wait
+       hasS = codenum > 0;
+     }
+     char* starpos = strchr(src, '*');
+@@ -4314,7 +4315,7 @@ inline void gcode_M303() {
+       destination[X_AXIS] = delta[X_AXIS]/axis_scaling[X_AXIS];
+       destination[Y_AXIS] = delta[Y_AXIS]/axis_scaling[Y_AXIS];
+       prepare_move();
+-      //ClearToSend();
++      //ok_to_send();
+       return true;
+     }
+     return false;
+@@ -5537,7 +5538,7 @@ void process_commands() {
+     SERIAL_ECHOLNPGM("\"");
+   }
+ 
+-  ClearToSend();
++  ok_to_send();
+ }
+ 
+ void FlushSerialRequestResend() {
+@@ -5545,10 +5546,10 @@ void FlushSerialRequestResend() {
+   MYSERIAL.flush();
+   SERIAL_PROTOCOLPGM(MSG_RESEND);
+   SERIAL_PROTOCOLLN(gcode_LastN + 1);
+-  ClearToSend();
++  ok_to_send();
+ }
+ 
+-void ClearToSend() {
++void ok_to_send() {
+   refresh_cmd_timeout();
+   #ifdef SDSUPPORT
+     if (fromsd[cmd_queue_index_r]) return;
+@@ -5777,54 +5778,15 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+ 
+ #endif // PREVENT_DANGEROUS_EXTRUDE
+ 
+-void prepare_move() {
+-  clamp_to_software_endstops(destination);
+-  refresh_cmd_timeout();
+-
+-  #ifdef PREVENT_DANGEROUS_EXTRUDE
+-    (void)prevent_dangerous_extrude(current_position[E_AXIS], destination[E_AXIS]);
+-  #endif
+-
+-  #ifdef SCARA //for now same as delta-code
+-
+-    float difference[NUM_AXIS];
+-    for (int8_t i = 0; i < NUM_AXIS; i++) difference[i] = destination[i] - current_position[i];
+-
+-    float cartesian_mm = sqrt(sq(difference[X_AXIS]) + sq(difference[Y_AXIS]) + sq(difference[Z_AXIS]));
+-    if (cartesian_mm < 0.000001) { cartesian_mm = abs(difference[E_AXIS]); }
+-    if (cartesian_mm < 0.000001) { return; }
+-    float seconds = 6000 * cartesian_mm / feedrate / feedrate_multiplier;
+-    int steps = max(1, int(scara_segments_per_second * seconds));
+-
+-    //SERIAL_ECHOPGM("mm="); SERIAL_ECHO(cartesian_mm);
+-    //SERIAL_ECHOPGM(" seconds="); SERIAL_ECHO(seconds);
+-    //SERIAL_ECHOPGM(" steps="); SERIAL_ECHOLN(steps);
+-
+-    for (int s = 1; s <= steps; s++) {
+-      float fraction = float(s) / float(steps);
+-      for (int8_t i = 0; i < NUM_AXIS; i++) destination[i] = current_position[i] + difference[i] * fraction;
+-  
+-      calculate_delta(destination);
+-      //SERIAL_ECHOPGM("destination[X_AXIS]="); SERIAL_ECHOLN(destination[X_AXIS]);
+-      //SERIAL_ECHOPGM("destination[Y_AXIS]="); SERIAL_ECHOLN(destination[Y_AXIS]);
+-      //SERIAL_ECHOPGM("destination[Z_AXIS]="); SERIAL_ECHOLN(destination[Z_AXIS]);
+-      //SERIAL_ECHOPGM("delta[X_AXIS]="); SERIAL_ECHOLN(delta[X_AXIS]);
+-      //SERIAL_ECHOPGM("delta[Y_AXIS]="); SERIAL_ECHOLN(delta[Y_AXIS]);
+-      //SERIAL_ECHOPGM("delta[Z_AXIS]="); SERIAL_ECHOLN(delta[Z_AXIS]);
+-
+-      plan_buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], feedrate/60*feedrate_multiplier/100.0, active_extruder);
+-    }
+-
+-  #endif // SCARA
+-  
+-  #ifdef DELTA
++#if defined(DELTA) || defined(SCARA)
+ 
++  inline bool prepare_move_delta() {
+     float difference[NUM_AXIS];
+     for (int8_t i=0; i < NUM_AXIS; i++) difference[i] = destination[i] - current_position[i];
+ 
+     float cartesian_mm = sqrt(sq(difference[X_AXIS]) + sq(difference[Y_AXIS]) + sq(difference[Z_AXIS]));
+     if (cartesian_mm < 0.000001) cartesian_mm = abs(difference[E_AXIS]);
+-    if (cartesian_mm < 0.000001) return;
++    if (cartesian_mm < 0.000001) return false;
+     float seconds = 6000 * cartesian_mm / feedrate / feedrate_multiplier;
+     int steps = max(1, int(delta_segments_per_second * seconds));
+ 
+@@ -5833,18 +5795,39 @@ void prepare_move() {
+     // SERIAL_ECHOPGM(" steps="); SERIAL_ECHOLN(steps);
+ 
+     for (int s = 1; s <= steps; s++) {
++
+       float fraction = float(s) / float(steps);
+-      for (int8_t i = 0; i < NUM_AXIS; i++) destination[i] = current_position[i] + difference[i] * fraction;
++
++      for (int8_t i = 0; i < NUM_AXIS; i++)
++        destination[i] = current_position[i] + difference[i] * fraction;
++
+       calculate_delta(destination);
++
+       #ifdef ENABLE_AUTO_BED_LEVELING
+         adjust_delta(destination);
+       #endif
++
++      //SERIAL_ECHOPGM("destination[X_AXIS]="); SERIAL_ECHOLN(destination[X_AXIS]);
++      //SERIAL_ECHOPGM("destination[Y_AXIS]="); SERIAL_ECHOLN(destination[Y_AXIS]);
++      //SERIAL_ECHOPGM("destination[Z_AXIS]="); SERIAL_ECHOLN(destination[Z_AXIS]);
++      //SERIAL_ECHOPGM("delta[X_AXIS]="); SERIAL_ECHOLN(delta[X_AXIS]);
++      //SERIAL_ECHOPGM("delta[Y_AXIS]="); SERIAL_ECHOLN(delta[Y_AXIS]);
++      //SERIAL_ECHOPGM("delta[Z_AXIS]="); SERIAL_ECHOLN(delta[Z_AXIS]);
++
+       plan_buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], feedrate/60*feedrate_multiplier/100.0, active_extruder);
+     }
++    return true;
++  }
+ 
+-  #endif // DELTA
++#endif // DELTA || SCARA
+ 
+-  #ifdef DUAL_X_CARRIAGE
++#ifdef SCARA
++  inline bool prepare_move_scara() { return prepare_move_delta(); }
++#endif
++
++#ifdef DUAL_X_CARRIAGE
++
++  inline bool prepare_move_dual_x_carriage() {
+     if (active_extruder_parked) {
+       if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && active_extruder == 0) {
+         // move duplicate extruder into correct duplication position.
+@@ -5865,7 +5848,7 @@ void prepare_move() {
+             set_current_to_destination();
+             NOLESS(raised_parked_position[Z_AXIS], destination[Z_AXIS]);
+             delayed_move_time = millis();
+-            return;
++            return false;
+           }
+         }
+         delayed_move_time = 0;
+@@ -5876,9 +5859,14 @@ void prepare_move() {
+         active_extruder_parked = false;
+       }
+     }
+-  #endif // DUAL_X_CARRIAGE
++    return true;
++  }
+ 
+-  #if !defined(DELTA) && !defined(SCARA)
++#endif // DUAL_X_CARRIAGE
++
++#if !defined(DELTA) && !defined(SCARA)
++
++  inline bool prepare_move_cartesian() {
+     // Do not use feedrate_multiplier for E or Z only moves
+     if (current_position[X_AXIS] == destination[X_AXIS] && current_position[Y_AXIS] == destination[Y_AXIS]) {
+       line_to_destination();
+@@ -5886,12 +5874,40 @@ void prepare_move() {
+     else {
+       #ifdef MESH_BED_LEVELING
+         mesh_plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], (feedrate/60)*(feedrate_multiplier/100.0), active_extruder);
+-        return;
++        return false;
+       #else
+         line_to_destination(feedrate * feedrate_multiplier / 100.0);
+-      #endif  // MESH_BED_LEVELING
++      #endif
+     }
+-  #endif // !(DELTA || SCARA)
++    return true;
++  }
++
++#endif // !DELTA && !SCARA
++
++/**
++ * Prepare a single move and get ready for the next one
++ */
++void prepare_move() {
++  clamp_to_software_endstops(destination);
++  refresh_cmd_timeout();
++
++  #ifdef PREVENT_DANGEROUS_EXTRUDE
++    prevent_dangerous_extrude(current_position[E_AXIS], destination[E_AXIS]);
++  #endif
++
++  #ifdef SCARA
++    if (!prepare_move_scara()) return;
++  #elif defined(DELTA)
++    if (!prepare_move_delta()) return;
++  #endif
++
++  #ifdef DUAL_X_CARRIAGE
++    if (!prepare_move_dual_x_carriage()) return;
++  #endif
++
++  #if !defined(DELTA) && !defined(SCARA)
++    if (!prepare_move_cartesian()) return;
++  #endif
+ 
+   set_current_to_destination();
+ }
+@@ -5911,37 +5927,37 @@ void prepare_arc_move(char isclockwise) {
+ 
+ #if HAS_CONTROLLERFAN
+ 
+-millis_t lastMotor = 0; // Last time a motor was turned on
+-millis_t lastMotorCheck = 0; // Last time the state was checked
+-
+-void controllerFan() {
+-  millis_t ms = millis();
+-  if (ms >= lastMotorCheck + 2500) { // Not a time critical function, so we only check every 2500ms
+-    lastMotorCheck = ms;
+-    if (X_ENABLE_READ == X_ENABLE_ON || Y_ENABLE_READ == Y_ENABLE_ON || Z_ENABLE_READ == Z_ENABLE_ON || soft_pwm_bed > 0
+-      || E0_ENABLE_READ == E_ENABLE_ON // If any of the drivers are enabled...
+-      #if EXTRUDERS > 1
+-        || E1_ENABLE_READ == E_ENABLE_ON
+-        #if HAS_X2_ENABLE
+-          || X2_ENABLE_READ == X_ENABLE_ON
+-        #endif
+-        #if EXTRUDERS > 2
+-          || E2_ENABLE_READ == E_ENABLE_ON
+-          #if EXTRUDERS > 3
+-            || E3_ENABLE_READ == E_ENABLE_ON
++  void controllerFan() {
++    static millis_t lastMotor = 0;      // Last time a motor was turned on
++    static millis_t lastMotorCheck = 0; // Last time the state was checked
++    millis_t ms = millis();
++    if (ms >= lastMotorCheck + 2500) { // Not a time critical function, so we only check every 2500ms
++      lastMotorCheck = ms;
++      if (X_ENABLE_READ == X_ENABLE_ON || Y_ENABLE_READ == Y_ENABLE_ON || Z_ENABLE_READ == Z_ENABLE_ON || soft_pwm_bed > 0
++        || E0_ENABLE_READ == E_ENABLE_ON // If any of the drivers are enabled...
++        #if EXTRUDERS > 1
++          || E1_ENABLE_READ == E_ENABLE_ON
++          #if HAS_X2_ENABLE
++            || X2_ENABLE_READ == X_ENABLE_ON
++          #endif
++          #if EXTRUDERS > 2
++            || E2_ENABLE_READ == E_ENABLE_ON
++            #if EXTRUDERS > 3
++              || E3_ENABLE_READ == E_ENABLE_ON
++            #endif
+           #endif
+         #endif
+-      #endif
+-    ) {
+-      lastMotor = ms; //... set time to NOW so the fan will turn on
++      ) {
++        lastMotor = ms; //... set time to NOW so the fan will turn on
++      }
++      uint8_t speed = (lastMotor == 0 || ms >= lastMotor + (CONTROLLERFAN_SECS * 1000UL)) ? 0 : CONTROLLERFAN_SPEED;
++      // allows digital or PWM fan output to be used (see M42 handling)
++      digitalWrite(CONTROLLERFAN_PIN, speed);
++      analogWrite(CONTROLLERFAN_PIN, speed);
+     }
+-    uint8_t speed = (lastMotor == 0 || ms >= lastMotor + (CONTROLLERFAN_SECS * 1000UL)) ? 0 : CONTROLLERFAN_SPEED;
+-    // allows digital or PWM fan output to be used (see M42 handling)
+-    digitalWrite(CONTROLLERFAN_PIN, speed);
+-    analogWrite(CONTROLLERFAN_PIN, speed);
+   }
+-}
+-#endif
++
++#endif // HAS_CONTROLLERFAN
+ 
+ #ifdef SCARA
+ void calculate_SCARA_forward_Transform(float f_scara[3])
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 151b703..bb552e5 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -30,7 +30,7 @@ Here are some standard links for getting your machine calibrated:
+ // You might need Z-Min endstop on SCARA-Printer to use this feature. Actually untested!
+ // Uncomment to use Morgan scara mode
+ #define SCARA  
+-#define scara_segments_per_second 200 //careful, two much will decrease performance...
++#define SCARA_SEGMENTS_PER_SECOND 200 // If movement is choppy try lowering this value
+ // Length of inner support arm
+ #define Linkage_1 150 //mm      Preprocessor cannot handle decimal point...
+ // Length of outer support arm     Measure arm lengths precisely and enter 
+
+commit 6e5572228db9a366719265e8a8f70760e579c477 (from 27ad381e253e538d2f20997e0d46cc02c342f988)
+Merge: 5146694 27ad381
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 07:53:11 2015 -0700
+
+    Merge pull request #2064 from thinkyhead/wait_before_g28
+    
+    Split up prepare_move by type
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index fa57408..f09a8a2 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -276,6 +276,13 @@
+     #define MAX_PROBE_Y (min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+   #endif
+ 
++   /**
++    * Sled Options
++    */ 
++  #ifdef Z_PROBE_SLED
++    #define Z_SAFE_HOMING
++  #endif
++  
+   /**
+    * MAX_STEP_FREQUENCY differs for TOSHIBA
+    */
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a0fb564..293298e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -651,8 +651,8 @@ void setup() {
+   #endif
+ 
+   #ifdef Z_PROBE_SLED
+-    pinMode(SERVO0_PIN, OUTPUT);
+-    digitalWrite(SERVO0_PIN, LOW); // turn it off
++    pinMode(SLED_PIN, OUTPUT);
++    digitalWrite(SLED_PIN, LOW); // turn it off
+   #endif // Z_PROBE_SLED
+ 
+   setup_homepin();
+@@ -1517,6 +1517,47 @@ static void setup_for_endstop_move() {
+ 
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
++
++#ifdef Z_PROBE_SLED
++
++  #ifndef SLED_DOCKING_OFFSET
++    #define SLED_DOCKING_OFFSET 0
++  #endif
++
++  /**
++   * Method to dock/undock a sled designed by Charles Bell.
++   *
++   * dock[in]     If true, move to MAX_X and engage the electromagnet
++   * offset[in]   The additional distance to move to adjust docking location
++   */
++  static void dock_sled(bool dock, int offset=0) {
++    if (!axis_known_position[X_AXIS] || !axis_known_position[Y_AXIS]) {
++      LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
++      return;
++    }
++
++    if (dock) {
++      float oldXpos = current_position[X_AXIS]; // save x position
++      do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // rise Z   
++      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset - 1, current_position[Y_AXIS], current_position[Z_AXIS]);  // Dock sled a bit closer to ensure proper capturing                                                                                                                           
++      digitalWrite(SLED_PIN, LOW); // turn off magnet
++      do_blocking_move_to(oldXpos, current_position[Y_AXIS], current_position[Z_AXIS]); // return to position before docking
++    } else {
++      float oldXpos = current_position[X_AXIS]; // save x position
++      float z_loc = current_position[Z_AXIS];
++      if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
++      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], z_loc); // this also updates current_position
++      digitalWrite(SLED_PIN, HIGH); // turn on magnet
++      do_blocking_move_to(oldXpos, current_position[Y_AXIS], current_position[Z_AXIS]); // return to position before docking
++    }
++  }
++
++#endif // Z_PROBE_SLED
++
++
++
+ /**
+  * Home an individual axis
+  */
+@@ -1539,6 +1580,13 @@ static void homeaxis(AxisEnum axis) {
+     current_position[axis] = 0;
+     sync_plan_position();
+ 
++    #ifdef Z_PROBE_SLED
++      // Get Probe
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) dock_sled(false);
++      }
++    #endif
++    
+     #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+       // Deploy a probe if there is one, and homing towards the bed
+@@ -1635,6 +1683,13 @@ static void homeaxis(AxisEnum axis) {
+     endstops_hit_on_purpose(); // clear endstop hit flags
+     axis_known_position[axis] = true;
+ 
++    #ifdef Z_PROBE_SLED
++    // bring probe back
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) dock_sled(true);
++      } 
++    #endif
++
+     #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+       // Deploy a probe if there is one, and homing towards the bed
+@@ -1709,39 +1764,6 @@ static void homeaxis(AxisEnum axis) {
+ 
+ #endif // FWRETRACT
+ 
+-#ifdef Z_PROBE_SLED
+-
+-  #ifndef SLED_DOCKING_OFFSET
+-    #define SLED_DOCKING_OFFSET 0
+-  #endif
+-
+-  /**
+-   * Method to dock/undock a sled designed by Charles Bell.
+-   *
+-   * dock[in]     If true, move to MAX_X and engage the electromagnet
+-   * offset[in]   The additional distance to move to adjust docking location
+-   */
+-  static void dock_sled(bool dock, int offset=0) {
+-    if (!axis_known_position[X_AXIS] || !axis_known_position[Y_AXIS]) {
+-      LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
+-      return;
+-    }
+-
+-    if (dock) {
+-      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], current_position[Z_AXIS]); // this also updates current_position
+-      digitalWrite(SERVO0_PIN, LOW); // turn off magnet
+-    } else {
+-      float z_loc = current_position[Z_AXIS];
+-      if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
+-      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, Y_PROBE_OFFSET_FROM_EXTRUDER, z_loc); // this also updates current_position
+-      digitalWrite(SERVO0_PIN, HIGH); // turn on magnet
+-    }
+-  }
+-
+-#endif // Z_PROBE_SLED
+-
+ /**
+  *
+  * G-Code Handler functions
+@@ -2585,7 +2607,7 @@ inline void gcode_G28() {
+     #endif // !DELTA
+ 
+     #ifdef Z_PROBE_SLED
+-      dock_sled(true, -SLED_DOCKING_OFFSET); // dock the probe, correcting for over-travel
++      dock_sled(true); // dock the probe
+     #elif defined(Z_PROBE_ALLEN_KEY) //|| defined(SERVO_LEVELING)
+       stow_z_probe();
+     #endif
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index d6f45d7..cc9d1f2 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -14,6 +14,7 @@
+ #define BOARD_RAMPS_13_EEB      34   // RAMPS 1.3 / 1.4 (Power outputs: Extruder0, Extruder1, Bed)
+ #define BOARD_RAMPS_13_EFF      35   // RAMPS 1.3 / 1.4 (Power outputs: Extruder, Fan, Fan)
+ #define BOARD_RAMPS_13_EEF      36   // RAMPS 1.3 / 1.4 (Power outputs: Extruder0, Extruder1, Fan)
++#define BOARD_RAMPS_13_SF       38   // RAMPS 1.3 / 1.4 (Power outputs: Spindle, Controller Fan)
+ #define BOARD_FELIX2            37   // Felix 2.0+ Electronics Board (RAMPS like)
+ #define BOARD_DUEMILANOVE_328P  4    // Duemilanove w/ ATMega328P pin assignments
+ #define BOARD_GEN6              5    // Gen6
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 0270253..6af115d 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -34,7 +34,7 @@
+   #include "pins_SETHI.h"
+ #elif MB(RAMPS_OLD)
+   #include "pins_RAMPS_OLD.h"
+-#elif MB(RAMPS_13_EFB) || MB(RAMPS_13_EEB) || MB(RAMPS_13_EFF) || MB(RAMPS_13_EEF)
++#elif MB(RAMPS_13_EFB) || MB(RAMPS_13_EEB) || MB(RAMPS_13_EFF) || MB(RAMPS_13_EEF) || MB(RAMPS_13_SF)
+   #include "pins_RAMPS_13.h"
+ #elif MB(DUEMILANOVE_328P)
+   #include "pins_DUEMILANOVE_328P.h"
+diff --git a/Marlin/pins_MEGATRONICS_3.h b/Marlin/pins_MEGATRONICS_3.h
+index 6b4016b..ed62727 100644
+--- a/Marlin/pins_MEGATRONICS_3.h
++++ b/Marlin/pins_MEGATRONICS_3.h
+@@ -8,6 +8,11 @@
+ 
+ #define LARGE_FLASH        true
+ 
++
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ // Servo support
+ #ifdef NUM_SERVOS
+   #define SERVO0_PIN       46 //AUX3-6
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index 6d782b9..4c008d6 100644
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -22,6 +22,10 @@
+   #endif
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #undef X_MS1_PIN
+ #undef X_MS2_PIN
+ #undef Y_MS1_PIN
+diff --git a/Marlin/pins_RAMPS_13.h b/Marlin/pins_RAMPS_13.h
+index af1d2d3..c9c796e 100644
+--- a/Marlin/pins_RAMPS_13.h
++++ b/Marlin/pins_RAMPS_13.h
+@@ -7,6 +7,7 @@
+  *  RAMPS_13_EEB (Extruder, Extruder, Bed)
+  *  RAMPS_13_EFF (Extruder, Fan, Fan)
+  *  RAMPS_13_EEF (Extruder, Extruder, Fan)
++ *  RAMPS_13_SF  (Spindle, Controller Fan)
+  *
+  *  Other pins_MYBOARD.h files may override these defaults
+  */
+@@ -81,7 +82,7 @@
+   #if MB(RAMPS_13_EFF)
+     #define CONTROLLERFAN_PIN  -1 // Pin used for the fan to cool controller
+   #endif
+-#elif MB(RAMPS_13_EEF)
++#elif MB(RAMPS_13_EEF) || MB(RAMPS_13_SF)
+   #define FAN_PIN            8
+ #else
+   #define FAN_PIN            4 // IO pin. Buffer needed
+@@ -101,7 +102,7 @@
+   #define HEATER_0_PIN       10   // EXTRUDER 1
+ #endif
+ 
+-#if MB(RAMPS_13_EFB)
++#if MB(RAMPS_13_EFB) || MB(RAMPS_13_SF)
+   #define HEATER_1_PIN       -1
+ #else
+   #define HEATER_1_PIN       9    // EXTRUDER 2 (FAN On Sprinter)
+@@ -113,7 +114,7 @@
+ #define TEMP_1_PIN         15   // ANALOG NUMBERING
+ #define TEMP_2_PIN         -1   // ANALOG NUMBERING
+ 
+-#if MB(RAMPS_13_EFF) || MB(RAMPS_13_EEF)
++#if MB(RAMPS_13_EFF) || MB(RAMPS_13_EEF) || MB(RAMPS_13_SF)
+   #define HEATER_BED_PIN     -1    // NO BED
+ #else
+   #define HEATER_BED_PIN     8    // BED
+@@ -134,6 +135,10 @@
+   #endif
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #ifdef ULTRA_LCD
+ 
+   #ifdef NEWPANEL
+diff --git a/Marlin/pins_SANGUINOLOLU_11.h b/Marlin/pins_SANGUINOLOLU_11.h
+index e7bdd97..ca41bdd 100644
+--- a/Marlin/pins_SANGUINOLOLU_11.h
++++ b/Marlin/pins_SANGUINOLOLU_11.h
+@@ -44,6 +44,10 @@
+   #define FAN_PIN            4
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #ifdef NUM_SERVOS
+   #define SERVO0_PIN          -1
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4bc2de8..29d7704 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -558,7 +558,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_min_both = z2_min_endstop && old_z2_min_endstop;
+             if ((z_min_both || z2_min_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+               if (!performing_homing || (performing_homing && z_min_both && z2_min_both)) //if not performing home or if both endstops were trigged during homing...
+                 step_events_completed = current_block->step_event_count;
+             }
+@@ -579,7 +579,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ 
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+@@ -613,7 +613,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_max_both = z2_max_endstop && old_z2_max_endstop;
+             if ((z_max_both || z2_max_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+ 
+              // if (z_max_both) SERIAL_ECHOLN("z_max_endstop = true");
+              // if (z2_max_both) SERIAL_ECHOLN("z2_max_endstop = true");
+@@ -638,7 +638,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+           old_z_probe_endstop = z_probe_endstop;
+

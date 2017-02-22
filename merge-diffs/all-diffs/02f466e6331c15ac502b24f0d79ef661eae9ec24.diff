@@ -1,0 +1,241 @@
+commit 02f466e6331c15ac502b24f0d79ef661eae9ec24 (from da9d4c4caf9845b5b3077cdf5b6d65c606bf00b5)
+Merge: da9d4c4 04fa9d4
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Mar 24 02:41:16 2016 -0700
+
+    Merge pull request #3202 from thinkyhead/rc_menu_item_M303_redo
+    
+    Add Menu Items to initiate M303
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 414aeb3..35ab606 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -228,6 +228,7 @@ inline bool IsRunning() { return  Running; }
+ inline bool IsStopped() { return !Running; }
+ 
+ bool enqueue_and_echo_command(const char* cmd, bool say_ok=false); //put a single ASCII command at the end of the current buffer or return false when it is full
++void enqueue_and_echo_command_now(const char* cmd); // enqueue now, only return when the command has been enqueued
+ void enqueue_and_echo_commands_P(const char* cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
+ 
+ void prepare_arc_move(char isclockwise);
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 04a371c..bb5ab23 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -549,6 +549,10 @@ inline bool _enqueuecommand(const char* cmd, bool say_ok=false) {
+   return true;
+ }
+ 
++void enqueue_and_echo_command_now(const char* cmd) {
++  while (!enqueue_and_echo_command(cmd)) idle();
++}
++
+ /**
+  * Enqueue with Serial Echo
+  */
+@@ -5135,20 +5139,27 @@ inline void gcode_M226() {
+ 
+ /**
+  * M303: PID relay autotune
+- *       S<temperature> sets the target temperature. (default target temperature = 150C)
+- *       E<extruder> (-1 for the bed)
++ *
++ *       S<temperature> sets the target temperature. (default 150C)
++ *       E<extruder> (-1 for the bed) (default 0)
+  *       C<cycles>
++ *       U<bool> with a non-zero value will apply the result to current settings
+  */
+ inline void gcode_M303() {
+   int e = code_seen('E') ? code_value_short() : 0;
+   int c = code_seen('C') ? code_value_short() : 5;
++  bool u = code_seen('U') && code_value_short() != 0;
++  
+   float temp = code_seen('S') ? code_value() : (e < 0 ? 70.0 : 150.0);
+ 
+-  if (e >=0 && e < EXTRUDERS)
++  if (e >= 0 && e < EXTRUDERS)
+     target_extruder = e;
+ 
+-  KEEPALIVE_STATE(NOT_BUSY);
+-  PID_autotune(temp, e, c);
++  KEEPALIVE_STATE(NOT_BUSY); // don't send "busy: processing" messages during autotune output
++
++  PID_autotune(temp, e, c, u);
++
++  KEEPALIVE_STATE(IN_HANDLER);
+ }
+ 
+ #if ENABLED(SCARA)
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index e508190..c3585e3 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -247,7 +247,7 @@ void CardReader::openAndPrintFile(const char *name) {
+   char cmd[4 + (FILENAME_LENGTH + 1) * MAX_DIR_DEPTH + 2]; // Room for "M23 ", names with slashes, a null, and one extra
+   sprintf_P(cmd, PSTR("M23 %s"), name);
+   for (char *c = &cmd[4]; *c; c++) *c = tolower(*c);
+-  enqueue_and_echo_command(cmd);
++  enqueue_and_echo_command_now(cmd);
+   enqueue_and_echo_commands_P(PSTR("M24"));
+ }
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 054990d..4df2233 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -199,7 +199,7 @@ static void updateTemperaturesFromRawValues();
+ //================================ Functions ================================
+ //===========================================================================
+ 
+-void PID_autotune(float temp, int extruder, int ncycles) {
++void PID_autotune(float temp, int extruder, int ncycles, bool set_result/*=false*/) {
+   float input = 0.0;
+   int cycles = 0;
+   bool heating = true;
+@@ -346,6 +346,24 @@ void PID_autotune(float temp, int extruder, int ncycles) {
+       SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(Kp);
+       SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(Ki);
+       SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(Kd);
++
++      // Use the result? (As with "M303 U1")
++      if (set_result) {
++        if (extruder < 0) {
++          #if ENABLED(PIDTEMPBED)
++            bedKp = Kp;
++            bedKi = scalePID_i(Ki);
++            bedKd = scalePID_d(Kd);
++            updatePID();
++          #endif
++        }
++        else {
++          PID_PARAM(Kp, extruder) = Kp;
++          PID_PARAM(Ki, e) = scalePID_i(Ki);
++          PID_PARAM(Kd, e) = scalePID_d(Kd);
++          updatePID();
++        }
++      }
+       return;
+     }
+     lcd_update();
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 29a6920..1a4d648 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -141,7 +141,7 @@ int getHeaterPower(int heater);
+ void disable_all_heaters();
+ void updatePID();
+ 
+-void PID_autotune(float temp, int extruder, int ncycles);
++void PID_autotune(float temp, int extruder, int ncycles, bool set_result=false);
+ 
+ void setExtruderAutoFanState(int pin, bool state);
+ void checkExtruderAutoFans();
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index e605948..43f112e 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1067,6 +1067,33 @@ static void lcd_control_menu() {
+  *
+  */
+ 
++#if ENABLED(PIDTEMP) || ENABLED(PIDTEMPBED)
++
++  #if ENABLED(PIDTEMP)
++    int autotune_temp[EXTRUDERS] = { 150 };
++    const int heater_maxtemp[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_MAXTEMP, HEATER_1_MAXTEMP, HEATER_2_MAXTEMP, HEATER_3_MAXTEMP);
++  #endif
++
++  #if ENABLED(PIDTEMPBED)
++    int autotune_temp_bed = 70;
++  #endif
++
++  static void _lcd_autotune(int e) {
++    char cmd[30];
++    sprintf_P(cmd, PSTR("M303 U1 E%d S%d"), e,
++      #if ENABLED(PIDTEMP) && ENABLED(PIDTEMPBED)
++        e < 0 ? autotune_temp_bed : autotune_temp[e]
++      #elif ENABLED(PIDTEMPBED)
++        autotune_temp_bed
++      #else
++        autotune_temp[e]
++      #endif
++    );
++    enqueue_and_echo_command_now(cmd);
++  }
++
++#endif PIDTEMP || PIDTEMPBED
++
+ #if ENABLED(PIDTEMP)
+ 
+   // Helpers for editing PID Ki & Kd values
+@@ -1079,18 +1106,19 @@ static void lcd_control_menu() {
+     PID_PARAM(Kd, e) = scalePID_d(raw_Kd);
+     updatePID();
+   }
+-  #define COPY_AND_SCALE(eindex) \
++  #define _PIDTEMP_FUNCTIONS(eindex) \
+     void copy_and_scalePID_i_E ## eindex() { copy_and_scalePID_i(eindex); } \
+-    void copy_and_scalePID_d_E ## eindex() { copy_and_scalePID_d(eindex); }
++    void copy_and_scalePID_d_E ## eindex() { copy_and_scalePID_d(eindex); } \
++    void lcd_autotune_callback_E ## eindex() { _lcd_autotune(eindex); }
+ 
+-  COPY_AND_SCALE(0);
++  _PIDTEMP_FUNCTIONS(0);
+   #if ENABLED(PID_PARAMS_PER_EXTRUDER)
+     #if EXTRUDERS > 1
+-      COPY_AND_SCALE(1);
++      _PIDTEMP_FUNCTIONS(1);
+       #if EXTRUDERS > 2
+-        COPY_AND_SCALE(2);
++        _PIDTEMP_FUNCTIONS(2);
+         #if EXTRUDERS > 3
+-          COPY_AND_SCALE(3);
++          _PIDTEMP_FUNCTIONS(3);
+         #endif //EXTRUDERS > 3
+       #endif //EXTRUDERS > 2
+     #endif //EXTRUDERS > 1
+@@ -1176,15 +1204,15 @@ static void lcd_control_temperature_menu() {
+   #endif
+ 
+   //
+-  // PID-P, PID-I, PID-D, PID-C
+-  // PID-P E1, PID-I E1, PID-D E1, PID-C E1
+-  // PID-P E2, PID-I E2, PID-D E2, PID-C E2
+-  // PID-P E3, PID-I E3, PID-D E3, PID-C E3
+-  // PID-P E4, PID-I E4, PID-D E4, PID-C E4
++  // PID-P, PID-I, PID-D, PID-C, PID Autotune
++  // PID-P E1, PID-I E1, PID-D E1, PID-C E1, PID Autotune E1
++  // PID-P E2, PID-I E2, PID-D E2, PID-C E2, PID Autotune E2
++  // PID-P E3, PID-I E3, PID-D E3, PID-C E3, PID Autotune E3
++  // PID-P E4, PID-I E4, PID-D E4, PID-C E4, PID Autotune E4
+   //
+   #if ENABLED(PIDTEMP)
+ 
+-    #define _PID_MENU_ITEMS(ELABEL, eindex) \
++    #define _PID_BASE_MENU_ITEMS(ELABEL, eindex) \
+       raw_Ki = unscalePID_i(PID_PARAM(Ki, eindex)); \
+       raw_Kd = unscalePID_d(PID_PARAM(Kd, eindex)); \
+       MENU_ITEM_EDIT(float52, MSG_PID_P ELABEL, &PID_PARAM(Kp, eindex), 1, 9990); \
+@@ -1192,13 +1220,17 @@ static void lcd_control_temperature_menu() {
+       MENU_ITEM_EDIT_CALLBACK(float52, MSG_PID_D ELABEL, &raw_Kd, 1, 9990, copy_and_scalePID_d_E ## eindex)
+ 
+     #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-      #define PID_MENU_ITEMS(ELABEL, eindex) \
+-        _PID_MENU_ITEMS(ELABEL, eindex); \
++      #define _PID_MENU_ITEMS(ELABEL, eindex) \
++        _PID_BASE_MENU_ITEMS(ELABEL, eindex); \
+         MENU_ITEM_EDIT(float3, MSG_PID_C ELABEL, &PID_PARAM(Kc, eindex), 1, 9990)
+     #else
+-      #define PID_MENU_ITEMS(ELABEL, eindex) _PID_MENU_ITEMS(ELABEL, eindex)
++      #define _PID_MENU_ITEMS(ELABEL, eindex) _PID_BASE_MENU_ITEMS(ELABEL, eindex)
+     #endif
+ 
++    #define PID_MENU_ITEMS(ELABEL, eindex) \
++      _PID_MENU_ITEMS(ELABEL, eindex); \
++      MENU_MULTIPLIER_ITEM_EDIT_CALLBACK(int3, MSG_PID_AUTOTUNE ELABEL, &autotune_temp[eindex], 150, heater_maxtemp[eindex] - 15, lcd_autotune_callback_E ## eindex)
++
+     #if ENABLED(PID_PARAMS_PER_EXTRUDER) && EXTRUDERS > 1
+       PID_MENU_ITEMS(MSG_E1, 0);
+       PID_MENU_ITEMS(MSG_E2, 1);
+

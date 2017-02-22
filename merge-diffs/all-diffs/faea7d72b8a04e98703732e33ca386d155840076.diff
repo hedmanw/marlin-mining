@@ -1,0 +1,461 @@
+commit faea7d72b8a04e98703732e33ca386d155840076 (from 12a4d60e186f52e0a185c71f74622e5ac504c984)
+Merge: 12a4d60 08337e0
+Author: daid <daid303@gmail.com>
+Date:   Wed Nov 7 02:00:26 2012 -0800
+
+    Merge pull request #290 from buildrob/Marlin_v1
+    
+    Clean up special serial port cases
+
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+index 39731bd..a48ffbe 100644
+--- a/Marlin/MarlinSerial.h
++++ b/Marlin/MarlinSerial.h
+@@ -24,7 +24,7 @@
+ #include "Marlin.h"
+ 
+ #if !defined(SERIAL_PORT) 
+-#error SERIAL_PORT not set 
++#define SERIAL_PORT 0
+ #endif
+ 
+ // The presence of the UBRRH register is used to detect a UART.
+@@ -35,29 +35,21 @@
+ // These are macros to build serial port register names for the selected SERIAL_PORT (C preprocessor
+ // requires two levels of indirection to expand macro values properly)
+ #define SERIAL_REGNAME(registerbase,number,suffix) SERIAL_REGNAME_INTERNAL(registerbase,number,suffix)
+-#if SERIAL_PORT == 0 && !defined(UBRR0H)
++#if SERIAL_PORT == 0 && (!defined(UBRR0H) || !defined(UDR0)) // use un-numbered registers if necessary
+ #define SERIAL_REGNAME_INTERNAL(registerbase,number,suffix) registerbase##suffix
+-#else
++#else
+ #define SERIAL_REGNAME_INTERNAL(registerbase,number,suffix) registerbase##number##suffix
+-#endif
++#endif
+ 
+ // Registers used by MarlinSerial class (these are expanded 
+ // depending on selected serial port
+-#define M_UCSRxA SERIAL_REGNAME(UCSR,SERIAL_PORT,A) // defines M_UCSRxA to be UCSRxA where x is the serial port number
++#define M_UCSRxA SERIAL_REGNAME(UCSR,SERIAL_PORT,A) // defines M_UCSRxA to be UCSRnA where n is the serial port number
+ #define M_UCSRxB SERIAL_REGNAME(UCSR,SERIAL_PORT,B) 
+ #define M_RXENx SERIAL_REGNAME(RXEN,SERIAL_PORT,)    
+ #define M_TXENx SERIAL_REGNAME(TXEN,SERIAL_PORT,)    
+ #define M_RXCIEx SERIAL_REGNAME(RXCIE,SERIAL_PORT,)    
+ #define M_UDREx SERIAL_REGNAME(UDRE,SERIAL_PORT,)    
+-#if SERIAL_PORT == 0 && !defined(UDR0)
+-  #if defined(UDR)
+-    #define M_UDRx UDR  //  atmega8, atmega32
+-  #else
+-    #error UDR not defined
+-  #endif
+-#else
+-  #define M_UDRx SERIAL_REGNAME(UDR,SERIAL_PORT,) 
+-#endif  
++#define M_UDRx SERIAL_REGNAME(UDR,SERIAL_PORT,)  
+ #define M_UBRRxH SERIAL_REGNAME(UBRR,SERIAL_PORT,H)
+ #define M_UBRRxL SERIAL_REGNAME(UBRR,SERIAL_PORT,L)
+ #define M_RXCx SERIAL_REGNAME(RXC,SERIAL_PORT,)
+@@ -189,4 +181,4 @@ class MarlinSerial //: public Stream
+ extern MarlinSerial MSerial;
+ #endif // ! teensylu
+ 
+-#endif
++#endif
+diff --git a/README.md b/README.md
+index fb2c189..bbc501e 100644
+--- a/README.md
++++ b/README.md
+@@ -45,6 +45,7 @@ Features:
+ *   Heater power reporting. Useful for PID monitoring.
+ *   PID tuning
+ *   CoreXY kinematics (www.corexy.com/theory.html)
++*   Configurable serial port to support connection of wireless adaptors.
+ 
+ The default baudrate is 250000. This baudrate has less jitter and hence errors than the usual 115200 baud, but is less supported by drivers and host-environments.
+ 
+
+commit faea7d72b8a04e98703732e33ca386d155840076 (from 08337e01f7e455aadc54f65d1b0ca1c12090493a)
+Merge: 12a4d60 08337e0
+Author: daid <daid303@gmail.com>
+Date:   Wed Nov 7 02:00:26 2012 -0800
+
+    Merge pull request #290 from buildrob/Marlin_v1
+    
+    Clean up special serial port cases
+
+diff --git a/Marlin/ConfigurationStore.h b/Marlin/ConfigurationStore.h
+new file mode 100644
+index 0000000..06801ae
+--- /dev/null
++++ b/Marlin/ConfigurationStore.h
+@@ -0,0 +1,24 @@
++#ifndef CONFIG_STORE_H
++#define CONFIG_STORE_H
++
++#include "Configuration.h"
++
++#ifdef EEPROM_SETTINGS
++void Config_StoreSettings();
++void Config_RetrieveSettings();
++#else
++FORCE_INLINE void Config_StoreSettings() {}
++FORCE_INLINE void Config_RetrieveSettings() {}
++#endif
++
++#ifdef EEPROM_CHITCHAT
++void Config_PrintSettings();
++#else
++FORCE_INLINE void Config_PrintSettings() {}
++#endif
++
++void Config_ResetDefault();
++
++#endif
++
++
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+deleted file mode 100644
+index c8eaf1f..0000000
+--- a/Marlin/EEPROMwrite.h
++++ /dev/null
+@@ -1,232 +0,0 @@
+-#ifndef EEPROM_H
+-#define EEPROM_H
+-
+-#include "Marlin.h"
+-#include "planner.h"
+-#include "temperature.h"
+-//#include <EEPROM.h>
+-
+-template <class T> int EEPROM_writeAnything(int &ee, const T& value)
+-{
+-  const byte* p = (const byte*)(const void*)&value;
+-  int i;
+-  for (i = 0; i < (int)sizeof(value); i++)
+-    eeprom_write_byte((unsigned char *)ee++, *p++);
+-  return i;
+-}
+-
+-template <class T> int EEPROM_readAnything(int &ee, T& value)
+-{
+-  byte* p = (byte*)(void*)&value;
+-  int i;
+-  for (i = 0; i < (int)sizeof(value); i++)
+-    *p++ = eeprom_read_byte((unsigned char *)ee++);
+-  return i;
+-}
+-//======================================================================================
+-
+-
+-
+-
+-#define EEPROM_OFFSET 100
+-
+-
+-// IMPORTANT:  Whenever there are changes made to the variables stored in EEPROM
+-// in the functions below, also increment the version number. This makes sure that
+-// the default values are used whenever there is a change to the data, to prevent
+-// wrong data being written to the variables.
+-// ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V07"
+-
+-inline void EEPROM_StoreSettings() 
+-{
+-#ifdef EEPROM_SETTINGS
+-  char ver[4]= "000";
+-  int i=EEPROM_OFFSET;
+-  EEPROM_writeAnything(i,ver); // invalidate data first 
+-  EEPROM_writeAnything(i,axis_steps_per_unit);  
+-  EEPROM_writeAnything(i,max_feedrate);  
+-  EEPROM_writeAnything(i,max_acceleration_units_per_sq_second);
+-  EEPROM_writeAnything(i,acceleration);
+-  EEPROM_writeAnything(i,retract_acceleration);
+-  EEPROM_writeAnything(i,minimumfeedrate);
+-  EEPROM_writeAnything(i,mintravelfeedrate);
+-  EEPROM_writeAnything(i,minsegmenttime);
+-  EEPROM_writeAnything(i,max_xy_jerk);
+-  EEPROM_writeAnything(i,max_z_jerk);
+-  EEPROM_writeAnything(i,max_e_jerk);
+-  EEPROM_writeAnything(i,add_homeing);
+-  EEPROM_writeAnything(i,plaPreheatHotendTemp);
+-  EEPROM_writeAnything(i,plaPreheatHPBTemp);
+-  EEPROM_writeAnything(i,plaPreheatFanSpeed);
+-  EEPROM_writeAnything(i,absPreheatHotendTemp);
+-  EEPROM_writeAnything(i,absPreheatHPBTemp);
+-  EEPROM_writeAnything(i,absPreheatFanSpeed);
+-  #ifdef PIDTEMP
+-    EEPROM_writeAnything(i,Kp);
+-    EEPROM_writeAnything(i,Ki);
+-    EEPROM_writeAnything(i,Kd);
+-  #else
+-    EEPROM_writeAnything(i,3000);
+-    EEPROM_writeAnything(i,0);
+-    EEPROM_writeAnything(i,0);
+-  #endif
+-  char ver2[4]=EEPROM_VERSION;
+-  i=EEPROM_OFFSET;
+-  EEPROM_writeAnything(i,ver2); // validate data
+-  SERIAL_ECHO_START;
+-  SERIAL_ECHOLNPGM("Settings Stored");
+-#endif //EEPROM_SETTINGS
+-}
+-
+-
+-inline void EEPROM_printSettings()
+-{  // if def=true, the default values will be used
+-//  #ifdef EEPROM_SETTINGS  
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Steps per unit:");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M92 X",axis_steps_per_unit[0]);
+-      SERIAL_ECHOPAIR(" Y",axis_steps_per_unit[1]);
+-      SERIAL_ECHOPAIR(" Z",axis_steps_per_unit[2]);
+-      SERIAL_ECHOPAIR(" E",axis_steps_per_unit[3]);
+-      SERIAL_ECHOLN("");
+-      
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M203 X",max_feedrate[0]);
+-      SERIAL_ECHOPAIR(" Y",max_feedrate[1] ); 
+-      SERIAL_ECHOPAIR(" Z", max_feedrate[2] ); 
+-      SERIAL_ECHOPAIR(" E", max_feedrate[3]);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Maximum Acceleration (mm/s2):");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M201 X" ,max_acceleration_units_per_sq_second[0] ); 
+-      SERIAL_ECHOPAIR(" Y" , max_acceleration_units_per_sq_second[1] ); 
+-      SERIAL_ECHOPAIR(" Z" ,max_acceleration_units_per_sq_second[2] );
+-      SERIAL_ECHOPAIR(" E" ,max_acceleration_units_per_sq_second[3]);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Acceleration: S=acceleration, T=retract acceleration");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M204 S",acceleration ); 
+-      SERIAL_ECHOPAIR(" T" ,retract_acceleration);
+-      SERIAL_ECHOLN("");
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum xY jerk (mm/s),  Z=maximum Z jerk (mm/s)");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M205 S",minimumfeedrate ); 
+-      SERIAL_ECHOPAIR(" T" ,mintravelfeedrate ); 
+-      SERIAL_ECHOPAIR(" B" ,minsegmenttime ); 
+-      SERIAL_ECHOPAIR(" X" ,max_xy_jerk ); 
+-      SERIAL_ECHOPAIR(" Z" ,max_z_jerk);
+-      SERIAL_ECHOPAIR(" E" ,max_e_jerk);
+-      SERIAL_ECHOLN(""); 
+-    SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Home offset (mm):");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("  M206 X",add_homeing[0] );
+-      SERIAL_ECHOPAIR(" Y" ,add_homeing[1] );
+-      SERIAL_ECHOPAIR(" Z" ,add_homeing[2] );
+-      SERIAL_ECHOLN("");
+-    #ifdef PIDTEMP
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("PID settings:");
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOPAIR("   M301 P",Kp); 
+-      SERIAL_ECHOPAIR(" I" ,Ki/PID_dT); 
+-      SERIAL_ECHOPAIR(" D" ,Kd*PID_dT);
+-      SERIAL_ECHOLN(""); 
+-    #endif
+-//  #endif
+-} 
+-
+-
+-inline void EEPROM_RetrieveSettings(bool def=false)
+-{  // if def=true, the default values will be used
+-  #ifdef EEPROM_SETTINGS
+-    int i=EEPROM_OFFSET;
+-    char stored_ver[4];
+-    char ver[4]=EEPROM_VERSION;
+-    EEPROM_readAnything(i,stored_ver); //read stored version
+-    //  SERIAL_ECHOLN("Version: [" << ver << "] Stored version: [" << stored_ver << "]");
+-    if ((!def)&&(strncmp(ver,stored_ver,3)==0)) 
+-    {   // version number match
+-      EEPROM_readAnything(i,axis_steps_per_unit);  
+-      EEPROM_readAnything(i,max_feedrate);  
+-      EEPROM_readAnything(i,max_acceleration_units_per_sq_second);
+-      EEPROM_readAnything(i,acceleration);
+-      EEPROM_readAnything(i,retract_acceleration);
+-      EEPROM_readAnything(i,minimumfeedrate);
+-      EEPROM_readAnything(i,mintravelfeedrate);
+-      EEPROM_readAnything(i,minsegmenttime);
+-      EEPROM_readAnything(i,max_xy_jerk);
+-      EEPROM_readAnything(i,max_z_jerk);
+-      EEPROM_readAnything(i,max_e_jerk);
+-      EEPROM_readAnything(i,add_homeing);
+-	  EEPROM_readAnything(i,plaPreheatHotendTemp);
+-	  EEPROM_readAnything(i,plaPreheatHPBTemp);
+-	  EEPROM_readAnything(i,plaPreheatFanSpeed);
+-	  EEPROM_readAnything(i,absPreheatHotendTemp);
+-	  EEPROM_readAnything(i,absPreheatHPBTemp);
+-	  EEPROM_readAnything(i,absPreheatFanSpeed);
+-      #ifndef PIDTEMP
+-        float Kp,Ki,Kd;
+-      #endif
+-      EEPROM_readAnything(i,Kp);
+-      EEPROM_readAnything(i,Ki);
+-      EEPROM_readAnything(i,Kd);
+-
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM("Stored settings retreived:");
+-    }
+-    else 
+-  #endif
+-    {
+-      float tmp1[]=DEFAULT_AXIS_STEPS_PER_UNIT;
+-      float tmp2[]=DEFAULT_MAX_FEEDRATE;
+-      long tmp3[]=DEFAULT_MAX_ACCELERATION;
+-      for (short i=0;i<4;i++) 
+-      {
+-        axis_steps_per_unit[i]=tmp1[i];  
+-        max_feedrate[i]=tmp2[i];  
+-        max_acceleration_units_per_sq_second[i]=tmp3[i];
+-      }
+-      acceleration=DEFAULT_ACCELERATION;
+-      retract_acceleration=DEFAULT_RETRACT_ACCELERATION;
+-      minimumfeedrate=DEFAULT_MINIMUMFEEDRATE;
+-      minsegmenttime=DEFAULT_MINSEGMENTTIME;       
+-      mintravelfeedrate=DEFAULT_MINTRAVELFEEDRATE;
+-      max_xy_jerk=DEFAULT_XYJERK;
+-      max_z_jerk=DEFAULT_ZJERK;
+-      max_e_jerk=DEFAULT_EJERK;
+-      add_homeing[0] = add_homeing[1] = add_homeing[2] = 0;
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLN("Using Default settings:");
+-#ifdef ULTIPANEL
+-	  plaPreheatHotendTemp = PLA_PREHEAT_HOTEND_TEMP;
+-	  plaPreheatHPBTemp = PLA_PREHEAT_HPB_TEMP;
+-	  plaPreheatFanSpeed = PLA_PREHEAT_FAN_SPEED;
+-	  absPreheatHotendTemp = ABS_PREHEAT_HOTEND_TEMP;
+-	  absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
+-	  absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+-#endif
+-#ifdef PIDTEMP
+-        Kp = DEFAULT_Kp;
+-        Ki = DEFAULT_Ki;
+-        Kd = DEFAULT_Kp;
+-#ifdef PID_ADD_EXTRUSION_RATE
+-        Kc = DEFAULT_Kc;
+- #endif
+-#endif
+-    }
+-  #ifdef EEPROM_CHITCHAT
+-    EEPROM_printSettings();
+-  #endif
+-}  
+-
+-#endif
+-
+-
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ed222b8..bbd1129 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -36,7 +36,7 @@
+ #include "motion_control.h"
+ #include "cardreader.h"
+ #include "watchdog.h"
+-#include "EEPROMwrite.h"
++#include "ConfigurationStore.h"
+ #include "language.h"
+ #include "pins_arduino.h"
+ 
+@@ -322,7 +322,7 @@ void setup()
+     fromsd[i] = false;
+   }
+   
+-  EEPROM_RetrieveSettings(); // loads data from EEPROM if available
++  Config_RetrieveSettings(); // loads data from EEPROM if available
+ 
+   for(int8_t i=0; i < NUM_AXIS; i++)
+   {
+@@ -1457,22 +1457,22 @@ void process_commands()
+     break;
+     case 500: // Store settings in EEPROM
+     {
+-        EEPROM_StoreSettings();
++        Config_StoreSettings();
+     }
+     break;
+     case 501: // Read settings from EEPROM
+     {
+-      EEPROM_RetrieveSettings();
++        Config_RetrieveSettings();
+     }
+     break;
+     case 502: // Revert to default settings
+     {
+-      EEPROM_RetrieveSettings(true);
++        Config_ResetDefault();
+     }
+     break;
+     case 503: // print settings currently in memory
+     {
+-      EEPROM_printSettings();
++        Config_PrintSettings();
+     }
+     break;
+     case 999: // Restart after being stopped
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index a7fd12c..c0f2fe8 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -5,7 +5,7 @@
+ #include "Marlin.h"
+ #include "language.h"
+ #include "temperature.h"
+-#include "EEPROMwrite.h"
++#include "ConfigurationStore.h"
+ 
+ //===========================================================================
+ //=============================imported variables============================
+@@ -2220,7 +2220,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        EEPROM_StoreSettings();
++        Config_StoreSettings();
+       }
+     }break;
+     case ItemC_load:
+@@ -2234,7 +2234,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        EEPROM_RetrieveSettings();
++        Config_RetrieveSettings();
+       }
+     }break;
+     case ItemC_failsafe:
+@@ -2248,7 +2248,7 @@ void MainMenu::showControl()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        EEPROM_RetrieveSettings(true);
++        Config_ResetDefault();
+       }
+     }break;
+     default:   
+@@ -2785,7 +2785,7 @@ void MainMenu::showPLAsettings()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        EEPROM_StoreSettings();
++        Config_StoreSettings();
+       }
+     }break;
+       default:   
+@@ -2931,7 +2931,7 @@ void MainMenu::showABSsettings()
+         //enquecommand("M84");
+         beepshort();
+         BLOCK;
+-        EEPROM_StoreSettings();
++        Config_StoreSettings();
+       }
+     }break;
+       default:   
+

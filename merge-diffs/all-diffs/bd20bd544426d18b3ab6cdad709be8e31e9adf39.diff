@@ -1,0 +1,388 @@
+commit bd20bd544426d18b3ab6cdad709be8e31e9adf39 (from 9ba8cf5fe3ed82df1ff63d54b9d540205802b2dc)
+Merge: 9ba8cf5 f48599f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 03:29:21 2015 -0700
+
+    Merge pull request #2063 from chris-bo/autobed_sled
+    
+    improve sled handling
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index fa57408..f09a8a2 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -276,6 +276,13 @@
+     #define MAX_PROBE_Y (min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+   #endif
+ 
++   /**
++    * Sled Options
++    */ 
++  #ifdef Z_PROBE_SLED
++    #define Z_SAFE_HOMING
++  #endif
++  
+   /**
+    * MAX_STEP_FREQUENCY differs for TOSHIBA
+    */
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1e3d436..8dc884e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -650,8 +650,8 @@ void setup() {
+   #endif
+ 
+   #ifdef Z_PROBE_SLED
+-    pinMode(SERVO0_PIN, OUTPUT);
+-    digitalWrite(SERVO0_PIN, LOW); // turn it off
++    pinMode(SLED_PIN, OUTPUT);
++    digitalWrite(SLED_PIN, LOW); // turn it off
+   #endif // Z_PROBE_SLED
+ 
+   setup_homepin();
+@@ -1516,6 +1516,47 @@ static void setup_for_endstop_move() {
+ 
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
++
++#ifdef Z_PROBE_SLED
++
++  #ifndef SLED_DOCKING_OFFSET
++    #define SLED_DOCKING_OFFSET 0
++  #endif
++
++  /**
++   * Method to dock/undock a sled designed by Charles Bell.
++   *
++   * dock[in]     If true, move to MAX_X and engage the electromagnet
++   * offset[in]   The additional distance to move to adjust docking location
++   */
++  static void dock_sled(bool dock, int offset=0) {
++    if (!axis_known_position[X_AXIS] || !axis_known_position[Y_AXIS]) {
++      LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
++      return;
++    }
++
++    if (dock) {
++      float oldXpos = current_position[X_AXIS]; // save x position
++      do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // rise Z   
++      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset - 1, current_position[Y_AXIS], current_position[Z_AXIS]);  // Dock sled a bit closer to ensure proper capturing                                                                                                                           
++      digitalWrite(SLED_PIN, LOW); // turn off magnet
++      do_blocking_move_to(oldXpos, current_position[Y_AXIS], current_position[Z_AXIS]); // return to position before docking
++    } else {
++      float oldXpos = current_position[X_AXIS]; // save x position
++      float z_loc = current_position[Z_AXIS];
++      if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
++      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], z_loc); // this also updates current_position
++      digitalWrite(SLED_PIN, HIGH); // turn on magnet
++      do_blocking_move_to(oldXpos, current_position[Y_AXIS], current_position[Z_AXIS]); // return to position before docking
++    }
++  }
++
++#endif // Z_PROBE_SLED
++
++
++
+ /**
+  * Home an individual axis
+  */
+@@ -1538,6 +1579,13 @@ static void homeaxis(AxisEnum axis) {
+     current_position[axis] = 0;
+     sync_plan_position();
+ 
++    #ifdef Z_PROBE_SLED
++      // Get Probe
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) dock_sled(false);
++      }
++    #endif
++    
+     #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+       // Deploy a probe if there is one, and homing towards the bed
+@@ -1634,6 +1682,13 @@ static void homeaxis(AxisEnum axis) {
+     endstops_hit_on_purpose(); // clear endstop hit flags
+     axis_known_position[axis] = true;
+ 
++    #ifdef Z_PROBE_SLED
++    // bring probe back
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) dock_sled(true);
++      } 
++    #endif
++
+     #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+       // Deploy a probe if there is one, and homing towards the bed
+@@ -1708,39 +1763,6 @@ static void homeaxis(AxisEnum axis) {
+ 
+ #endif // FWRETRACT
+ 
+-#ifdef Z_PROBE_SLED
+-
+-  #ifndef SLED_DOCKING_OFFSET
+-    #define SLED_DOCKING_OFFSET 0
+-  #endif
+-
+-  /**
+-   * Method to dock/undock a sled designed by Charles Bell.
+-   *
+-   * dock[in]     If true, move to MAX_X and engage the electromagnet
+-   * offset[in]   The additional distance to move to adjust docking location
+-   */
+-  static void dock_sled(bool dock, int offset=0) {
+-    if (!axis_known_position[X_AXIS] || !axis_known_position[Y_AXIS]) {
+-      LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
+-      return;
+-    }
+-
+-    if (dock) {
+-      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], current_position[Z_AXIS]); // this also updates current_position
+-      digitalWrite(SERVO0_PIN, LOW); // turn off magnet
+-    } else {
+-      float z_loc = current_position[Z_AXIS];
+-      if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
+-      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, Y_PROBE_OFFSET_FROM_EXTRUDER, z_loc); // this also updates current_position
+-      digitalWrite(SERVO0_PIN, HIGH); // turn on magnet
+-    }
+-  }
+-
+-#endif // Z_PROBE_SLED
+-
+ /**
+  *
+  * G-Code Handler functions
+@@ -2584,7 +2606,7 @@ inline void gcode_G28() {
+     #endif // !DELTA
+ 
+     #ifdef Z_PROBE_SLED
+-      dock_sled(true, -SLED_DOCKING_OFFSET); // dock the probe, correcting for over-travel
++      dock_sled(true); // dock the probe
+     #elif defined(Z_PROBE_ALLEN_KEY) //|| defined(SERVO_LEVELING)
+       stow_z_probe();
+     #endif
+diff --git a/Marlin/pins_MEGATRONICS_3.h b/Marlin/pins_MEGATRONICS_3.h
+index 6b4016b..ed62727 100644
+--- a/Marlin/pins_MEGATRONICS_3.h
++++ b/Marlin/pins_MEGATRONICS_3.h
+@@ -8,6 +8,11 @@
+ 
+ #define LARGE_FLASH        true
+ 
++
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ // Servo support
+ #ifdef NUM_SERVOS
+   #define SERVO0_PIN       46 //AUX3-6
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index 6d782b9..4c008d6 100644
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -22,6 +22,10 @@
+   #endif
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #undef X_MS1_PIN
+ #undef X_MS2_PIN
+ #undef Y_MS1_PIN
+diff --git a/Marlin/pins_RAMPS_13.h b/Marlin/pins_RAMPS_13.h
+index af1d2d3..87ac923 100644
+--- a/Marlin/pins_RAMPS_13.h
++++ b/Marlin/pins_RAMPS_13.h
+@@ -134,6 +134,10 @@
+   #endif
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #ifdef ULTRA_LCD
+ 
+   #ifdef NEWPANEL
+diff --git a/Marlin/pins_SANGUINOLOLU_11.h b/Marlin/pins_SANGUINOLOLU_11.h
+index e7bdd97..ca41bdd 100644
+--- a/Marlin/pins_SANGUINOLOLU_11.h
++++ b/Marlin/pins_SANGUINOLOLU_11.h
+@@ -44,6 +44,10 @@
+   #define FAN_PIN            4
+ #endif
+ 
++#ifdef Z_PROBE_SLED
++  #define SLED_PIN         -1
++#endif
++
+ #ifdef NUM_SERVOS
+   #define SERVO0_PIN          -1
+ 
+
+commit bd20bd544426d18b3ab6cdad709be8e31e9adf39 (from f48599f172bfbf08dcd17a051a7426f0a60cbb91)
+Merge: 9ba8cf5 f48599f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 03:29:21 2015 -0700
+
+    Merge pull request #2063 from chris-bo/autobed_sled
+    
+    improve sled handling
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 4703dbf..03531d1 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -21,6 +21,10 @@
+ #include "fastio.h"
+ #include "Configuration.h"
+ 
++#ifndef SANITYCHECK_H
++  #error Your Configuration.h and Configuration_adv.h files are outdated!
++#endif
++
+ #if (ARDUINO >= 100)
+   #include "Arduino.h"
+ #else
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e6609e2..8dc884e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1096,6 +1096,14 @@ inline void sync_plan_position() {
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
++static void setup_for_endstop_move() {
++  saved_feedrate = feedrate;
++  saved_feedrate_multiplier = feedrate_multiplier;
++  feedrate_multiplier = 100;
++  refresh_cmd_timeout();
++  enable_endstops(true);
++}
++
+ #ifdef ENABLE_AUTO_BED_LEVELING
+ 
+   #ifdef DELTA
+@@ -1256,14 +1264,6 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     feedrate = oldFeedRate;
+   }
+ 
+-  static void setup_for_endstop_move() {
+-    saved_feedrate = feedrate;
+-    saved_feedrate_multiplier = feedrate_multiplier;
+-    feedrate_multiplier = 100;
+-    refresh_cmd_timeout();
+-    enable_endstops(true);
+-  }
+-
+   static void clean_up_after_endstop_move() {
+     #ifdef ENDSTOPS_ONLY_FOR_HOMING
+       enable_endstops(false);
+@@ -1867,6 +1867,9 @@ inline void gcode_G4() {
+  */
+ inline void gcode_G28() {
+ 
++  // Wait for planner moves to finish!
++  st_synchronize();
++
+   // For auto bed leveling, clear the level matrix
+   #ifdef ENABLE_AUTO_BED_LEVELING
+     plan_bed_level_matrix.set_to_identity();
+@@ -1881,12 +1884,7 @@ inline void gcode_G28() {
+     mbl.active = 0;
+   #endif
+ 
+-  saved_feedrate = feedrate;
+-  saved_feedrate_multiplier = feedrate_multiplier;
+-  feedrate_multiplier = 100;
+-  refresh_cmd_timeout();
+-
+-  enable_endstops(true);
++  setup_for_endstop_move();
+ 
+   set_destination_to_current();
+ 
+@@ -3172,8 +3170,6 @@ inline void gcode_M42() {
+ 
+     clean_up_after_endstop_move();
+ 
+-    // enable_endstops(true);
+-
+     if (verbose_level > 0) {
+       SERIAL_PROTOCOLPGM("Mean: ");
+       SERIAL_PROTOCOL_F(mean, 6);
+@@ -5761,25 +5757,22 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+ 
+ #ifdef PREVENT_DANGEROUS_EXTRUDE
+ 
+-  inline float prevent_dangerous_extrude(float &curr_e, float &dest_e) {
++  inline void prevent_dangerous_extrude(float &curr_e, float &dest_e) {
+     float de = dest_e - curr_e;
+     if (de) {
+       if (degHotend(active_extruder) < extrude_min_temp) {
+         curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+         SERIAL_ECHO_START;
+         SERIAL_ECHOLNPGM(MSG_ERR_COLD_EXTRUDE_STOP);
+-        return 0;
+       }
+       #ifdef PREVENT_LENGTHY_EXTRUDE
+         if (labs(de) > EXTRUDE_MAXLENGTH) {
+           curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+           SERIAL_ECHO_START;
+           SERIAL_ECHOLNPGM(MSG_ERR_LONG_EXTRUDE_STOP);
+-          return 0;
+         }
+       #endif
+     }
+-    return de;
+   }
+ 
+ #endif // PREVENT_DANGEROUS_EXTRUDE
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4bc2de8..29d7704 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -558,7 +558,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_min_both = z2_min_endstop && old_z2_min_endstop;
+             if ((z_min_both || z2_min_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+               if (!performing_homing || (performing_homing && z_min_both && z2_min_both)) //if not performing home or if both endstops were trigged during homing...
+                 step_events_completed = current_block->step_event_count;
+             }
+@@ -579,7 +579,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ 
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+@@ -613,7 +613,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_max_both = z2_max_endstop && old_z2_max_endstop;
+             if ((z_max_both || z2_max_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+ 
+              // if (z_max_both) SERIAL_ECHOLN("z_max_endstop = true");
+              // if (z2_max_both) SERIAL_ECHOLN("z2_max_endstop = true");
+@@ -638,7 +638,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+           old_z_probe_endstop = z_probe_endstop;
+

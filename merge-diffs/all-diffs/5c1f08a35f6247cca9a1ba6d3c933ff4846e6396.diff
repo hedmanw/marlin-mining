@@ -1,0 +1,497 @@
+commit 5c1f08a35f6247cca9a1ba6d3c933ff4846e6396 (from db7b0ea0cfb45e8ddeb5626fa6008ea6a4174e8d)
+Merge: db7b0ea 79b56b0
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 3 18:04:31 2015 -0700
+
+    Merge pull request #1772 from croadfeldt/Merge_cleanup
+    
+    Z_PROBE_ENDSTOP
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index c7e2084..e441b95 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -189,6 +189,9 @@
+       #define ENDSTOPPULLUP_YMIN
+       #define ENDSTOPPULLUP_ZMIN
+     #endif
++    #ifndef DISABLE_Z_PROBE_ENDSTOP
++      #define ENDSTOPPULLUP_ZPROBE
++    #endif
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index a984923..f23b1e4 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -319,6 +319,7 @@ your extruder heater takes 2 minutes to hit the target on heating.
+   // #define ENDSTOPPULLUP_XMIN
+   // #define ENDSTOPPULLUP_YMIN
+   // #define ENDSTOPPULLUP_ZMIN
++  // #define ENDSTOPPULLUP_ZPROBE
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+@@ -328,8 +329,14 @@ const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+ const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+ //#define DISABLE_MAX_ENDSTOPS
+ //#define DISABLE_MIN_ENDSTOPS
++// If you want to enable the Z Probe pin, but disable its use, uncomment the line below.
++// This only affects a Z Probe Endstop if you have separate Z min endstop as well and have
++// activated Z_PROBE_ENDSTOP below. If you are using the Z Min endstop on your Z Probe,
++// this has no effect.
++//#define DISABLE_Z_PROBE_ENDSTOP
+ 
+ // For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
+ #define X_ENABLE_ON 0
+@@ -492,6 +499,20 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ 
+   #endif
+ 
++// Support for a dedicated Z PROBE endstop separate from the Z MIN endstop.
++// If you would like to use both a Z PROBE and a Z MIN endstop together or just a Z PROBE with a custom pin, uncomment #define Z_PROBE_ENDSTOP and read the instructions below.
++// If you want to still use the Z min endstop for homing, disable Z_SAFE_HOMING above. Eg; to park the head outside the bed area when homing with G28.
++// WARNING: The Z MIN endstop will need to set properly as it would without a Z PROBE to prevent head crashes and premature stopping during a print.
++// To use a separte Z PROBE endstop, you must have a Z_PROBE_PIN defined in the pins.h file for your control board.
++// If you are using a servo based Z PROBE, you will need to enable NUM_SERVOS, SERVO_ENDSTOPS and SERVO_ENDSTOPS_ANGLES in the R/C Servo below.
++// RAMPS 1.3/1.4 boards may be able to use the 5V, Ground and the D32 pin in the Aux 4 section of the RAMPS board. Use 5V for powered sensors, otherwise connect to ground and D32
++// for normally closed configuration and 5V and D32 for normally open configurations. Normally closed configuration is advised and assumed.
++// The D32 pin in Aux 4 on RAMPS maps to the Arduino D32 pin. Z_PROBE_PIN is setting the pin to use on the Arduino. Since the D32 pin on the RAMPS maps to D32 on Arduino, this works.
++// D32 is currently selected in the RAMPS 1.3/1.4 pin file. All other boards will need changes to the respective pins_XXXXX.h file.
++// WARNING: Setting the wrong pin may have unexpected and potentially disastrous outcomes. Use with caution and do your homework.
++
++//  #define Z_PROBE_ENDSTOP
++
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 3eda508..2f5b605 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1244,9 +1244,14 @@ inline void sync_plan_position() {
+       prepare_move_raw();
+       
+       st_synchronize();
+-      
++
++    #if defined(Z_PROBE_ENDSTOP)
++      bool z_probe_endstop = (READ(Z_PROBE_PIN) != Z_PROBE_ENDSTOP_INVERTING);
++      if (z_probe_endstop) {
++    #else
+       bool z_min_endstop = (READ(Z_MIN_PIN) != Z_MIN_ENDSTOP_INVERTING);
+       if (z_min_endstop) {
++    #endif
+         if (!Stopped) {
+           SERIAL_ERROR_START;
+           SERIAL_ERRORLNPGM("Z-Probe failed to engage!");
+@@ -1313,9 +1318,14 @@ inline void sync_plan_position() {
+       prepare_move_raw();
+       
+       st_synchronize();
+-      
++
++    #if defined(Z_PROBE_ENDSTOP)
++      bool z_probe_endstop = (READ(Z_PROBE_PIN) != Z_PROBE_ENDSTOP_INVERTING);
++      if (!z_probe_endstop) {
++    #else
+       bool z_min_endstop = (READ(Z_MIN_PIN) != Z_MIN_ENDSTOP_INVERTING);
+       if (!z_min_endstop) {
++    #endif
+         if (!Stopped) {
+           SERIAL_ERROR_START;
+           SERIAL_ERRORLNPGM("Z-Probe failed to retract!");
+@@ -2793,11 +2803,17 @@ inline void gcode_M42() {
+   } // code_seen('S')
+ }
+ 
+-
+ #if defined(ENABLE_AUTO_BED_LEVELING) && defined(Z_PROBE_REPEATABILITY_TEST)
+ 
+-  #if Z_MIN_PIN == -1
+-    #error "You must have a Z_MIN endstop in order to enable calculation of Z-Probe repeatability."
++  // This is redudant since the SanityCheck.h already checks for a valid Z_PROBE_PIN, but here for clarity.
++  #if defined (Z_PROBE_ENDSTOP)
++    #if (! defined (Z_PROBE_PIN) || Z_PROBE_PIN == -1)
++      #error "You must have a Z_PROBE_PIN defined in order to enable calculation of Z-Probe repeatability."
++    #endif
++  #else
++    #if (Z_MIN_PIN == -1)
++      #error "You must have a Z_MIN_PIN defined in order to enable calculation of Z-Probe repeatability."
++    #endif
+   #endif
+ 
+   /**
+@@ -3526,7 +3542,10 @@ inline void gcode_M119() {
+     SERIAL_PROTOCOLPGM(MSG_Z2_MAX);
+     SERIAL_PROTOCOLLN(((READ(Z2_MAX_PIN)^Z2_MAX_ENDSTOP_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+   #endif
+-  
++  #if defined(Z_PROBE_PIN) && Z_PROBE_PIN > -1
++    SERIAL_PROTOCOLPGM(MSG_Z_PROBE);
++    SERIAL_PROTOCOLLN(((READ(Z_PROBE_PIN)^Z_PROBE_ENDSTOP_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
++  #endif
+ }
+ 
+ /**
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 8c05f83..8ea9b2e 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -93,14 +93,40 @@
+      * Require a Z Min pin
+      */
+     #if Z_MIN_PIN == -1
+-      #ifdef Z_PROBE_REPEATABILITY_TEST
+-        #error You must have a Z_MIN endstop to enable Z_PROBE_REPEATABILITY_TEST.
+-      #else
+-        #error ENABLE_AUTO_BED_LEVELING requires a Z_MIN endstop. Z_MIN_PIN must point to a valid hardware pin.
++      #if Z_PROBE_PIN == -1 || (! defined (Z_PROBE_ENDSTOP) || defined (DISABLE_Z_PROBE_ENDSTOP)) // It's possible for someone to set a pin for the Z Probe, but not enable it.
++        #ifdef Z_PROBE_REPEATABILITY_TEST
++          #error You must have a Z_MIN or Z_PROBE endstop to enable Z_PROBE_REPEATABILITY_TEST.
++        #else
++          #error ENABLE_AUTO_BED_LEVELING requires a Z_MIN or Z_PROBE endstop. Z_MIN_PIN or Z_PROBE_PIN must point to a valid hardware pin.
++        #endif
+       #endif
+     #endif
+ 
+     /**
++     * Require a Z Probe Pin if Z_PROBE_ENDSTOP is enabled.
++     */
++    #if defined(Z_PROBE_ENDSTOP)
++      #ifndef Z_PROBE_PIN
++        #error You must have a Z_PROBE_PIN defined in your pins_XXXX.h file if you enable Z_PROBE_ENDSTOP
++      #endif
++      #if Z_PROBE_PIN == -1
++        #error You must set Z_PROBE_PIN to a valid pin if you enable Z_PROBE_ENDSTOP
++      #endif
++// Forcing Servo definitions can break some hall effect sensor setups. Leaving these here for further comment.
++//      #ifndef NUM_SERVOS
++//        #error You must have NUM_SERVOS defined and there must be at least 1 configured to use Z_PROBE_ENDSTOP
++//      #endif
++//      #if defined(NUM_SERVOS) && NUM_SERVOS < 1
++//        #error You must have at least 1 servo defined for NUM_SERVOS to use Z_PROBE_ENDSTOP
++//      #endif
++//      #ifndef SERVO_ENDSTOPS
++//        #error You must have SERVO_ENDSTOPS defined and have the Z index set to at least 0 or above to use Z_PROBE_ENDSTOP
++//      #endif
++//      #ifndef SERVO_ENDSTOP_ANGLES
++//        #error You must have SERVO_ENDSTOP_ANGLES defined for Z Extend and Retract to use Z_PROBE_AND_ENSTOP
++//      #endif
++    #endif
++    /**
+      * Check if Probe_Offset * Grid Points is greater than Probing Range
+      */
+     #ifdef AUTO_BED_LEVELING_GRID
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 5b7c22f..48daddb 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -161,6 +161,7 @@
+ #define MSG_Z_MIN                           "z_min: "
+ #define MSG_Z_MAX                           "z_max: "
+ #define MSG_Z2_MAX                          "z2_max: "
++#define MSG_Z_PROBE                         "z_probe: "
+ #define MSG_M119_REPORT                     "Reporting endstop status"
+ #define MSG_ENDSTOP_HIT                     "TRIGGERED"
+ #define MSG_ENDSTOP_OPEN                    "open"
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 3c75a73..0d63298 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -187,6 +187,10 @@
+   #define Z_MIN_PIN          -1
+ #endif
+ 
++#if defined (DISABLE_Z_PROBE_ENDSTOP) || ! defined (Z_PROBE_ENDSTOP) // Allow code to compile regardless of Z_PROBE_ENDSTOP setting.
++  #define Z_PROBE_PIN        -1
++#endif
++
+ #ifdef DISABLE_XMAX_ENDSTOP
+   #undef X_MAX_PIN
+   #define X_MAX_PIN          -1
+@@ -216,7 +220,7 @@
+   #define Z_MIN_PIN          -1
+ #endif
+ 
+-#define SENSITIVE_PINS { 0, 1, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN, X_MIN_PIN, X_MAX_PIN, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN, Y_MIN_PIN, Y_MAX_PIN, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN, Z_MIN_PIN, Z_MAX_PIN, PS_ON_PIN, \
++#define SENSITIVE_PINS { 0, 1, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN, X_MIN_PIN, X_MAX_PIN, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN, Y_MIN_PIN, Y_MAX_PIN, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN, Z_MIN_PIN, Z_MAX_PIN, Z_PROBE_PIN, PS_ON_PIN, \
+                         HEATER_BED_PIN, FAN_PIN, \
+                         _E0_PINS _E1_PINS _E2_PINS _E3_PINS \
+                         analogInputToDigitalPin(TEMP_BED_PIN) \
+diff --git a/Marlin/pins_RAMPS_13.h b/Marlin/pins_RAMPS_13.h
+index 71287f6..11ecdde 100644
+--- a/Marlin/pins_RAMPS_13.h
++++ b/Marlin/pins_RAMPS_13.h
+@@ -34,6 +34,7 @@
+ #define Z_ENABLE_PIN       62
+ #define Z_MIN_PIN          18
+ #define Z_MAX_PIN          19
++#define Z_PROBE_PIN        -1
+ 
+ #define Y2_STEP_PIN        36
+ #define Y2_DIR_PIN         34
+@@ -61,6 +62,11 @@
+   #define FILWIDTH_PIN        5
+ #endif
+ 
++#if defined(Z_PROBE_ENDSTOP)
++  // Define a pin to use as the signal pin on Arduino for the Z_PROBE endstop.
++ #define Z_PROBE_PIN 32
++#endif
++
+ #if defined(FILAMENT_RUNOUT_SENSOR)
+   // define digital pin 4 for the filament runout sensor. Use the RAMPS 1.4 digital input 4 on the servos connector
+   #define FILRUNOUT_PIN        4
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index a7dba46..5c01e2f 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -76,6 +76,7 @@ volatile long endstops_stepsTotal, endstops_stepsDone;
+ static volatile bool endstop_x_hit = false;
+ static volatile bool endstop_y_hit = false;
+ static volatile bool endstop_z_hit = false;
++static volatile bool endstop_z_probe_hit = false; // Leaving this in even if Z_PROBE_ENDSTOP isn't defined, keeps code below cleaner. #ifdef it and usage below to save space.
+ 
+ #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+   bool abort_on_endstop_hit = false;
+@@ -112,6 +113,10 @@ static volatile bool endstop_z_hit = false;
+   #endif
+ #endif
+ 
++#ifdef Z_PROBE_ENDSTOP // No need to check for valid pin, SanityCheck.h already does this.
++static bool old_z_probe_endstop = false;
++#endif
++
+ static bool check_endstops = true;
+ 
+ volatile long count_position[NUM_AXIS] = { 0 };
+@@ -254,11 +259,11 @@ volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
+ #define DISABLE_STEPPER_DRIVER_INTERRUPT() TIMSK1 &= ~BIT(OCIE1A)
+ 
+ void endstops_hit_on_purpose() {
+-  endstop_x_hit = endstop_y_hit = endstop_z_hit = false;
++  endstop_x_hit = endstop_y_hit = endstop_z_hit = endstop_z_probe_hit = false; // #ifdef endstop_z_probe_hit = to save space if needed.
+ }
+ 
+ void checkHitEndstops() {
+-  if (endstop_x_hit || endstop_y_hit || endstop_z_hit) {
++  if (endstop_x_hit || endstop_y_hit || endstop_z_hit || endstop_z_probe_hit) { // #ifdef || endstop_z_probe_hit to save space if needed.
+     SERIAL_ECHO_START;
+     SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
+     if (endstop_x_hit) {
+@@ -273,6 +278,12 @@ void checkHitEndstops() {
+       SERIAL_ECHOPAIR(" Z:", (float)endstops_trigsteps[Z_AXIS] / axis_steps_per_unit[Z_AXIS]);
+       LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
+     }
++    #ifdef Z_PROBE_ENDSTOP
++    if (endstop_z_probe_hit) {
++    	SERIAL_ECHOPAIR(" Z_PROBE:", (float)endstops_trigsteps[Z_AXIS] / axis_steps_per_unit[Z_AXIS]);
++    	LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "ZP");
++    }
++    #endif
+     SERIAL_EOL;
+ 
+     endstops_hit_on_purpose();
+@@ -551,6 +562,19 @@ ISR(TIMER1_COMPA_vect) {
+ 
+         #endif // Z_MIN_PIN
+ 
++        #ifdef Z_PROBE_ENDSTOP
++          UPDATE_ENDSTOP(z, Z, probe, PROBE);
++          z_probe_endstop=(READ(Z_PROBE_PIN) != Z_PROBE_ENDSTOP_INVERTING);
++          if(z_probe_endstop && old_z_probe_endstop)
++          {
++        	  endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
++        	  endstop_z_probe_hit=true;
++
++//        	  if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
++          }
++          old_z_probe_endstop = z_probe_endstop;
++        #endif
++        
+       } // check_endstops
+ 
+     }
+@@ -596,6 +620,18 @@ ISR(TIMER1_COMPA_vect) {
+           #endif // !Z_DUAL_ENDSTOPS
+ 
+         #endif // Z_MAX_PIN
++        
++        #ifdef Z_PROBE_ENDSTOP
++          UPDATE_ENDSTOP(z, Z, probe, PROBE);
++          z_probe_endstop=(READ(Z_PROBE_PIN) != Z_PROBE_ENDSTOP_INVERTING);
++          if(z_probe_endstop && old_z_probe_endstop)
++          {
++        	  endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
++        	  endstop_z_probe_hit=true;
++//        	  if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
++          }
++          old_z_probe_endstop = z_probe_endstop;
++        #endif
+ 
+       } // check_endstops
+ 
+@@ -679,7 +715,7 @@ ISR(TIMER1_COMPA_vect) {
+       step_events_completed++;
+       if (step_events_completed >= current_block->step_event_count) break;
+     }
+-    // Calculare new timer value
++    // Calculate new timer value
+     unsigned short timer;
+     unsigned short step_rate;
+     if (step_events_completed <= (unsigned long int)current_block->accelerate_until) {
+@@ -962,6 +998,13 @@ void st_init() {
+     #endif
+   #endif  
+   
++#if (defined(Z_PROBE_PIN) && Z_PROBE_PIN >= 0) && defined(Z_PROBE_ENDSTOP) // Check for Z_PROBE_ENDSTOP so we don't pull a pin high unless it's to be used.
++  SET_INPUT(Z_PROBE_PIN);
++  #ifdef ENDSTOPPULLUP_ZPROBE
++    WRITE(Z_PROBE_PIN,HIGH);
++  #endif
++#endif
++
+   #define AXIS_INIT(axis, AXIS, PIN) \
+     AXIS ##_STEP_INIT; \
+     AXIS ##_STEP_WRITE(INVERT_## PIN ##_STEP_PIN); \
+
+commit 5c1f08a35f6247cca9a1ba6d3c933ff4846e6396 (from 79b56b083f4b9de89ffd2ec032af0a2c4c70f1cb)
+Merge: db7b0ea 79b56b0
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 3 18:04:31 2015 -0700
+
+    Merge pull request #1772 from croadfeldt/Merge_cleanup
+    
+    Z_PROBE_ENDSTOP
+
+diff --git a/.gitignore b/.gitignore
+index cd72efb..380a028 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,12 @@
++// Our automatic versioning scheme generates the following file
++// NEVER put it in the repository
++_Version.h
++
++// All of the following OS, IDE and compiler generated file
++// references should be moved from this file
++// They are needed, but they belong in your global .gitignore
++// rather than in a per-project file such as this
++
+ *.o
+ applet/
+ *~
+diff --git a/ArduinoAddons/Arduino_1.5.x/hardware/marlin/avr/platform.local.txt b/ArduinoAddons/Arduino_1.5.x/hardware/marlin/avr/platform.local.txt
+new file mode 100644
+index 0000000..ff2ad5d
+--- /dev/null
++++ b/ArduinoAddons/Arduino_1.5.x/hardware/marlin/avr/platform.local.txt
+@@ -0,0 +1 @@
++compiler.cpp.extra_flags=-DHAS_AUTOMATIC_VERSIONING
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 456cfb0..2f5b605 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1602,7 +1602,7 @@ void refresh_cmd_timeout(void) { previous_millis_cmd = millis(); }
+     else {
+ 
+       if (retract_zlift > 0.01) {
+-        current_position[Z_AXIS] + =retract_zlift;
++        current_position[Z_AXIS] += retract_zlift;
+         #ifdef DELTA
+           sync_plan_position_delta();
+         #else
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index a8c9800..8a60f01 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -37,6 +37,7 @@
+ #define BOARD_BRAINWAVE         82   // Brainwave (AT90USB646)
+ #define BOARD_SAV_MKI           83   // SAV Mk-I (AT90USB1286)
+ #define BOARD_TEENSY2           84   // Teensy++2.0 (AT90USB1286) - CLI compile: DEFINES=AT90USBxx_TEENSYPP_ASSIGNMENTS HARDWARE_MOTHERBOARD=84  make
++#define BOARD_BRAINWAVE_PRO     85   // Brainwave Pro (AT90USB1286)
+ #define BOARD_GEN3_PLUS         9    // Gen3+
+ #define BOARD_GEN3_MONOLITHIC   22   // Gen3 Monolithic Electronics
+ #define BOARD_MEGATRONICS       70   // Megatronics
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 4a4698c..48daddb 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -36,8 +36,11 @@
+   #define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
+ #endif
+ 
++#ifdef HAS_AUTOMATIC_VERSIONING
++  #include "_Version.h"
++#endif
++
+ #define PROTOCOL_VERSION "1.0"
+-#define FIRMWARE_URL "https://github.com/MarlinFirmware/Marlin"
+ 
+ #if MB(ULTIMAKER)|| MB(ULTIMAKER_OLD)|| MB(ULTIMAIN_2)
+   #undef FIRMWARE_URL
+@@ -65,13 +68,33 @@
+   #define MACHINE_NAME "HEPHESTOS"
+   #undef FIRMWARE_URL
+   #define FIRMWARE_URL "http://www.bq.com/gb/downloads-prusa-i3-hephestos.html"
+-#else // Default firmware set to Mendel
+-  #define MACHINE_NAME "Mendel"
++#elif MB(BRAINWAVE_PRO)
++  #define MACHINE_NAME "Kossel Pro"
++  #ifndef FIRMWARE_URL
++    #define FIRMWARE_URL "https://github.com/OpenBeamUSA/Marlin/"
++  #endif
++#else
++  #ifndef MACHINE_NAME
++    #define MACHINE_NAME "Mendel"
++  #endif
+ #endif
+ 
+ #ifdef CUSTOM_MENDEL_NAME
++  #warning CUSTOM_MENDEL_NAME deprecated - use CUSTOM_MACHINE_NAME
++  #define CUSTOM_MACHINE_NAME CUSTOM_MENDEL_NAME
++#endif
++
++#ifdef CUSTOM_MACHINE_NAME
+   #undef MACHINE_NAME
+-  #define MACHINE_NAME CUSTOM_MENDEL_NAME
++  #define MACHINE_NAME CUSTOM_MACHINE_NAME
++#endif
++
++#ifndef FIRMWARE_URL
++  #define FIRMWARE_URL "https://github.com/MarlinFirmware/Marlin"
++#endif
++
++#ifndef BUILD_VERSION
++  #define BUILD_VERSION "V1; Sprinter/grbl mashup for gen6"
+ #endif
+ 
+ #ifndef MACHINE_UUID
+@@ -122,7 +145,7 @@
+ #define MSG_HEATING_COMPLETE                "Heating done."
+ #define MSG_BED_HEATING                     "Bed Heating."
+ #define MSG_BED_DONE                        "Bed done."
+-#define MSG_M115_REPORT                     "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
++#define MSG_M115_REPORT                     "FIRMWARE_NAME:Marlin " BUILD_VERSION " FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
+ #define MSG_COUNT_X                         " Count X: "
+ #define MSG_ERR_KILLED                      "Printer halted. kill() called!"
+ #define MSG_ERR_STOPPED                     "Printer stopped due to errors. Fix the error and use M999 to restart. (Temperature is reset. Set it after restarting)"
+diff --git a/README.md b/README.md
+index af49af0..2ecb9d8 100644
+--- a/README.md
++++ b/README.md
+@@ -33,8 +33,6 @@ We are actively looking for testers. So please try the current development versi
+ 
+ __IRC:__ #marlin-firmware @freenode ([WebChat Client](https://webchat.freenode.net/?channels=marlin-firmware)
+ 
+-__Mailing List:__ marlin@lists.0l.de ([Subscribe](http://lists.0l.de/mailman/listinfo/marlin), [Archive](http://lists.0l.de/pipermail/marlin/))
+-
+ ## Credits
+ 
+ The current Marlin dev team consists of:
+

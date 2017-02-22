@@ -1,0 +1,190 @@
+commit 82c2d308dc79e22c9fc3a879251a2df3ef4d9478 (from d66e53c42b51e102456b6a937b4c9353d2bd9aea)
+Merge: d66e53c ecec5c5
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 17 18:27:48 2016 -0700
+
+    Merge pull request #3783 from thinkyhead/rc_bezier_delta_fix
+    
+    Bezier style and DELTA patch
+
+diff --git a/Marlin/planner_bezier.cpp b/Marlin/planner_bezier.cpp
+index 5e820c4..b72478d 100644
+--- a/Marlin/planner_bezier.cpp
++++ b/Marlin/planner_bezier.cpp
+@@ -113,9 +113,9 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+   float second1 = target[Y_AXIS] + offset[3];
+   float t = 0.0;
+ 
+-  float tmp[4];
+-  tmp[X_AXIS] = position[X_AXIS];
+-  tmp[Y_AXIS] = position[Y_AXIS];
++  float bez_target[4];
++  bez_target[X_AXIS] = position[X_AXIS];
++  bez_target[Y_AXIS] = position[Y_AXIS];
+   float step = MAX_STEP;
+ 
+   uint8_t idle_counter = 0;
+@@ -141,8 +141,8 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+       float candidate_t = 0.5 * (t + new_t);
+       float candidate_pos0 = eval_bezier(position[X_AXIS], first0, second0, target[X_AXIS], candidate_t);
+       float candidate_pos1 = eval_bezier(position[Y_AXIS], first1, second1, target[Y_AXIS], candidate_t);
+-      float interp_pos0 = 0.5 * (tmp[X_AXIS] + new_pos0);
+-      float interp_pos1 = 0.5 * (tmp[Y_AXIS] + new_pos1);
++      float interp_pos0 = 0.5 * (bez_target[X_AXIS] + new_pos0);
++      float interp_pos1 = 0.5 * (bez_target[Y_AXIS] + new_pos1);
+       if (dist1(candidate_pos0, candidate_pos1, interp_pos0, interp_pos1) <= (SIGMA)) break;
+       new_t = candidate_t;
+       new_pos0 = candidate_pos0;
+@@ -157,8 +157,8 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+       if (candidate_t >= 1.0) break;
+       float candidate_pos0 = eval_bezier(position[X_AXIS], first0, second0, target[X_AXIS], candidate_t);
+       float candidate_pos1 = eval_bezier(position[Y_AXIS], first1, second1, target[Y_AXIS], candidate_t);
+-      float interp_pos0 = 0.5 * (tmp[X_AXIS] + candidate_pos0);
+-      float interp_pos1 = 0.5 * (tmp[Y_AXIS] + candidate_pos1);
++      float interp_pos0 = 0.5 * (bez_target[X_AXIS] + candidate_pos0);
++      float interp_pos1 = 0.5 * (bez_target[Y_AXIS] + candidate_pos1);
+       if (dist1(new_pos0, new_pos1, interp_pos0, interp_pos1) > (SIGMA)) break;
+       new_t = candidate_t;
+       new_pos0 = candidate_pos0;
+@@ -180,14 +180,23 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+     t = new_t;
+ 
+     // Compute and send new position
+-    tmp[X_AXIS] = new_pos0;
+-    tmp[Y_AXIS] = new_pos1;
++    bez_target[X_AXIS] = new_pos0;
++    bez_target[Y_AXIS] = new_pos1;
+     // FIXME. The following two are wrong, since the parameter t is
+     // not linear in the distance.
+-    tmp[Z_AXIS] = interp(position[Z_AXIS], target[Z_AXIS], t);
+-    tmp[E_AXIS] = interp(position[E_AXIS], target[E_AXIS], t);
+-    clamp_to_software_endstops(tmp);
+-    planner.buffer_line(tmp[X_AXIS], tmp[Y_AXIS], tmp[Z_AXIS], tmp[E_AXIS], feed_rate, extruder);
++    bez_target[Z_AXIS] = interp(position[Z_AXIS], target[Z_AXIS], t);
++    bez_target[E_AXIS] = interp(position[E_AXIS], target[E_AXIS], t);
++    clamp_to_software_endstops(bez_target);
++
++    #if ENABLED(DELTA) || ENABLED(SCARA)
++      calculate_delta(bez_target);
++      #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++        adjust_delta(bez_target);
++      #endif
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], bez_target[E_AXIS], feed_rate, extruder);
++    #else
++      planner.buffer_line(bez_target[X_AXIS], bez_target[Y_AXIS], bez_target[Z_AXIS], bez_target[E_AXIS], feed_rate, extruder);
++    #endif
+   }
+ }
+ 
+
+commit 82c2d308dc79e22c9fc3a879251a2df3ef4d9478 (from ecec5c5e58296ca72854d7cbbdec671e7a298b68)
+Merge: d66e53c ecec5c5
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 17 18:27:48 2016 -0700
+
+    Merge pull request #3783 from thinkyhead/rc_bezier_delta_fix
+    
+    Bezier style and DELTA patch
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e0191a2..338c124 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2063,10 +2063,17 @@ static void setup_for_endstop_move() {
+ #endif // AUTO_BED_LEVELING_FEATURE
+ 
+ #if ENABLED(Z_PROBE_SLED) || ENABLED(Z_SAFE_HOMING) || ENABLED(AUTO_BED_LEVELING_FEATURE)
+-  static void axis_unhomed_error() {
+-    LCD_MESSAGEPGM(MSG_YX_UNHOMED);
+-    SERIAL_ECHO_START;
+-    SERIAL_ECHOLNPGM(MSG_YX_UNHOMED);
++  static void axis_unhomed_error(bool xyz=false) {
++    if (xyz) {
++      LCD_MESSAGEPGM(MSG_XYZ_UNHOMED);
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_XYZ_UNHOMED);
++    }
++    else {
++      LCD_MESSAGEPGM(MSG_YX_UNHOMED);
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_YX_UNHOMED);
++    }
+   }
+ #endif
+ 
+@@ -2090,8 +2097,8 @@ static void setup_for_endstop_move() {
+       }
+     #endif
+ 
+-    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS]) {
+-      axis_unhomed_error();
++    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
++      axis_unhomed_error(true);
+       return;
+     }
+ 
+@@ -3176,8 +3183,8 @@ inline void gcode_G28() {
+     #endif
+ 
+     // Don't allow auto-leveling without homing first
+-    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS]) {
+-      axis_unhomed_error();
++    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
++      axis_unhomed_error(true);
+       return;
+     }
+ 
+@@ -4035,7 +4042,7 @@ inline void gcode_M42() {
+   inline void gcode_M48() {
+ 
+     if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
+-      axis_unhomed_error();
++      axis_unhomed_error(true);
+       return;
+     }
+ 
+@@ -7372,8 +7379,10 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+     float cartesian_mm = sqrt(sq(difference[X_AXIS]) + sq(difference[Y_AXIS]) + sq(difference[Z_AXIS]));
+     if (cartesian_mm < 0.000001) cartesian_mm = abs(difference[E_AXIS]);
+     if (cartesian_mm < 0.000001) return false;
+-    float seconds = 6000 * cartesian_mm / feedrate / feedrate_multiplier;
++    float _feedrate = feedrate * feedrate_multiplier / 6000.0;
++    float seconds = cartesian_mm / _feedrate;
+     int steps = max(1, int(delta_segments_per_second * seconds));
++    float inv_steps = 1.0/steps;
+ 
+     // SERIAL_ECHOPGM("mm="); SERIAL_ECHO(cartesian_mm);
+     // SERIAL_ECHOPGM(" seconds="); SERIAL_ECHO(seconds);
+@@ -7381,7 +7390,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+ 
+     for (int s = 1; s <= steps; s++) {
+ 
+-      float fraction = float(s) / float(steps);
++      float fraction = float(s) * inv_steps;
+ 
+       for (int8_t i = 0; i < NUM_AXIS; i++)
+         target[i] = current_position[i] + difference[i] * fraction;
+@@ -7395,7 +7404,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+       //DEBUG_POS("prepare_move_delta", target);
+       //DEBUG_POS("prepare_move_delta", delta);
+ 
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], feedrate / 60 * feedrate_multiplier / 100.0, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], _feedrate, active_extruder);
+     }
+     return true;
+   }
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index cc9142d..e85d342 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -448,6 +448,9 @@
+ #ifndef MSG_YX_UNHOMED
+   #define MSG_YX_UNHOMED                      "Home X/Y before Z"
+ #endif
++#ifndef MSG_XYZ_UNHOMED
++  #define MSG_XYZ_UNHOMED                     "Home XYZ first"
++#endif
+ #ifndef MSG_ZPROBE_ZOFFSET
+   #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #endif
+

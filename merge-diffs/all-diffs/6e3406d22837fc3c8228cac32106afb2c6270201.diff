@@ -1,0 +1,522 @@
+commit 6e3406d22837fc3c8228cac32106afb2c6270201 (from 9d11b70436da7f00375075bed9654ff13487c185)
+Merge: 9d11b70 43c298a
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Tue Jul 1 10:27:39 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 1355a7a..46d6b96 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -132,6 +132,7 @@
+ // 1010 is Pt1000 with 1k pullup (non standard)
+ // 147 is Pt100 with 4k7 pullup
+ // 110 is Pt100 with 1k pullup (non standard)
++// 70 is 500C thermistor for Pico hot end
+ 
+ #define TEMP_SENSOR_0 -1
+ #define TEMP_SENSOR_1 -1
+@@ -250,6 +251,44 @@
+ #define EXTRUDE_MINTEMP 170
+ #define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
+ 
++/*================== Thermal Runaway Protection ==============================
++This is a feature to protect your printer from burn up in flames if it has
++a thermistor coming off place (this happened to a friend of mine recently and
++motivated me writing this feature).
++
++The issue: If a thermistor come off, it will read a lower temperature than actual.
++The system will turn the heater on forever, burning up the filament and anything
++else around.
++
++After the temperature reaches the target for the first time, this feature will 
++start measuring for how long the current temperature stays below the target 
++minus _HYSTERESIS (set_temperature - THERMAL_RUNAWAY_PROTECTION_HYSTERESIS).
++
++If it stays longer than _PERIOD, it means the thermistor temperature
++cannot catch up with the target, so something *may be* wrong. Then, to be on the
++safe side, the system will he halt.
++
++Bear in mind the count down will just start AFTER the first time the 
++thermistor temperature is over the target, so you will have no problem if
++your extruder heater takes 2 minutes to hit the target on heating.
++
++*/
++// If you want to enable this feature for all your extruder heaters,
++// uncomment the 2 defines below:
++
++// Parameters for all extruder heaters
++//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++
++// If you want to enable this feature for your bed heater,
++// uncomment the 2 defines below:
++
++// Parameters for the bed heater
++//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
++//===========================================================================
++
++
+ //===========================================================================
+ //=============================Mechanical Settings===========================
+ //===========================================================================
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c3ccea4..da56dc7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1947,14 +1947,16 @@ void process_commands()
+ 
+       /* See if we are heating up or cooling down */
+       target_direction = isHeatingHotend(tmp_extruder); // true if heating, false if cooling
++      
++      cancel_heatup = false;
+ 
+       #ifdef TEMP_RESIDENCY_TIME
+         long residencyStart;
+         residencyStart = -1;
+         /* continue to loop until we have reached the target temp
+           _and_ until TEMP_RESIDENCY_TIME hasn't passed since we reached it */
+-        while((residencyStart == -1) ||
+-              (residencyStart >= 0 && (((unsigned int) (millis() - residencyStart)) < (TEMP_RESIDENCY_TIME * 1000UL))) ) {
++        while((!cancel_heatup)&&((residencyStart == -1) ||
++              (residencyStart >= 0 && (((unsigned int) (millis() - residencyStart)) < (TEMP_RESIDENCY_TIME * 1000UL)))) ) {
+       #else
+         while ( target_direction ? (isHeatingHotend(tmp_extruder)) : (isCoolingHotend(tmp_extruder)&&(CooldownNoWait==false)) ) {
+       #endif //TEMP_RESIDENCY_TIME
+@@ -2010,10 +2012,11 @@ void process_commands()
+           CooldownNoWait = false;
+         }
+         codenum = millis();
+-
++        
++        cancel_heatup = false;
+         target_direction = isHeatingBed(); // true if heating, false if cooling
+ 
+-        while ( target_direction ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
++        while ( (target_direction)&&(!cancel_heatup) ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
+         {
+           if(( millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
+           {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index aac6ca6..a10c255 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -416,6 +416,10 @@ void manage_heater()
+   for(int e = 0; e < EXTRUDERS; e++) 
+   {
+ 
++  #ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++    thermal_runaway_protection(&thermal_runaway_state_machine[e], &thermal_runaway_timer[e], current_temperature[e], target_temperature[e], e, THERMAL_RUNAWAY_PROTECTION_PERIOD, THERMAL_RUNAWAY_PROTECTION_HYSTERESIS);
++  #endif
++
+   #ifdef PIDTEMP
+     pid_input = current_temperature[e];
+ 
+@@ -526,6 +530,10 @@ void manage_heater()
+ 
+   #if TEMP_SENSOR_BED != 0
+   
++    #ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++      thermal_runaway_protection(&thermal_runaway_bed_state_machine, &thermal_runaway_bed_timer, current_temperature_bed, target_temperature_bed, 9, THERMAL_RUNAWAY_PROTECTION_BED_PERIOD, THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS);
++    #endif
++
+   #ifdef PIDTEMPBED
+     pid_input = current_temperature_bed;
+ 
+@@ -896,6 +904,66 @@ void setWatch()
+ #endif 
+ }
+ 
++#ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc)
++{
++/*
++      SERIAL_ECHO_START;
++      SERIAL_ECHO("Thermal Thermal Runaway Running. Heater ID:");
++      SERIAL_ECHO(heater_id);
++      SERIAL_ECHO(" ;  State:");
++      SERIAL_ECHO(*state);
++      SERIAL_ECHO(" ;  Timer:");
++      SERIAL_ECHO(*timer);
++      SERIAL_ECHO(" ;  Temperature:");
++      SERIAL_ECHO(temperature);
++      SERIAL_ECHO(" ;  Target Temp:");
++      SERIAL_ECHO(target_temperature);
++      SERIAL_ECHOLN("");    
++*/
++  if ((target_temperature == 0) || thermal_runaway)
++  {
++    *state = 0;
++    *timer = 0;
++    return;
++  }
++  switch (*state)
++  {
++    case 0: // "Heater Inactive" state
++      if (target_temperature > 0) *state = 1;
++      break;
++    case 1: // "First Heating" state
++      if (temperature >= target_temperature) *state = 2;
++      break;
++    case 2: // "Temperature Stable" state
++      if (temperature >= (target_temperature - hysteresis_degc))
++      {
++        *timer = millis();
++      } 
++      else if ( (millis() - *timer) > period_seconds*1000)
++      {
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM("Thermal Runaway, system stopped! Heater_ID: ");
++        SERIAL_ERRORLN((int)heater_id);
++        LCD_ALERTMESSAGEPGM("THERMAL RUNAWAY");
++        thermal_runaway = true;
++        while(1)
++        {
++          disable_heater();
++          disable_x();
++          disable_y();
++          disable_z();
++          disable_e0();
++          disable_e1();
++          disable_e2();
++          manage_heater();
++          lcd_update();
++        }
++      }
++      break;
++  }
++}
++#endif
+ 
+ void disable_heater()
+ {
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index a8580de..df2b5de 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -154,6 +154,17 @@ void disable_heater();
+ void setWatch();
+ void updatePID();
+ 
++#ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
++static int thermal_runaway_state_machine[3]; // = {0,0,0};
++static unsigned long thermal_runaway_timer[3]; // = {0,0,0};
++static bool thermal_runaway = false;
++  #if TEMP_SENSOR_BED != 0
++    static int thermal_runaway_bed_state_machine;
++    static unsigned long thermal_runaway_bed_timer;
++  #endif
++#endif
++
+ FORCE_INLINE void autotempShutdown(){
+  #ifdef AUTOTEMP
+  if(autotemp_enabled)
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index 07b385e..86bf5c2 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -1021,6 +1021,81 @@ const short temptable_1047[][2] PROGMEM = {
+   PtLine(300,1000,4700)
+ };
+ #endif
++#if (THERMISTORHEATER_0 == 70) || (THERMISTORHEATER_1 == 70) || (THERMISTORHEATER_2 == 70) || (THERMISTORBED == 70) // 500C thermistor for Pico hot end
++const short temptable_70[][2] PROGMEM = {
++  {  110.774119598719*OVERSAMPLENR ,  350 },
++  {  118.214386957249*OVERSAMPLENR ,  345 },
++  {  126.211418543166*OVERSAMPLENR ,  340 },
++  {  134.789559066223*OVERSAMPLENR ,  335 },
++  {  144.004513869701*OVERSAMPLENR ,  330 },
++  {  153.884483790827*OVERSAMPLENR ,  325 },
++  {  164.484880793637*OVERSAMPLENR ,  320 },
++  {  175.848885102724*OVERSAMPLENR ,  315 },
++  {  188.006799079015*OVERSAMPLENR ,  310 },
++  {  201.008072969044*OVERSAMPLENR ,  305 },
++  {  214.83716032276*OVERSAMPLENR ,  300 },
++  {  229.784739779664*OVERSAMPLENR ,  295 },
++  {  245.499466045473*OVERSAMPLENR ,  290 },
++  {  262.2766342096*OVERSAMPLENR ,  285 },
++  {  280.073883176433*OVERSAMPLENR ,  280 },
++  {  298.952693467726*OVERSAMPLENR ,  275 },
++  {  318.808251051674*OVERSAMPLENR ,  270 },
++  {  337.490932563222*OVERSAMPLENR ,  265 },
++  {  361.683649122745*OVERSAMPLENR ,  260 },
++  {  384.717024083981*OVERSAMPLENR ,  255 },
++  {  408.659301759076*OVERSAMPLENR ,  250 },
++  {  433.471659455884*OVERSAMPLENR ,  245 },
++  {  459.199039926034*OVERSAMPLENR ,  240 },
++  {  485.566500982316*OVERSAMPLENR ,  235 },
++  {  512.538918631075*OVERSAMPLENR ,  230 },
++  {  539.980999544838*OVERSAMPLENR ,  225 },
++  {  567.783095549935*OVERSAMPLENR ,  220 },
++  {  595.698041673552*OVERSAMPLENR ,  215 },
++  {  623.633922319597*OVERSAMPLENR ,  210 },
++  {  651.356162750829*OVERSAMPLENR ,  205 },
++  {  678.700901620956*OVERSAMPLENR ,  200 },
++  {  705.528145361264*OVERSAMPLENR ,  195 },
++  {  731.61267976339*OVERSAMPLENR ,  190 },
++  {  756.786212184365*OVERSAMPLENR ,  185 },
++  {  780.950223357761*OVERSAMPLENR ,  180 },
++  {  804.012961595082*OVERSAMPLENR ,  175 },
++  {  825.904975939166*OVERSAMPLENR ,  170 },
++  {  846.403941639008*OVERSAMPLENR ,  165 },
++  {  865.52326974895*OVERSAMPLENR ,  160 },
++  {  883.246145367727*OVERSAMPLENR ,  155 },
++  {  899.5821946515*OVERSAMPLENR ,  150 },
++  {  914.544289228582*OVERSAMPLENR ,  145 },
++  {  928.145628221761*OVERSAMPLENR ,  140 },
++  {  940.422208546562*OVERSAMPLENR ,  135 },
++  {  951.456922916497*OVERSAMPLENR ,  130 },
++  {  961.303500633788*OVERSAMPLENR ,  125 },
++  {  970.044756889055*OVERSAMPLENR ,  120 },
++  {  977.761456230051*OVERSAMPLENR ,  115 },
++  {  984.540978083453*OVERSAMPLENR ,  110 },
++  {  990.440780765757*OVERSAMPLENR ,  105 },
++  {  995.589621465301*OVERSAMPLENR ,  100 },
++  {  1000.02514280144*OVERSAMPLENR ,  95 },
++  {  1003.84429789876*OVERSAMPLENR ,  90 },
++  {  1007.10199009318*OVERSAMPLENR ,  85 },
++  {  1009.87151698323*OVERSAMPLENR ,  80 },
++  {  1012.21633594237*OVERSAMPLENR ,  75 },
++  {  1014.18959892949*OVERSAMPLENR ,  70 },
++  {  1015.84079162998*OVERSAMPLENR ,  65 },
++  {  1017.21555915335*OVERSAMPLENR ,  60 },
++  {  1018.35284662863*OVERSAMPLENR ,  55 },
++  {  1019.28926921888*OVERSAMPLENR ,  50 },
++  {  1020.05398015669*OVERSAMPLENR ,  45 },
++  {  1020.67737496272*OVERSAMPLENR ,  40 },
++  {  1021.1802909627*OVERSAMPLENR ,  35 },
++  {  1021.58459281248*OVERSAMPLENR ,  30 },
++  {  1021.90701441192*OVERSAMPLENR ,  25 },
++  {  1022.16215103698*OVERSAMPLENR ,  20 },
++  {  1022.36275529549*OVERSAMPLENR ,  15 },
++  {  1022.51930392497*OVERSAMPLENR ,  10 },
++  {  1022.64051573734*OVERSAMPLENR ,  5 },
++  {  1022.73355805611*OVERSAMPLENR ,  0 }
++};
++#endif
+ 
+ #define _TT_NAME(_N) temptable_ ## _N
+ #define TT_NAME(_N) _TT_NAME(_N)
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index a1b8789..96868c9 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -19,6 +19,7 @@ int absPreheatHotendTemp;
+ int absPreheatHPBTemp;
+ int absPreheatFanSpeed;
+ 
++bool cancel_heatup = false ;
+ 
+ #ifdef ULTIPANEL
+ static float manual_feedrate[] = MANUAL_FEEDRATE;
+@@ -194,7 +195,7 @@ static void lcd_status_screen()
+         currentMenu = lcd_main_menu;
+         encoderPosition = 0;
+         lcd_quick_feedback();
+-        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
++        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
+     }
+ 
+ #ifdef ULTIPANEL_FEEDMULTIPLY
+@@ -256,6 +257,8 @@ static void lcd_sdcard_stop()
+         enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     }
+     autotempShutdown();
++    
++    cancel_heatup = true;
+ }
+ 
+ /* Menu implementation */
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index fce23ba..aacfda6 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -43,6 +43,8 @@
+   extern int absPreheatHotendTemp;
+   extern int absPreheatHPBTemp;
+   extern int absPreheatFanSpeed;
++  
++  extern bool cancel_heatup;
+     
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+
+commit 6e3406d22837fc3c8228cac32106afb2c6270201 (from 43c298a7a9674bade1395a75fe54667cdb22fce4)
+Merge: 9d11b70 43c298a
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Tue Jul 1 10:27:39 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 3e44168..da56dc7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1655,6 +1655,8 @@ void process_commands()
+           lcd_update();
+         }
+       }else{
++          if (!lcd_detected())
++            break;
+         while(!lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index d2fb418..6168d36 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -150,9 +150,17 @@ void CardReader::initsd()
+   if(root.isOpen())
+     root.close();
+ #ifdef SDSLOW
+-  if (!card.init(SPI_HALF_SPEED,SDSS))
++  if (!card.init(SPI_HALF_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_HALF_SPEED,LCD_SDSS)
++  #endif
++    )
+ #else
+-  if (!card.init(SPI_FULL_SPEED,SDSS))
++  if (!card.init(SPI_FULL_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_FULL_SPEED,LCD_SDSS)
++  #endif
++    )
+ #endif
+   {
+     //if (!card.init(SPI_HALF_SPEED,SDSS))
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index c3644a0..2a8fa7b 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -700,14 +700,14 @@
+         #define BTN_EN1 47  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 43
+         #define BTN_ENC 32
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT -1
+         #define KILL_PIN 41
+       #elif defined(LCD_I2C_VIKI)
+         #define BTN_EN1 22  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 7
+         #define BTN_ENC -1
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT 49
+       #else
+         //arduino pin which triggers an piezzo beeper
+@@ -1225,7 +1225,7 @@
+      #ifdef LCD_I2C_PANELOLU2
+        #ifdef MELZI
+          #define BTN_ENC 29 //the click switch
+-         #define SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
++         #define LCD_SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
+        #else
+          #define BTN_ENC 30 //the click switch
+        #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index bb7dd0f..96868c9 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1188,7 +1188,7 @@ void lcd_update()
+     lcd_buttons_update();
+ 
+     #if (SDCARDDETECT > 0)
+-    if((IS_SD_INSERTED != lcd_oldcardstatus))
++    if((IS_SD_INSERTED != lcd_oldcardstatus && lcd_detected()))
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+@@ -1285,6 +1285,11 @@ void lcd_setstatus(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setstatuspgm(const char* message)
+@@ -1292,6 +1297,11 @@ void lcd_setstatuspgm(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setalertstatuspgm(const char* message)
+@@ -1400,6 +1410,15 @@ void lcd_buttons_update()
+     lastEncoderBits = enc;
+ }
+ 
++bool lcd_detected(void)
++{
++#if (defined(LCD_I2C_TYPE_MCP23017) || defined(LCD_I2C_TYPE_MCP23008)) && defined(DETECT_DEVICE)
++  return lcd.LcdDetected() == 1;
++#else
++  return true;
++#endif
++}
++
+ void lcd_buzz(long duration, uint16_t freq)
+ {
+ #ifdef LCD_USE_I2C_BUZZER
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 9bf6858..aacfda6 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,6 +11,7 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
++  bool lcd_detected(void);
+ 
+ #ifdef DOGLCD
+   extern int lcd_contrast;
+@@ -94,6 +95,7 @@
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+   FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) 
+   #define LCD_ALERTMESSAGEPGM(x) 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 11e0a95..c321125 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -166,13 +166,21 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+   
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+

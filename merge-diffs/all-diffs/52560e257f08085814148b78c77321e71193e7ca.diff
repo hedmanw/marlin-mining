@@ -1,0 +1,687 @@
+commit 52560e257f08085814148b78c77321e71193e7ca (from 30afac64c4fca381da84bf287854bc19b1df4da2)
+Merge: 30afac6 dd75fca
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Aug 11 12:39:26 2016 -0700
+
+    Merge pull request #4595 from thinkyhead/rc_i2c_slave
+    
+    Add support for i2c slave address
+
+diff --git a/.travis.yml b/.travis.yml
+index 728281e..251a621 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -205,10 +205,11 @@ script:
+   - opt_enable ULTIMAKERCONTROLLER FILAMENT_LCD_DISPLAY
+   - build_marlin
+   #
+-  # Enable BEZIER_CURVE_SUPPORT
++  # Enable BEZIER_CURVE_SUPPORT, EXPERIMENTAL_I2CBUS, and I2C_SLAVE_ADDRESS
+   #
+   - restore_configs
+-  - opt_enable_adv BEZIER_CURVE_SUPPORT
++  - opt_enable_adv BEZIER_CURVE_SUPPORT EXPERIMENTAL_I2CBUS
++  - opt_set_adv I2C_SLAVE_ADDRESS 1
+   - build_marlin
+   #
+   # Enable COREXY
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index a822c83..2def9b3 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 30b8048..ac40193 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -835,6 +835,14 @@ void servo_init() {
+   void enableStepperDrivers() { pinMode(STEPPER_RESET_PIN, INPUT); }  // set to input, which allows it to be pulled high by pullups
+ #endif
+ 
++#if ENABLED(EXPERIMENTAL_I2CBUS) && I2C_SLAVE_ADDRESS > 0
++
++  void i2c_listener(int bytes) {
++    i2c.receive(bytes);        // just echo all bytes received to serial
++  }
++
++#endif
++
+ /**
+  * Marlin entry-point: Set up before the program loop
+  *  - Set up the kill pin, filament runout, power hold
+@@ -981,6 +989,10 @@ void setup() {
+       for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
+         mixing_virtual_tool_mix[t][i] = mixing_factor[i];
+   #endif
++
++  #if ENABLED(EXPERIMENTAL_I2CBUS) && I2C_SLAVE_ADDRESS > 0
++    i2c.onReceive(i2c_listener);
++  #endif
+ }
+ 
+ /**
+@@ -5246,15 +5258,13 @@ inline void gcode_M121() { endstops.enable_globally(false); }
+    */
+   inline void gcode_M155() {
+     // Set the target address
+-    if (code_seen('A'))
+-      i2c.address(code_value_byte());
++    if (code_seen('A')) i2c.address(code_value_byte());
+ 
+     // Add a new byte to the buffer
+-    else if (code_seen('B'))
+-      i2c.addbyte(code_value_int());
++    if (code_seen('B')) i2c.addbyte(code_value_byte());
+ 
+     // Flush the buffer to the bus
+-    else if (code_seen('S')) i2c.send();
++    if (code_seen('S')) i2c.send();
+ 
+     // Reset and rewind the buffer
+     else if (code_seen('R')) i2c.reset();
+@@ -5266,11 +5276,11 @@ inline void gcode_M121() { endstops.enable_globally(false); }
+    * Usage: M156 A<slave device address base 10> B<number of bytes>
+    */
+   inline void gcode_M156() {
+-    uint8_t addr = code_seen('A') ? code_value_byte() : 0;
+-    int bytes    = code_seen('B') ? code_value_int() : 1;
++    if (code_seen('A')) i2c.address(code_value_byte());
++
++    uint8_t bytes = code_seen('B') ? code_value_byte() : 1;
+ 
+-    if (addr && bytes > 0 && bytes <= 32) {
+-      i2c.address(addr);
++    if (i2c.addr > 0 && bytes > 0 && bytes <= 32) {
+       i2c.reqbytes(bytes);
+     }
+     else {
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 3e10c3f..444fc7b 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 5700735..6f4d113 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index b719e60..d26e220 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index eeb11da..4b771d5 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index dc26fd6..92a81b2 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -801,5 +801,6 @@ const unsigned int dropsegments = 2; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index 64efac9..dde4547 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 2118f83..d077ae2 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 07f1e56..bf4d323 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index d0d98fb..1417c80 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -803,5 +803,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index b719e60..d26e220 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 9183be4..828391a 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -797,5 +797,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index eb79a30..967a3e6 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -797,5 +797,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 7ec5948..64ea68f 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -796,5 +796,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 8114779..99fbcf0 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -801,5 +801,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 2a7399b..0af7481 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -797,5 +797,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 22cefd5..7715b71 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 2ececd4..3cfe586 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -795,5 +795,6 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ // @section i2cbus
+ 
+ //#define EXPERIMENTAL_I2CBUS
++#define I2C_SLAVE_ADDRESS  0 // Set non-zero to act as a slave
+ 
+ #endif // CONFIGURATION_ADV_H
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+index c1d6008..cbefbfd 100644
+--- a/Marlin/twibus.cpp
++++ b/Marlin/twibus.cpp
+@@ -29,25 +29,28 @@
+ #include <Wire.h>
+ 
+ TWIBus::TWIBus() {
+-  Wire.begin(); // We use no address so we will join the BUS as the master
++  #if I2C_SLAVE_ADDRESS == 0
++    Wire.begin();                  // No address joins the BUS as the master
++  #else
++    Wire.begin(I2C_SLAVE_ADDRESS); // Join the bus as a slave
++  #endif
+   this->reset();
+ }
+ 
+ void TWIBus::reset() {
+-  this->addr = 0;
+   this->buffer_s = 0;
+   this->buffer[0] = 0x00;
+ }
+ 
+-void TWIBus::address(uint8_t addr) {
++void TWIBus::address(const uint8_t addr) {
+   this->addr = addr;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("sendto"), this->addr);
++    debug(PSTR("address"), this->addr);
+   #endif
+ }
+ 
+-void TWIBus::addbyte(char c) {
++void TWIBus::addbyte(const char c) {
+   if (buffer_s >= sizeof(this->buffer)) return;
+   this->buffer[this->buffer_s++] = c;
+ 
+@@ -67,39 +70,35 @@ void TWIBus::send() {
+   Wire.write(this->buffer, this->buffer_s);
+   Wire.endTransmission();
+ 
+-    // Reset the buffer after sending the data
++  // Reset the buffer after sending the data
+   this->reset();
+ }
+ 
+-void TWIBus::reqbytes(uint8_t bytes) {
++void TWIBus::reqbytes(const uint8_t bytes) {
+   if (!this->addr) return;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+     debug(PSTR("reqbytes"), bytes);
+   #endif
+ 
++  // requestFrom() is a blocking function
+   millis_t t = millis() + this->timeout;
+   Wire.requestFrom(this->addr, bytes);
++  while (Wire.available() < bytes && PENDING(millis(), t)) { /*nada*/ }
+ 
+-    // requestFrom() is a blocking function
+-  while (Wire.available() < bytes) {
+-    if (ELAPSED(millis(), t)) break;
+-    else continue;
+-  }
++  this->relaydata(bytes);
+ 
++  // Reset the buffer after sending the data
++  this->reset();
++}
++
++void TWIBus::relaydata(uint8_t bytes) {
+   SERIAL_ECHO_START;
+   SERIAL_ECHOPAIR("i2c-reply: from:", this->addr);
+-  SERIAL_ECHOPAIR(" bytes:", Wire.available());
++  SERIAL_ECHOPAIR(" bytes:", bytes);
+   SERIAL_ECHOPGM (" data:");
+-
+-    // Protect against buffer overflows if the number of received bytes
+-    // is less than the number of requested bytes
+-  uint8_t wba = Wire.available();
+-  for (int i = 0; i < wba; i++) SERIAL_CHAR(Wire.read());
++  while (bytes-- && Wire.available()) SERIAL_CHAR(Wire.read());
+   SERIAL_EOL;
+-
+-  // Reset the buffer after sending the data
+-  this->reset();
+ }
+ 
+ #if ENABLED(DEBUG_TWIBUS)
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+index d0d0e0f..d78e646 100644
+--- a/Marlin/twibus.h
++++ b/Marlin/twibus.h
+@@ -25,9 +25,13 @@
+ 
+ #include "macros.h"
+ 
++#include <Wire.h>
++
+ // Print debug messages with M111 S2 (Uses 236 bytes of PROGMEM)
+ //#define DEBUG_TWIBUS
+ 
++typedef void (*twiSlaveFunc_t)(int bytes);
++
+ /**
+  * TWIBUS class
+  *
+@@ -49,79 +53,105 @@ class TWIBus {
+   private:
+     /**
+      * @brief Timeout value in milliseconds
+-     * @details For blocking operations this constant value will set the max
+-     * amount of time Marlin will keep waiting for a reply. Useful is something
+-     * goes wrong on the bus and the SDA/SCL lines are held up by another device.
++     * @details Maximum amount of time (ms) to wait for a reply.
++     *          Useful if something goes wrong on the bus and the
++     *          SDA/SCL lines are held up by another device.
+      */
+     const int timeout = 5;
+ 
+     /**
+-     * @brief Target device address
+-     * @description This stores, until the buffer is flushed, the target device
+-     * address, take not we do follow Arduino 7bit addressing.
+-     */
+-    uint8_t addr = 0;
+-
+-    /**
+      * @brief Number of bytes on buffer
+-     * @description This var holds the total number of bytes on our buffer
+-     * waiting to be flushed to the bus.
++     * @description Number of bytes in the buffer waiting to be flushed to the bus.
+      */
+     uint8_t buffer_s = 0;
+ 
+     /**
+      * @brief Internal buffer
+-     * @details This is a fixed buffer, TWI command cannot be longer than this
++     * @details A fixed buffer. TWI commands can be no longer than this.
+      */
+-    char buffer[30];
++    char buffer[32];
+ 
+ 
+   public:
+     /**
++     * @brief Target device address
++     * @description The target device address. Persists until changed.
++     */
++    uint8_t addr = 0;
++
++    /**
+      * @brief Class constructor
+-     * @details Initialized the TWI bus and clears the buffer
++     * @details Initialize the TWI bus and clear the buffer
+      */
+     TWIBus();
+ 
+     /**
+      * @brief Reset the buffer
+-     * @details Brings the internal buffer to a known-empty state
++     * @details Set the buffer to a known-empty state
+      */
+     void reset();
+ 
+     /**
+      * @brief Send the buffer data to the bus
+-     * @details Flushed the buffer into the bus targeting the cached slave device
+-     * address.
++     * @details Flush the buffer to the bus at the target address.
+      */
+     void send();
+ 
+     /**
+      * @brief Add one byte to the buffer
+-     * @details Adds the byte to the buffer in a sequential way, if buffer is full
+-     * the request is silently ignored.
++     * @details Add a byte to the end of the buffer.
++     *          Silently fails if the buffer is full.
+      *
+      * @param c a data byte
+      */
+-    void addbyte(char c);
++    void addbyte(const char c);
+ 
+     /**
+-     * @brief Sets the target slave address
+-     * @details The target slave address is stored so it can be later used when
+-     * the complete packet needs to be sent over the bus.
++     * @brief Set the target slave address
++     * @details The target slave address for sending the full packet.
+      *
+      * @param addr 7-bit integer address
+      */
+-    void address(uint8_t addr);
++    void address(const uint8_t addr);
++
++    /**
++     * @brief Request data from the slave device
++     * @details Request a number of bytes from a slave device.
++     *          This implementation simply sends the data to serial
++     *          in a parser-friendly format.
++     *
++     * @param bytes the number of bytes to request
++     */
++    void reqbytes(const uint8_t bytes);
+ 
+     /**
+-     * @brief Request data from slave device
+-     * @details Requests data from a slave device, when the data is received it will
+-     * be relayed to the serial line using a parser-friendly formatting.
++     * @brief Relay data from the slave device to serial
++     * @details Relay a number of bytes from the bus to
++     *          serial in a parser-friendly format.
+      *
+      * @param bytes the number of bytes to request
+      */
+-    void reqbytes(uint8_t bytes);
++    void relaydata(uint8_t bytes);
++
++    #if I2C_SLAVE_ADDRESS > 0
++
++      /**
++       * @brief Receive bytes (passively)
++       * @details Receive bytes sent to our slave address.
++       *          and simply echo them to serial.
++       */
++      inline void receive(uint8_t bytes) { relaydata(bytes); }
++
++      /**
++       * @brief Register a slave handler
++       * @details Set a handler to receive data from the bus,
++       *          so we can act as a slave.
++       *
++       * @param handler A function to handle receiving bytes
++       */
++      inline void onReceive(const twiSlaveFunc_t handler) { Wire.onReceive(handler); }
++
++    #endif
+ 
+     #if ENABLED(DEBUG_TWIBUS)
+ 
+
+commit 52560e257f08085814148b78c77321e71193e7ca (from dd75fca4d918df43b7f3bad530f6ed72e4839948)
+Merge: 30afac6 dd75fca
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Aug 11 12:39:26 2016 -0700
+
+    Merge pull request #4595 from thinkyhead/rc_i2c_slave
+    
+    Add support for i2c slave address
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index c9242e7..94e5b8a 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -71,6 +71,7 @@
+ #define SERIAL_PROTOCOLLNPGM(x) do{ serialprintPGM(PSTR(x "\n")); }while(0)
+ 
+ #define SERIAL_PROTOCOLPAIR(name, value) SERIAL_ECHOPAIR(name, value)
++#define SERIAL_PROTOCOLLNPAIR(name, value) do{ SERIAL_ECHOPAIR(name, value); SERIAL_EOL; }while(0)
+ 
+ extern const char errormagic[] PROGMEM;
+ extern const char echomagic[] PROGMEM;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 87b4d30..ac40193 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3292,10 +3292,9 @@ inline void gcode_G28() {
+       case MeshReport:
+         if (mbl.has_mesh()) {
+           SERIAL_PROTOCOLPAIR("State: ", mbl.active() ? "On" : "Off");
+-          SERIAL_PROTOCOLPAIR("\nNum X,Y: ", MESH_NUM_X_POINTS);
+-          SERIAL_PROTOCOLCHAR(','); SERIAL_PROTOCOL(MESH_NUM_Y_POINTS);
+-          SERIAL_PROTOCOLPAIR("\nZ search height: ", MESH_HOME_SEARCH_Z);
+-          SERIAL_PROTOCOLPGM("\nZ offset: "); SERIAL_PROTOCOL_F(mbl.z_offset, 5);
++          SERIAL_PROTOCOLLNPGM("\nNum X,Y: " STRINGIFY(MESH_NUM_X_POINTS) "," STRINGIFY(MESH_NUM_Y_POINTS));
++          SERIAL_PROTOCOLLNPGM("Z search height: " STRINGIFY(MESH_HOME_SEARCH_Z));
++          SERIAL_PROTOCOLPGM("Z offset: "); SERIAL_PROTOCOL_F(mbl.z_offset, 5);
+           SERIAL_PROTOCOLLNPGM("\nMeasured points:");
+           for (py = 0; py < MESH_NUM_Y_POINTS; py++) {
+             for (px = 0; px < MESH_NUM_X_POINTS; px++) {
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 65b4093..a0cdadc 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -395,8 +395,7 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+     if (file.open(curDir, fname, O_READ)) {
+       filesize = file.fileSize();
+       SERIAL_PROTOCOLPAIR(MSG_SD_FILE_OPENED, fname);
+-      SERIAL_PROTOCOLPAIR(MSG_SD_SIZE, filesize);
+-      SERIAL_EOL;
++      SERIAL_PROTOCOLLNPAIR(MSG_SD_SIZE, filesize);
+       sdpos = 0;
+ 
+       SERIAL_PROTOCOLLNPGM(MSG_SD_FILE_SELECTED);
+@@ -417,8 +416,7 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+     }
+     else {
+       saving = true;
+-      SERIAL_PROTOCOLPAIR(MSG_SD_WRITE_TO_FILE, name);
+-      SERIAL_EOL;
++      SERIAL_PROTOCOLLNPAIR(MSG_SD_WRITE_TO_FILE, name);
+       lcd_setstatus(fname);
+     }
+   }
+@@ -449,6 +447,7 @@ void CardReader::removeFile(char* name) {
+         if (!myDir.open(curDir, subdirname, O_READ)) {
+           SERIAL_PROTOCOLPAIR("open failed, File: ", subdirname);
+           SERIAL_PROTOCOLCHAR('.');
++          SERIAL_EOL;
+           return;
+         }
+         else {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 3bcfe39..4cb3ed9 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -322,17 +322,17 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+               SERIAL_PROTOCOLPAIR(MSG_T_MIN, min);
+               SERIAL_PROTOCOLPAIR(MSG_T_MAX, max);
+               if (cycles > 2) {
+-                Ku = (4.0 * d) / (3.14159265 * (max - min) * 0.5);
++                Ku = (4.0 * d) / (M_PI * (max - min) * 0.5);
+                 Tu = ((float)(t_low + t_high) * 0.001);
+                 SERIAL_PROTOCOLPAIR(MSG_KU, Ku);
+                 SERIAL_PROTOCOLPAIR(MSG_TU, Tu);
+                 workKp = 0.6 * Ku;
+                 workKi = 2 * workKp / Tu;
+                 workKd = workKp * Tu * 0.125;
+-                SERIAL_PROTOCOLLNPGM(MSG_CLASSIC_PID);
++                SERIAL_PROTOCOLLNPGM("\n" MSG_CLASSIC_PID);
+                 SERIAL_PROTOCOLPAIR(MSG_KP, workKp);
+                 SERIAL_PROTOCOLPAIR(MSG_KI, workKi);
+-                SERIAL_PROTOCOLPAIR(MSG_KD, workKd);
++                SERIAL_PROTOCOLLNPAIR(MSG_KD, workKd);
+                 /**
+                 workKp = 0.33*Ku;
+                 workKi = workKp/Tu;
+@@ -390,40 +390,38 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+ 
+         #if HAS_PID_FOR_BOTH
+           const char* estring = hotend < 0 ? "bed" : "";
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kp ", workKp);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Ki ", workKi);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kd ", workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kp ", workKp); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Ki ", workKi); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kd ", workKd); SERIAL_EOL;
+         #elif ENABLED(PIDTEMP)
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kp ", workKp);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Ki ", workKi);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kd ", workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kp ", workKp); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Ki ", workKi); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kd ", workKd); SERIAL_EOL;
+         #else
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKp ", workKp);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKi ", workKi);
+-          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKd ", workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKp ", workKp); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKi ", workKi); SERIAL_EOL;
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKd ", workKd); SERIAL_EOL;
+         #endif
+ 
+-        #define _SET_BED_PID() \
++        #define _SET_BED_PID() do { \
+           bedKp = workKp; \
+           bedKi = scalePID_i(workKi); \
+           bedKd = scalePID_d(workKd); \
+-          updatePID()
++          updatePID(); } while(0)
+ 
+-        #define _SET_EXTRUDER_PID() \
++        #define _SET_EXTRUDER_PID() do { \
+           PID_PARAM(Kp, hotend) = workKp; \
+           PID_PARAM(Ki, hotend) = scalePID_i(workKi); \
+           PID_PARAM(Kd, hotend) = scalePID_d(workKd); \
+-          updatePID()
++          updatePID(); } while(0)
+ 
+         // Use the result? (As with "M303 U1")
+         if (set_result) {
+           #if HAS_PID_FOR_BOTH
+-            if (hotend < 0) {
++            if (hotend < 0)
+               _SET_BED_PID();
+-            }
+-            else {
++            else
+               _SET_EXTRUDER_PID();
+-            }
+           #elif ENABLED(PIDTEMP)
+             _SET_EXTRUDER_PID();
+           #else
+

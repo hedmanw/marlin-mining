@@ -1,0 +1,199 @@
+commit 63715aba4f549c8af6b1aa3d26701b789eb3ae00 (from 8a01e5fb7a54f3bce2c516b9e1e664bc43ae40a2)
+Merge: 8a01e5f 5243d8b
+Author: Richard Wackerbarth <rkw@dataplex.net>
+Date:   Wed Jul 15 17:40:59 2015 -0500
+
+    Merge Anti-jitter for all servo moves (PR#2427)
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 8586522..3bb02ba 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -504,13 +504,6 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+   //#define Z_PROBE_SLED // turn on if you have a z-probe mounted on a sled like those designed by Charles Bell
+   //#define SLED_DOCKING_OFFSET 5 // the extra distance the X axis must travel to pickup the sled. 0 should be fine but you can push it further if you'd like.
+ 
+-  //If defined, the Probe servo will be turned on only during movement and then turned off to avoid jerk
+-  //The value is the delay to turn the servo off after powered on - depends on the servo speed; 300ms is good value, but you can try lower it.
+-  // You MUST HAVE the SERVO_ENDSTOPS defined to use here a value higher than zero otherwise your code will not compile.
+-
+-//  #define PROBE_SERVO_DEACTIVATION_DELAY 300
+-
+-
+ //If you have enabled the Bed Auto Leveling and are using the same Z Probe for Z Homing,
+ //it is highly recommended you let this Z_SAFE_HOMING enabled!!!
+ 
+@@ -774,6 +767,17 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+ //
+ //#define NUM_SERVOS 3 // Servo index starts with 0 for M280 command
+ 
++// If DEACTIVATE_SERVOS_AFTER_MOVE is defined, the servos will be turned on only during movement and then turned off to avoid jitter
++// SERVO_DEACTIVATION_DELAY is the delay to turn the servo off after powered on - depends on the servo speed; 300ms is good value, but you can try lower it.
++// If your servo does not reach the requested position, enlarge the time.
++// You MUST HAVE the SERVO_ENDSTOPS defined to use here a value higher than zero otherwise your code will not compile.
++//
++//#define DEACTIVATE_SERVOS_AFTER_MOVE
++
++#ifdef DEACTIVATE_SERVOS_AFTER_MOVE
++  #define SERVO_DEACTIVATION_DELAY 300
++#endif
++
+ // Servo Endstops
+ //
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8fdefc4..b1b2b34 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -36,7 +36,7 @@
+   #endif
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
+-#define SERVO_LEVELING (defined(ENABLE_AUTO_BED_LEVELING) && PROBE_SERVO_DEACTIVATION_DELAY > 0)
++#define SERVO_LEVELING (defined(ENABLE_AUTO_BED_LEVELING) && defined(DEACTIVATE_SERVOS_AFTER_MOVE))
+ 
+ #ifdef MESH_BED_LEVELING
+   #include "mesh_bed_leveling.h"
+@@ -570,13 +570,9 @@ void servo_init() {
+   #ifdef SERVO_ENDSTOPS
+     for (int i = 0; i < 3; i++)
+       if (servo_endstops[i] >= 0)
+-        servo[servo_endstops[i]].write(servo_endstop_angles[i * 2 + 1]);
++        servo[servo_endstops[i]].move(0, servo_endstop_angles[i * 2 + 1]);
+   #endif
+ 
+-  #if SERVO_LEVELING
+-    delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-    servo[servo_endstops[Z_AXIS]].detach();
+-  #endif
+ }
+ 
+ /**
+@@ -1315,14 +1311,7 @@ static void setup_for_endstop_move() {
+       // Engage Z Servo endstop if enabled
+       if (servo_endstops[Z_AXIS] >= 0) {
+         Servo *srv = &servo[servo_endstops[Z_AXIS]];
+-        #if SERVO_LEVELING
+-          srv->attach(0);
+-        #endif
+-        srv->write(servo_endstop_angles[Z_AXIS * 2]);
+-        #if SERVO_LEVELING
+-          delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          srv->detach();
+-        #endif
++        srv->move(0, servo_endstop_angles[Z_AXIS * 2]);
+       }
+ 
+     #elif defined(Z_PROBE_ALLEN_KEY)
+@@ -1424,14 +1413,7 @@ static void setup_for_endstop_move() {
+ 
+         // Change the Z servo angle
+         Servo *srv = &servo[servo_endstops[Z_AXIS]];
+-        #if SERVO_LEVELING
+-          srv->attach(0);
+-        #endif
+-        srv->write(servo_endstop_angles[Z_AXIS * 2 + 1]);
+-        #if SERVO_LEVELING
+-          delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          srv->detach();
+-        #endif
++        srv->move(0, servo_endstop_angles[Z_AXIS * 2 + 1]);
+       }
+ 
+     #elif defined(Z_PROBE_ALLEN_KEY)
+@@ -1683,7 +1665,7 @@ static void homeaxis(AxisEnum axis) {
+       if (axis != Z_AXIS) {
+         // Engage Servo endstop if enabled
+         if (servo_endstops[axis] > -1)
+-          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
++          servo[servo_endstops[axis]].move(0, servo_endstop_angles[axis * 2]);
+       }
+     #endif
+ 
+@@ -1786,7 +1768,7 @@ static void homeaxis(AxisEnum axis) {
+       {
+         // Retract Servo endstop if enabled
+         if (servo_endstops[axis] > -1)
+-          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++          servo[servo_endstops[axis]].move(0, servo_endstop_angles[axis * 2 + 1]);
+       }
+     #endif
+ 
+@@ -4354,14 +4336,7 @@ inline void gcode_M226() {
+       servo_position = code_value_short();
+       if (servo_index >= 0 && servo_index < NUM_SERVOS) {
+         Servo *srv = &servo[servo_index];
+-        #if SERVO_LEVELING
+-          srv->attach(0);
+-        #endif
+-        srv->write(servo_position);
+-        #if SERVO_LEVELING
+-          delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          srv->detach();
+-        #endif
++        srv->move(0, servo_position);
+       }
+       else {
+         SERIAL_ECHO_START;
+diff --git a/Marlin/servo.cpp b/Marlin/servo.cpp
+index 32e5d84..6e3f398 100644
+--- a/Marlin/servo.cpp
++++ b/Marlin/servo.cpp
+@@ -35,12 +35,14 @@
+ 
+  write()     - Sets the servo angle in degrees.  (invalid angle that is valid as pulse in microseconds is treated as microseconds)
+  writeMicroseconds() - Sets the servo pulse width in microseconds
++ move(pin, angel) - Sequence of attach(pin), write(angel),
++                    if DEACTIVATE_SERVOS_AFTER_MOVE is defined waits SERVO_DEACTIVATION_DELAY, than detaches.
+  read()      - Gets the last written servo pulse width as an angle between 0 and 180.
+  readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
+  attached()  - Returns true if there is a servo attached.
+  detach()    - Stops an attached servos from pulsing its i/o pin.
+ 
+-*/
++ */
+ #include "Configuration.h" 
+ 
+ #ifdef NUM_SERVOS
+@@ -301,4 +303,17 @@ int Servo::readMicroseconds() {
+ 
+ bool Servo::attached() { return servos[this->servoIndex].Pin.isActive; }
+ 
++uint8_t Servo::move(int pin, int value) {
++  uint8_t ret;
++  ret = this->attach(pin);
++  if (ret) {
++    this->write(value);
++    #ifdef DEACTIVATE_SERVOS_AFTER_MOVE && (SERVO_DEACTIVATION_DELAY > 0)
++      delay(SERVO_DEACTIVATION_DELAY);
++      this->detach();
++    #endif
++  }
++  return ret;
++}
++
+ #endif
+diff --git a/Marlin/servo.h b/Marlin/servo.h
+index 4647561..4c58991 100644
+--- a/Marlin/servo.h
++++ b/Marlin/servo.h
+@@ -40,6 +40,8 @@
+    readMicroseconds()   - Gets the last written servo pulse width in microseconds. (was read_us() in first release)
+    attached()  - Returns true if there is a servo attached.
+    detach()    - Stops an attached servos from pulsing its i/o pin.
++   move(pin, angel) - Sequence of attach(pin), write(angel),
++                      if DEACTIVATE_SERVOS_AFTER_MOVE is defined waits SERVO_DEACTIVATION_DELAY, than detaches.
+  */
+ 
+ #ifndef servo_h
+@@ -120,6 +122,9 @@ class Servo {
+     void detach();
+     void write(int value);             // if value is < 200 it is treated as an angle, otherwise as pulse width in microseconds
+     void writeMicroseconds(int value); // Write pulse width in microseconds
++    uint8_t move(int pin, int value);  // attach the given pin to the next free channel, sets pinMode, returns channel number or 0 if failure.
++                                       // if value is < 200 it is treated as an angle, otherwise as pulse width in microseconds.
++                                       // if DEACTIVATE_SERVOS_AFTER_MOVE is defined waits SERVO_DEACTIVATION_DELAY, than detaches.
+     int read();                        // returns current pulse width as an angle between 0 and 180 degrees
+     int readMicroseconds();            // returns current pulse width in microseconds for this servo (was read_us() in first release)
+     bool attached();                   // return true if this servo is attached, otherwise false
+

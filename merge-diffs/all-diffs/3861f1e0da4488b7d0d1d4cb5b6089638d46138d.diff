@@ -1,0 +1,118 @@
+commit 3861f1e0da4488b7d0d1d4cb5b6089638d46138d (from 8806c7bbccdc48d25a77807e646ddf192c1ab8e9)
+Merge: 8806c7b 40e64b3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon May 30 00:08:57 2016 -0700
+
+    Merge pull request #3908 from jbrazio/bugfix/3826
+    
+    Closes #3826: SD printing will now pause and stop the print counter
+
+diff --git a/Marlin/printcounter.cpp b/Marlin/printcounter.cpp
+index 3a555c2..0c79087 100644
+--- a/Marlin/printcounter.cpp
++++ b/Marlin/printcounter.cpp
+@@ -86,7 +86,7 @@ void PrintCounter::showStats() {
+ 
+   SERIAL_ECHOPGM(", Failed: ");
+   SERIAL_ECHO(this->data.totalPrints - this->data.finishedPrints
+-    - (this->isRunning() || this->isPaused()) ? 1 : 0); // Removes 1 from failures with an active counter
++    - ((this->isRunning() || this->isPaused()) ? 1 : 0)); // Removes 1 from failures with an active counter
+ 
+   uint32_t t = this->data.printTime /60;
+   SERIAL_ECHOPGM(", Total print time: ");
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 425391f..0f7746d 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -470,14 +470,21 @@ inline void line_to_current(AxisEnum axis) {
+ 
+ #if ENABLED(SDSUPPORT)
+ 
+-  static void lcd_sdcard_pause() { card.pauseSDPrint(); }
++  static void lcd_sdcard_pause() {
++    card.pauseSDPrint();
++    print_job_timer.pause();
++  }
+ 
+-  static void lcd_sdcard_resume() { card.startFileprint(); }
++  static void lcd_sdcard_resume() {
++    card.startFileprint();
++    print_job_timer.start();
++  }
+ 
+   static void lcd_sdcard_stop() {
+     stepper.quick_stop();
+     card.sdprinting = false;
+     card.closefile();
++    print_job_timer.stop();
+     thermalManager.autotempShutdown();
+     cancel_heatup = true;
+     lcd_setstatus(MSG_PRINT_ABORTED, true);
+
+commit 3861f1e0da4488b7d0d1d4cb5b6089638d46138d (from 40e64b36de05d539c5e20c0f8aa6396a0389acbe)
+Merge: 8806c7b 40e64b3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon May 30 00:08:57 2016 -0700
+
+    Merge pull request #3908 from jbrazio/bugfix/3826
+    
+    Closes #3826: SD printing will now pause and stop the print counter
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index fe14777..ae141a6 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -519,10 +519,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define MESH_BED_LEVELING    // Enable mesh bed leveling.
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+-  #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
+-  #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_INSET 10        // Mesh inset margin on print area
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index 7b2201f..20960fd 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -24,6 +24,10 @@
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+ 
++  #define MESH_MIN_X (X_MIN_POS + MESH_INSET)
++  #define MESH_MAX_X (X_MAX_POS - (MESH_INSET))
++  #define MESH_MIN_Y (Y_MIN_POS + MESH_INSET)
++  #define MESH_MAX_Y (Y_MAX_POS - (MESH_INSET))
+   #define MESH_X_DIST ((MESH_MAX_X - (MESH_MIN_X))/(MESH_NUM_X_POINTS - 1))
+   #define MESH_Y_DIST ((MESH_MAX_Y - (MESH_MIN_Y))/(MESH_NUM_Y_POINTS - 1))
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index d1747ee..cd2409c 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -139,7 +139,7 @@ class Stepper {
+     //
+     // Current direction of stepper motors (+1 or -1)
+     //
+-    volatile signed char count_direction[NUM_AXIS] = { 1 };
++    volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
+ 
+   public:
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 250cb5e..0f7746d 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1376,7 +1376,7 @@ static void lcd_control_menu() {
+ #if ENABLED(PID_AUTOTUNE_MENU)
+ 
+   #if ENABLED(PIDTEMP)
+-    int autotune_temp[EXTRUDERS] = { 150 };
++    int autotune_temp[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(150);
+     const int heater_maxtemp[EXTRUDERS] = ARRAY_BY_EXTRUDERS(HEATER_0_MAXTEMP, HEATER_1_MAXTEMP, HEATER_2_MAXTEMP, HEATER_3_MAXTEMP);
+   #endif
+ 
+

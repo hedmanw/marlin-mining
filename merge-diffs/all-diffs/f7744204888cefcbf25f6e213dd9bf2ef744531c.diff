@@ -1,0 +1,1762 @@
+commit f7744204888cefcbf25f6e213dd9bf2ef744531c (from 7d55d86081e9a3b37ab948931b8d731980f1516d)
+Merge: 7d55d86 b1a3a95
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Mar 24 00:11:46 2016 -0700
+
+    Merge pull request #3196 from thinkyhead/rc_controllerfan_bug
+    
+    Make DISABLE_INACTIVE_X, etc., true if missing
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index f210a49..824252a 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -360,6 +360,22 @@
+     #undef SD_DETECT_INVERTED
+   #endif
+ 
++  /**
++   * Set defaults for missing (newer) options
++   */
++  #ifndef DISABLE_INACTIVE_X
++    #define DISABLE_INACTIVE_X DISABLE_X
++  #endif
++  #ifndef DISABLE_INACTIVE_Y
++    #define DISABLE_INACTIVE_Y DISABLE_Y
++  #endif
++  #ifndef DISABLE_INACTIVE_Z
++    #define DISABLE_INACTIVE_Z DISABLE_Z
++  #endif
++  #ifndef DISABLE_INACTIVE_E
++    #define DISABLE_INACTIVE_E DISABLE_E
++  #endif
++
+   // Power Signal Control Definitions
+   // By default use ATX definition
+   #ifndef POWER_SUPPLY
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index fe23fbc..0ad9d84 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -6997,11 +6997,11 @@ void plan_arc(
+ #if HAS_CONTROLLERFAN
+ 
+   void controllerFan() {
+-    static millis_t lastMotor = 0;      // Last time a motor was turned on
+-    static millis_t lastMotorCheck = 0; // Last time the state was checked
++    static millis_t lastMotorOn = 0; // Last time a motor was turned on
++    static millis_t nextMotorCheck = 0; // Last time the state was checked
+     millis_t ms = millis();
+-    if (ms >= lastMotorCheck + 2500) { // Not a time critical function, so we only check every 2500ms
+-      lastMotorCheck = ms;
++    if (ms >= nextMotorCheck) {
++      nextMotorCheck = ms + 2500; // Not a time critical function, so only check every 2.5s
+       if (X_ENABLE_READ == X_ENABLE_ON || Y_ENABLE_READ == Y_ENABLE_ON || Z_ENABLE_READ == Z_ENABLE_ON || soft_pwm_bed > 0
+           || E0_ENABLE_READ == E_ENABLE_ON // If any of the drivers are enabled...
+           #if EXTRUDERS > 1
+@@ -7017,9 +7017,12 @@ void plan_arc(
+             #endif
+           #endif
+       ) {
+-        lastMotor = ms; //... set time to NOW so the fan will turn on
++        lastMotorOn = ms; //... set time to NOW so the fan will turn on
+       }
+-      uint8_t speed = (lastMotor == 0 || ms >= lastMotor + ((CONTROLLERFAN_SECS) * 1000UL)) ? 0 : CONTROLLERFAN_SPEED;
++
++      // Fan off if no steppers have been enabled for CONTROLLERFAN_SECS seconds
++      uint8_t speed = (lastMotorOn == 0 || ms >= lastMotorOn + (CONTROLLERFAN_SECS) * 1000UL) ? 0 : CONTROLLERFAN_SPEED;
++
+       // allows digital or PWM fan output to be used (see M42 handling)
+       digitalWrite(CONTROLLERFAN_PIN, speed);
+       analogWrite(CONTROLLERFAN_PIN, speed);
+
+commit f7744204888cefcbf25f6e213dd9bf2ef744531c (from b1a3a95ad4c7fef3a6f9641e90ae521b17faec1d)
+Merge: 7d55d86 b1a3a95
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Mar 24 00:11:46 2016 -0700
+
+    Merge pull request #3196 from thinkyhead/rc_controllerfan_bug
+    
+    Make DISABLE_INACTIVE_X, etc., true if missing
+
+diff --git a/.gitignore b/.gitignore
+index 380a028..aa1d424 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -15,3 +15,6 @@ applet/
+ *.bak
+ *.DS_Store
+ *.idea
++*.s
++*.i
++*.ii
+diff --git a/.travis.yml b/.travis.yml
+index 610612e..cfcee4f 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -26,199 +26,144 @@ install:
+   - mv LiquidCrystal_I2C/LiquidCrystal_I2C /usr/local/share/arduino/libraries/LiquidCrystal_I2C
+   - git clone https://github.com/lincomatic/LiquidTWI2.git
+   - mv LiquidTWI2 /usr/local/share/arduino/libraries/LiquidTWI2
+-  # Install astyle
+-  - wget https://github.com/timonwong/astyle-mirror/archive/master.zip
+-  - unzip master.zip
+-  - cd astyle-mirror-master/build/gcc/
+-  - make prefix=$HOME astyle install
+ before_script:
+   # arduino requires an X server even with command line
+   # https://github.com/arduino/Arduino/issues/1981
+   - Xvfb :1 -screen 0 1024x768x16 &> xvfb.log &
+   # change back to home directory for compiling
+   - cd $TRAVIS_BUILD_DIR
+-  # Check style
+-  # ~/bin/astyle --recursive --options=.astylerc "Marlin/*.h" "Marlin/*.cpp"
+ script:
+-  # Abort on style errors
+-  # if [ "0" != `find . -name "*.orig" | wc -l` ] ; then echo "Improperly styled source -- run astyle" ; exit -999; fi
+-  # Relaxed Travis check
+-  # if [ "0" != `find . -name "*.orig" | wc -l` ] ; then echo "Improperly styled source -- run astyle" ; fi
+   # build default config
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+-  # backup configuration.h
++  - build_marlin
++  # Backup Configuration.h, Configuration_adv.h, and pins_RAMPS_14.h
+   - cp Marlin/Configuration.h Marlin/Configuration.h.backup
+   - cp Marlin/Configuration_adv.h Marlin/Configuration_adv.h.backup
+   - cp Marlin/pins_RAMPS_14.h Marlin/pins_RAMPS_14.h.backup
+   # add sensor for bed
+-  - sed -i 's/#define TEMP_SENSOR_BED 0/#define TEMP_SENSOR_BED 1/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - opt_set TEMP_SENSOR_BED 1
++  - build_marlin
+   # change extruder numbers from 1 to 2
+-  - sed -i 's/#define MOTHERBOARD BOARD_RAMPS_14_EFB/#define MOTHERBOARD BOARD_RAMPS_14_EEB/g' Marlin/Configuration.h
+-  - sed -i 's/#define EXTRUDERS 1/#define EXTRUDERS 2/g' Marlin/Configuration.h
+-  - sed -i 's/#define TEMP_SENSOR_1 0/#define TEMP_SENSOR_1 1/g' Marlin/Configuration.h
++  - opt_set MOTHERBOARD BOARD_RAMPS_14_EEB
++  - opt_set EXTRUDERS 2
++  - opt_set TEMP_SENSOR_1 1
+   #- cat Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - build_marlin
+   # change extruder numbers from 2 to 3, needs to be a board with 3 extruders defined in pins.h 
+-  - sed -i 's/#define MOTHERBOARD BOARD_RAMPS_14_EEB/#define MOTHERBOARD BOARD_RUMBA/g' Marlin/Configuration.h
+-  - sed -i 's/#define EXTRUDERS 2/#define EXTRUDERS 3/g' Marlin/Configuration.h
+-  - sed -i 's/#define TEMP_SENSOR_2 0/#define TEMP_SENSOR_2 1/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - opt_set MOTHERBOARD BOARD_RUMBA
++  - opt_set EXTRUDERS 3
++  - opt_set TEMP_SENSOR_2 1
++  - build_marlin
+   # enable PIDTEMPBED 
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define PIDTEMPBED/#define PIDTEMPBED/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable PIDTEMPBED
++  - build_marlin
+   # enable AUTO_BED_LEVELING
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define ENABLE_AUTO_BED_LEVELING/#define ENABLE_AUTO_BED_LEVELING/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable ENABLE_AUTO_BED_LEVELING
++  - build_marlin
+   # enable AUTO_BED_LEVELING with servos
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define ENABLE_AUTO_BED_LEVELING/#define ENABLE_AUTO_BED_LEVELING/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define NUM_SERVOS/#define NUM_SERVOS/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define Z_ENDSTOP_SERVO_NR/#define Z_ENDSTOP_SERVO_NR/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define SERVO_ENDSTOP_ANGLES/#define SERVO_ENDSTOP_ANGLES/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define DEACTIVATE_SERVOS_AFTER_MOVE/#define DEACTIVATE_SERVOS_AFTER_MOVE/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable ENABLE_AUTO_BED_LEVELING NUM_SERVOS Z_ENDSTOP_SERVO_NR SERVO_ENDSTOP_ANGLES DEACTIVATE_SERVOS_AFTER_MOVE
++  - build_marlin
+   # enable EEPROM_SETTINGS & EEPROM_CHITCHAT
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define EEPROM_SETTINGS/#define EEPROM_SETTINGS/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define EEPROM_CHITCHAT/#define EEPROM_CHITCHAT/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable EEPROM_SETTINGS EEPROM_CHITCHAT
++  - build_marlin
+   ### LCDS ###
+   # ULTIMAKERCONTROLLER
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define ULTIMAKERCONTROLLER/#define ULTIMAKERCONTROLLER/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable ULTIMAKERCONTROLLER
++  - build_marlin
+   # MAKRPANEL
+   # Needs to use melzi and sanguino hardware
+-  #- cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  #- sed -i 's/\/\/#define MAKRPANEL/#define MAKRPANEL/g' Marlin/Configuration.h
+-  #- rm -rf .build/
+-  #- DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  #- restore_configs
++  #- opt_enable MAKRPANEL
++  #- build_marlin
+   # REPRAP_DISCOUNT_SMART_CONTROLLER
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define SDSUPPORT/#define SDSUPPORT/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define REPRAP_DISCOUNT_SMART_CONTROLLER/#define REPRAP_DISCOUNT_SMART_CONTROLLER/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+-  # G3D_PANE
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define G3D_PANEL/#define G3D_PANEL/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable REPRAP_DISCOUNT_SMART_CONTROLLER SDSUPPORT
++  - build_marlin
++  # G3D_PANEL
++  - restore_configs
++  - opt_enable G3D_PANEL SDSUPPORT
++  - build_marlin
+   # REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER/#define REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+-  # REPRAPWORLD_KEYPAD 
++  - restore_configs
++  - opt_enable REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER
++  - build_marlin
++  # REPRAPWORLD_KEYPAD
+   # Cant find configuration details to get it to compile
+-  #- cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  #- sed -i 's/\/\/#define ULTRA_LCD/#define ULTRA_LCD/g' Marlin/Configuration.h
+-  #- sed -i 's/\/\/#define REPRAPWORLD_KEYPAD/#define REPRAPWORLD_KEYPAD/g' Marlin/Configuration.h
+-  #- sed -i 's/\/\/#define REPRAPWORLD_KEYPAD_MOVE_STEP 10.0/#define REPRAPWORLD_KEYPAD_MOVE_STEP 10.0/g' Marlin/Configuration.h
+-  #- rm -rf .build/
+-  #- DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  #- restore_configs
++  #- opt_enable ULTRA_LCD REPRAPWORLD_KEYPAD REPRAPWORLD_KEYPAD_MOVE_STEP
++  #- build_marlin
+   # RA_CONTROL_PANEL
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define RA_CONTROL_PANEL/#define RA_CONTROL_PANEL/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable RA_CONTROL_PANEL
++  - build_marlin
+   ### I2C PANELS ###
+   # LCD_I2C_SAINSMART_YWROBOT
+   # Failing at the moment needs different library 
+-  #- cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  #- sed -i 's/\/\/#define LCD_I2C_SAINSMART_YWROBOT/#define LCD_I2C_SAINSMART_YWROBOT/g' Marlin/Configuration.h
+-  #- rm -rf .build/
+-  #- DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  #- restore_configs
++  #- opt_enable LCD_I2C_SAINSMART_YWROBOT
++  #- build_marlin
+   # LCD_I2C_PANELOLU2
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define LCD_I2C_PANELOLU2/#define LCD_I2C_PANELOLU2/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable LCD_I2C_PANELOLU2
++  - build_marlin
+   # LCD_I2C_VIKI
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define LCD_I2C_VIKI/#define LCD_I2C_VIKI/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable LCD_I2C_VIKI
++  - build_marlin
+   # LCM1602
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define LCM1602/#define LCM1602/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable LCM1602
++  - build_marlin
+   # Enable FILAMENTCHANGEENABLE
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define FILAMENTCHANGEENABLE/#define FILAMENTCHANGEENABLE/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable FILAMENTCHANGEENABLE
++  - build_marlin
+   # Enable filament sensor
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define FILAMENT_SENSOR/#define FILAMENT_SENSOR/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+-   # Enable filament sensor with LCD display
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define ULTIMAKERCONTROLLER/#define ULTIMAKERCONTROLLER/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define FILAMENT_SENSOR/#define FILAMENT_SENSOR/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define FILAMENT_LCD_DISPLAY/#define FILAMENT_LCD_DISPLAY/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable FILAMENT_SENSOR
++  - build_marlin
++  # Enable filament sensor with LCD display
++  - restore_configs
++  - opt_enable ULTIMAKERCONTROLLER FILAMENT_SENSOR FILAMENT_LCD_DISPLAY
++  - build_marlin
+   # Enable COREXY
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define COREXY/#define COREXY/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable COREXY
++  - build_marlin
+   # Enable COREXZ
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define COREXZ/#define COREXZ/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - restore_configs
++  - opt_enable COREXZ
++  - build_marlin
+   # Enable Z_DUAL_STEPPER_DRIVERS, Z_DUAL_ENDSTOPS
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - sed -i 's/\/\/#define Z_DUAL_STEPPER_DRIVERS/#define Z_DUAL_STEPPER_DRIVERS/g' Marlin/Configuration_adv.h
+-  - sed -i 's/\ \ \/\/\ \#define Z_DUAL_ENDSTOPS/#define Z_DUAL_ENDSTOPS/g' Marlin/Configuration_adv.h
+-  - sed -i 's/#define X_MAX_PIN           2/#define X_MAX_PIN          -1/g' Marlin/pins_RAMPS_14.h
+-  - sed -i 's/\ \ \ \ \#define Z2_MAX_PIN 36/#define Z2_MAX_PIN  2/g' Marlin/Configuration_adv.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+-  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+-  - cp Marlin/Configuration_adv.h.backup Marlin/Configuration_adv.h
+-  - cp Marlin/pins_RAMPS_14.h.backup Marlin/pins_RAMPS_14.h
++  - restore_configs
++  - opt_enable_adv Z_DUAL_STEPPER_DRIVERS Z_DUAL_ENDSTOPS
++  - pins_set RAMPS_14 X_MAX_PIN -1
++  - opt_set_adv Z2_MAX_PIN 2
++  - build_marlin
++  - restore_configs
+   ######## Example Configurations ##############
+   # Delta Config (generic)
+-  - cp Marlin/example_configurations/delta/generic/Configuration* Marlin/
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - use_example_configs delta/generic
++  - build_marlin
+   # Delta Config (generic) + ABL + ALLEN_KEY
+-  - cp Marlin/example_configurations/delta/generic/Configuration* Marlin/
+-  - sed -i 's/#define DISABLE_MIN_ENDSTOPS/\/\/#define DISABLE_MIN_ENDSTOPS/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define AUTO_BED_LEVELING_FEATURE/#define AUTO_BED_LEVELING_FEATURE/g' Marlin/Configuration.h
+-  - sed -i 's/\/\/#define Z_PROBE_ALLEN_KEY/#define Z_PROBE_ALLEN_KEY/g' Marlin/Configuration.h
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - use_example_configs delta/generic
++  - opt_disable DISABLE_MIN_ENDSTOPS
++  - opt_enable AUTO_BED_LEVELING_FEATURE Z_PROBE_ALLEN_KEY
++  - build_marlin
+   # Delta Config (Mini Kossel)
+-  - cp Marlin/example_configurations/delta/kossel_mini/Configuration* Marlin/
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - use_example_configs delta/kossel_mini
++  - build_marlin
+   # Makibox Config  need to check board type for Teensy++ 2.0
+-  #- cp Marlin/example_configurations/makibox/Configuration* Marlin/
+-  #- rm -rf .build/
+-  #- DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  #- use_example_configs makibox
++  #- build_marlin
+   # SCARA Config
+-  - cp Marlin/example_configurations/SCARA/Configuration* Marlin/
+-  - rm -rf .build/
+-  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  - use_example_configs SCARA
++  - build_marlin
+   # tvrrug Config need to check board type for sanguino atmega644p
+-  #- cp Marlin/example_configurations/tvrrug/Round2/Configuration* Marlin/
+-  #- rm -rf .build/
+-  #- DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  #- use_example_configs tvrrug/Round2
++  #- build_marlin
+   ######## Board Types #############
+diff --git a/LinuxAddons/bin/build_marlin b/LinuxAddons/bin/build_marlin
+new file mode 100755
+index 0000000..3af5aa1
+--- /dev/null
++++ b/LinuxAddons/bin/build_marlin
+@@ -0,0 +1,4 @@
++#!/usr/bin/env bash
++
++rm -rf .build/
++DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+diff --git a/LinuxAddons/bin/opt_disable b/LinuxAddons/bin/opt_disable
+new file mode 100755
+index 0000000..36646db
+--- /dev/null
++++ b/LinuxAddons/bin/opt_disable
+@@ -0,0 +1,5 @@
++#!/usr/bin/env bash
++
++for opt in "$@" ; do
++  eval "sed -i 's/\(\/\/ *\)*\(\#define *$opt\)/\/\/\2/g' Marlin/Configuration.h"
++done
+diff --git a/LinuxAddons/bin/opt_enable b/LinuxAddons/bin/opt_enable
+new file mode 100755
+index 0000000..42233f0
+--- /dev/null
++++ b/LinuxAddons/bin/opt_enable
+@@ -0,0 +1,5 @@
++#!/usr/bin/env bash
++
++for opt in "$@" ; do
++  eval "sed -i 's/\/\/ *\(#define *$opt\)/\1/g' Marlin/Configuration.h"
++done
+diff --git a/LinuxAddons/bin/opt_enable_adv b/LinuxAddons/bin/opt_enable_adv
+new file mode 100755
+index 0000000..89dfce1
+--- /dev/null
++++ b/LinuxAddons/bin/opt_enable_adv
+@@ -0,0 +1,5 @@
++#!/usr/bin/env bash
++
++for opt in "$@" ; do
++  eval "sed -i 's/\/\/ *\(#define *$opt\)/\1/g' Marlin/Configuration_adv.h"
++done
+diff --git a/LinuxAddons/bin/opt_set b/LinuxAddons/bin/opt_set
+new file mode 100755
+index 0000000..fda7f37
+--- /dev/null
++++ b/LinuxAddons/bin/opt_set
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++
++eval "sed -i 's/\(#define *$1\) *.*$/\1 $2/g' Marlin/Configuration.h"
+diff --git a/LinuxAddons/bin/opt_set_adv b/LinuxAddons/bin/opt_set_adv
+new file mode 100755
+index 0000000..9ce1e4c
+--- /dev/null
++++ b/LinuxAddons/bin/opt_set_adv
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++
++eval "sed -i 's/\(#define *$1\) *.*$/\1 $2/g' Marlin/Configuration_adv.h"
+diff --git a/LinuxAddons/bin/pins_set b/LinuxAddons/bin/pins_set
+new file mode 100755
+index 0000000..4fe401c
+--- /dev/null
++++ b/LinuxAddons/bin/pins_set
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++
++eval "sed -i 's/\(#define *$2\) *.*$/\1 $3/g' Marlin/pins_$1.h"
+diff --git a/LinuxAddons/bin/restore_configs b/LinuxAddons/bin/restore_configs
+new file mode 100755
+index 0000000..ca77e55
+--- /dev/null
++++ b/LinuxAddons/bin/restore_configs
+@@ -0,0 +1,5 @@
++#!/usr/bin/env bash
++
++cp Marlin/Configuration.h.backup      Marlin/Configuration.h
++cp Marlin/Configuration_adv.h.backup  Marlin/Configuration_adv.h
++cp Marlin/pins_RAMPS_14.h.backup      Marlin/pins_RAMPS_14.h
+diff --git a/LinuxAddons/bin/use_example_configs b/LinuxAddons/bin/use_example_configs
+new file mode 100755
+index 0000000..d1e6e46
+--- /dev/null
++++ b/LinuxAddons/bin/use_example_configs
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++
++eval "cp Marlin/example_configurations/$1/Configuration* Marlin/"
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 43d3f50..fecf130 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -703,7 +703,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index f424258..0ad9d84 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -461,6 +461,8 @@ void serial_echopair_P(const char* s_P, float v)         { serialprintPGM(s_P);
+ void serial_echopair_P(const char* s_P, double v)        { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, unsigned long v) { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ 
++void gcode_M114();
++
+ #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
+   float extrude_min_temp = EXTRUDE_MINTEMP;
+ #endif
+@@ -2696,6 +2698,8 @@ inline void gcode_G28() {
+     }
+   #endif
+ 
++  gcode_M114(); // Send end position to RepetierHost
++
+ }
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+@@ -3332,6 +3336,8 @@ inline void gcode_G28() {
+       }
+     #endif
+ 
++    gcode_M114(); // Send end position to RepetierHost
++
+   }
+ 
+   #if DISABLED(Z_PROBE_SLED) // could be avoided
+@@ -3366,6 +3372,8 @@ inline void gcode_G28() {
+         raise_z_for_servo();
+       #endif
+       stow_z_probe(false); // Retract Z Servo endstop if available. Z_PROBE_SLED is missed her.
++    
++      gcode_M114(); // Send end position to RepetierHost
+     }
+ 
+   #endif //!Z_PROBE_SLED
+@@ -3932,6 +3940,8 @@ inline void gcode_M42() {
+     delay(25);
+ 
+     clean_up_after_endstop_move();
++  
++    gcode_M114(); // Send end position to RepetierHost
+   }
+ 
+ #endif // AUTO_BED_LEVELING_FEATURE && Z_MIN_PROBE_REPEATABILITY_TEST
+@@ -5413,7 +5423,7 @@ inline void gcode_M428() {
+         SERIAL_ERRORLNPGM(MSG_ERR_M428_TOO_FAR);
+         LCD_ALERTMESSAGEPGM("Err: Too far!");
+         #if HAS_BUZZER
+-          enqueue_and_echo_commands_P(PSTR("M300 S40 P200"));
++          buzz(200, 40);
+         #endif
+         err = true;
+         break;
+@@ -5427,7 +5437,8 @@ inline void gcode_M428() {
+     sync_plan_position();
+     LCD_ALERTMESSAGEPGM("Offset applied.");
+     #if HAS_BUZZER
+-      enqueue_and_echo_commands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
++      buzz(200, 659);
++      buzz(200, 698);
+     #endif
+   }
+ }
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 67033c3..db244db 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -687,7 +687,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index ff200ca..5d7a0e6 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -684,7 +684,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index c925ddc..93fe283 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -696,7 +696,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 1b6954f..bfcfa55 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -199,15 +199,15 @@ Here are some standard links for getting your machine calibrated:
+   //#define SLOW_PWM_HEATERS // PWM with very low frequency (roughly 0.125Hz=8s) and minimum state time of approximately 1s useful for heaters driven by a relay
+   //#define PID_PARAMS_PER_EXTRUDER // Uses separate PID parameters for each extruder (useful for mismatched extruders)
+                                     // Set/get with gcode: M301 E[extruder number, 0-2]
+-  #define PID_FUNCTIONAL_RANGE 20   // If the temperature difference between the target temperature and the actual temperature
++  #define PID_FUNCTIONAL_RANGE 250  // If the temperature difference between the target temperature and the actual temperature
+                                     // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
+   #define PID_INTEGRAL_DRIVE_MAX PID_MAX  //limit for the integral term
+   #define K1 0.95 //smoothing factor within the PID
+ 
+   // Tuned PID values using M303
+-  #define  DEFAULT_Kp 18.92
+-  #define  DEFAULT_Ki 1.37
+-  #define  DEFAULT_Kd 65.57
++  #define  DEFAULT_Kp 19.18
++  #define  DEFAULT_Ki 1.36
++  #define  DEFAULT_Kd 67.42
+ 
+   // BQ firmware stock PID values
+   //#define  DEFAULT_Kp 10.7
+@@ -335,8 +335,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Z Probe Options =============================
+ //===========================================================================
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z-probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++// Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
++// The Z_MIN_PIN will then be used for both Z-homing and probing.
+ //
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+@@ -372,11 +372,12 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN
+ // If you want to use a probe you do have to define one of the two defines above!
+ 
+-// If you want to enable the Z probe pin, but disable its use, uncomment the line below.
+-// This only affects a Z probe endstop if you have separate Z min endstop as well and have
+-// activated Z_MIN_PROBE_ENDSTOP above. If you are using the Z Min endstop on your Z probe,
+-// this has no effect.
+-// In other words. If a Z_MIN_PROBE_PIN is defined in your pin file - don't use it.
++// To use a probe you must enable one of the two options above!
++//
++// This option disables the use of the Z_MIN_PROBE_PIN
++// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
++// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
++// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+ //#define DISABLE_Z_MIN_PROBE_ENDSTOP
+ 
+ // For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
+@@ -415,7 +416,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
+-//#define MIN_Z_HEIGHT_FOR_HOMING 5 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++#define MIN_Z_HEIGHT_FOR_HOMING 5   // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+@@ -459,9 +460,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+   #define MESH_MIN_X 10
+-  #define MESH_MAX_X (X_MAX_POS - (MESH_MIN_X))
++  #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+   #define MESH_MIN_Y 10
+-  #define MESH_MAX_Y (Y_MAX_POS - (MESH_MIN_Y))
++  #define MESH_MAX_Y (Y_MAX_POS - MESH_MIN_Y)
+   #define MESH_NUM_X_POINTS 3  // Don't use more than 7 points per axis, implementation limited.
+   #define MESH_NUM_Y_POINTS 3
+   #define MESH_HOME_SEARCH_Z 4  // Z after Home, bed somewhere below but above 0.0.
+@@ -499,7 +500,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   // Enable this to sample the bed in a grid (least squares solution).
+   // Note: this feature generates 10KB extra code size.
+-  //#define AUTO_BED_LEVELING_GRID
++  #define AUTO_BED_LEVELING_GRID
+ 
+   #if ENABLED(AUTO_BED_LEVELING_GRID)
+ 
+@@ -544,33 +545,46 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //    |           |
+   //    O-- FRONT --+
+   //  (0,0)
+-  #define X_PROBE_OFFSET_FROM_EXTRUDER 34  // Z probe to nozzle X offset: -left  +right
+-  #define Y_PROBE_OFFSET_FROM_EXTRUDER 15  // Z probe to nozzle Y offset: -front +behind
+-  #define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z probe to nozzle Z offset: -below (always!)
++  #define X_PROBE_OFFSET_FROM_EXTRUDER 34  // X offset: -left  [of the nozzle] +right
++  #define Y_PROBE_OFFSET_FROM_EXTRUDER 15  // Y offset: -front [of the nozzle] +behind
++  #define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below [the nozzle] (always negative!)
+ 
+   #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+ 
+-  #define Z_RAISE_BEFORE_PROBING 5    // How much the Z axis will be raised before traveling to the first probing point.
+-  #define Z_RAISE_BETWEEN_PROBINGS 1  // How much the Z axis will be raised when traveling from between next probing points.
+-  #define Z_RAISE_AFTER_PROBING 10    // How much the Z axis will be raised after the last probing point.
++  #define Z_RAISE_BEFORE_PROBING   5  // How much the Z axis will be raised before traveling to the first probing point.
++  #define Z_RAISE_BETWEEN_PROBINGS 2  // How much the Z axis will be raised when traveling from between next probing points.
++  #define Z_RAISE_AFTER_PROBING    5  // How much the Z axis will be raised after the last probing point.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+                                                                              // Useful to retract a deployable Z probe.
+ 
+-  //#define Z_PROBE_SLED // Turn on if you have a Z probe mounted on a sled like those designed by Charles Bell.
+-  //#define SLED_DOCKING_OFFSET 5 // The extra distance the X axis must travel to pickup the sled. 0 should be fine but you can push it further if you'd like.
++  // Probes are sensors/switches that need to be activated before they can be used
++  // and deactivated after the use.
++  // Allen Key Probes, Servo Probes, Z-Sled Probes, FIX_MOUNTED_PROBE, ... . You have to activate one of these for the AUTO_BED_LEVELING_FEATURE
+ 
++  // A fix mounted probe, like the normal inductive probe, must be deactivated to go below Z_PROBE_OFFSET_FROM_EXTRUDER
++  // when the hardware endstops are active.
++  #define FIX_MOUNTED_PROBE
+ 
+-  //If you have enabled the Bed Auto Leveling and are using the same Z Probe for Z Homing,
+-  //it is highly recommended you let this Z_SAFE_HOMING enabled!!!
++  // A Servo Probe can be defined in the servo section below.
+ 
+-  #define Z_SAFE_HOMING   // This feature is meant to avoid Z homing with Z probe outside the bed area.
++  // An Allen Key Probe is currently predefined only in the delta example configurations.
++
++  //#define Z_PROBE_SLED // Enable if you have a Z probe mounted on a sled like those designed by Charles Bell.
++  //#define SLED_DOCKING_OFFSET 5 // The extra distance the X axis must travel to pickup the sled. 0 should be fine but you can push it further if you'd like.
++
++  // If you've enabled AUTO_BED_LEVELING_FEATURE and are using the Z Probe for Z Homing,
++  // it is highly recommended you leave Z_SAFE_HOMING enabled!
++
++  #define Z_SAFE_HOMING   // Use the z-min-probe for homing to z-min - not the z-min-endstop.
++                          // This feature is meant to avoid Z homing with Z probe outside the bed area.
+                           // When defined, it will:
+                           // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+                           // - If stepper drivers timeout, it will need X and Y homing again before Z homing.
+                           // - Position the Z probe in a defined XY point before Z Homing when homing all axis (G28).
+                           // - Block Z homing only when the Z probe is outside bed area.
+ 
++
+   #if ENABLED(Z_SAFE_HOMING)
+ 
+     #define Z_SAFE_HOMING_X_POINT ((X_MIN_POS + X_MAX_POS) / 2)    // X point for Z homing when homing all axis (G28).
+@@ -685,7 +699,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 8cb0cf6..39a3d8a 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -63,7 +63,7 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
+     #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+@@ -278,7 +278,7 @@
+ #define DEFAULT_MINSEGMENTTIME        20000
+ 
+ // If defined the movements slow down when the look ahead buffer is only half full
+-//#define SLOWDOWN
++#define SLOWDOWN
+ 
+ // Frequency limit
+ // See nophead's blog for more info
+diff --git a/Marlin/example_configurations/Hephestos_2/readme.md b/Marlin/example_configurations/Hephestos_2/readme.md
+index 7b3fc58..1952170 100644
+--- a/Marlin/example_configurations/Hephestos_2/readme.md
++++ b/Marlin/example_configurations/Hephestos_2/readme.md
+@@ -1,7 +1,8 @@
+ # Example Configuration for BQ [Hephestos 2](http://www.bq.com/uk/hephestos-2)
+-This configuration file is based on the original configuration file shipped with the heavily modifiied Marlin fork by BQ. The orignal firmware and configuration file can be found at [BQ Github repository](https://github.com/bq/Marlin).
++This configuration file is based on the original configuration file shipped with the heavily modified Marlin fork by BQ. The original firmware and configuration file can be found at [BQ Github repository](https://github.com/bq/Marlin).
+ 
+ NOTE: The look and feel of the Hephestos 2 while navigating the LCD menu will change by using the original Marlin firmware.
+ 
+ ## Changelog
+-* 2016/03/01 - Initial release
++ * 2016/03/01 - Initial release
++ * 2016/03/21 - Activated four point auto leveling by default; updated miscellaneous z-probe values
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index fcba5be..57e70f3 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -719,7 +719,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // K8200: for Display VM8201 // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index fed932e..a94f983 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -704,7 +704,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index ba6c7e8..74ad040 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -699,7 +699,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 00a9348..43dd9b6 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -712,7 +712,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 7a2d02c..1a50c6f 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -755,7 +755,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index ea9f24d..a92ddb0 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -696,7 +696,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 4169033..f8f0a00 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -704,7 +704,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 880bcdd..cf0cbcf 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -826,7 +826,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 5bd1488..9a22fda 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -826,7 +826,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 81504e4..4926afc 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -830,7 +830,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 5edd663..3aefda8 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -821,7 +821,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 11d022e..5fbfd37 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -740,7 +740,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 1001f34..1cc2641 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -707,7 +707,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 297a122..ac2aafd 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -698,7 +698,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ // Choose ONE of these 3 charsets. This has to match your hardware. Ignored for full graphic display.
+ // To find out what type you have - compile with (test) - upload - click to get the menu. You'll see two typical lines from the upper half of the charset.
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+   #define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+   //#define DISPLAY_CHARSET_HD44780_WESTERN
+   //#define DISPLAY_CHARSET_HD44780_CYRILLIC
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 4c7cb88..69bc65f 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -10,7 +10,7 @@
+ //
+ //   ==> ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRALCD" / "SDSUPPORT" #define IN "Configuration.h"
+ //   ==> ALSO TRY ALL AVAILABLE LANGUAGE OPTIONS
+-// See also documentation/LCDLanguageFont.md
++// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+ 
+ // Languages
+ // en         English
+diff --git a/Marlin/language_an.h b/Marlin/language_an.h
+index 488c2ea..7c6dbba 100644
+--- a/Marlin/language_an.h
++++ b/Marlin/language_an.h
+@@ -2,7 +2,7 @@
+  * Aragonese
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_AN_H
+diff --git a/Marlin/language_bg.h b/Marlin/language_bg.h
+index e84cd0c..c0eff00 100644
+--- a/Marlin/language_bg.h
++++ b/Marlin/language_bg.h
+@@ -2,7 +2,7 @@
+  * Bulgarian
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_BG_H
+diff --git a/Marlin/language_ca.h b/Marlin/language_ca.h
+index f6b70ba..eb50c9f 100644
+--- a/Marlin/language_ca.h
++++ b/Marlin/language_ca.h
+@@ -2,7 +2,7 @@
+  * Catalan
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_CA_H
+diff --git a/Marlin/language_cn.h b/Marlin/language_cn.h
+index 7aa8a5b..a2c797a 100644
+--- a/Marlin/language_cn.h
++++ b/Marlin/language_cn.h
+@@ -2,7 +2,7 @@
+  * Chinese
+  *
+  * LCD Menu Messages
+- * Se also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_CN_H
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index 8518ee6..3762dbb 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -2,7 +2,7 @@
+  * Czech
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  * Translated by Petr Zahradnik, Computer Laboratory
+  * Blog and video blog Zahradnik se bavi
+diff --git a/Marlin/language_da.h b/Marlin/language_da.h
+index e1afe64..cc04f12 100644
+--- a/Marlin/language_da.h
++++ b/Marlin/language_da.h
+@@ -2,7 +2,7 @@
+  * Danish
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_DA_H
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index 111efe0..be0b15d 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -2,7 +2,7 @@
+  * German
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_DE_H
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 127cd99..819ae99 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -2,7 +2,7 @@
+  * English
+  *
+  * LCD Menu Messages
+- * Se also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_EN_H
+diff --git a/Marlin/language_es.h b/Marlin/language_es.h
+index 364a3aa..05d4a78 100644
+--- a/Marlin/language_es.h
++++ b/Marlin/language_es.h
+@@ -2,7 +2,7 @@
+  * Spanish
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_ES_H
+diff --git a/Marlin/language_eu.h b/Marlin/language_eu.h
+index 896afce..c1cc44b 100644
+--- a/Marlin/language_eu.h
++++ b/Marlin/language_eu.h
+@@ -2,7 +2,7 @@
+  * Basque-Euskera
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_EU_H
+diff --git a/Marlin/language_fi.h b/Marlin/language_fi.h
+index 2937fa7..41f7f5d 100644
+--- a/Marlin/language_fi.h
++++ b/Marlin/language_fi.h
+@@ -2,7 +2,7 @@
+  * Finnish
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_FI_H
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index 60cf146..eda1050 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -2,7 +2,7 @@
+  * French
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_FR_H
+diff --git a/Marlin/language_gl.h b/Marlin/language_gl.h
+index 5b7830d..fc9c8c3 100644
+--- a/Marlin/language_gl.h
++++ b/Marlin/language_gl.h
+@@ -2,7 +2,7 @@
+  * Galician language (ISO "gl")
+  *
+  * LCD Menu Messages
+- * Se also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_GL_H
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index ecaa787..21a8aeb 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -2,7 +2,7 @@
+  * Italian
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_IT_H
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 6435e14..52fdc27 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -2,7 +2,7 @@
+  * Japanese (Kana)
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ 
+@@ -17,12 +17,12 @@
+ // 片仮名表示定義
+ #define WELCOME_MSG                         MACHINE_NAME " ready."
+ #define MSG_SD_INSERTED                     "\xb6\xb0\xc4\xde\x20\xbf\xb3\xc6\xad\xb3\xbb\xda\xcf\xbc\xc0" // "Card inserted"
+-#define MSG_SD_REMOVED                      "\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                  // "Card removed"
++#define MSG_SD_REMOVED                      "\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                 // "Card removed"
+ #define MSG_MAIN                            "\xd2\xb2\xdd"                                                 // "Main"
+ #define MSG_AUTOSTART                       "\xbc\xde\xc4\xde\xb3\xb6\xb2\xbc"                             // "Autostart"
+ #define MSG_DISABLE_STEPPERS                "\xd3\xb0\xc0\xb0\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"         // "Disable steppers"
+ #define MSG_AUTO_HOME                       "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "Auto home"
+-#define MSG_LEVEL_BED_HOMING                "Homing"
++#define MSG_LEVEL_BED_HOMING                "\xb9\xde\xdd\xc3\xdd\xc6\xb2\xc4\xde\xb3"                     // "Homing"
+ #define MSG_SET_HOME_OFFSETS                "\xb7\xbc\xde\xad\xdd\xb5\xcc\xbe\xaf\xc4\xbe\xaf\xc3\xb2"     // "Set home offsets"
+ #define MSG_SET_ORIGIN                      "\xb7\xbc\xde\xad\xdd\xbe\xaf\xc4"                             // "Set origin"
+ #define MSG_PREHEAT_PLA                     "PLA \xd6\xc8\xc2"                                             // "Preheat PLA"
+@@ -39,8 +39,9 @@
+ #define MSG_SWITCH_PS_ON                    "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xdd"                         // "Switch power on"
+ #define MSG_SWITCH_PS_OFF                   "\xc3\xde\xdd\xb9\xde\xdd\x20\xb5\xcc"                         // "Switch power off"
+ #define MSG_EXTRUDE                         "\xb5\xbc\xc0\xde\xbc"                                         // "Extrude"
+-#define MSG_RETRACT                         "\xd8\xc4\xd7\xb8\xc4"                                         // "Retract"
++#define MSG_RETRACT                         "\xcb\xb7\xba\xd0\xbe\xaf\xc3\xb2"                             // "Retract"
+ #define MSG_MOVE_AXIS                       "\xbc\xde\xb8\xb2\xc4\xde\xb3"                                 // "Move axis"
++#define MSG_LEVEL_BED                       "\xcd\xde\xaf\xc4\xde\xda\xcd\xde\xd8\xdd\xb8\xde"             // "Level bed"
+ #define MSG_MOVE_X                          "X\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move X"
+ #define MSG_MOVE_Y                          "Y\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move Y"
+ #define MSG_MOVE_Z                          "Z\xbc\xde\xb8\x20\xb2\xc4\xde\xb3"                            // "Move Z"
+@@ -54,94 +55,97 @@
+ #define MSG_FAN_SPEED                       "\xcc\xa7\xdd\xbf\xb8\xc4\xde"                                 // "Fan speed"
+ #define MSG_FLOW                            "\xb5\xb8\xd8\xd8\xae\xb3"                                     // "Flow"
+ #define MSG_CONTROL                         "\xba\xdd\xc4\xdb\xb0\xd9"                                     // "Control"
+-#define MSG_MIN                             LCD_STR_THERMOMETER " Min"
+-#define MSG_MAX                             LCD_STR_THERMOMETER " Max"
+-#define MSG_FACTOR                          LCD_STR_THERMOMETER " Fact"
++#define MSG_MIN                             LCD_STR_THERMOMETER " \xbb\xb2\xc3\xb2"                        // " Min"
++#define MSG_MAX                             LCD_STR_THERMOMETER " \xbb\xb2\xba\xb3"                        // " Max"
++#define MSG_FACTOR                          LCD_STR_THERMOMETER " \xcc\xa7\xb8\xc0\xb0"                    // " Fact"
+ #define MSG_AUTOTEMP                        "\xbc\xde\xc4\xde\xb3\xb5\xdd\xc4\xde"                         // "Autotemp"
+-#define MSG_ON                              "On "
+-#define MSG_OFF                             "Off"
++#define MSG_ON                              "\xb5\xdd "                                                    // "On "
++#define MSG_OFF                             "\xb5\xcc "                                                    // "Off"
+ #define MSG_PID_P                           "PID-P"
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+-#define MSG_ACC                             "\xb6\xbf\xb8\xc4\xde"                                         // "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
+-#define MSG_VMAX                            "Vmax "
+-#define MSG_X                               "x"
+-#define MSG_Y                               "y"
+-#define MSG_Z                               "z"
+-#define MSG_E                               "e"
+-#define MSG_VMIN                            "Vmin"
+-#define MSG_VTRAV_MIN                       "VTrav min"
+-#define MSG_AMAX                            "Amax "
+-#define MSG_A_RETRACT                       "A-retract"
++#define MSG_ACC                             "\xb6\xbf\xb8\xc4\xde mm/s^2"                                  // "Accel"
++#define MSG_VXY_JERK                        "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                      // "Vxy-jerk"
++#define MSG_VZ_JERK                         "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                       // "Vz-jerk"
++#define MSG_VE_JERK                         "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\x20\xd4\xb8\xc4\xde"     // "Ve-jerk"
++#define MSG_VMAX                            "\xbb\xb2\xc0\xde\xb2\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4 "        // "Vmax "
++#define MSG_X                               "X"                                                            // "x"
++#define MSG_Y                               "Y"                                                            // "y"
++#define MSG_Z                               "Z"                                                            // "z"
++#define MSG_E                               "E"                                                            // "e"
++#define MSG_VMIN                            "\xbb\xb2\xbc\xae\xb3\xcc\xa8\xb0\xc4\xde\xda\xb0\xc4"         // "Vmin"
++#define MSG_VTRAV_MIN                       "\xbb\xb2\xbc\xae\xb3\xc4\xd7\xcd\xde\xd9\xda\xb0\xc4"         // "VTrav min"
++#define MSG_AMAX                            "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                    // "Amax "
++#define MSG_A_RETRACT                       "\xcb\xb7\xba\xd0\xb6\xbf\xb8\xc4\xde"                         // "A-retract"
++#define MSG_A_TRAVEL                        "\xc4\xd7\xcd\xde\xd9\xb6\xbf\xb8\xc4\xde"                     // "A-travel"
+ #define MSG_XSTEPS                          "Xsteps/mm"
+ #define MSG_YSTEPS                          "Ysteps/mm"
+ #define MSG_ZSTEPS                          "Zsteps/mm"
+ #define MSG_ESTEPS                          "Esteps/mm"
+-#define MSG_TEMPERATURE                     "\xb5\xdd\xc4\xde"                                             // "Temperature"
+-#define MSG_MOTION                          "\xb3\xba\xde\xb7\xbe\xaf\xc3\xb2"                             // "Motion"
+-#define MSG_VOLUMETRIC                      "\xcc\xa8\xd7\xd2\xdd\xc4"                                     // "Filament"
++#define MSG_TEMPERATURE                     "\xb5\xdd\xc4\xde"                                              // "Temperature"
++#define MSG_MOTION                          "\xb3\xba\xde\xb7\xbe\xaf\xc3\xb2"                              // "Motion"
++#define MSG_VOLUMETRIC                      "\xcc\xa8\xd7\xd2\xdd\xc4"                                      // "Filament"
+ #define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+-#define MSG_FILAMENT_DIAM                   "Fil. Dia."
+-#define MSG_CONTRAST                        "LCD\xba\xdd\xc4\xd7\xbd\xc4"                                  // "LCD contrast"
+-#define MSG_STORE_EPROM                     "\xd2\xd3\xd8\xcd\xb6\xb8\xc9\xb3"                             // "Store memory"
++#define MSG_FILAMENT_DIAM                   "\xcc\xa8\xd7\xd2\xdd\xc4\xc1\xae\xaf\xb9\xb2"                  // "Fil. Dia."
++#define MSG_CONTRAST                        "LCD\xba\xdd\xc4\xd7\xbd\xc4"                                   // "LCD contrast"
++#define MSG_STORE_EPROM                     "\xd2\xd3\xd8\xcd\xb6\xb8\xc9\xb3"                              // "Store memory"
+ #define MSG_LOAD_EPROM                      "\xd2\xd3\xd8\xb6\xd7\xd6\xd0\xba\xd0"                          // "Load memory"
+-#define MSG_RESTORE_FAILSAFE                "\xbe\xaf\xc3\xb2\xd8\xbe\xaf\xc4"                             // "Restore failsafe"
+-#define MSG_REFRESH                         "\xd8\xcc\xda\xaf\xbc\xad"                                     // "Refresh"
+-#define MSG_WATCH                           "\xb2\xdd\xcc\xab"                                             // "Info screen"
+-#define MSG_PREPARE                         "\xbc\xde\xad\xdd\xcb\xde\xbe\xaf\xc3\xb2"                     // "Prepare"
+-#define MSG_TUNE                            "\xc1\xae\xb3\xbe\xb2"                                         // "Tune"
+-#define MSG_PAUSE_PRINT                     "\xb2\xc1\xbc\xde\xc3\xb2\xbc"                                 // "Pause print"
+-#define MSG_RESUME_PRINT                    "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                         // "Resume print"
+-#define MSG_STOP_PRINT                      "\xcc\xdf\xd8\xdd\xc4\xc3\xb2\xbc"                             // "Stop print"
+-#define MSG_CARD_MENU                       "SD\xb6\xb0\xc4\xde\xb6\xd7\xcc\xdf\xd8\xdd\xc4"               // "Print from SD"
+-#define MSG_NO_CARD                         "SD\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"               // "No SD card"
+-#define MSG_DWELL                           "\xbd\xd8\xb0\xcc\xdf"                                         // "Sleep..."
+-#define MSG_USERWAIT                        "\xbc\xca\xde\xd7\xb8\xb5\xcf\xc1\xb8\xc0\xde\xbb\xb2"         // "Wait for user..."
+-#define MSG_RESUMING                        "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                         // "Resuming print"
+-#define MSG_PRINT_ABORTED                   "\xcc\xdf\xd8\xdd\xc4\xc1\xad\xb3\xbc\xbb\xda\xcf\xbc\xc0"     // "Print aborted"
+-#define MSG_NO_MOVE                         "\xb3\xba\xde\xb7\xcf\xbe\xdd"                                 // "No move."
+-#define MSG_KILLED                          "\xbc\xae\xb3\xb7\xae"                                         // "KILLED. "
+-#define MSG_STOPPED                         "\xc3\xb2\xbc\xbc\xcf\xbc\xc0"                                 // "STOPPED. "
+-#define MSG_CONTROL_RETRACT                 "Retract mm"
+-#define MSG_CONTROL_RETRACT_SWAP            "Swap Re.mm"
+-#define MSG_CONTROL_RETRACTF                "Retract  V"
+-#define MSG_CONTROL_RETRACT_ZLIFT           "Hop mm"
+-#define MSG_CONTROL_RETRACT_RECOVER         "UnRet +mm"
+-#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "S UnRet+mm"
+-#define MSG_CONTROL_RETRACT_RECOVERF        "UnRet  V"
+-#define MSG_AUTORETRACT                     "AutoRetr."
+-#define MSG_FILAMENTCHANGE                  "\xcc\xa8\xd7\xd2\xdd\xc4\xba\xb3\xb6\xdd"                     // "Change filament"
+-#define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                   // "Init. SD card"
+-#define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                           // "Change SD card"
+-#define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde \xcd\xde\xaf\xc4\xde\xb6\xde\xb2"   // "Z probe out. bed"
++#define MSG_RESTORE_FAILSAFE                "\xbe\xaf\xc3\xb2\xd8\xbe\xaf\xc4"                              // "Restore failsafe"
++#define MSG_REFRESH                         "\xd8\xcc\xda\xaf\xbc\xad"                                      // "Refresh"
++#define MSG_WATCH                           "\xb2\xdd\xcc\xab"                                              // "Info screen"
++#define MSG_PREPARE                         "\xbc\xde\xad\xdd\xcb\xde\xbe\xaf\xc3\xb2"                      // "Prepare"
++#define MSG_TUNE                            "\xc1\xae\xb3\xbe\xb2"                                          // "Tune"
++#define MSG_PAUSE_PRINT                     "\xb2\xc1\xbc\xde\xc3\xb2\xbc"                                  // "Pause print"
++#define MSG_RESUME_PRINT                    "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "Resume print"
++#define MSG_STOP_PRINT                      "\xcc\xdf\xd8\xdd\xc4\xc3\xb2\xbc"                              // "Stop print"
++#define MSG_CARD_MENU                       "SD\xb6\xb0\xc4\xde\xb6\xd7\xcc\xdf\xd8\xdd\xc4"                // "Print from SD"
++#define MSG_NO_CARD                         "SD\xb6\xb0\xc4\xde\xb6\xde\xb1\xd8\xcf\xbe\xdd"                // "No SD card"
++#define MSG_DWELL                           "\xbd\xd8\xb0\xcc\xdf"                                          // "Sleep..."
++#define MSG_USERWAIT                        "\xbc\xca\xde\xd7\xb8\xb5\xcf\xc1\xb8\xc0\xde\xbb\xb2"          // "Wait for user..."
++#define MSG_RESUMING                        "\xcc\xdf\xd8\xdd\xc4\xbb\xb2\xb6\xb2"                          // "Resuming print"
++#define MSG_PRINT_ABORTED                   "\xcc\xdf\xd8\xdd\xc4\xc1\xad\xb3\xbc\xbb\xda\xcf\xbc\xc0"      // "Print aborted"
++#define MSG_NO_MOVE                         "\xb3\xba\xde\xb7\xcf\xbe\xdd"                                  // "No move."
++#define MSG_KILLED                          "\xcb\xbc\xde\xae\xb3\xc3\xb2\xbc"                              // "KILLED. "
++#define MSG_STOPPED                         "\xc3\xb2\xbc\xbc\xcf\xbc\xc0"                                  // "STOPPED. "
++#define MSG_CONTROL_RETRACT                 "\xcb\xb7\xba\xd0\xd8\xae\xb3 mm"                               // "Retract mm"
++#define MSG_CONTROL_RETRACT_SWAP            "\xcb\xb7\xba\xd0\xd8\xae\xb3S mm"                              // "Swap Re.mm"
++#define MSG_CONTROL_RETRACTF                "\xcb\xb7\xba\xd0\xda\xb0\xc4 mm/s"                             // "Retract  V"
++#define MSG_CONTROL_RETRACT_ZLIFT           "\xc9\xbd\xde\xd9\xc0\xb2\xcb mm"                               // "Hop mm"
++#define MSG_CONTROL_RETRACT_RECOVER         "\xd8\xb6\xca\xde\xb0 +mm"                                      // "UnRet +mm"
++#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "\xd8\xb6\xca\xde\xb0S +mm"                                     // "S UnRet+mm"
++#define MSG_CONTROL_RETRACT_RECOVERF        "\xd8\xb6\xca\xde\xb0\xda\xb0\xc4 mm/s"                         // "UnRet  V"
++#define MSG_AUTORETRACT                     "\xbc\xde\xc4\xde\xb3\xcb\xb7\xba\xd0"                             // "AutoRetr."
++#define MSG_FILAMENTCHANGE                  "\xcc\xa8\xd7\xd2\xdd\xc4\xba\xb3\xb6\xdd"                      // "Change filament"
++#define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                    // "Init. SD card"
++#define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                            // "Change SD card"
++#define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2" // "Z probe out. bed"
+ #define MSG_POSITION_UNKNOWN                "\xb9\xde\xdd\xc3\xdd\xcaXY\xb2\xc4\xde\xb3\xba\xdeZ"           // "Home X/Y before Z"
+-#define MSG_ZPROBE_ZOFFSET                  "Z\xb5\xcc\xbe\xaf\xc4"                                        // "Z Offset"
+-#define MSG_BABYSTEP_X                      "\xcb\xde\xc4\xde\xb3 X"                                       // "Babystep X"
+-#define MSG_BABYSTEP_Y                      "\xcb\xde\xc4\xde\xb3 Y"                                       // "Babystep Y"
+-#define MSG_BABYSTEP_Z                      "\xcb\xde\xc4\xde\xb3 Z"                                       // "Babystep Z"
+-#define MSG_ENDSTOP_ABORT                   "Endstop abort"
+-#define MSG_END_HOUR                        "hours"
+-#define MSG_END_MINUTE                      "minutes"
+-
+-/* These are from language.h. PLEASE DON'T TRANSLATE! All translatable messages can be found in language_en.h
+-#define MSG_HEATING                         "\xb6\xc8\xc2\xc1\xad\xb3..."                                  // "Heating..."
+-#define MSG_HEATING_COMPLETE                "\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"                            // "Heating done."
+-#define MSG_BED_HEATING                     "\xcd\xde\xaf\xc4\xde\xb6\xc8\xc2\xc1\xad\xb3"                 // "Bed Heating."
+-#define MSG_BED_DONE                        "\xcd\xde\xaf\xc4\xde\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"        // "Bed done."
+-#define MSG_ENDSTOPS_HIT                    "endstops hit: "
+-                   ^ typho
+-*/
++#define MSG_ZPROBE_ZOFFSET                  "Z\xb5\xcc\xbe\xaf\xc4"                                         // "Z Offset"
++#define MSG_BABYSTEP_X                      "X\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep X"
++#define MSG_BABYSTEP_Y                      "Y\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep Y"
++#define MSG_BABYSTEP_Z                      "Z\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                         // "Babystep Z"
++#define MSG_ENDSTOP_ABORT                   "\xb4\xdd\xc4\xde\xbd\xc4\xaf\xcc\xdf\x20\xbb\xc4\xde\xb3"      // "Endstop abort"
++#define MSG_HEATING_FAILED_LCD              "\xb6\xc8\xc2\xbc\xaf\xca\xde\xb2"                              // "Heating failed"
++#define MSG_ERR_REDUNDANT_TEMP              "\xb4\xd7\xb0:\xbc\xde\xae\xb3\xc1\xae\xb3\xbb\xb0\xd0\xbd\xc0\xb0\xb7\xc9\xb3" // "Err: REDUNDANT TEMP ERROR"
++#define MSG_THERMAL_RUNAWAY                 "\xc8\xc2\xce\xde\xb3\xbf\xb3"                                                  // "THERMAL RUNAWAY"
++#define MSG_ERR_MAXTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6"                         // "Err: MAXTEMP"
++#define MSG_ERR_MINTEMP                     "\xb4\xd7\xb0:\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"                             // "Err: MINTEMP"
++#define MSG_ERR_MAXTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xba\xb3\xb5\xdd\xc1\xae\xb3\xb6" // "Err: MAXTEMP BED"
++#define MSG_ERR_MINTEMP_BED                 "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xc3\xb2\xb5\xdd\xd0\xcf\xdd"     // "Err: MINTEMP BED"
++#define MSG_END_HOUR                        "\xbc\xde\xb6\xdd"                                              // "hours"
++#define MSG_END_MINUTE                      "\xcc\xdd"                                                      // "minutes"
++#define MSG_HEATING                         "\xb6\xc8\xc2\xc1\xad\xb3"                                      // "Heating..."
++#define MSG_HEATING_COMPLETE                "\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"                              // "Heating done."
++#define MSG_BED_HEATING                     "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xc1\xad\xb3"              // "Bed Heating."
++#define MSG_BED_DONE                        "\xcd\xde\xaf\xc4\xde\x20\xb6\xc8\xc2\xb6\xdd\xd8\xae\xb3"      // "Bed done."
+ 
+ #if ENABLED(DELTA_CALIBRATION_MENU)
+-  #define MSG_DELTA_CALIBRATE               "Delta Calibration"
+-  #define MSG_DELTA_CALIBRATE_X             "Calibrate X"
+-  #define MSG_DELTA_CALIBRATE_Y             "Calibrate Y"
+-  #define MSG_DELTA_CALIBRATE_Z             "Calibrate Z"
+-  #define MSG_DELTA_CALIBRATE_CENTER        "Calibrate Center"
++  #define MSG_DELTA_CALIBRATE               "\xc3\xde\xd9\xc0\x20\xba\xb3\xbe\xb2"                          // "Delta Calibration"
++  #define MSG_DELTA_CALIBRATE_X             "X\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate X"
++  #define MSG_DELTA_CALIBRATE_Y             "Y\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate Y"
++  #define MSG_DELTA_CALIBRATE_Z             "Z\xbc\xde\xb8\x20\xba\xb3\xbe\xb2"                             // "Calibrate Z"
++  #define MSG_DELTA_CALIBRATE_CENTER        "\xc1\xad\xb3\xbc\xdd\x20\xba\xb3\xbe\xb2"                      // "Calibrate Center"
+ #endif // DELTA_CALIBRATION_MENU
+ 
+ #endif // LANGUAGE_KANA_H
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 716fc37..a5a102c 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -2,7 +2,7 @@
+  * Japanese (Kana UTF8 version)
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ 
+@@ -20,83 +20,85 @@
+ 
+ // 片仮名表示定義
+ #define WELCOME_MSG                         MACHINE_NAME " ready."
+-#define MSG_SD_INSERTED                     "カード ソウニュウサレマシタ"          // "Card inserted"
++#define MSG_SD_INSERTED                     "カード ソウニュウサレマシタ"        // "Card inserted"
+ #define MSG_SD_REMOVED                      "カードガアリマセン"               // "Card removed"
+-#define MSG_MAIN                            "メイン"                        // "Main"
++#define MSG_MAIN                            "メイン"                       // "Main"
+ #define MSG_AUTOSTART                       "ジドウカイシ"                   // "Autostart"
+-#define MSG_DISABLE_STEPPERS                "モーターデンゲン オフ"             // "Disable steppers"
++#define MSG_DISABLE_STEPPERS                "モーターデンゲン オフ"            // "Disable steppers"
+ #define MSG_AUTO_HOME                       "ゲンテンニイドウ"                // "Auto home"
+-#define MSG_LEVEL_BED_HOMING                "Homing"
++#define MSG_LEVEL_BED_HOMING                "ゲンテンニイドウ"                // "Homing"
+ #define MSG_SET_HOME_OFFSETS                "キジュンオフセットセッテイ"         // "Set home offsets"
+ #define MSG_SET_ORIGIN                      "キジュンセット"                 // "Set origin"
+-#define MSG_PREHEAT_PLA                     "PLA ヨネツ"                    // "Preheat PLA"
++#define MSG_PREHEAT_PLA                     "PLA ヨネツ"                   // "Preheat PLA"
+ #define MSG_PREHEAT_PLA_N                   MSG_PREHEAT_PLA " "
+-#define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " スベテ"      // " All"
+-#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " ベッド"    // "Bed"
+-#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " セッテイ"     // "conf"
+-#define MSG_PREHEAT_ABS                     "ABS ヨネツ"                    // "Preheat ABS"
++#define MSG_PREHEAT_PLA_ALL                 MSG_PREHEAT_PLA " スベテ"     // " All"
++#define MSG_PREHEAT_PLA_BEDONLY             MSG_PREHEAT_PLA " ベッド"     // "Bed"
++#define MSG_PREHEAT_PLA_SETTINGS            MSG_PREHEAT_PLA " セッテイ"    // "conf"
++#define MSG_PREHEAT_ABS                     "ABS ヨネツ"                  // "Preheat ABS"
+ #define MSG_PREHEAT_ABS_N                   MSG_PREHEAT_ABS " "
+-#define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " スベテ"      // " All"
+-#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " ベッド"    // "Bed"
++#define MSG_PREHEAT_ABS_ALL                 MSG_PREHEAT_ABS " スベテ"     // " All"
++#define MSG_PREHEAT_ABS_BEDONLY             MSG_PREHEAT_ABS " ベッド"     // "Bed"
+ #define MSG_PREHEAT_ABS_SETTINGS            MSG_PREHEAT_ABS " セッテイ"    // "conf"
+-#define MSG_COOLDOWN                        "カネツテイシ"                    // "Cooldown"
++#define MSG_COOLDOWN                        "カネツテイシ"                  // "Cooldown"
+ #define MSG_SWITCH_PS_ON                    "デンゲン オン"                 // "Switch power on"
+ #define MSG_SWITCH_PS_OFF                   "デンゲン オフ"                 // "Switch power off"
+ #define MSG_EXTRUDE                         "オシダシ"                     // "Extrude"
+-#define MSG_RETRACT                         "リトラクト"                     // "Retract"
+-#define MSG_MOVE_AXIS                       "ジクイドウ"                   // "Move axis"
+-#define MSG_MOVE_X                          "Xジク イドウ"                 // "Move X"
+-#define MSG_MOVE_Y                          "Yジク イドウ"                 // "Move Y"
+-#define MSG_MOVE_Z                          "Zジク イドウ"                 // "Move Z"
++#define MSG_RETRACT                         "ヒキコミセッテイ"                // "Retract"
++#define MSG_MOVE_AXIS                       "ジクイドウ"                    // "Move axis"
++#define MSG_LEVEL_BED                       "ベッドレベリング"                // "Level bed"
++#define MSG_MOVE_X                          "Xジク イドウ"                  // "Move X"
++#define MSG_MOVE_Y                          "Yジク イドウ"                  // "Move Y"
++#define MSG_MOVE_Z                          "Zジク イドウ"                  // "Move Z"
+ #define MSG_MOVE_E                          "エクストルーダー"                // "Extruder"
+ #define MSG_MOVE_01MM                       "0.1mm イドウ"                 // "Move 0.1mm"
+ #define MSG_MOVE_1MM                        "  1mm イドウ"                 // "Move 1mm"
+ #define MSG_MOVE_10MM                       " 10mm イドウ"                 // "Move 10mm"
+ #define MSG_SPEED                           "スピード"                     // "Speed"
+ #define MSG_NOZZLE                          "ノズル"                       // "Nozzle"
+-#define MSG_BED                             "ベッド"                     // "Bed"
++#define MSG_BED                             "ベッド"                       // "Bed"
+ #define MSG_FAN_SPEED                       "ファンソクド"                    // "Fan speed"
+ #define MSG_FLOW                            "オクリリョウ"                     // "Flow"
+ #define MSG_CONTROL                         "コントロール"                    // "Control"
+-#define MSG_MIN                             LCD_STR_THERMOMETER " Min"
+-#define MSG_MAX                             LCD_STR_THERMOMETER " Max"
+-#define MSG_FACTOR                          LCD_STR_THERMOMETER " Fact"
+-#define MSG_AUTOTEMP                        "ジドウオンド"                  // "Autotemp"
+-#define MSG_ON                              "On "
+-#define MSG_OFF                             "Off"
++#define MSG_MIN                             LCD_STR_THERMOMETER " サイテイ" // " Min"
++#define MSG_MAX                             LCD_STR_THERMOMETER " サイコウ" // " Max"
++#define MSG_FACTOR                          LCD_STR_THERMOMETER " ファクター" // " Fact"
++#define MSG_AUTOTEMP                        "ジドウオンド"                    // "Autotemp"
++#define MSG_ON                              "オン "                         // "On "
++#define MSG_OFF                             "オフ "                         // "Off"   
+ #define MSG_PID_P                           "PID-P"
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+-#define MSG_ACC                             "カソクド"                     // "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
+-#define MSG_VMAX                            "Vmax "
+-#define MSG_X                               "x"
+-#define MSG_Y                               "y"
+-#define MSG_Z                               "z"
+-#define MSG_E                               "e"
+-#define MSG_VMIN                            "Vmin"
+-#define MSG_VTRAV_MIN                       "VTrav min"
+-#define MSG_AMAX                            "Amax "
+-#define MSG_A_RETRACT                       "A-retract"
++#define MSG_ACC                             "カソクド mm/s^2"              // "Accel"
++#define MSG_VXY_JERK                        "XYジク ヤクド mm/s"            // "Vxy-jerk"
++#define MSG_VZ_JERK                         "Zジク ヤクド mm/s"             // "Vz-jerk"
++#define MSG_VE_JERK                         "エクストルーダー ヤクド"          // "Ve-jerk"
++#define MSG_VMAX                            "サイダイフィードレート "           // "Vmax "
++#define MSG_X                               "X"                         // "x"
++#define MSG_Y                               "Y"                         // "y"
++#define MSG_Z                               "Z"                         // "z"
++#define MSG_E                               "E"                         // "e"
++#define MSG_VMIN                            "サイショウフィードレート"          // "Vmin"
++#define MSG_VTRAV_MIN                       "サイショウトラベルレート"          // "VTrav min"
++#define MSG_AMAX                            "サイダイカソクド "              // "Amax "
++#define MSG_A_RETRACT                       "ヒキコミカソクド"               // "A-retract"
++#define MSG_A_TRAVEL                        "トラベルカソクド"               // "A-travel"
+ #define MSG_XSTEPS                          "Xsteps/mm"
+ #define MSG_YSTEPS                          "Ysteps/mm"
+ #define MSG_ZSTEPS                          "Zsteps/mm"
+ #define MSG_ESTEPS                          "Esteps/mm"
+ #define MSG_TEMPERATURE                     "オンド"                      // "Temperature"
+ #define MSG_MOTION                          "ウゴキセッテイ"                // "Motion"
+-#define MSG_VOLUMETRIC                      "フィラメント"                    // "Filament"
++#define MSG_VOLUMETRIC                      "フィラメント"                   // "Filament"
+ #define MSG_VOLUMETRIC_ENABLED              "E in mm3"
+-#define MSG_FILAMENT_DIAM                   "Fil. Dia."
+-#define MSG_CONTRAST                        "LCDコントラスト"                 // "LCD contrast"
+-#define MSG_STORE_EPROM                     "メモリヘカクノウ"                 // "Store memory"
++#define MSG_FILAMENT_DIAM                   "フィラメントチョッケイ"            // "Fil. Dia."
++#define MSG_CONTRAST                        "LCDコントラスト"               // "LCD contrast"
++#define MSG_STORE_EPROM                     "メモリヘカクノウ"               // "Store memory"
+ #define MSG_LOAD_EPROM                      "メモリカラヨミコミ"               // "Load memory"
+ #define MSG_RESTORE_FAILSAFE                "セッテイリセット"               // "Restore failsafe"
+ #define MSG_REFRESH                         "リフレッシュ"                  // "Refresh"
+ #define MSG_WATCH                           "インフォ"                     // "Info screen"
+-#define MSG_PREPARE                         "ジュンビセッテイ"             //"Prepare"
++#define MSG_PREPARE                         "ジュンビセッテイ"               // "Prepare"
+ #define MSG_TUNE                            "チョウセイ"                    // "Tune"
+ #define MSG_PAUSE_PRINT                     "イチジテイシ"                  // "Pause print"
+ #define MSG_RESUME_PRINT                    "プリントサイカイ"                // "Resume print"
+@@ -108,35 +110,46 @@
+ #define MSG_RESUMING                        "プリントサイカイ"                // "Resuming print"
+ #define MSG_PRINT_ABORTED                   "プリントチュウシサレマシタ"          // "Print aborted"
+ #define MSG_NO_MOVE                         "ウゴキマセン"                  // "No move."
+-#define MSG_KILLED                          "ショウキョ"                     // "KILLED. "
++#define MSG_KILLED                          "ヒジョウテイシ"                  // "KILLED. "
+ #define MSG_STOPPED                         "テイシシマシタ"                  // "STOPPED. "
+-#define MSG_CONTROL_RETRACT                 "Retract mm"
+-#define MSG_CONTROL_RETRACT_SWAP            "Swap Re.mm"
+-#define MSG_CONTROL_RETRACTF                "Retract  V"
+-#define MSG_CONTROL_RETRACT_ZLIFT           "Hop mm"
+-#define MSG_CONTROL_RETRACT_RECOVER         "UnRet +mm"
+-#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "S UnRet+mm"
+-#define MSG_CONTROL_RETRACT_RECOVERF        "UnRet  V"
+-#define MSG_AUTORETRACT                     "AutoRetr."
+-#define MSG_FILAMENTCHANGE                  "フィラメントコウカン"               // "Change filament"
+-#define MSG_INIT_SDCARD                     "SDカードサイヨミコミ"              // "Init. SD card"
+-#define MSG_CNG_SDCARD                      "SDカードコウカン"                // "Change SD card"
+-#define MSG_ZPROBE_OUT                      "Zプローブ ベッドガイ"         // "Z probe out. bed"
++#define MSG_CONTROL_RETRACT                 "ヒキコミリョウ mm"                // "Retract mm"
++#define MSG_CONTROL_RETRACT_SWAP            "ヒキコミリョウS mm"               // "Swap Re.mm"
++#define MSG_CONTROL_RETRACTF                "ヒキコミレート mm/s"             // "Retract  V"
++#define MSG_CONTROL_RETRACT_ZLIFT           "ノズルタイヒ mm"                // "Hop mm"
++#define MSG_CONTROL_RETRACT_RECOVER         "リカバー +mm"                 // "UnRet +mm"
++#define MSG_CONTROL_RETRACT_RECOVER_SWAP    "リカバーS +mm"                // "S UnRet+mm"
++#define MSG_CONTROL_RETRACT_RECOVERF        "リカバーレート mm/s"            // "UnRet  V"
++#define MSG_AUTORETRACT                     "ジドウヒキコミ"                 // "AutoRetr."
++#define MSG_FILAMENTCHANGE                  "フィラメントコウカン"              // "Change filament"
++#define MSG_INIT_SDCARD                     "SDカードサイヨミコミ"             // "Init. SD card"
++#define MSG_CNG_SDCARD                      "SDカードコウカン"               // "Change SD card"
++#define MSG_ZPROBE_OUT                      "Zプローブ ベッドガイ"            // "Z probe out. bed"
+ #define MSG_POSITION_UNKNOWN                "ゲンテンハXYイドウゴZ"           // "Home X/Y before Z"
+ #define MSG_ZPROBE_ZOFFSET                  "Zオフセット"                   // "Z Offset"
+-#define MSG_BABYSTEP_X                      "ビドウ X"                    // "Babystep X"
+-#define MSG_BABYSTEP_Y                      "ビドウ Y"                    // "Babystep Y"
+-#define MSG_BABYSTEP_Z                      "ビドウ Z"                    // "Babystep Z"
+-#define MSG_ENDSTOP_ABORT                   "Endstop abort"
+-#define MSG_END_HOUR                        "hours"
+-#define MSG_END_MINUTE                      "minutes"
++#define MSG_BABYSTEP_X                      "Xジク ビドウ"                  // "Babystep X"
++#define MSG_BABYSTEP_Y                      "Yジク ビドウ"                  // "Babystep Y"
++#define MSG_BABYSTEP_Z                      "Zジク ビドウ"                  // "Babystep Z"
++#define MSG_ENDSTOP_ABORT                   "エンドストップ サドウ"            // "Endstop abort"
++#define MSG_HEATING_FAILED_LCD              "カネツシッパイ"                 // "Heating failed"
++#define MSG_ERR_REDUNDANT_TEMP              "エラー:ジョウチョウサーミスターキノウ"  // "Err: REDUNDANT TEMP ERROR"
++#define MSG_THERMAL_RUNAWAY                 "ネツボウソウ"                   // "THERMAL RUNAWAY"
++#define MSG_ERR_MAXTEMP                     "エラー:サイコウオンチョウカ"         // "Err: MAXTEMP"
++#define MSG_ERR_MINTEMP                     "エラー:サイテイオンミマン"          // "Err: MINTEMP"
++#define MSG_ERR_MAXTEMP_BED                 "エラー:ベッド サイコウオンチョウカ"    // "Err: MAXTEMP BED"
++#define MSG_ERR_MINTEMP_BED                 "エラー:ベッド サイテイオンミマン"     // "Err: MINTEMP BED"
++#define MSG_END_HOUR                        "ジカン"                       // "hours"
++#define MSG_END_MINUTE                      "フン"                         // "minutes"
++#define MSG_HEATING                         "カネツチュウ"                   // "Heating..."
++#define MSG_HEATING_COMPLETE                "カネツカンリョウ"                 // "Heating done."
++#define MSG_BED_HEATING                     "ベッド カネツチュウ"              // "Bed Heating."
++#define MSG_BED_DONE                        "ベッド カネツカンリョウ"            // "Bed done."
+ 
+ #if ENABLED(DELTA_CALIBRATION_MENU)
+-  #define MSG_DELTA_CALIBRATE               "Delta Calibration"
+-  #define MSG_DELTA_CALIBRATE_X             "Calibrate X"
+-  #define MSG_DELTA_CALIBRATE_Y             "Calibrate Y"
+-  #define MSG_DELTA_CALIBRATE_Z             "Calibrate Z"
+-  #define MSG_DELTA_CALIBRATE_CENTER        "Calibrate Center"
++  #define MSG_DELTA_CALIBRATE               "デルタ コウセイ"                // "Delta Calibration"
++  #define MSG_DELTA_CALIBRATE_X             "Xジク コウセイ"                 // "Calibrate X"
++  #define MSG_DELTA_CALIBRATE_Y             "Yジク コウセイ"                 // "Calibrate Y"
++  #define MSG_DELTA_CALIBRATE_Z             "Zジク コウセイ"                 // "Calibrate Z"
++  #define MSG_DELTA_CALIBRATE_CENTER        "チュウシン コウセイ"              // "Calibrate Center"
+ #endif // DELTA_CALIBRATION_MENU
+ 
+ #endif // LANGUAGE_KANA_UTF_H
+diff --git a/Marlin/language_nl.h b/Marlin/language_nl.h
+index fb28b79..1a6440f 100644
+--- a/Marlin/language_nl.h
++++ b/Marlin/language_nl.h
+@@ -2,7 +2,7 @@
+  * Dutch
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_NL_H
+diff --git a/Marlin/language_pl.h b/Marlin/language_pl.h
+index f430712..5862abe 100644
+--- a/Marlin/language_pl.h
++++ b/Marlin/language_pl.h
+@@ -2,7 +2,7 @@
+  * Polish
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_PL_H
+diff --git a/Marlin/language_pt-br.h b/Marlin/language_pt-br.h
+index 269ff9b..31a093f 100644
+--- a/Marlin/language_pt-br.h
++++ b/Marlin/language_pt-br.h
+@@ -2,7 +2,7 @@
+  * Portuguese (Brazil)
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_PT_BR_H
+diff --git a/Marlin/language_pt-br_utf8.h b/Marlin/language_pt-br_utf8.h
+index 8380e7c..49248ab 100644
+--- a/Marlin/language_pt-br_utf8.h
++++ b/Marlin/language_pt-br_utf8.h
+@@ -2,7 +2,7 @@
+  * Portuguese (Brazil)
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_PT_BR_UTF_H
+diff --git a/Marlin/language_pt.h b/Marlin/language_pt.h
+index b59bdbd..0fcfc5e 100644
+--- a/Marlin/language_pt.h
++++ b/Marlin/language_pt.h
+@@ -2,7 +2,7 @@
+  * Portuguese
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_PT_H
+diff --git a/Marlin/language_pt_utf8.h b/Marlin/language_pt_utf8.h
+index c902ba2..f1c8de0 100644
+--- a/Marlin/language_pt_utf8.h
++++ b/Marlin/language_pt_utf8.h
+@@ -2,7 +2,7 @@
+  * Portuguese
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_PT_UTF_H
+diff --git a/Marlin/language_ru.h b/Marlin/language_ru.h
+index e0d8200..98c5b79 100644
+--- a/Marlin/language_ru.h
++++ b/Marlin/language_ru.h
+@@ -2,7 +2,7 @@
+  * Russian
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_RU_H
+diff --git a/Marlin/language_test.h b/Marlin/language_test.h
+index be9e6c0..08ac198 100644
+--- a/Marlin/language_test.h
++++ b/Marlin/language_test.h
+@@ -2,7 +2,7 @@
+  * TEST
+  *
+  * LCD Menu Messages
+- * See also documentation/LCDLanguageFont.md
++ * See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+  *
+  */
+ #ifndef LANGUAGE_TEST_H
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index f841cd7..6d97df2 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -219,6 +219,7 @@
+ #endif
+ 
+ #if ENABLED(DISABLE_YMAX_ENDSTOP)
++  #undef Y_MAX_PIN
+   #define Y_MAX_PIN          -1
+ #endif
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index f4a3dc3..fd8269d 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -464,18 +464,21 @@ void check_axes_activity() {
+ 
+     #ifdef FAN_KICKSTART_TIME
+ 
+-      static millis_t fan_kick_end[FAN_COUNT] = { 0 }, ms = millis();
++      static millis_t fan_kick_end[FAN_COUNT] = { 0 };
+ 
+       #define KICKSTART_FAN(f) \
+         if (tail_fan_speed[f]) { \
++          millis_t ms = millis(); \
+           if (fan_kick_end[f] == 0) { \
+             fan_kick_end[f] = ms + FAN_KICKSTART_TIME; \
+             tail_fan_speed[f] = 255; \
++          } else { \
++            if (fan_kick_end[f] > ms) { \
++              tail_fan_speed[f] = 255; \
++            } \
+           } \
+-          else if (fan_kick_end[f] > ms) \
+-            tail_fan_speed[f] = 255; \
+-          else \
+-            fan_kick_end[f] = 0; \
++        } else { \
++          fan_kick_end[f] = 0; \
+         }
+ 
+       #if HAS_FAN0
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index aec2f2f..23d2ab3 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -873,7 +873,7 @@ const short temptable_55[][2] PROGMEM = {
+ };
+ #endif
+ 
+-#if (THERMISTORHEATER_0 == 60) || (THERMISTORHEATER_1 == 60) || (THERMISTORHEATER_2 == 60) || (THERMISTORHEATER_3 == 60) || (THERMISTORBED == 60) // Maker's Tool Works Kapton Bed Thermister
++#if (THERMISTORHEATER_0 == 60) || (THERMISTORHEATER_1 == 60) || (THERMISTORHEATER_2 == 60) || (THERMISTORHEATER_3 == 60) || (THERMISTORBED == 60) // Maker's Tool Works Kapton Bed Thermistor
+ // ./createTemperatureLookup.py --r0=100000 --t0=25 --r1=0 --r2=4700 --beta=3950
+ // r0: 100000
+ // t0: 25
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 88e0a44..e605948 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1867,7 +1867,7 @@ void lcd_update() {
+         blink++;     // Variable for animation
+         (*currentMenu)();
+       }
+-      #endif
++    #endif
+ 
+     #if ENABLED(LCD_HAS_STATUS_INDICATORS)
+       lcd_implementation_update_indicators();
+

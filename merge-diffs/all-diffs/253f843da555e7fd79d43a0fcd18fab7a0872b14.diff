@@ -1,0 +1,831 @@
+commit 253f843da555e7fd79d43a0fcd18fab7a0872b14 (from 889570029ab19ce2e9bb7a4d64b27c586ddbb8f1)
+Merge: 8895700 7242d44
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 13:50:19 2016 -0700
+
+    Merge pull request #4306 from thinkyhead/rc_stupid_name_okbai
+    
+    ENDSTOPS_ONLY_FOR_HOMING is confusing
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index fb59131..0a6d774 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -596,6 +596,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 027132d..930e931 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e735529..8162d3a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2728,18 +2728,18 @@ inline void gcode_G0_G1() {
+  * G4: Dwell S<seconds> or P<milliseconds>
+  */
+ inline void gcode_G4() {
+-  millis_t codenum = 0;
++  millis_t dwell_ms = 0;
+ 
+-  if (code_seen('P')) codenum = code_value_millis(); // milliseconds to wait
+-  if (code_seen('S')) codenum = code_value_millis_from_seconds(); // seconds to wait
++  if (code_seen('P')) dwell_ms = code_value_millis(); // milliseconds to wait
++  if (code_seen('S')) dwell_ms = code_value_millis_from_seconds(); // seconds to wait
+ 
+   stepper.synchronize();
+   refresh_cmd_timeout();
+-  codenum += previous_cmd_ms;  // keep track of when we started waiting
++  dwell_ms += previous_cmd_ms;  // keep track of when we started waiting
+ 
+   if (!lcd_hasstatus()) LCD_MESSAGEPGM(MSG_DWELL);
+ 
+-  while (PENDING(millis(), codenum)) idle();
++  while (PENDING(millis(), dwell_ms)) idle();
+ }
+ 
+ #if ENABLED(BEZIER_CURVE_SUPPORT)
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 98abffa..0866344 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -680,6 +680,8 @@
+   #error "ABS_PREHEAT_HPB_TEMP is now PREHEAT_2_TEMP_BED. Please update your configuration."
+ #elif defined(ABS_PREHEAT_FAN_SPEED)
+   #error "ABS_PREHEAT_FAN_SPEED is now PREHEAT_2_FAN_SPEED. Please update your configuration."
++#elif defined(ENDSTOPS_ONLY_FOR_HOMING)
++  #error "ENDSTOPS_ONLY_FOR_HOMING is deprecated. Use (disable) ENDSTOPS_ALWAYS_ON_DEFAULT instead."
+ #endif
+ 
+ /**
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 4cf9f5d..b74cc8d 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -127,6 +127,7 @@
+  */
+ #include "Marlin.h"
+ #include "language.h"
++#include "endstops.h"
+ #include "planner.h"
+ #include "temperature.h"
+ #include "ultralcd.h"
+@@ -660,6 +661,14 @@ void Config_ResetDefault() {
+   for (uint8_t q = 0; q < COUNT(filament_size); q++)
+     filament_size[q] = DEFAULT_NOMINAL_FILAMENT_DIA;
+ 
++  endstops.enable_globally(
++    #if ENABLED(ENDSTOPS_ALWAYS_ON_DEFAULT)
++      (true)
++    #else
++      (false)
++    #endif
++  );
++
+   Config_Postprocess();
+ 
+   SERIAL_ECHO_START;
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 3bfb67a..751296d 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -40,10 +40,10 @@ Endstops endstops;
+ 
+ bool  Endstops::enabled = true,
+       Endstops::enabled_globally =
+-        #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-          false
++        #if ENABLED(ENDSTOPS_ALWAYS_ON_DEFAULT)
++          (true)
+         #else
+-          true
++          (false)
+         #endif
+       ;
+ volatile char Endstops::endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_PROBE as BIT value
+@@ -64,20 +64,6 @@ volatile char Endstops::endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_P
+  * Class and Instance Methods
+  */
+ 
+-Endstops::Endstops() {
+-  enable_globally(
+-    #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-      false
+-    #else
+-      true
+-    #endif
+-  );
+-  enable(true);
+-  #if HAS_BED_PROBE
+-    enable_z_probe(false);
+-  #endif
+-} // Endstops::Endstops
+-
+ void Endstops::init() {
+ 
+   #if HAS_X_MIN
+diff --git a/Marlin/endstops.h b/Marlin/endstops.h
+index 76b3486..e5d541c 100644
+--- a/Marlin/endstops.h
++++ b/Marlin/endstops.h
+@@ -43,7 +43,7 @@ class Endstops {
+     #endif
+         current_endstop_bits, old_endstop_bits;
+         
+-    Endstops();
++    Endstops() {};
+ 
+     /**
+      * Initialize the endstop pins
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index a61f51b..5d23fb5 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -596,6 +596,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 5fb71ef..9207b57 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 4ad34b0..2bb499f 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -578,6 +578,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 05189ec..3f0729b 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index c1467c5..5fc495f 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -576,6 +576,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 9d132ad..fa58bb3 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -588,6 +588,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 1aa7c21..af6bce8 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-//#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 012df06..ebdd18c 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -590,6 +590,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ #define MIN_Z_HEIGHT_FOR_HOMING 5   // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 95b8c89..bfb6b16 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a4252f4..c20173d 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -613,6 +613,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR true
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 2d0afdf..3703ce1 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -229,7 +229,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -445,7 +447,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 3addb54..e9e7a6b 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -573,6 +573,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index ba78a15..11fdbdb 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 992912e..48f7f60 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -573,6 +573,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 59b2c9d..11a5a07 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -596,6 +596,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 14c4547..c080bd9 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -593,6 +593,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index e3af83b..3c09682 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 9270801..7a9f0d3 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -604,6 +604,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index a7285ff..6a0dea8 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 700bc69..f51bc48 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -617,6 +617,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR true
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 116c99a..fe9b6ba 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -231,7 +231,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -447,7 +449,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 7110d30..5abe59e 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -588,6 +588,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 1aa7c21..af6bce8 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-//#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 95428fc..9f3fa95 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -596,6 +596,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 5a8faef..d599e9a 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -685,6 +685,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 3e9fd86..173cacf 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 3118bf3..cf5e081 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -679,6 +679,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 1dfeb8c..51a2d2b 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 3d237ec..f2fdc54 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -682,6 +682,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 15// (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index e2bb764..90b3c68 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -440,7 +442,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 96c143f..aca8ede 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -676,6 +676,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 3baf693..b8b94f8 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -228,7 +228,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -445,7 +447,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index a7e3f4e..b59312f 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -677,6 +677,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 3b82e06..74bb7c5 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6a5a8c2..4d05e5c 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -599,6 +599,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index bdf8209..6e8c6e6 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 5f27ebd..787de28 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -586,6 +586,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 9c04c46..f72daab 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+
+commit 253f843da555e7fd79d43a0fcd18fab7a0872b14 (from 7242d4481061c5749aaf2f40ae26c6440239c6d2)
+Merge: 8895700 7242d44
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 13:50:19 2016 -0700
+
+    Merge pull request #4306 from thinkyhead/rc_stupid_name_okbai
+    
+    ENDSTOPS_ONLY_FOR_HOMING is confusing
+
+diff --git a/buildroot/share/scripts/createTemperatureLookupMarlin.py b/buildroot/share/scripts/createTemperatureLookupMarlin.py
+index 3a3ed91..9859caa 100755
+--- a/buildroot/share/scripts/createTemperatureLookupMarlin.py
++++ b/buildroot/share/scripts/createTemperatureLookupMarlin.py
+@@ -5,7 +5,7 @@ Generates lookup to temperature values for use in a microcontroller in C format
+ http://en.wikipedia.org/wiki/Steinhart-Hart_equation
+ 
+ The main use is for Arduino programs that read data from the circuit board described here:
+-http://make.rrrf.org/ts-1.0
++http://reprap.org/wiki/Temperature_Sensor_v2.0
+ 
+ Usage: python createTemperatureLookup.py [options]
+ 
+

@@ -1,0 +1,410 @@
+commit 9a9e9afcf81a6eb7b7515df41bc2a1b099f8b849 (from f0beae7641fc9349f02ee89dd6bcd3ff97e54254)
+Merge: f0beae7 f38a33a
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Sep 18 23:42:16 2016 -0500
+
+    Merge pull request #4839 from thinkyhead/rc_bltouch_servo_nr
+    
+    Better BLTOUCH support
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 91b26ef..3f77307 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -118,9 +118,13 @@
+    * The BLTouch Probe emulates a servo probe
+    */
+   #if ENABLED(BLTOUCH)
+-    #undef Z_ENDSTOP_SERVO_NR
++    #ifndef Z_ENDSTOP_SERVO_NR
++      #define Z_ENDSTOP_SERVO_NR 0
++    #endif
++    #ifndef NUM_SERVOS
++      #define NUM_SERVOS (Z_ENDSTOP_SERVO_NR + 1)
++    #endif
+     #undef Z_SERVO_ANGLES
+-    #define Z_ENDSTOP_SERVO_NR 0
+     #define Z_SERVO_ANGLES {10,90} // For BLTouch 10=deploy, 90=retract
+     #undef DEACTIVATE_SERVOS_AFTER_MOVE
+     #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 7a938ea..87b4d58 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -528,6 +528,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0a4e9b8..1f86f88 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1881,6 +1881,11 @@ static void clean_up_after_endstop_or_probe_move() {
+     // Make room for probe
+     do_probe_raise(_Z_PROBE_DEPLOY_HEIGHT);
+ 
++    // Check BLTOUCH probe status for an error
++    #if ENABLED(BLTOUCH)
++      if (servo[Z_ENDSTOP_SERVO_NR].read() == BLTouchState_Error) { stop(); return true; }
++    #endif
++
+     #if ENABLED(Z_PROBE_SLED)
+       if (axis_unhomed_error(true, false, false)) { stop(); return true; }
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 41e5f06..6ed5bfe 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -306,12 +306,8 @@
+ /**
+  * Limited number of servos
+  */
+-#if defined(NUM_SERVOS) && NUM_SERVOS > 0
+-  #if NUM_SERVOS > 4
+-    #error "The maximum number of SERVOS in Marlin is 4."
+-  #elif HAS_Z_SERVO_ENDSTOP && Z_ENDSTOP_SERVO_NR >= NUM_SERVOS
+-    #error "Z_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+-  #endif
++#if NUM_SERVOS > 4
++  #error "The maximum number of SERVOS in Marlin is 4."
+ #endif
+ 
+ /**
+@@ -367,7 +363,7 @@
+     #ifndef NUM_SERVOS
+       #error "You must set NUM_SERVOS for a Z servo probe (Z_ENDSTOP_SERVO_NR)."
+     #elif Z_ENDSTOP_SERVO_NR >= NUM_SERVOS
+-      #error "Z_ENDSTOP_SERVO_NR must be less than NUM_SERVOS."
++      #error "Z_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+     #endif
+   #endif
+ 
+@@ -404,7 +400,7 @@
+   #if (ENABLED(FIX_MOUNTED_PROBE) && (ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
+        || (ENABLED(Z_PROBE_ALLEN_KEY) && (HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
+        || (HAS_Z_SERVO_ENDSTOP && ENABLED(Z_PROBE_SLED))
+-    #error "Please define only one type of probe: Z Servo, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
++    #error "Please define only one type of probe: Z Servo/BLTOUCH, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+   #endif
+ 
+   /**
+diff --git a/Marlin/enum.h b/Marlin/enum.h
+index 18db5a6..34e0223 100644
+--- a/Marlin/enum.h
++++ b/Marlin/enum.h
+@@ -124,6 +124,15 @@ enum TempState {
+   };
+ #endif
+ 
++#if ENABLED(BLTOUCH)
++  enum BLTouchState {
++    BLTouchState_Deploy   = 10,
++    BLTouchState_Stow     = 90,
++    BLTouchState_Selftest = 120,
++    BLTouchState_Error    = 160
++  };
++#endif
++
+ #if ENABLED(FILAMENT_CHANGE_FEATURE)
+   enum FilamentChangeMenuResponse {
+     FILAMENT_CHANGE_RESPONSE_WAIT_FOR,
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 9d0f8ae..452ec32 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -511,6 +511,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index f5f8ae2..8ae7eff 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -494,6 +494,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 3e680f6..44581c6 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -492,6 +492,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 8e1c8ca..c642467 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -503,6 +503,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 2ec53a4..a7094c0 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -505,6 +505,7 @@
+ #define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 206540d..efc72e1 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -528,6 +528,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index d718d1a..ad21151 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -511,6 +511,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 3bad2fd..fddbb12 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -511,6 +511,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index db8119e..794ec71 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -511,6 +511,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 25d918c..c2d8ed6 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -509,6 +509,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 808490f..5ca4706 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -521,6 +521,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 0d9185b..54a4ace 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -532,6 +532,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 28d374b..8b10193 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -503,6 +503,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index c2ec1bf..056e603 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -511,6 +511,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 4596253..f196ba9 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -554,6 +554,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index c66410c..06ad8e1 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -554,6 +554,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 4159567..83d70a5 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -554,6 +554,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index f5ff185..ef820d4 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -550,6 +550,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index f644a04..4b25bf1 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -560,6 +560,7 @@
+ #define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6cfb9d5..d194a1d 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -514,6 +514,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index b7d939c..9168a02 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -507,6 +507,7 @@
+ //#define FIX_MOUNTED_PROBE
+ 
+ // The BLTouch probe emulates a servo probe.
++// The default connector is SERVO 0. Set Z_ENDSTOP_SERVO_NR below to override.
+ //#define BLTOUCH
+ 
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index b1b8e0a..a84d1ac 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -366,6 +366,9 @@
+ #ifndef MSG_ZPROBE_OUT
+   #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+ #endif
++#ifndef MSG_RESET_BLTOUCH
++  #define MSG_RESET_BLTOUCH                   "Reset BLTouch"
++#endif
+ #ifndef MSG_HOME
+   #define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+ #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index a1deff0..5240c30 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -30,6 +30,11 @@
+ #include "configuration_store.h"
+ #include "utility.h"
+ 
++#if ENABLED(BLTOUCH)
++  #include "servo.h"
++  extern Servo servo[NUM_SERVOS];
++#endif
++
+ #if ENABLED(PRINTCOUNTER)
+   #include "printcounter.h"
+   #include "duration_t.h"
+@@ -586,6 +591,12 @@ void kill_screen(const char* lcd_msg) {
+   static void lcd_main_menu() {
+     START_MENU();
+     MENU_ITEM(back, MSG_WATCH);
++
++    #if ENABLED(BLTOUCH)
++      if (servo[Z_ENDSTOP_SERVO_NR].read() == BLTouchState_Error)
++        MENU_ITEM(gcode, MSG_RESET_BLTOUCH, "M280 S90 P" STRINGIFY(Z_ENDSTOP_SERVO_NR));
++    #endif
++
+     if (planner.movesplanned() || IS_SD_PRINTING) {
+       MENU_ITEM(submenu, MSG_TUNE, lcd_tune_menu);
+     }
+

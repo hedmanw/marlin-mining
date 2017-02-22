@@ -1,0 +1,462 @@
+commit e0ab06cfae5d14f97368e567dbea3a96fd062013 (from 4b697938e6e5cad0c3c66340bca11ca8c4d6c407)
+Merge: 4b69793 0b8ef5e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Mar 28 18:54:00 2016 -0700
+
+    Merge pull request #3267 from thinkyhead/rc_command_args_null_oooops
+    
+    Cleanup, simplification of command dispatcher code
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 787cb12..1294b5e 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -109,7 +109,6 @@ void serial_echopair_P(const char* s_P, float v);
+ void serial_echopair_P(const char* s_P, double v);
+ void serial_echopair_P(const char* s_P, unsigned long v);
+ 
+-
+ // Things to write to serial from Program memory. Saves 400 to 2k of RAM.
+ FORCE_INLINE void serialprintPGM(const char* str) {
+   char ch;
+@@ -119,8 +118,6 @@ FORCE_INLINE void serialprintPGM(const char* str) {
+   }
+ }
+ 
+-void get_command();
+-
+ void idle(
+   #if ENABLED(FILAMENTCHANGEENABLE)
+     bool no_stepper_sleep=false  // pass true to keep steppers from disabling on timeout
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 38eef42..f3fb887 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -462,6 +462,7 @@ static bool send_ok[BUFSIZE];
+  * ***************************************************************************
+  */
+ 
++void get_available_commands();
+ void process_next_command();
+ 
+ void plan_arc(float target[NUM_AXIS], float* offset, uint8_t clockwise);
+@@ -804,7 +805,7 @@ void setup() {
+  *  - Call LCD update
+  */
+ void loop() {
+-  if (commands_in_queue < BUFSIZE) get_command();
++  if (commands_in_queue < BUFSIZE) get_available_commands();
+ 
+   #if ENABLED(SDSUPPORT)
+     card.checkautostart(false);
+@@ -856,24 +857,16 @@ void gcode_line_error(const char* err, bool doFlush = true) {
+   serial_count = 0;
+ }
+ 
+-/**
+- * Add to the circular command queue the next command from:
+- *  - The command-injection queue (queued_commands_P)
+- *  - The active serial input (usually USB)
+- *  - The SD card file being actively printed
+- */
+-void get_command() {
+-
++inline void get_serial_commands() {
+   static char serial_line_buffer[MAX_CMD_SIZE];
+   static boolean serial_comment_mode = false;
+ 
+-  if (drain_queued_commands_P()) return; // priority is given to non-serial commands
+-
++  // If the command buffer is empty for too long,
++  // send "wait" to indicate Marlin is still waiting.
+   #if defined(NO_TIMEOUTS) && NO_TIMEOUTS > 0
+     static millis_t last_command_time = 0;
+     millis_t ms = millis();
+-
+-    if (!MYSERIAL.available() && commands_in_queue == 0 && ms - last_command_time > NO_TIMEOUTS) {
++    if (commands_in_queue == 0 && !MYSERIAL.available() && ms > last_command_time + NO_TIMEOUTS) {
+       SERIAL_ECHOLNPGM(MSG_WAIT);
+       last_command_time = ms;
+     }
+@@ -893,7 +886,7 @@ void get_command() {
+ 
+       serial_comment_mode = false; // end of line == end of comment
+ 
+-      if (!serial_count) return; // empty lines just exit
++      if (!serial_count) continue; // skip empty lines
+ 
+       serial_line_buffer[serial_count] = 0; // terminate string
+       serial_count = 0; //reset buffer
+@@ -978,7 +971,7 @@ void get_command() {
+       if (MYSERIAL.available() > 0) {
+         // if we have one more character, copy it over
+         serial_char = MYSERIAL.read();
+-        serial_line_buffer[serial_count++] = serial_char;
++        if (!serial_comment_mode) serial_line_buffer[serial_count++] = serial_char;
+       }
+       // otherwise do nothing
+     }
+@@ -988,9 +981,11 @@ void get_command() {
+     }
+ 
+   } // queue has space, serial has data
++}
+ 
+-  #if ENABLED(SDSUPPORT)
++#if ENABLED(SDSUPPORT)
+ 
++  inline void get_sdcard_commands() {
+     static bool stop_buffering = false,
+                 sd_comment_mode = false;
+ 
+@@ -1050,8 +1045,26 @@ void get_command() {
+         if (!sd_comment_mode) command_queue[cmd_queue_index_w][sd_count++] = sd_char;
+       }
+     }
++  }
++
++#endif // SDSUPPORT
++
++/**
++ * Add to the circular command queue the next command from:
++ *  - The command-injection queue (queued_commands_P)
++ *  - The active serial input (usually USB)
++ *  - The SD card file being actively printed
++ */
++void get_available_commands() {
++
++  // if any immediate commands remain, don't get other commands yet
++  if (drain_queued_commands_P()) return;
++
++  get_serial_commands();
+ 
+-  #endif // SDSUPPORT
++  #if ENABLED(SDSUPPORT)
++    get_sdcard_commands();
++  #endif
+ }
+ 
+ bool code_has_value() {
+@@ -1060,7 +1073,7 @@ bool code_has_value() {
+   while (c == ' ') c = seen_pointer[++i];
+   if (c == '-' || c == '+') c = seen_pointer[++i];
+   if (c == '.') c = seen_pointer[++i];
+-  return (c >= '0' && c <= '9');
++  return NUMERIC(c);
+ }
+ 
+ float code_value() {
+@@ -6066,9 +6079,9 @@ void process_next_command() {
+   //  - Bypass N[-0-9][0-9]*[ ]*
+   //  - Overwrite * with nul to mark the end
+   while (*current_command == ' ') ++current_command;
+-  if (*current_command == 'N' && ((current_command[1] >= '0' && current_command[1] <= '9') || current_command[1] == '-')) {
++  if (*current_command == 'N' && NUMERIC_SIGNED(current_command[1])) {
+     current_command += 2; // skip N[-0-9]
+-    while (*current_command >= '0' && *current_command <= '9') ++current_command; // skip [0-9]*
++    while (NUMERIC(*current_command)) ++current_command; // skip [0-9]*
+     while (*current_command == ' ') ++current_command; // skip [ ]*
+   }
+   char* starpos = strchr(current_command, '*');  // * should always be the last parameter
+@@ -6082,25 +6095,22 @@ void process_next_command() {
+   // Skip spaces to get the numeric part
+   while (*cmd_ptr == ' ') cmd_ptr++;
+ 
+-  // The code must have a numeric value
+-  bool code_is_good = false;
++  uint16_t codenum = 0; // define ahead of goto
+ 
+-  int codenum = 0; // define ahead of goto
++  // Bail early if there's no code
++  bool code_is_good = NUMERIC(*cmd_ptr);
++  if (!code_is_good) goto ExitUnknownCommand;
+ 
+   // Get and skip the code number
+-  while (*cmd_ptr >= '0' && *cmd_ptr <= '9') {
+-    code_is_good = true;
+-    codenum = codenum * 10 + *cmd_ptr - '0';
++  do {
++    codenum = (codenum * 10) + (*cmd_ptr - '0');
+     cmd_ptr++;
+-  }
+-
+-  // Bail early if there's no code
+-  if (!code_is_good) goto ExitUnknownCommand;
++  } while (NUMERIC(*cmd_ptr));
+ 
+-  // Skip all spaces to get to the first argument
++  // Skip all spaces to get to the first argument, or nul
+   while (*cmd_ptr == ' ') cmd_ptr++;
+ 
+-  // The command's arguments start here, for sure!
++  // The command's arguments (if any) start here, for sure!
+   current_command_args = cmd_ptr;
+ 
+   KEEPALIVE_STATE(IN_HANDLER);
+@@ -6668,7 +6678,7 @@ void ok_to_send() {
+     if (*p == 'N') {
+       SERIAL_PROTOCOL(' ');
+       SERIAL_ECHO(*p++);
+-      while ((*p >= '0' && *p <= '9') || *p == '-')
++      while (NUMERIC_SIGNED(*p))
+         SERIAL_ECHO(*p++);
+     }
+     SERIAL_PROTOCOLPGM(" P"); SERIAL_PROTOCOL(int(BLOCK_BUFFER_SIZE - movesplanned() - 1));
+@@ -7365,7 +7375,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+       filrunout();
+   #endif
+ 
+-  if (commands_in_queue < BUFSIZE) get_command();
++  if (commands_in_queue < BUFSIZE) get_available_commands();
+ 
+   millis_t ms = millis();
+ 
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index 966fc48..c2ff004 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -51,6 +51,8 @@
+ #define ENABLED(b) _CAT(SWITCH_ENABLED_, b)
+ #define DISABLED(b) (!_CAT(SWITCH_ENABLED_, b))
+ 
++#define NUMERIC(a) ((a) >= '0' && '9' >= (a))
++#define NUMERIC_SIGNED(a) (NUMERIC(a) || (a) == '-')
+ #define COUNT(a) (sizeof(a)/sizeof(*a))
+ 
+ #endif //__MACROS_H
+
+commit e0ab06cfae5d14f97368e567dbea3a96fd062013 (from 0b8ef5eba65e8262642100425ee6b43e6e10b58d)
+Merge: 4b69793 0b8ef5e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Mar 28 18:54:00 2016 -0700
+
+    Merge pull request #3267 from thinkyhead/rc_command_args_null_oooops
+    
+    Cleanup, simplification of command dispatcher code
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 53c529f..84f001f 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 5c49313..5608d4b 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index c35788a..fcdee23 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 04fa311..3131e10 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 08e9f6e..c93dde2 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 41533b5..627067d 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 3b4b16a..c052253 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index c35788a..fcdee23 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index a491731..85734dc 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index b5cb7ef..006502e 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 63ad905..4b93e46 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 5f2c24e..b3fec75 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -80,8 +80,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index f8e4dba..44e7942 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index f8e1287..9b131b3 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 5ae2355..37d3bd8 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -75,8 +75,8 @@
+    * If you get false positives for "Heating failed" increase WATCH_TEMP_PERIOD and/or decrease WATCH_TEMP_INCREASE
+    * WATCH_TEMP_INCREASE should not be below 2.
+    */
+-  #define WATCH_TEMP_PERIOD 16                // Seconds
+-  #define WATCH_TEMP_INCREASE 4               // Degrees Celsius
++  #define WATCH_TEMP_PERIOD 20                // Seconds
++  #define WATCH_TEMP_INCREASE 2               // Degrees Celsius
+ #endif
+ 
+ /**
+

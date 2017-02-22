@@ -1,0 +1,464 @@
+commit 42e381f8e2d1073bc7713c087bcc1346e593ac67 (from b5987de08a4896ceb2a5cb7097d3110bc819055a)
+Merge: b5987de db27e67
+Author: Richard Wackerbarth <rkw@dataplex.net>
+Date:   Sat Sep 12 07:54:42 2015 -0500
+
+    Merge Extrusion_rate_heater_compensation
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 58d0955..50be513 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -41,7 +41,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 1acc459..7c244dc 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -329,6 +329,10 @@ extern int fanSpeed;
+   extern int meas_delay_cm; //delay distance
+ #endif
+ 
++#if ENABLED(PID_ADD_EXTRUSION_RATE)
++  extern int lpq_len;
++#endif
++
+ #if ENABLED(FWRETRACT)
+   extern bool autoretract_enabled;
+   extern bool retracted[EXTRUDERS]; // extruder[n].retracted
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 525a611..bce975c 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -420,6 +420,10 @@ bool target_direction;
+   boolean chdkActive = false;
+ #endif
+ 
++#if ENABLED(PID_ADD_EXTRUSION_RATE)
++  int lpq_len = 20;
++#endif
++
+ //===========================================================================
+ //================================ Functions ================================
+ //===========================================================================
+@@ -4770,7 +4774,16 @@ inline void gcode_M226() {
+ #if ENABLED(PIDTEMP)
+ 
+   /**
+-   * M301: Set PID parameters P I D (and optionally C)
++   * M301: Set PID parameters P I D (and optionally C, L)
++   *
++   *   P[float] Kp term
++   *   I[float] Ki term (unscaled)
++   *   D[float] Kd term (unscaled)
++   *
++   * With PID_ADD_EXTRUSION_RATE:
++   *
++   *   C[float] Kc term
++   *   L[float] LPQ length
+    */
+   inline void gcode_M301() {
+ 
+@@ -4784,6 +4797,8 @@ inline void gcode_M226() {
+       if (code_seen('D')) PID_PARAM(Kd, e) = scalePID_d(code_value());
+       #if ENABLED(PID_ADD_EXTRUSION_RATE)
+         if (code_seen('C')) PID_PARAM(Kc, e) = code_value();
++        if (code_seen('L')) lpq_len = code_value();
++        NOMORE(lpq_len, LPQ_MAX_LEN);
+       #endif
+ 
+       updatePID();
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index edb2d97..ffaeb5b 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -14,7 +14,7 @@
+  *
+  */
+ 
+-#define EEPROM_VERSION "V20"
++#define EEPROM_VERSION "V21"
+ 
+ /**
+  * V19 EEPROM Layout:
+@@ -60,6 +60,7 @@
+  *  M301 E1 PIDC  Kp[1], Ki[1], Kd[1], Kc[1]
+  *  M301 E2 PIDC  Kp[2], Ki[2], Kd[2], Kc[2]
+  *  M301 E3 PIDC  Kp[3], Ki[3], Kd[3], Kc[3]
++ *  M301 L        lpq_len
+  *
+  * PIDTEMPBED:
+  *  M304 PID  bedKp, bedKi, bedKd
+@@ -227,6 +228,11 @@ void Config_StoreSettings()  {
+ 
+   } // Extruders Loop
+ 
++  #if DISABLED(PID_ADD_EXTRUSION_RATE)
++    int lpq_len = 20;
++  #endif
++  EEPROM_WRITE_VAR(i, lpq_len);
++
+   #if DISABLED(PIDTEMPBED)
+     float bedKp = DUMMY_PID_VALUE, bedKi = DUMMY_PID_VALUE, bedKd = DUMMY_PID_VALUE;
+   #endif
+@@ -393,6 +399,11 @@ void Config_RetrieveSettings() {
+       for (int q=16; q--;) EEPROM_READ_VAR(i, dummy);  // 4x Kp, Ki, Kd, Kc
+     #endif // !PIDTEMP
+ 
++    #if DISABLED(PID_ADD_EXTRUSION_RATE)
++      int lpq_len;
++    #endif
++    EEPROM_READ_VAR(i, lpq_len);
++
+     #if DISABLED(PIDTEMPBED)
+       float bedKp, bedKi, bedKd;
+     #endif
+@@ -539,6 +550,9 @@ void Config_ResetDefault() {
+         PID_PARAM(Kc, e) = DEFAULT_Kc;
+       #endif
+     }
++    #if ENABLED(PID_ADD_EXTRUSION_RATE)
++      lpq_len = 20; // default last-position-queue size
++    #endif
+     // call updatePID (similar to when we have processed M301)
+     updatePID();
+   #endif // PIDTEMP
+@@ -744,7 +758,8 @@ void Config_PrintSettings(bool forReplay) {
+             SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, i)));
+             #if ENABLED(PID_ADD_EXTRUSION_RATE)
+               SERIAL_ECHOPAIR(" C", PID_PARAM(Kc, i));
+-            #endif      
++              if (i == 0) SERIAL_ECHOPAIR(" L", lpq_len);
++            #endif
+             SERIAL_EOL;
+           }
+         }
+@@ -758,7 +773,8 @@ void Config_PrintSettings(bool forReplay) {
+         SERIAL_ECHOPAIR(" D", unscalePID_d(PID_PARAM(Kd, 0)));
+         #if ENABLED(PID_ADD_EXTRUSION_RATE)
+           SERIAL_ECHOPAIR(" C", PID_PARAM(Kc, 0));
+-        #endif      
++          SERIAL_ECHOPAIR(" L", lpq_len);
++        #endif
+         SERIAL_EOL;
+       }
+     #endif // PIDTEMP
+diff --git a/Marlin/configurator/config/Configuration_adv.h b/Marlin/configurator/config/Configuration_adv.h
+index 8ef9337..f622524 100644
+--- a/Marlin/configurator/config/Configuration_adv.h
++++ b/Marlin/configurator/config/Configuration_adv.h
+@@ -41,7 +41,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/configurator/config/language.h b/Marlin/configurator/config/language.h
+index 53e8b30..46a306c 100644
+--- a/Marlin/configurator/config/language.h
++++ b/Marlin/configurator/config/language.h
+@@ -199,6 +199,7 @@
+ #define MSG_PID_DEBUG_PTERM                 " pTerm "
+ #define MSG_PID_DEBUG_ITERM                 " iTerm "
+ #define MSG_PID_DEBUG_DTERM                 " dTerm "
++#define MSG_PID_DEBUG_CTERM                 " cTerm "
+ #define MSG_INVALID_EXTRUDER_NUM            " - Invalid extruder number !"
+ 
+ #define MSG_HEATER_BED                      "bed"
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 06f9099..7b6cdd7 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index dc21c0c..e833422 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 52b7466..dee7514 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 7e3eda2..80580c2 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -41,7 +41,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index cc80b88..a5983c5 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index e129185..126794b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -41,7 +41,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 71492d2..e010b13 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index b4a815b..e04d43a 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 1af6cb8..7ba24cd 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 1ea29f2..60700a2 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 44420dc..98632c1 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -55,7 +55,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 518aa90..7ba1c6b 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 5218014..416d135 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -51,7 +51,8 @@
+   // if Kc is chosen well, the additional required power due to increased melting should be compensated.
+   #define PID_ADD_EXTRUSION_RATE
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++    #define DEFAULT_Kc (100) //heating power=Kc*(e_speed)
++    #define LPQ_MAX_LEN 50
+   #endif
+ #endif
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 1a16a04..fa72989 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -200,6 +200,7 @@
+ #define MSG_PID_DEBUG_PTERM                 " pTerm "
+ #define MSG_PID_DEBUG_ITERM                 " iTerm "
+ #define MSG_PID_DEBUG_DTERM                 " dTerm "
++#define MSG_PID_DEBUG_CTERM                 " cTerm "
+ #define MSG_INVALID_EXTRUDER_NUM            " - Invalid extruder number !"
+ 
+ #define MSG_HEATER_BED                      "bed"
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index fa064ad..9c45d10 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -99,6 +99,12 @@ static volatile bool temp_meas_ready = false;
+   static float pTerm[EXTRUDERS];
+   static float iTerm[EXTRUDERS];
+   static float dTerm[EXTRUDERS];
++  #if ENABLED(PID_ADD_EXTRUSION_RATE)
++    static float cTerm[EXTRUDERS];
++    static long last_position[EXTRUDERS];
++    static long lpq[LPQ_MAX_LEN];
++    static int lpq_ptr = 0;
++  #endif
+   //int output;
+   static float pid_error[EXTRUDERS];
+   static float temp_iState_min[EXTRUDERS];
+@@ -357,6 +363,9 @@ void updatePID() {
+   #if ENABLED(PIDTEMP)
+     for (int e = 0; e < EXTRUDERS; e++) {
+       temp_iState_max[e] = PID_INTEGRAL_DRIVE_MAX / PID_PARAM(Ki,e);
++      #if ENABLED(PID_ADD_EXTRUSION_RATE)
++        last_position[e] = 0;
++      #endif
+     }
+   #endif
+   #if ENABLED(PIDTEMPBED)
+@@ -497,6 +506,23 @@ float get_pid_output(int e) {
+         iTerm[e] = PID_PARAM(Ki,e) * temp_iState[e];
+ 
+         pid_output = pTerm[e] + iTerm[e] - dTerm[e];
++
++        #if ENABLED(PID_ADD_EXTRUSION_RATE)
++          cTerm[e] = 0;
++          if (e == active_extruder) {
++            long e_position = st_get_position(E_AXIS);
++            if (e_position > last_position[e]) {
++              lpq[lpq_ptr++] = e_position - last_position[e];
++              last_position[e] = e_position;
++            } else {
++              lpq[lpq_ptr++] = 0;
++            }
++            if (lpq_ptr >= lpq_len) lpq_ptr = 0;
++            cTerm[e] = (lpq[lpq_ptr] / axis_steps_per_unit[E_AXIS]) * Kc;
++            pid_output += cTerm[e];
++          }
++        #endif //PID_ADD_EXTRUSION_RATE
++
+         if (pid_output > PID_MAX) {
+           if (pid_error[e] > 0) temp_iState[e] -= pid_error[e]; // conditional un-integration
+           pid_output = PID_MAX;
+@@ -512,18 +538,16 @@ float get_pid_output(int e) {
+ 
+     #if ENABLED(PID_DEBUG)
+       SERIAL_ECHO_START;
+-      SERIAL_ECHO(MSG_PID_DEBUG);
+-      SERIAL_ECHO(e);
+-      SERIAL_ECHO(MSG_PID_DEBUG_INPUT);
+-      SERIAL_ECHO(current_temperature[e]);
+-      SERIAL_ECHO(MSG_PID_DEBUG_OUTPUT);
+-      SERIAL_ECHO(pid_output);
+-      SERIAL_ECHO(MSG_PID_DEBUG_PTERM);
+-      SERIAL_ECHO(pTerm[e]);
+-      SERIAL_ECHO(MSG_PID_DEBUG_ITERM);
+-      SERIAL_ECHO(iTerm[e]);
+-      SERIAL_ECHO(MSG_PID_DEBUG_DTERM);
+-      SERIAL_ECHOLN(dTerm[e]);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG, e);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG_INPUT, current_temperature[e]);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG_OUTPUT, pid_output);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG_PTERM, pTerm[e]);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG_ITERM, iTerm[e]);
++      SERIAL_ECHOPAIR(MSG_PID_DEBUG_DTERM, dTerm[e]);
++      #if ENABLED(PID_ADD_EXTRUSION_RATE)
++        SERIAL_ECHOPAIR(MSG_PID_DEBUG_CTERM, cTerm[e]);
++      #endif
++      SERIAL_EOL;
+     #endif //PID_DEBUG
+ 
+   #else /* PID off */
+@@ -837,6 +861,9 @@ void tp_init() {
+     #if ENABLED(PIDTEMP)
+       temp_iState_min[e] = 0.0;
+       temp_iState_max[e] = PID_INTEGRAL_DRIVE_MAX / PID_PARAM(Ki,e);
++      #if ENABLED(PID_ADD_EXTRUSION_RATE)
++        last_position[e] = 0;
++      #endif
+     #endif //PIDTEMP
+     #if ENABLED(PIDTEMPBED)
+       temp_iState_min_bed = 0.0;
+

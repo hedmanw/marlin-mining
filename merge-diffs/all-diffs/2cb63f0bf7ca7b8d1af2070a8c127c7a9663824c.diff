@@ -1,0 +1,470 @@
+commit 2cb63f0bf7ca7b8d1af2070a8c127c7a9663824c (from 8241cf990177d942918f2396d3e9c9aef9945212)
+Merge: 8241cf9 73d8609
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Aug 27 20:46:50 2016 -0500
+
+    Merge pull request #4719 from thinkyhead/rc_delta_homing_patch
+    
+    Marlin patches for homing, esp. Delta
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8270428..bbd969e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1615,6 +1615,8 @@ static void set_axis_is_at_home(AxisEnum axis) {
+       SERIAL_ECHOLNPGM(")");
+     }
+   #endif
++
++  axis_known_position[axis] = axis_homed[axis] = true;
+ }
+ 
+ /**
+@@ -2118,7 +2120,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     #endif
+ 
+     do_blocking_move_to(oldXpos, oldYpos, current_position[Z_AXIS]); // return to position before deploy
+-    endstops.enable_z_probe( deploy );
++    endstops.enable_z_probe(deploy);
+     return false;
+   }
+ 
+@@ -2416,12 +2418,12 @@ static void clean_up_after_endstop_or_probe_move() {
+  */
+ 
+ static void do_homing_move(AxisEnum axis, float where, float fr_mm_s = 0.0) {
+-  float old_feedrate_mm_s = feedrate_mm_s;
++  current_position[axis] = 0;
++  sync_plan_position();
+   current_position[axis] = where;
+-  feedrate_mm_s = (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis];
+-  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], feedrate_mm_s, active_extruder);
++  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis], active_extruder);
+   stepper.synchronize();
+-  feedrate_mm_s = old_feedrate_mm_s;
++  endstops.hit_on_purpose();
+ }
+ 
+ #define HOMEAXIS(LETTER) homeaxis(LETTER##_AXIS)
+@@ -2430,7 +2432,7 @@ static void homeaxis(AxisEnum axis) {
+   #define HOMEAXIS_DO(LETTER) \
+     ((LETTER##_MIN_PIN > -1 && LETTER##_HOME_DIR==-1) || (LETTER##_MAX_PIN > -1 && LETTER##_HOME_DIR==1))
+ 
+-  if (!(axis == X_AXIS ? HOMEAXIS_DO(X) : axis == Y_AXIS ? HOMEAXIS_DO(Y) : axis == Z_AXIS ? HOMEAXIS_DO(Z) : 0)) return;
++  if (!(axis == X_AXIS ? HOMEAXIS_DO(X) : axis == Y_AXIS ? HOMEAXIS_DO(Y) : axis == Z_AXIS ? HOMEAXIS_DO(Z) : false)) return;
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+@@ -2455,10 +2457,6 @@ static void homeaxis(AxisEnum axis) {
+     }
+   #endif
+ 
+-  // Set the axis position as setup for the move
+-  current_position[axis] = 0;
+-  sync_plan_position();
+-
+   // Set a flag for Z motor locking
+   #if ENABLED(Z_DUAL_ENDSTOPS)
+     if (axis == Z_AXIS) stepper.set_homing_flag(true);
+@@ -2467,9 +2465,9 @@ static void homeaxis(AxisEnum axis) {
+   // Move towards the endstop until an endstop is triggered
+   do_homing_move(axis, 1.5 * max_length(axis) * axis_home_dir);
+ 
+-  // Set the axis position as setup for the move
+-  current_position[axis] = 0;
+-  sync_plan_position();
++  #if ENABLED(DEBUG_LEVELING_FEATURE)
++    if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("> 1st Home", current_position[axis]);
++  #endif
+ 
+   // Move away from the endstop by the axis HOME_BUMP_MM
+   do_homing_move(axis, -home_bump_mm(axis) * axis_home_dir);
+@@ -2477,12 +2475,8 @@ static void homeaxis(AxisEnum axis) {
+   // Move slowly towards the endstop until triggered
+   do_homing_move(axis, 2 * home_bump_mm(axis) * axis_home_dir, get_homing_bump_feedrate(axis));
+ 
+-  // reset current_position to 0 to reflect hitting endpoint
+-  current_position[axis] = 0;
+-  sync_plan_position();
+-
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+-    if (DEBUGGING(LEVELING)) DEBUG_POS("> TRIGGER ENDSTOP", current_position);
++    if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("> 2nd Home", current_position[axis]);
+   #endif
+ 
+   #if ENABLED(Z_DUAL_ENDSTOPS)
+@@ -2506,32 +2500,35 @@ static void homeaxis(AxisEnum axis) {
+     } // Z_AXIS
+   #endif
+ 
++  // Delta has already moved all three towers up in G28
++  // so here it re-homes each tower in turn.
++  // Delta homing treats the axes as normal linear axes.
+   #if ENABLED(DELTA)
++
+     // retrace by the amount specified in endstop_adj
+     if (endstop_adj[axis] * Z_HOME_DIR < 0) {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) {
+-          SERIAL_ECHOPAIR("> endstop_adj = ", endstop_adj[axis]);
++          SERIAL_ECHOPAIR("> endstop_adj = ", endstop_adj[axis] * Z_HOME_DIR);
+           DEBUG_POS("", current_position);
+         }
+       #endif
+       do_homing_move(axis, endstop_adj[axis]);
+     }
+-  #endif
+ 
+-  // Set the axis position to its home position (plus home offsets)
+-  set_axis_is_at_home(axis);
++  #else
+ 
+-  SYNC_PLAN_POSITION_KINEMATIC();
++    // Set the axis position to its home position (plus home offsets)
++    set_axis_is_at_home(axis);
++    sync_plan_position();
+ 
+-  #if ENABLED(DEBUG_LEVELING_FEATURE)
+-    if (DEBUGGING(LEVELING)) DEBUG_POS("> AFTER set_axis_is_at_home", current_position);
+-  #endif
++    destination[axis] = current_position[axis];
++
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS("> AFTER set_axis_is_at_home", current_position);
++    #endif
+ 
+-  destination[axis] = current_position[axis];
+-  endstops.hit_on_purpose(); // clear endstop hit flags
+-  axis_known_position[axis] = true;
+-  axis_homed[axis] = true;
++  #endif
+ 
+   // Put away the Z probe
+   #if HAS_BED_PROBE && Z_HOME_DIR < 0 && DISABLED(Z_MIN_PROBE_ENDSTOP)
+@@ -2979,25 +2976,34 @@ inline void gcode_G28() {
+   #if ENABLED(DELTA)
+     /**
+      * A delta can only safely home all axes at the same time
++     * This is like quick_home_xy() but for 3 towers.
+      */
+ 
+-    // Pretend the current position is 0,0,0
+-    // This is like quick_home_xy() but for 3 towers.
+-    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 0.0;
++    // Init the current position of all carriages to 0,0,0
++    memset(current_position, 0, sizeof(current_position));
+     sync_plan_position();
+ 
+-    // Move all carriages up together until the first endstop is hit.
+-    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 3.0 * (Z_MAX_LENGTH);
+-    feedrate_mm_s = 1.732 * homing_feedrate_mm_s[X_AXIS];
++    // Move all carriages together linearly until an endstop is hit.
++    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = (Z_MAX_LENGTH + 10);
++    feedrate_mm_s = homing_feedrate_mm_s[X_AXIS];
+     line_to_current_position();
+     stepper.synchronize();
+     endstops.hit_on_purpose(); // clear endstop hit flags
+-    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 0.0;
+ 
+-    // take care of back off and rehome. Now one carriage is at the top.
+-    HOMEAXIS(X);
+-    HOMEAXIS(Y);
+-    HOMEAXIS(Z);
++    // Probably not needed. Double-check this line:
++    memset(current_position, 0, sizeof(current_position));
++
++    // At least one carriage has reached the top.
++    // Now back off and re-home each carriage separately.
++    HOMEAXIS(A);
++    HOMEAXIS(B);
++    HOMEAXIS(C);
++
++    // Set all carriages to their home positions
++    // Do this here all at once for Delta, because
++    // XYZ isn't ABC. Applying this per-tower would
++    // give the impression that they are the same.
++    LOOP_XYZ(i) set_axis_is_at_home((AxisEnum)i);
+ 
+     SYNC_PLAN_POSITION_KINEMATIC();
+ 
+@@ -3177,11 +3183,7 @@ inline void gcode_G28() {
+ 
+   #endif // !DELTA (gcode_G28)
+ 
+-  #if ENABLED(DEBUG_LEVELING_FEATURE)
+-    if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> endstops.not_homing()");
+-  #endif
+   endstops.not_homing();
+-  endstops.hit_on_purpose(); // clear endstop hit flags
+ 
+   // Enable mesh leveling again
+   #if ENABLED(MESH_BED_LEVELING)
+
+commit 2cb63f0bf7ca7b8d1af2070a8c127c7a9663824c (from 73d86098b7e5a79212c1f12479a083b496b18855)
+Merge: 8241cf9 73d8609
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Aug 27 20:46:50 2016 -0500
+
+    Merge pull request #4719 from thinkyhead/rc_delta_homing_patch
+    
+    Marlin patches for homing, esp. Delta
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index dae9c85..bbd969e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3498,6 +3498,38 @@ inline void gcode_G28() {
+       if (DEBUGGING(LEVELING)) {
+         SERIAL_ECHOLNPGM(">>> gcode_G29");
+         DEBUG_POS("", current_position);
++        SERIAL_ECHOPGM("Probe: ");
++        #if ENABLED(FIX_MOUNTED_PROBE)
++          SERIAL_ECHOLNPGM("FIX_MOUNTED_PROBE");
++        #elif HAS_Z_SERVO_ENDSTOP
++          SERIAL_ECHOLNPGM("SERVO PROBE");
++        #elif ENABLED(BLTOUCH)
++          SERIAL_ECHOLNPGM("BLTOUCH");
++        #elif ENABLED(Z_PROBE_SLED)
++          SERIAL_ECHOLNPGM("Z_PROBE_SLED");
++        #elif ENABLED(Z_PROBE_ALLEN_KEY)
++          SERIAL_ECHOLNPGM("Z_PROBE_ALLEN_KEY");
++        #endif
++        SERIAL_ECHOPAIR("Probe Offset X:", X_PROBE_OFFSET_FROM_EXTRUDER);
++        SERIAL_ECHOPAIR(" Y:", Y_PROBE_OFFSET_FROM_EXTRUDER);
++        SERIAL_ECHOPAIR(" Z:", zprobe_zoffset);
++        #if (X_PROBE_OFFSET_FROM_EXTRUDER > 0)
++          SERIAL_ECHOPGM("(Right");
++        #elif (X_PROBE_OFFSET_FROM_EXTRUDER < 0)
++          SERIAL_ECHOPGM("(Left");
++        #endif
++        #if (Y_PROBE_OFFSET_FROM_EXTRUDER > 0)
++          SERIAL_ECHOPGM("-Back");
++        #elif (Y_PROBE_OFFSET_FROM_EXTRUDER < 0)
++          SERIAL_ECHOPGM("-Front");
++        #endif
++        if (zprobe_zoffset < 0)
++          SERIAL_ECHOPGM(" & Below");
++        else if (zprobe_zoffset > 0)
++          SERIAL_ECHOPGM(" & Above");
++        else
++          SERIAL_ECHOPGM(" & Same Z as");
++        SERIAL_ECHOLNPGM(" Nozzle)");
+       }
+     #endif
+ 
+diff --git a/Marlin/enum.h b/Marlin/enum.h
+index a51d208..ded1be6 100644
+--- a/Marlin/enum.h
++++ b/Marlin/enum.h
+@@ -70,7 +70,8 @@ enum DebugFlags {
+   DEBUG_ERRORS        = _BV(2), ///< Not implemented
+   DEBUG_DRYRUN        = _BV(3), ///< Ignore temperature setting and E movement commands
+   DEBUG_COMMUNICATION = _BV(4), ///< Not implemented
+-  DEBUG_LEVELING      = _BV(5)  ///< Print detailed output for homing and leveling
++  DEBUG_LEVELING      = _BV(5), ///< Print detailed output for homing and leveling
++  DEBUG_ALL           = 0xFF
+ };
+ 
+ enum EndstopEnum {
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4fd18f5..dd06598 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -567,6 +567,17 @@ void Planner::check_axes_activity() {
+        dy = target[Y_AXIS] - position[Y_AXIS],
+        dz = target[Z_AXIS] - position[Z_AXIS];
+ 
++  /*
++  SERIAL_ECHO_START;
++  SERIAL_ECHOPAIR("Planner X:", x);
++  SERIAL_ECHOPAIR(" (", dx);
++  SERIAL_ECHOPAIR(") Y:", y);
++  SERIAL_ECHOPAIR(" (", dy);
++  SERIAL_ECHOPAIR(") Z:", z);
++  SERIAL_ECHOPAIR(" (", dz);
++  SERIAL_ECHOLNPGM(")");
++  //*/
++
+   // DRYRUN ignores all temperature constraints and assures that the extruder is instantly satisfied
+   if (DEBUGGING(DRYRUN))
+     position[E_AXIS] = target[E_AXIS];
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 18ebed9..e27b035 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -289,9 +289,15 @@ void Stepper::set_directions() {
+       count_direction[AXIS ##_AXIS] = 1; \
+     }
+ 
+-  SET_STEP_DIR(X); // A
+-  SET_STEP_DIR(Y); // B
+-  SET_STEP_DIR(Z); // C
++  #if HAS_X_DIR
++    SET_STEP_DIR(X); // A
++  #endif
++  #if HAS_Y_DIR
++    SET_STEP_DIR(Y); // B
++  #endif
++  #if HAS_Z_DIR
++    SET_STEP_DIR(Z); // C
++  #endif
+ 
+   #if DISABLED(ADVANCE)
+     if (motor_direction(E_AXIS)) {
+@@ -447,9 +453,15 @@ void Stepper::isr() {
+         _COUNTER(AXIS) += current_block->steps[_AXIS(AXIS)]; \
+         if (_COUNTER(AXIS) > 0) { _APPLY_STEP(AXIS)(!_INVERT_STEP_PIN(AXIS),0); }
+ 
+-      STEP_ADD(X);
+-      STEP_ADD(Y);
+-      STEP_ADD(Z);
++      #if HAS_X_STEP
++        STEP_ADD(X);
++      #endif
++      #if HAS_Y_STEP
++        STEP_ADD(Y);
++      #endif
++      #if HAS_Z_STEP
++        STEP_ADD(Z);
++      #endif
+ 
+       #if DISABLED(ADVANCE) && DISABLED(LIN_ADVANCE)
+         #if ENABLED(MIXING_EXTRUDER)
+@@ -474,9 +486,15 @@ void Stepper::isr() {
+           _APPLY_STEP(AXIS)(_INVERT_STEP_PIN(AXIS),0); \
+         }
+ 
+-      STEP_IF_COUNTER(X);
+-      STEP_IF_COUNTER(Y);
+-      STEP_IF_COUNTER(Z);
++      #if HAS_X_STEP
++        STEP_IF_COUNTER(X);
++      #endif
++      #if HAS_Y_STEP
++        STEP_IF_COUNTER(Y);
++      #endif
++      #if HAS_Z_STEP
++        STEP_IF_COUNTER(Z);
++      #endif
+ 
+       #if DISABLED(ADVANCE) && DISABLED(LIN_ADVANCE)
+         #if ENABLED(MIXING_EXTRUDER)
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 353732d..c6122a4 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1399,7 +1399,12 @@ void Temperature::set_current_temp_raw() {
+ }
+ 
+ /**
+- * Timer 0 is shared with millies
++ * Timer 0 is shared with millies so don't change the prescaler.
++ *
++ * This ISR uses the compare method so it runs at the base
++ * frequency (16 MHz / 256 = 62500 Hz), but at the TCNT0 set
++ * in OCR0B above (128 or halfway between OVFs).
++ *
+  *  - Manage PWM to all the heaters and fan
+  *  - Update the raw temperature values
+  *  - Check new temperature values for MIN/MAX errors
+@@ -1515,6 +1520,7 @@ void Temperature::isr() {
+       #endif
+     #endif
+ 
++    // 488.28 Hz (or 1:976.56, 2:1953.12, 3:3906.25, 4:7812.5, 5:7812.5 6:15625, 6:15625 7:31250)
+     pwm_count += _BV(SOFT_PWM_SCALE);
+     pwm_count &= 0x7f;
+ 
+@@ -1523,7 +1529,7 @@ void Temperature::isr() {
+     /**
+      * SLOW PWM HEATERS
+      *
+-     * for heaters drived by relay
++     * For relay-driven heaters
+      */
+     #ifndef MIN_STATE_TIME
+       #define MIN_STATE_TIME 16 // MIN_STATE_TIME * 65.5 = time in milliseconds
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+index 11f2057..0352e1b 100644
+--- a/Marlin/twibus.cpp
++++ b/Marlin/twibus.cpp
+@@ -25,7 +25,6 @@
+ #if ENABLED(EXPERIMENTAL_I2CBUS)
+ 
+ #include "twibus.h"
+-
+ #include <Wire.h>
+ 
+ TWIBus::TWIBus() {
+@@ -121,18 +120,12 @@ bool TWIBus::request(const uint8_t bytes) {
+   #endif
+ 
+   // requestFrom() is a blocking function
+-  Wire.requestFrom(this->addr, bytes);
+-
+-  // Wait for all bytes to arrive
+-  millis_t t = millis() + this->timeout;
+-  while (Wire.available() < bytes)
+-    if (ELAPSED(millis(), t)) {
+-      #if ENABLED(DEBUG_TWIBUS)
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHOLNPGM("i2c timeout");
+-      #endif
+-      return false;
+-    }
++  if (Wire.requestFrom(this->addr, bytes) == 0) {
++    #if ENABLED(DEBUG_TWIBUS)
++      debug("request fail", this->addr);
++    #endif
++    return false;
++  }
+ 
+   return true;
+ }
+@@ -151,6 +144,11 @@ uint8_t TWIBus::capture(char *dst, const uint8_t bytes) {
+   uint8_t count = 0;
+   while (count < bytes && Wire.available())
+     dst[count++] = Wire.read();
++
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("capture"), count);
++  #endif
++
+   return count;
+ }
+ 
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+index d578a6d..bd2d8a5 100644
+--- a/Marlin/twibus.h
++++ b/Marlin/twibus.h
+@@ -55,14 +55,6 @@ typedef void (*twiRequestFunc_t)();
+ class TWIBus {
+   private:
+     /**
+-     * @brief Timeout value in milliseconds
+-     * @details Maximum amount of time (ms) to wait for a reply.
+-     *          Useful if something goes wrong on the bus and the
+-     *          SDA/SCL lines are held up by another device.
+-     */
+-    const int timeout = 5;
+-
+-    /**
+      * @brief Number of bytes on buffer
+      * @description Number of bytes in the buffer waiting to be flushed to the bus
+      */
+@@ -165,11 +157,11 @@ class TWIBus {
+     /**
+      * @brief Request data from the slave device and wait.
+      * @details Request a number of bytes from a slave device.
+-     *          Wait for the data to arrive until the timeout
+-     *          interval expires. Return true on success.
++     *          Wait for the data to arrive, and return true
++     *          on success.
+      *
+      * @param bytes the number of bytes to request
+-     * @return status of the request: true=success, false=timeout
++     * @return status of the request: true=success, false=fail
+      */
+     bool request(const uint8_t bytes);
+ 
+

@@ -1,0 +1,625 @@
+commit 08b722b635aab46aefce76fc7003f18c278925d9 (from d052a3c6aa7394a2957ea9c3e8b6f3f28049c954)
+Merge: d052a3c dfb3887
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Mar 4 21:36:29 2015 -0800
+
+    Merge pull request #1555 from C-o-r-E/solenoids
+    
+    Add support for solenoid articulated extruders
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8390a5f..b065b82 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -154,6 +154,8 @@
+ // M302 - Allow cold extrudes, or set the minimum extrude S<temperature>.
+ // M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+ // M304 - Set bed PID parameters P I and D
++// M380 - Activate solenoid on active extruder
++// M381 - Disable all solenoids
+ // M400 - Finish all moves
+ // M401 - Lower z-probe if present
+ // M402 - Raise z-probe if present
+@@ -529,32 +531,28 @@ void setup_homepin(void)
+ void setup_photpin()
+ {
+   #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+-    SET_OUTPUT(PHOTOGRAPH_PIN);
+-    WRITE(PHOTOGRAPH_PIN, LOW);
++    OUT_WRITE(PHOTOGRAPH_PIN, LOW);
+   #endif
+ }
+ 
+ void setup_powerhold()
+ {
+   #if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
+-    SET_OUTPUT(SUICIDE_PIN);
+-    WRITE(SUICIDE_PIN, HIGH);
++    OUT_WRITE(SUICIDE_PIN, HIGH);
+   #endif
+   #if defined(PS_ON_PIN) && PS_ON_PIN > -1
+-    SET_OUTPUT(PS_ON_PIN);
+-	#if defined(PS_DEFAULT_OFF)
+-	  WRITE(PS_ON_PIN, PS_ON_ASLEEP);
+-    #else
+-	  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+-	#endif
++    #if defined(PS_DEFAULT_OFF)
++      OUT_WRITE(PS_ON_PIN, PS_ON_ASLEEP);
++      #else
++      OUT_WRITE(PS_ON_PIN, PS_ON_AWAKE);
++    #endif
+   #endif
+ }
+ 
+ void suicide()
+ {
+   #if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
+-    SET_OUTPUT(SUICIDE_PIN);
+-    WRITE(SUICIDE_PIN, LOW);
++    OUT_WRITE(SUICIDE_PIN, LOW);
+   #endif
+ }
+ 
+@@ -2723,15 +2721,13 @@ Sigma_Exit:
+ 
+     #if defined(PS_ON_PIN) && PS_ON_PIN > -1
+       case 80: // M80 - Turn on Power Supply
+-        SET_OUTPUT(PS_ON_PIN); //GND
+-        WRITE(PS_ON_PIN, PS_ON_AWAKE);
++        OUT_WRITE(PS_ON_PIN, PS_ON_AWAKE); // GND
+ 
+         // If you have a switch on suicide pin, this is useful
+         // if you want to start another print with suicide feature after
+         // a print without suicide...
+         #if defined SUICIDE_PIN && SUICIDE_PIN > -1
+-            SET_OUTPUT(SUICIDE_PIN);
+-            WRITE(SUICIDE_PIN, HIGH);
++            OUT_WRITE(SUICIDE_PIN, HIGH);
+         #endif
+ 
+         #ifdef ULTIPANEL
+@@ -2755,8 +2751,7 @@ Sigma_Exit:
+         st_synchronize();
+         suicide();
+       #elif defined(PS_ON_PIN) && PS_ON_PIN > -1
+-        SET_OUTPUT(PS_ON_PIN);
+-        WRITE(PS_ON_PIN, PS_ON_ASLEEP);
++        OUT_WRITE(PS_ON_PIN, PS_ON_ASLEEP);
+       #endif
+       #ifdef ULTIPANEL
+         powersupply = false;
+@@ -3118,7 +3113,7 @@ Sigma_Exit:
+          SERIAL_ECHO(extruder_offset[Z_AXIS][tmp_extruder]);
+       #endif
+       }
+-      SERIAL_ECHOLN("");
++      SERIAL_EOL;
+     }break;
+     #endif
+     case 220: // M220 S<factor in percent>- set speed factor override percentage
+@@ -3337,8 +3332,7 @@ Sigma_Exit:
+      {
+      	#ifdef CHDK
+        
+-         SET_OUTPUT(CHDK);
+-         WRITE(CHDK, HIGH);
++         OUT_WRITE(CHDK, HIGH);
+          chdkHigh = millis();
+          chdkActive = true;
+        
+@@ -3497,6 +3491,17 @@ Sigma_Exit:
+       }
+       break;
+ 	#endif
++    
++#ifdef EXT_SOLENOID
++    case 380:
++        enable_solenoid_on_active_extruder();
++        break;
++
++    case 381:
++        disable_all_solenoids();
++        break;
++#endif //EXT_SOLENOID
++
+     case 400: // M400 finish all moves
+     {
+       st_synchronize();
+@@ -3737,9 +3742,7 @@ case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or disp
+           if(cnt==0)
+           {
+           #if BEEPER > 0
+-            SET_OUTPUT(BEEPER);
+-
+-            WRITE(BEEPER,HIGH);
++            OUT_WRITE(BEEPER,HIGH);
+             delay(3);
+             WRITE(BEEPER,LOW);
+             delay(3);
+@@ -4000,6 +4003,13 @@ case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or disp
+            prepare_move();
+         }
+       }
++
++#ifdef EXT_SOLENOID
++      st_synchronize();
++      disable_all_solenoids();
++      enable_solenoid_on_active_extruder();
++#endif //EXT_SOLENOID
++
+       #endif
+       SERIAL_ECHO_START;
+       SERIAL_ECHO(MSG_ACTIVE_EXTRUDER);
+@@ -4707,7 +4717,6 @@ bool setTargetedHotend(int code){
+   return false;
+ }
+ 
+-
+ float calculate_volumetric_multiplier(float diameter) {
+   if (!volumetric_enabled || diameter == 0) return 1.0;
+   float d2 = diameter * 0.5;
+@@ -4718,3 +4727,43 @@ void calculate_volumetric_multipliers() {
+   for (int i=0; i<EXTRUDERS; i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
++
++#ifdef EXT_SOLENOID
++
++void enable_solenoid(uint8_t num) {
++  switch(num) {
++    case 0:
++      OUT_WRITE(SOL0_PIN, HIGH);
++      break;
++      #if defined(SOL1_PIN) && SOL1_PIN > -1
++        case 1:
++          OUT_WRITE(SOL1_PIN, HIGH);
++          break;
++      #endif
++      #if defined(SOL2_PIN) && SOL2_PIN > -1
++        case 2:
++          OUT_WRITE(SOL2_PIN, HIGH);
++          break;
++      #endif
++      #if defined(SOL3_PIN) && SOL3_PIN > -1
++        case 3:
++          OUT_WRITE(SOL3_PIN, HIGH);
++          break;
++      #endif
++    default:
++      SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM(MSG_INVALID_SOLENOID);
++      break;
++  }
++}
++
++void enable_solenoid_on_active_extruder() { enable_solenoid(active_extruder); }
++
++void disable_all_solenoids() {
++  OUT_WRITE(SOL0_PIN, LOW);
++  OUT_WRITE(SOL1_PIN, LOW);
++  OUT_WRITE(SOL2_PIN, LOW);
++  OUT_WRITE(SOL3_PIN, LOW);
++}
++
++#endif //EXT_SOLENOID
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 7ee7df4..a51d77b 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -22,8 +22,7 @@ CardReader::CardReader() {
+   autostart_index = 0;
+   //power to SD reader
+   #if SDPOWER > -1
+-    SET_OUTPUT(SDPOWER);
+-    WRITE(SDPOWER, HIGH);
++    OUT_WRITE(SDPOWER, HIGH);
+   #endif //SDPOWER
+ 
+   autostart_atmillis = millis() + 5000;
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index 53f8221..d7198f3 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -83,6 +83,9 @@
+ /// check if pin is an timer wrapper
+ #define GET_TIMER(IO)  _GET_TIMER(IO)
+ 
++// Shorthand
++#define OUT_WRITE(IO, v) { SET_OUTPUT(IO); WRITE(IO, v); }
++
+ /*
+ 	ports and functions
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index f554c6a..dc32bea 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -121,6 +121,7 @@
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+ #define MSG_INVALID_EXTRUDER                "Invalid extruder"
++#define MSG_INVALID_SOLENOID                "Invalid solenoid"
+ #define MSG_X_MIN                           "x_min: "
+ #define MSG_X_MAX                           "x_max: "
+ #define MSG_Y_MIN                           "y_min: "
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 12ebd8d..375a86f 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -187,7 +187,7 @@ void checkHitEndstops()
+      SERIAL_ECHOPAIR(" Z:",(float)endstops_trigsteps[Z_AXIS]/axis_steps_per_unit[Z_AXIS]);
+      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
+    }
+-   SERIAL_ECHOLN("");
++   SERIAL_EOL;
+    endstop_x_hit=false;
+    endstop_y_hit=false;
+    endstop_z_hit=false;
+@@ -959,51 +959,41 @@ void st_init()
+ 
+   //Initialize Step Pins
+   #if defined(X_STEP_PIN) && (X_STEP_PIN > -1)
+-    SET_OUTPUT(X_STEP_PIN);
+-    WRITE(X_STEP_PIN,INVERT_X_STEP_PIN);
++    OUT_WRITE(X_STEP_PIN,INVERT_X_STEP_PIN);
+     disable_x();
+   #endif
+   #if defined(X2_STEP_PIN) && (X2_STEP_PIN > -1)
+-    SET_OUTPUT(X2_STEP_PIN);
+-    WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
++    OUT_WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
+     disable_x();
+   #endif
+   #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1)
+-    SET_OUTPUT(Y_STEP_PIN);
+-    WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
++    OUT_WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
+     #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && (Y2_STEP_PIN > -1)
+-      SET_OUTPUT(Y2_STEP_PIN);
+-      WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
++      OUT_WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
+     #endif
+     disable_y();
+   #endif
+   #if defined(Z_STEP_PIN) && (Z_STEP_PIN > -1)
+-    SET_OUTPUT(Z_STEP_PIN);
+-    WRITE(Z_STEP_PIN,INVERT_Z_STEP_PIN);
++    OUT_WRITE(Z_STEP_PIN,INVERT_Z_STEP_PIN);
+     #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_STEP_PIN) && (Z2_STEP_PIN > -1)
+-      SET_OUTPUT(Z2_STEP_PIN);
+-      WRITE(Z2_STEP_PIN,INVERT_Z_STEP_PIN);
++      OUT_WRITE(Z2_STEP_PIN,INVERT_Z_STEP_PIN);
+     #endif
+     disable_z();
+   #endif
+   #if defined(E0_STEP_PIN) && (E0_STEP_PIN > -1)
+-    SET_OUTPUT(E0_STEP_PIN);
+-    WRITE(E0_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E0_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e0();
+   #endif
+   #if defined(E1_STEP_PIN) && (E1_STEP_PIN > -1)
+-    SET_OUTPUT(E1_STEP_PIN);
+-    WRITE(E1_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E1_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e1();
+   #endif
+   #if defined(E2_STEP_PIN) && (E2_STEP_PIN > -1)
+-    SET_OUTPUT(E2_STEP_PIN);
+-    WRITE(E2_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E2_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e2();
+   #endif
+   #if defined(E3_STEP_PIN) && (E3_STEP_PIN > -1)
+-    SET_OUTPUT(E3_STEP_PIN);
+-    WRITE(E3_STEP_PIN,INVERT_E_STEP_PIN);
++    OUT_WRITE(E3_STEP_PIN,INVERT_E_STEP_PIN);
+     disable_e3();
+   #endif
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index c2f536b..ae9e5f4 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -901,21 +901,15 @@ void tp_init()
+   #ifdef HEATER_0_USES_MAX6675
+ 
+     #ifndef SDSUPPORT
+-      SET_OUTPUT(SCK_PIN);
+-      WRITE(SCK_PIN,0);
+-    
+-      SET_OUTPUT(MOSI_PIN);
+-      WRITE(MOSI_PIN,1);
+-    
+-      SET_INPUT(MISO_PIN);
+-      WRITE(MISO_PIN,1);
++      OUT_WRITE(SCK_PIN, LOW);
++      OUT_WRITE(MOSI_PIN, HIGH);
++      OUT_WRITE(MISO_PIN, HIGH);
+     #else
+       pinMode(SS_PIN, OUTPUT);
+       digitalWrite(SS_PIN, HIGH);
+     #endif
+     
+-    SET_OUTPUT(MAX6675_SS);
+-    WRITE(MAX6675_SS,1);
++    OUT_WRITE(MAX6675_SS,HIGH);
+ 
+   #endif //HEATER_0_USES_MAX6675
+ 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 1490d22..2081414 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -821,32 +821,28 @@ static void lcd_implementation_drawmenu_sddirectory(uint8_t row, const char* pst
+ 
+ static void lcd_implementation_quick_feedback()
+ {
+-#ifdef LCD_USE_I2C_BUZZER
+-	#if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
+-	  lcd_buzz(1000/6,100);
+-	#else
+-	  lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS,LCD_FEEDBACK_FREQUENCY_HZ);
+-	#endif
+-#elif defined(BEEPER) && BEEPER > -1
++  #ifdef LCD_USE_I2C_BUZZER
++    #if defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS) && defined(LCD_FEEDBACK_FREQUENCY_HZ)
++      lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
++    #else
++      lcd_buzz(1000/6, 100);
++    #endif
++  #elif defined(BEEPER) && BEEPER > -1
+     SET_OUTPUT(BEEPER);
+-	#if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
+-    for(int8_t i=0;i<10;i++)
+-    {
+-      WRITE(BEEPER,HIGH);
+-      delayMicroseconds(100);
+-      WRITE(BEEPER,LOW);
+-      delayMicroseconds(100);
+-    }
++    #if !defined(LCD_FEEDBACK_FREQUENCY_HZ) || !defined(LCD_FEEDBACK_FREQUENCY_DURATION_MS)
++      const unsigned int delay = 100;
++      uint8_t i = 10;
+     #else
+-    for(int8_t i=0;i<(LCD_FEEDBACK_FREQUENCY_DURATION_MS / (1000 / LCD_FEEDBACK_FREQUENCY_HZ));i++)
+-    {
++      const unsigned int delay = 1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2;
++      int8_t i = LCD_FEEDBACK_FREQUENCY_DURATION_MS * LCD_FEEDBACK_FREQUENCY_HZ / 1000;
++    #endif
++    while (i--) {
+       WRITE(BEEPER,HIGH);
+-      delayMicroseconds(1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2);
++      delayMicroseconds(delay);
+       WRITE(BEEPER,LOW);
+-      delayMicroseconds(1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2);
++      delayMicroseconds(delay);
+     }
+-    #endif
+-#endif
++  #endif
+ }
+ 
+ #ifdef LCD_HAS_STATUS_INDICATORS
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index 15e9e9d..f95431a 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -47,12 +47,9 @@ uint8_t u8g_dev_rrd_st7920_128x64_fn(u8g_t *u8g, u8g_dev_t *dev, uint8_t msg, vo
+   {
+     case U8G_DEV_MSG_INIT:
+       {
+-        SET_OUTPUT(ST7920_CS_PIN);
+-        WRITE(ST7920_CS_PIN,0);
+-        SET_OUTPUT(ST7920_DAT_PIN);
+-        WRITE(ST7920_DAT_PIN,0);
+-        SET_OUTPUT(ST7920_CLK_PIN);
+-        WRITE(ST7920_CLK_PIN,1);
++        OUT_WRITE(ST7920_CS_PIN,LOW);
++        OUT_WRITE(ST7920_DAT_PIN,LOW);
++        OUT_WRITE(ST7920_CLK_PIN,HIGH);
+ 
+         ST7920_CS();
+         u8g_Delay(120);                 //initial delay for boot up
+
+commit 08b722b635aab46aefce76fc7003f18c278925d9 (from dfb38874f8353d7fd32f4029c2f18f2a43f00cb9)
+Merge: d052a3c dfb3887
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Mar 4 21:36:29 2015 -0800
+
+    Merge pull request #1555 from C-o-r-E/solenoids
+    
+    Add support for solenoid articulated extruders
+
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index c7df306..4e2a567 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -21,17 +21,13 @@
+ **/
+ 
+ #ifdef ULTIPANEL
+-#define BLEN_A 0
+-#define BLEN_B 1
+-#define BLEN_C 2
+-#define EN_A (1<<BLEN_A)
+-#define EN_B (1<<BLEN_B)
+-#define EN_C (1<<BLEN_C)
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+-#define LCD_CLICKED (buttons&EN_C)
++  #define BLEN_A 0
++  #define BLEN_B 1
++  #define BLEN_C 2
++  #define EN_A (1<<BLEN_A)
++  #define EN_B (1<<BLEN_B)
++  #define EN_C (1<<BLEN_C)
++  #define LCD_CLICKED (buttons&EN_C)
+ #endif
+ 
+ #include <U8glib.h>
+diff --git a/Marlin/pins_CHEAPTRONIC.h b/Marlin/pins_CHEAPTRONIC.h
+index 83d67e5..dbf53a7 100644
+--- a/Marlin/pins_CHEAPTRONIC.h
++++ b/Marlin/pins_CHEAPTRONIC.h
+@@ -87,9 +87,3 @@
+ 
+ // Cheaptronic v1.0 does not use this port
+ #define SDCARDDETECT -1
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_ELEFU_3.h b/Marlin/pins_ELEFU_3.h
+index 4c9663a..e0e0a50 100644
+--- a/Marlin/pins_ELEFU_3.h
++++ b/Marlin/pins_ELEFU_3.h
+@@ -74,12 +74,6 @@
+   #define BLEN_B           1
+   #define BLEN_A           0
+ 
+-  //encoder rotation values
+-  #define encrot0          0
+-  #define encrot1          2
+-  #define encrot2          3
+-  #define encrot3          1
+-
+ #endif // RA_CONTROL_PANEL
+ 
+ #ifdef RA_DISCO
+diff --git a/Marlin/pins_MEGATRONICS.h b/Marlin/pins_MEGATRONICS.h
+index 2bd0e33..413906e 100644
+--- a/Marlin/pins_MEGATRONICS.h
++++ b/Marlin/pins_MEGATRONICS.h
+@@ -83,10 +83,4 @@
+ 
+   #define SDCARDDETECT -1   // Ramps does not use this port
+ 
+-    //encoder rotation values
+-  #define encrot0 0
+-  #define encrot1 2
+-  #define encrot2 3
+-  #define encrot3 1
+-
+ #endif // ULTRA_LCD && NEWPANEL
+diff --git a/Marlin/pins_MEGATRONICS_1.h b/Marlin/pins_MEGATRONICS_1.h
+index f321941..1592dfe 100644
+--- a/Marlin/pins_MEGATRONICS_1.h
++++ b/Marlin/pins_MEGATRONICS_1.h
+@@ -80,9 +80,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1  // Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_MEGATRONICS_2.h b/Marlin/pins_MEGATRONICS_2.h
+index 064431b..b05eaaa 100644
+--- a/Marlin/pins_MEGATRONICS_2.h
++++ b/Marlin/pins_MEGATRONICS_2.h
+@@ -95,9 +95,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1  // Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_MEGATRONICS_3.h b/Marlin/pins_MEGATRONICS_3.h
+index 3c53bca..04a7306 100644
+--- a/Marlin/pins_MEGATRONICS_3.h
++++ b/Marlin/pins_MEGATRONICS_3.h
+@@ -95,9 +95,3 @@
+ #define BLEN_A 0
+ 
+ #define SDCARDDETECT -1	// Megatronics does not use this port
+-
+-// Encoder rotation values
+-#define encrot0 0
+-#define encrot1 2
+-#define encrot2 3
+-#define encrot3 1
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index b2ccdc4..3849e29 100644
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -116,11 +116,6 @@
+ 
+     #define SDCARDDETECT 81    // Ramps does not use this port
+ 
+-    //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+   #else //!NEWPANEL - old style panel with shift register
+     //arduino pin witch triggers an piezzo beeper
+     #define BEEPER 33    No Beeper added
+@@ -138,12 +133,6 @@
+     #define LCD_PINS_D6 27
+     #define LCD_PINS_D7 29
+ 
+-    //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-
+     //bits in the shift register that carry the buttons for:
+     // left up center down right red
+     #define BL_LE 7
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2726547..2f83afe 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1394,6 +1394,17 @@ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+ 
+ #ifdef ULTIPANEL
+ 
++////////////////////////
++// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
++// These values are independent of which pins are used for EN_A and EN_B indications
++// The rotary encoder part is also independent to the chipset used for the LCD
++#if defined(EN_A) && defined(EN_B)
++  #define encrot0 0
++  #define encrot1 2
++  #define encrot2 3
++  #define encrot3 1
++#endif 
++
+ /* Warning: This function is called from interrupt context */
+ void lcd_buttons_update() {
+   #ifdef NEWPANEL
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 8230083..2081414 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -123,17 +123,6 @@
+   #define LCD_CLICKED (buttons&(B_MI|B_ST))
+ #endif
+ 
+-////////////////////////
+-// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
+-// These values are independent of which pins are used for EN_A and EN_B indications
+-// The rotary encoder part is also independent to the chipset used for the LCD
+-#if defined(EN_A) && defined(EN_B)
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-#endif 
+-
+ #endif //ULTIPANEL
+ 
+ ////////////////////////////////////
+

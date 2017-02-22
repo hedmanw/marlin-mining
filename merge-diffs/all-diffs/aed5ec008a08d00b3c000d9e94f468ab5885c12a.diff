@@ -1,0 +1,3832 @@
+commit aed5ec008a08d00b3c000d9e94f468ab5885c12a (from cfb98ef682be2ffb75e7d3d741afc721e054e391)
+Merge: cfb98ef f643f4d
+Author: nothinman <martin@lukasik.name>
+Date:   Mon May 19 17:55:34 2014 +0100
+
+    Merge pull request #851 from DanNixon/estop
+    
+    Implemented M112
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 53d829a..916f0c8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -673,6 +673,11 @@ void get_command()
+           }
+ 
+         }
++
++        //If command was e-stop process now
++        if(strcmp(cmdbuffer[bufindw], "M112") == 0)
++          kill();
++        
+         bufindw = (bufindw + 1)%BUFSIZE;
+         buflen += 1;
+       }
+@@ -1830,6 +1835,9 @@ void process_commands()
+ #endif
+       setWatch();
+       break;
++    case 112: //  M112 -Emergency Stop
++      kill();
++      break;
+     case 140: // M140 set bed temp
+       if (code_seen('S')) setTargetBed(code_value());
+       break;
+@@ -3426,6 +3434,9 @@ void handle_status_leds(void) {
+ 
+ void manage_inactivity()
+ {
++  if(buflen < (BUFSIZE-1))
++    get_command();
++
+   if( (millis() - previous_millis_cmd) >  max_inactive_time )
+     if(max_inactive_time)
+       kill();
+diff --git a/README.md b/README.md
+index 0b95554..17e920e 100644
+--- a/README.md
++++ b/README.md
+@@ -195,6 +195,7 @@ M Codes
+ *  M107 - Fan off
+ *  M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+ *         Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
++*  M112 - Emergency stop
+ *  M114 - Output current position to serial port
+ *  M115 - Capabilities string
+ *  M117 - display message
+
+commit aed5ec008a08d00b3c000d9e94f468ab5885c12a (from f643f4d67487e0d4ae190e579e9051e90985516f)
+Merge: cfb98ef f643f4d
+Author: nothinman <martin@lukasik.name>
+Date:   Mon May 19 17:55:34 2014 +0100
+
+    Merge pull request #851 from DanNixon/estop
+    
+    Implemented M112
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index e18c98a..4570e34 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -70,6 +70,7 @@
+ // 91 = Final OMCA board
+ // 301= Rambo
+ // 21 = Elefu Ra Board (v3)
++// 88 = 5DPrint D8 Driver Board
+ 
+ #ifndef MOTHERBOARD
+ #define MOTHERBOARD 7
+@@ -115,8 +116,10 @@
+ // 8 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup)
+ // 9 is 100k GE Sensing AL03006-58.2K-97-G1 (4.7k pullup)
+ // 10 is 100k RS thermistor 198-961 (4.7k pullup)
++// 11 is 100k beta 3950 1% thermistor (4.7k pullup)
++// 12 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup) (calibrated for Makibox hot bed)
+ // 20 is the PT100 circuit found in the Ultimainboard V2.x
+-// 60 is 100k Maker's Tool Works Kapton Bed Thermistor
++// 60 is 100k Maker's Tool Works Kapton Bed Thermistor beta=3950
+ //
+ //    1k ohm pullup tables - This is not normal, you would have to have changed out your 4.7k for 1k
+ //                          (but gives greater accuracy and more stable PID)
+@@ -459,6 +462,15 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //=============================Additional Features===========================
+ //===========================================================================
+ 
++// Custom M code points
++#define CUSTOM_M_CODES
++#ifdef CUSTOM_M_CODES
++  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++  #define Z_PROBE_OFFSET_RANGE_MIN -15
++  #define Z_PROBE_OFFSET_RANGE_MAX -5
++#endif
++
++
+ // EEPROM
+ // The microcontroller can store settings in the EEPROM, e.g. max velocity...
+ // M500 - stores parameters in EEPROM
+@@ -484,6 +496,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //#define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
+ //#define SDSUPPORT // Enable SD Card Support in Hardware Console
+ //#define SDSLOW // Use slower SD transfer mode (not normally needed - uncomment if you're getting volume init error)
++//#define SD_CHECK_AND_RETRY // Use CRC checks and retries on the SD communication
+ //#define ENCODER_PULSES_PER_STEP 1 // Increase if you have a high resolution encoder
+ //#define ENCODER_STEPS_PER_MENU_ITEM 5 // Set according to ENCODER_PULSES_PER_STEP or your liking
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index bca056f..245f65c 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -30,7 +30,7 @@
+ 
+ //automatic temperature: The hot end target temperature is calculated by all the buffered lines of gcode.
+ //The maximum buffered steps/sec of the extruder motor are called "se".
+-//You enter the autotemp mode by a M109 S<mintemp> T<maxtemp> F<factor>
++//You enter the autotemp mode by a M109 S<mintemp> B<maxtemp> F<factor>
+ // the target temperature is set to mintemp+factor*se[steps/sec] and limited by mintemp and maxtemp
+ // you exit the value by any M109 without F*
+ // Also, if the temperature is set to a value <mintemp, it is not changed by autotemp.
+@@ -215,7 +215,7 @@
+ //homing hits the endstop, then retracts by this distance, before it tries to slowly bump again:
+ #define X_HOME_RETRACT_MM 5
+ #define Y_HOME_RETRACT_MM 5
+-#define Z_HOME_RETRACT_MM 1
++#define Z_HOME_RETRACT_MM 2
+ //#define QUICK_HOME  //if this is defined, if both x and y are to be homed, a diagonal move will be performed initially.
+ 
+ #define AXIS_RELATIVE_MODES {false, false, false, false}
+@@ -239,6 +239,11 @@
+ #define MANUAL_FEEDRATE {50*60, 50*60, 4*60, 60}  // set the speeds for manual moves (mm/min)
+ #endif
+ 
++//Comment to disable setting feedrate multiplier via encoder
++#ifdef ULTIPANEL
++    #define ULTIPANEL_FEEDMULTIPLY
++#endif
++
+ // minimum time in microseconds that a movement needs to take if the buffer is emptied.
+ #define DEFAULT_MINSEGMENTTIME        20000
+ 
+@@ -279,6 +284,9 @@
+ //=============================Additional Features===========================
+ //===========================================================================
+ 
++//#define CHDK 4        //Pin for triggering CHDK to take a picture see how to use it here http://captain-slow.dk/2014/03/09/3d-printing-timelapses/
++#define CHDK_DELAY 50 //How long in ms the pin should stay HIGH before going LOW again
++
+ #define SD_FINISHED_STEPPERRELEASE true  //if sd support and the file is finished: disable steppers?
+ #define SD_FINISHED_RELEASECOMMAND "M84 X Y Z E" // You might want to keep the z enabled so your bed stays in place.
+ 
+@@ -402,10 +410,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #ifdef FWRETRACT
+   #define MIN_RETRACT 0.1                //minimum extruded mm to accept a automatic gcode retraction attempt
+   #define RETRACT_LENGTH 3               //default retract length (positive mm)
+-  #define RETRACT_FEEDRATE 80*60         //default feedrate for retracting
++  #define RETRACT_FEEDRATE 45            //default feedrate for retracting (mm/s)
+   #define RETRACT_ZLIFT 0                //default retract Z-lift
+   #define RETRACT_RECOVER_LENGTH 0       //default additional recover length (mm, added to retract length when recovering)
+-  #define RETRACT_RECOVER_FEEDRATE 8*60  //default feedrate for recovering from retraction
++  #define RETRACT_RECOVER_FEEDRATE 8     //default feedrate for recovering from retraction (mm/s)
+ #endif
+ 
+ //adds support for experimental filament exchange support M600; requires display
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 97866c8..e728209 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -203,7 +203,8 @@ void setPwmFrequency(uint8_t pin, int val);
+ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern int feedmultiply;
+-extern int extrudemultiply; // Sets extrude multiply factor (in percent)
++extern int extrudemultiply; // Sets extrude multiply factor (in percent) for all extruders
++extern int extruder_multiply[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+ extern float current_position[NUM_AXIS] ;
+ extern float add_homeing[3];
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 669c7b8..916f0c8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -118,6 +118,7 @@
+ // M107 - Fan off
+ // M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+ //        Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
++//        IF AUTOTEMP is enabled, S<mintemp> B<maxtemp> F<factor>. Exit autotemp by any M109 without F
+ // M114 - Output current position to serial port
+ // M115 - Capabilities string
+ // M117 - display message
+@@ -189,6 +190,14 @@ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+ int feedmultiply=100; //100->1 200->2
+ int saved_feedmultiply;
+ int extrudemultiply=100; //100->1 200->2
++int extruder_multiply[EXTRUDERS] = {100
++  #if EXTRUDERS > 1
++    , 100
++    #if EXTRUDERS > 2
++      , 100
++    #endif
++  #endif
++};
+ float volumetric_multiplier[EXTRUDERS] = {1.0
+   #if EXTRUDERS > 1
+     , 1.0
+@@ -314,6 +323,12 @@ bool Stopped=false;
+ bool CooldownNoWait = true;
+ bool target_direction;
+ 
++//Insert variables if CHDK is defined
++#ifdef CHDK
++unsigned long chdkHigh = 0;
++boolean chdkActive = false;
++#endif
++
+ //===========================================================================
+ //=============================Routines======================================
+ //===========================================================================
+@@ -1110,7 +1125,7 @@ void refresh_cmd_timeout(void)
+       current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+-      feedrate=retract_feedrate;
++      feedrate=retract_feedrate*60;
+       retracted=true;
+       prepare_move();
+       current_position[Z_AXIS]-=retract_zlift;
+@@ -1128,7 +1143,7 @@ void refresh_cmd_timeout(void)
+       current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+-      feedrate=retract_recover_feedrate;
++      feedrate=retract_recover_feedrate*60;
+       retracted=false;
+       prepare_move();
+       feedrate = oldFeedrate;
+@@ -1167,19 +1182,21 @@ void process_commands()
+         //ClearToSend();
+         return;
+       }
+-      //break;
++      break;
+     case 2: // G2  - CW ARC
+       if(Stopped == false) {
+         get_arc_coordinates();
+         prepare_arc_move(true);
+         return;
+       }
++      break;
+     case 3: // G3  - CCW ARC
+       if(Stopped == false) {
+         get_arc_coordinates();
+         prepare_arc_move(false);
+         return;
+       }
++      break;
+     case 4: // G4 dwell
+       LCD_MESSAGEPGM(MSG_DWELL);
+       codenum = 0;
+@@ -1277,7 +1294,12 @@ void process_commands()
+         destination[X_AXIS] = 1.5 * max_length(X_AXIS) * x_axis_home_dir;destination[Y_AXIS] = 1.5 * max_length(Y_AXIS) * home_dir(Y_AXIS);
+         feedrate = homing_feedrate[X_AXIS];
+         if(homing_feedrate[Y_AXIS]<feedrate)
+-          feedrate =homing_feedrate[Y_AXIS];
++          feedrate = homing_feedrate[Y_AXIS];
++        if (max_length(X_AXIS) > max_length(Y_AXIS)) {
++          feedrate *= sqrt(pow(max_length(Y_AXIS) / max_length(X_AXIS), 2) + 1);
++        } else {
++          feedrate *= sqrt(pow(max_length(X_AXIS) / max_length(Y_AXIS), 2) + 1);
++        }
+         plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+         st_synchronize();
+ 
+@@ -1782,7 +1804,7 @@ void process_commands()
+         int pin_number = LED_PIN;
+         if (code_seen('P') && pin_status >= 0 && pin_status <= 255)
+           pin_number = code_value();
+-        for(int8_t i = 0; i < (int8_t)sizeof(sensitive_pins); i++)
++        for(int8_t i = 0; i < (int8_t)(sizeof(sensitive_pins)/sizeof(int)); i++)
+         {
+           if (sensitive_pins[i] == pin_number)
+           {
+@@ -2139,8 +2161,9 @@ void process_commands()
+       }
+       break;
+     case 85: // M85
+-      code_seen('S');
+-      max_inactive_time = code_value() * 1000;
++      if(code_seen('S')) {
++        max_inactive_time = code_value() * 1000;
++      }
+       break;
+     case 92: // M92
+       for(int8_t i=0; i < NUM_AXIS; i++)
+@@ -2261,9 +2284,8 @@ void process_commands()
+           if(tmp_extruder >= EXTRUDERS) {
+             SERIAL_ECHO_START;
+             SERIAL_ECHO(MSG_M200_INVALID_EXTRUDER);
++            break;
+           }
+-          SERIAL_ECHOLN(tmp_extruder);
+-          break;
+         }
+         volumetric_multiplier[tmp_extruder] = 1 / area;
+       }
+@@ -2335,7 +2357,7 @@ void process_commands()
+       break;
+     #endif
+     #ifdef FWRETRACT
+-    case 207: //M207 - set retract length S[positive mm] F[feedrate mm/sec] Z[additional zlift/hop]
++    case 207: //M207 - set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop]
+     {
+       if(code_seen('S'))
+       {
+@@ -2343,14 +2365,14 @@ void process_commands()
+       }
+       if(code_seen('F'))
+       {
+-        retract_feedrate = code_value() ;
++        retract_feedrate = code_value()/60 ;
+       }
+       if(code_seen('Z'))
+       {
+         retract_zlift = code_value() ;
+       }
+     }break;
+-    case 208: // M208 - set retract recover length S[positive mm surplus to the M207 S*] F[feedrate mm/sec]
++    case 208: // M208 - set retract recover length S[positive mm surplus to the M207 S*] F[feedrate mm/min]
+     {
+       if(code_seen('S'))
+       {
+@@ -2358,7 +2380,7 @@ void process_commands()
+       }
+       if(code_seen('F'))
+       {
+-        retract_recover_feedrate = code_value() ;
++        retract_recover_feedrate = code_value()/60 ;
+       }
+     }break;
+     case 209: // M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
+@@ -2428,7 +2450,18 @@ void process_commands()
+     {
+       if(code_seen('S'))
+       {
+-        extrudemultiply = code_value() ;
++        int tmp_code = code_value();
++        if (code_seen('T'))
++        {
++          if(setTargetedHotend(221)){
++            break;
++          }
++          extruder_multiply[tmp_extruder] = tmp_code;
++        }
++        else
++        {
++          extrudemultiply = tmp_code ;
++        }
+       }
+     }
+     break;
+@@ -2443,7 +2476,7 @@ void process_commands()
+ 
+         if(pin_state >= -1 && pin_state <= 1){
+ 
+-          for(int8_t i = 0; i < (int8_t)sizeof(sensitive_pins); i++)
++          for(int8_t i = 0; i < (int8_t)(sizeof(sensitive_pins)/sizeof(int)); i++)
+           {
+             if (sensitive_pins[i] == pin_number)
+             {
+@@ -2596,23 +2629,33 @@ void process_commands()
+     #endif //PIDTEMP
+     case 240: // M240  Triggers a camera by emulating a Canon RC-1 : http://www.doc-diy.net/photo/rc-1_hacked/
+      {
+-      #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+-        const uint8_t NUM_PULSES=16;
+-        const float PULSE_LENGTH=0.01524;
+-        for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++     	#ifdef CHDK
++       
++         SET_OUTPUT(CHDK);
++         WRITE(CHDK, HIGH);
++         chdkHigh = millis();
++         chdkActive = true;
++       
++       #else
++     	
++      	#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
++	const uint8_t NUM_PULSES=16;
++	const float PULSE_LENGTH=0.01524;
++	for(int i=0; i < NUM_PULSES; i++) {
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+         delay(7.33);
+         for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+-      #endif
++      	#endif
++      #endif //chdk end if
+      }
+     break;
+ #ifdef DOGLCD
+@@ -2694,6 +2737,43 @@ void process_commands()
+     }
+     break;
+     #endif
++
++    #ifdef CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
++    case CUSTOM_M_CODE_SET_Z_PROBE_OFFSET:
++    {
++      float value;
++      if (code_seen('Z'))
++      {
++        value = code_value();
++        if ((Z_PROBE_OFFSET_RANGE_MIN <= value) && (value <= Z_PROBE_OFFSET_RANGE_MAX))
++        {
++          zprobe_zoffset = -value; // compare w/ line 278 of ConfigurationStore.cpp
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_ZPROBE_ZOFFSET " " MSG_OK);
++          SERIAL_PROTOCOLLN("");
++        }
++        else
++        {
++          SERIAL_ECHO_START;
++          SERIAL_ECHOPGM(MSG_ZPROBE_ZOFFSET);
++          SERIAL_ECHOPGM(MSG_Z_MIN);
++          SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MIN);
++          SERIAL_ECHOPGM(MSG_Z_MAX);
++          SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MAX);
++          SERIAL_PROTOCOLLN("");
++        }
++      }
++      else
++      {
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_ZPROBE_ZOFFSET " : ");
++          SERIAL_ECHO(-zprobe_zoffset);
++          SERIAL_PROTOCOLLN("");
++      }
++      break;
++    }
++    #endif // CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
++
+     #ifdef FILAMENTCHANGEENABLE
+     case 600: //Pause for filament change X[pos] Y[pos] Z[relative lift] E[initial retract] L[later retract distance for removal]
+     {
+@@ -3024,7 +3104,16 @@ void process_commands()
+         // Set the new active extruder and position
+         active_extruder = tmp_extruder;
+       #endif //else DUAL_X_CARRIAGE
++#ifdef DELTA 
++
++  calculate_delta(current_position); // change cartesian kinematic  to  delta kinematic;
++   //sent position to plan_set_position();
++  plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS],current_position[E_AXIS]);
++            
++#else
+         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++
++#endif
+         // Move to the old position if 'F' was in the parameters
+         if(make_move && Stopped == false) {
+            prepare_move();
+@@ -3364,6 +3453,16 @@ void manage_inactivity()
+       }
+     }
+   }
++  
++  #ifdef CHDK //Check if pin should be set to LOW after M240 set it to HIGH
++    if (chdkActive)
++    {
++      chdkActive = false;
++      if (millis()-chdkHigh < CHDK_DELAY) return;
++      WRITE(CHDK, LOW);
++    }
++  #endif
++  
+   #if defined(KILL_PIN) && KILL_PIN > -1
+     if( 0 == READ(KILL_PIN) )
+       kill();
+@@ -3531,6 +3630,9 @@ bool setTargetedHotend(int code){
+         case 218:
+           SERIAL_ECHO(MSG_M218_INVALID_EXTRUDER);
+           break;
++        case 221:
++          SERIAL_ECHO(MSG_M221_INVALID_EXTRUDER);
++          break;
+       }
+       SERIAL_ECHOLN(tmp_extruder);
+       return true;
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 72f5661..69ae777 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -373,6 +373,29 @@ bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+  * the value zero, false, is returned for failure.
+  */
+ bool Sd2Card::readBlock(uint32_t blockNumber, uint8_t* dst) {
++#ifdef SD_CHECK_AND_RETRY
++  uint8_t retryCnt = 3;
++  // use address if not SDHC card
++  if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
++ retry2:
++  retryCnt --;
++  if (cardCommand(CMD17, blockNumber)) {
++    error(SD_CARD_ERROR_CMD17);
++    if (retryCnt > 0) goto retry;
++    goto fail;
++  }
++  if (!readData(dst, 512))
++  {
++    if (retryCnt > 0) goto retry;
++    goto fail;
++  }
++  return true;
++ retry:
++   chipSelectHigh();
++   cardCommand(CMD12, 0);//Try sending a stop command, but ignore the result.
++   errorCode_ = 0;
++   goto retry2;
++#else
+   // use address if not SDHC card
+   if (type()!= SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+   if (cardCommand(CMD17, blockNumber)) {
+@@ -380,6 +403,7 @@ bool Sd2Card::readBlock(uint32_t blockNumber, uint8_t* dst) {
+     goto fail;
+   }
+   return readData(dst, 512);
++#endif
+ 
+  fail:
+   chipSelectHigh();
+@@ -397,6 +421,51 @@ bool Sd2Card::readData(uint8_t *dst) {
+   chipSelectLow();
+   return readData(dst, 512);
+ }
++
++#ifdef SD_CHECK_AND_RETRY
++static const uint16_t crctab[] PROGMEM = {
++  0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
++  0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
++  0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6,
++  0x9339, 0x8318, 0xB37B, 0xA35A, 0xD3BD, 0xC39C, 0xF3FF, 0xE3DE,
++  0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485,
++  0xA56A, 0xB54B, 0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D,
++  0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
++  0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC,
++  0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861, 0x2802, 0x3823,
++  0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B,
++  0x5AF5, 0x4AD4, 0x7AB7, 0x6A96, 0x1A71, 0x0A50, 0x3A33, 0x2A12,
++  0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A,
++  0x6CA6, 0x7C87, 0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41,
++  0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
++  0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70,
++  0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A, 0x9F59, 0x8F78,
++  0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F,
++  0x1080, 0x00A1, 0x30C2, 0x20E3, 0x5004, 0x4025, 0x7046, 0x6067,
++  0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E,
++  0x02B1, 0x1290, 0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256,
++  0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
++  0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405,
++  0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E, 0xC71D, 0xD73C,
++  0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634,
++  0xD94C, 0xC96D, 0xF90E, 0xE92F, 0x99C8, 0x89E9, 0xB98A, 0xA9AB,
++  0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3,
++  0xCB7D, 0xDB5C, 0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A,
++  0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
++  0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9,
++  0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83, 0x1CE0, 0x0CC1,
++  0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
++  0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
++};
++static uint16_t CRC_CCITT(const uint8_t* data, size_t n) {
++  uint16_t crc = 0;
++  for (size_t i = 0; i < n; i++) {
++    crc = pgm_read_word(&crctab[(crc >> 8 ^ data[i]) & 0XFF]) ^ (crc << 8);
++  }
++  return crc;
++}
++#endif
++
+ //------------------------------------------------------------------------------
+ bool Sd2Card::readData(uint8_t* dst, uint16_t count) {
+   // wait for start block token
+@@ -414,9 +483,22 @@ bool Sd2Card::readData(uint8_t* dst, uint16_t count) {
+   // transfer data
+   spiRead(dst, count);
+ 
++#ifdef SD_CHECK_AND_RETRY
++  {
++    uint16_t calcCrc = CRC_CCITT(dst, count);
++    uint16_t recvCrc = spiRec() << 8;
++    recvCrc |= spiRec();
++    if (calcCrc != recvCrc)
++    {
++        error(SD_CARD_ERROR_CRC);
++        goto fail;
++    }
++  }
++#else
+   // discard CRC
+   spiRec();
+   spiRec();
++#endif
+   chipSelectHigh();
+   return true;
+ 
+@@ -638,4 +720,4 @@ bool Sd2Card::writeStop() {
+   return false;
+ }
+ 
+-#endif
++#endif
+diff --git a/Marlin/Sd2Card.h b/Marlin/Sd2Card.h
+index 7de5f11..d6b302b 100644
+--- a/Marlin/Sd2Card.h
++++ b/Marlin/Sd2Card.h
+@@ -103,6 +103,8 @@ uint8_t const SD_CARD_ERROR_WRITE_TIMEOUT = 0X17;
+ uint8_t const SD_CARD_ERROR_SCK_RATE = 0X18;
+ /** init() not called */
+ uint8_t const SD_CARD_ERROR_INIT_NOT_CALLED = 0X19;
++/** crc check error */
++uint8_t const SD_CARD_ERROR_CRC = 0X20;
+ //------------------------------------------------------------------------------
+ // card types
+ /** Standard capacity V1 SD card */
+diff --git a/Marlin/digipot_mcp4451.cpp b/Marlin/digipot_mcp4451.cpp
+index 11ee684..7c15055 100644
+--- a/Marlin/digipot_mcp4451.cpp
++++ b/Marlin/digipot_mcp4451.cpp
+@@ -6,8 +6,13 @@
+ #include "Wire.h"
+ 
+ // Settings for the I2C based DIGIPOT (MCP4451) on Azteeg X3 Pro
++#if MOTHERBOARD == 88
++#define DIGIPOT_I2C_FACTOR 117.96
++#define DIGIPOT_I2C_MAX_CURRENT 1.736
++#else
+ #define DIGIPOT_I2C_FACTOR 106.7
+ #define DIGIPOT_I2C_MAX_CURRENT 2.5
++#endif
+ 
+ static byte current_to_wiper( float current ){
+     return byte(ceil(float((DIGIPOT_I2C_FACTOR*current))));
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+new file mode 100644
+index 0000000..6ebd08f
+--- /dev/null
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -0,0 +1,725 @@
++#ifndef CONFIGURATION_H
++#define CONFIGURATION_H
++
++// This configuration file contains the basic settings.
++// Advanced settings can be found in Configuration_adv.h
++// BASIC SETTINGS: select your board type, temperature sensor type, axis scaling, and endstop configuration
++
++//===========================================================================
++//============================= DELTA Printer ===============================
++//===========================================================================
++// For a Delta printer replace the configuration files with the files in the
++// example_configurations/delta directory.
++//
++
++// User-specified version info of this build to display in [Pronterface, etc] terminal window during
++// startup. Implementation of an idea by Prof Braino to inform user that any changes made to this
++// build by the user have been successfully uploaded into firmware.
++#define STRING_VERSION_CONFIG_H __DATE__ " " __TIME__ // build date and time
++#define STRING_CONFIG_H_AUTHOR "(none, default config)" // Who made the changes.
++
++// SERIAL_PORT selects which serial port should be used for communication with the host.
++// This allows the connection of wireless adapters (for instance) to non-default port pins.
++// Serial port 0 is still used by the Arduino bootloader regardless of this setting.
++#define SERIAL_PORT 0
++
++// This determines the communication speed of the printer
++// This determines the communication speed of the printer
++#define BAUDRATE 250000
++
++// This enables the serial port associated to the Bluetooth interface
++//#define BTENABLED              // Enable BT interface on AT90USB devices
++
++
++//// The following define selects which electronics board you have. Please choose the one that matches your setup
++// 10 = Gen7 custom (Alfons3 Version) "https://github.com/Alfons3/Generation_7_Electronics"
++// 11 = Gen7 v1.1, v1.2 = 11
++// 12 = Gen7 v1.3
++// 13 = Gen7 v1.4
++// 2  = Cheaptronic v1.0
++// 20 = Sethi 3D_1
++// 3  = MEGA/RAMPS up to 1.2 = 3
++// 33 = RAMPS 1.3 / 1.4 (Power outputs: Extruder, Fan, Bed)
++// 34 = RAMPS 1.3 / 1.4 (Power outputs: Extruder0, Extruder1, Bed)
++// 35 = RAMPS 1.3 / 1.4 (Power outputs: Extruder, Fan, Fan)
++// 4  = Duemilanove w/ ATMega328P pin assignment
++// 5  = Gen6
++// 51 = Gen6 deluxe
++// 6  = Sanguinololu < 1.2
++// 62 = Sanguinololu 1.2 and above
++// 63 = Melzi
++// 64 = STB V1.1
++// 65 = Azteeg X1
++// 66 = Melzi with ATmega1284 (MaKr3d version)
++// 67 = Azteeg X3
++// 68 = Azteeg X3 Pro
++// 7  = Ultimaker
++// 71 = Ultimaker (Older electronics. Pre 1.5.4. This is rare)
++// 72 = Ultimainboard 2.x (Uses TEMP_SENSOR 20)
++// 77 = 3Drag Controller
++// 8  = Teensylu
++// 80 = Rumba
++// 81 = Printrboard (AT90USB1286)
++// 82 = Brainwave (AT90USB646)
++// 83 = SAV Mk-I (AT90USB1286)
++// 9  = Gen3+
++// 70 = Megatronics
++// 701= Megatronics v2.0
++// 702= Minitronics v1.0
++// 90 = Alpha OMCA board
++// 91 = Final OMCA board
++// 301= Rambo
++// 21 = Elefu Ra Board (v3)
++// 88 = 5DPrint D8 Driver Board
++
++#ifndef MOTHERBOARD
++#define MOTHERBOARD 88
++#endif
++
++// Define this to set a custom name for your generic Mendel,
++// #define CUSTOM_MENDEL_NAME "This Mendel"
++
++// Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
++// You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
++// #define MACHINE_UUID "00000000-0000-0000-0000-000000000000"
++
++// This defines the number of extruders
++#define EXTRUDERS 1
++
++//// The following define selects which power supply you have. Please choose the one that matches your setup
++// 1 = ATX
++// 2 = X-Box 360 203Watts (the blue wire connected to PS_ON and the red wire to VCC)
++
++#define POWER_SUPPLY 1
++
++// Define this to have the electronics keep the power supply off on startup. If you don't know what this is leave it.
++// #define PS_DEFAULT_OFF
++
++//===========================================================================
++//=============================Thermal Settings  ============================
++//===========================================================================
++//
++//--NORMAL IS 4.7kohm PULLUP!-- 1kohm pullup can be used on hotend sensor, using correct resistor and table
++//
++//// Temperature sensor settings:
++// -2 is thermocouple with MAX6675 (only for sensor 0)
++// -1 is thermocouple with AD595
++// 0 is not used
++// 1 is 100k thermistor - best choice for EPCOS 100k (4.7k pullup)
++// 2 is 200k thermistor - ATC Semitec 204GT-2 (4.7k pullup)
++// 3 is Mendel-parts thermistor (4.7k pullup)
++// 4 is 10k thermistor !! do not use it for a hotend. It gives bad resolution at high temp. !!
++// 5 is 100K thermistor - ATC Semitec 104GT-2 (Used in ParCan & J-Head) (4.7k pullup)
++// 6 is 100k EPCOS - Not as accurate as table 1 (created using a fluke thermocouple) (4.7k pullup)
++// 7 is 100k Honeywell thermistor 135-104LAG-J01 (4.7k pullup)
++// 71 is 100k Honeywell thermistor 135-104LAF-J01 (4.7k pullup)
++// 8 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup)
++// 9 is 100k GE Sensing AL03006-58.2K-97-G1 (4.7k pullup)
++// 10 is 100k RS thermistor 198-961 (4.7k pullup)
++// 11 is 100k beta 3950 1% thermistor (4.7k pullup)
++// 12 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup) (calibrated for Makibox hot bed)
++// 20 is the PT100 circuit found in the Ultimainboard V2.x
++// 60 is 100k Maker's Tool Works Kapton Bed Thermistor beta=3950
++//
++//    1k ohm pullup tables - This is not normal, you would have to have changed out your 4.7k for 1k
++//                          (but gives greater accuracy and more stable PID)
++// 51 is 100k thermistor - EPCOS (1k pullup)
++// 52 is 200k thermistor - ATC Semitec 204GT-2 (1k pullup)
++// 55 is 100k thermistor - ATC Semitec 104GT-2 (Used in ParCan & J-Head) (1k pullup)
++//
++// 1047 is Pt1000 with 4k7 pullup
++// 1010 is Pt1000 with 1k pullup (non standard)
++// 147 is Pt100 with 4k7 pullup
++// 110 is Pt100 with 1k pullup (non standard)
++
++#define TEMP_SENSOR_0 1
++#define TEMP_SENSOR_1 0
++#define TEMP_SENSOR_2 0
++#define TEMP_SENSOR_BED 12
++
++// This makes temp sensor 1 a redundant sensor for sensor 0. If the temperatures difference between these sensors is to high the print will be aborted.
++//#define TEMP_SENSOR_1_AS_REDUNDANT
++#define MAX_REDUNDANT_TEMP_SENSOR_DIFF 10
++
++// Actual temperature must be close to target for this long before M109 returns success
++#define TEMP_RESIDENCY_TIME 10  // (seconds)
++#define TEMP_HYSTERESIS 3       // (degC) range of +/- temperatures considered "close" to the target one
++#define TEMP_WINDOW     1       // (degC) Window around target to start the residency timer x degC early.
++
++// The minimal temperature defines the temperature below which the heater will not be enabled It is used
++// to check that the wiring to the thermistor is not broken.
++// Otherwise this would lead to the heater being powered on all the time.
++#define HEATER_0_MINTEMP 5
++#define HEATER_1_MINTEMP 5
++#define HEATER_2_MINTEMP 5
++#define BED_MINTEMP 5
++
++// When temperature exceeds max temp, your heater will be switched off.
++// This feature exists to protect your hotend from overheating accidentally, but *NOT* from thermistor short/failure!
++// You should use MINTEMP for thermistor short/failure protection.
++#define HEATER_0_MAXTEMP 275
++#define HEATER_1_MAXTEMP 275
++#define HEATER_2_MAXTEMP 275
++#define BED_MAXTEMP 150
++
++// If your bed has low resistance e.g. .6 ohm and throws the fuse you can duty cycle it to reduce the
++// average current. The value should be an integer and the heat bed will be turned on for 1 interval of
++// HEATER_BED_DUTY_CYCLE_DIVIDER intervals.
++//#define HEATER_BED_DUTY_CYCLE_DIVIDER 4
++
++// If you want the M105 heater power reported in watts, define the BED_WATTS, and (shared for all extruders) EXTRUDER_WATTS
++//#define EXTRUDER_WATTS (12.0*12.0/6.7) //  P=I^2/R
++//#define BED_WATTS (12.0*12.0/1.1)      // P=I^2/R
++
++// PID settings:
++// Comment the following line to disable PID and enable bang-bang.
++#define PIDTEMP
++#define BANG_MAX 255 // limits current to nozzle while in bang-bang mode; 255=full current
++#define PID_MAX 255 // limits current to nozzle while PID is active (see PID_FUNCTIONAL_RANGE below); 255=full current
++#ifdef PIDTEMP
++  //#define PID_DEBUG // Sends debug data to the serial port.
++  //#define PID_OPENLOOP 1 // Puts PID in open loop. M104/M140 sets the output power from 0 to PID_MAX
++  #define PID_FUNCTIONAL_RANGE 10 // If the temperature difference between the target temperature and the actual temperature
++                                  // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
++  #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
++  #define K1 0.95 //smoothing factor within the PID
++  #define PID_dT ((OVERSAMPLENR * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
++
++// If you are using a pre-configured hotend then you can use one of the value sets by uncommenting it
++// Ultimaker
++    #define  DEFAULT_Kp 22.2
++    #define  DEFAULT_Ki 1.08
++    #define  DEFAULT_Kd 114
++
++// MakerGear
++//    #define  DEFAULT_Kp 7.0
++//    #define  DEFAULT_Ki 0.1
++//    #define  DEFAULT_Kd 12
++
++// Mendel Parts V9 on 12V
++//    #define  DEFAULT_Kp 63.0
++//    #define  DEFAULT_Ki 2.25
++//    #define  DEFAULT_Kd 440
++#endif // PIDTEMP
++
++// Bed Temperature Control
++// Select PID or bang-bang with PIDTEMPBED. If bang-bang, BED_LIMIT_SWITCHING will enable hysteresis
++//
++// Uncomment this to enable PID on the bed. It uses the same frequency PWM as the extruder.
++// If your PID_dT above is the default, and correct for your hardware/configuration, that means 7.689Hz,
++// which is fine for driving a square wave into a resistive load and does not significantly impact you FET heating.
++// This also works fine on a Fotek SSR-10DA Solid State Relay into a 250W heater.
++// If your configuration is significantly different than this and you don't understand the issues involved, you probably
++// shouldn't use bed PID until someone else verifies your hardware works.
++// If this is enabled, find your own PID constants below.
++//#define PIDTEMPBED
++//
++//#define BED_LIMIT_SWITCHING
++
++// This sets the max power delivered to the bed, and replaces the HEATER_BED_DUTY_CYCLE_DIVIDER option.
++// all forms of bed control obey this (PID, bang-bang, bang-bang with hysteresis)
++// setting this to anything other than 255 enables a form of PWM to the bed just like HEATER_BED_DUTY_CYCLE_DIVIDER did,
++// so you shouldn't use it unless you are OK with PWM on your bed.  (see the comment on enabling PIDTEMPBED)
++#define MAX_BED_POWER 175 // limits duty cycle to bed; 255=full current
++// This limit is set to 175 by default in the Makibox configuration and it can adjusted
++// to increase the heat up rate. However, if changed, user must be aware of the safety concerns
++// of drawing too much current from the power supply.
++
++#ifdef PIDTEMPBED
++//120v 250W silicone heater into 4mm borosilicate (MendelMax 1.5+)
++//from FOPDT model - kp=.39 Tp=405 Tdead=66, Tc set to 79.2, aggressive factor of .15 (vs .1, 1, 10)
++    #define  DEFAULT_bedKp 10.00
++    #define  DEFAULT_bedKi .023
++    #define  DEFAULT_bedKd 305.4
++
++//120v 250W silicone heater into 4mm borosilicate (MendelMax 1.5+)
++//from pidautotune
++//    #define  DEFAULT_bedKp 97.1
++//    #define  DEFAULT_bedKi 1.41
++//    #define  DEFAULT_bedKd 1675.16
++
++// FIND YOUR OWN: "M303 E-1 C8 S90" to run autotune on the bed at 90 degreesC for 8 cycles.
++#endif // PIDTEMPBED
++
++
++
++//this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
++//can be software-disabled for whatever purposes by
++#define PREVENT_DANGEROUS_EXTRUDE
++//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++#define PREVENT_LENGTHY_EXTRUDE
++
++#define EXTRUDE_MINTEMP 170
++#define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
++
++//===========================================================================
++//=============================Mechanical Settings===========================
++//===========================================================================
++
++// Uncomment the following line to enable CoreXY kinematics
++// #define COREXY
++
++// coarse Endstop Settings
++#define ENDSTOPPULLUPS // Comment this out (using // at the start of the line) to disable the endstop pullup resistors
++
++#ifndef ENDSTOPPULLUPS
++  // fine endstop settings: Individual pullups. will be ignored if ENDSTOPPULLUPS is defined
++  // #define ENDSTOPPULLUP_XMAX
++  // #define ENDSTOPPULLUP_YMAX
++  // #define ENDSTOPPULLUP_ZMAX
++  // #define ENDSTOPPULLUP_XMIN
++  // #define ENDSTOPPULLUP_YMIN
++  // #define ENDSTOPPULLUP_ZMIN
++#endif
++
++#ifdef ENDSTOPPULLUPS
++  #define ENDSTOPPULLUP_XMAX
++  #define ENDSTOPPULLUP_YMAX
++  #define ENDSTOPPULLUP_ZMAX
++  #define ENDSTOPPULLUP_XMIN
++  #define ENDSTOPPULLUP_YMIN
++  #define ENDSTOPPULLUP_ZMIN
++#endif
++
++// The pullups are needed if you directly connect a mechanical endswitch between the signal and ground pins.
++const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++//#define DISABLE_MAX_ENDSTOPS
++//#define DISABLE_MIN_ENDSTOPS
++
++// Disable max endstops for compatibility with endstop checking routine
++#if defined(COREXY) && !defined(DISABLE_MAX_ENDSTOPS)
++  #define DISABLE_MAX_ENDSTOPS
++#endif
++
++// For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
++#define X_ENABLE_ON 0
++#define Y_ENABLE_ON 0
++#define Z_ENABLE_ON 0
++#define E_ENABLE_ON 0 // For all extruders
++
++// Disables axis when it's not being used.
++#define DISABLE_X false
++#define DISABLE_Y false
++#define DISABLE_Z false
++#define DISABLE_E false // For all extruders
++
++#define INVERT_X_DIR false    // for Mendel set to false, for Orca set to true
++#define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
++#define INVERT_Z_DIR false    // for Mendel set to false, for Orca set to true
++#define INVERT_E0_DIR true   // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E1_DIR false    // for direct drive extruder v9 set to true, for geared extruder set to false
++#define INVERT_E2_DIR false   // for direct drive extruder v9 set to true, for geared extruder set to false
++
++// ENDSTOP SETTINGS:
++// Sets direction of endstops when homing; 1=MAX, -1=MIN
++#define X_HOME_DIR -1
++#define Y_HOME_DIR -1
++#define Z_HOME_DIR -1
++
++#define min_software_endstops true // If true, axis won't move to coordinates less than HOME_POS.
++#define max_software_endstops true  // If true, axis won't move to coordinates greater than the defined lengths below.
++
++// Travel limits after homing
++#define X_MAX_POS 110
++#define X_MIN_POS 0
++#define Y_MAX_POS 150
++#define Y_MIN_POS 0
++#define Z_MAX_POS 86
++#define Z_MIN_POS 0
++
++#define X_MAX_LENGTH (X_MAX_POS - X_MIN_POS)
++#define Y_MAX_LENGTH (Y_MAX_POS - Y_MIN_POS)
++#define Z_MAX_LENGTH (Z_MAX_POS - Z_MIN_POS)
++//============================= Bed Auto Leveling ===========================
++
++//#define ENABLE_AUTO_BED_LEVELING // Delete the comment to enable (remove // at the start of the line)
++
++#ifdef ENABLE_AUTO_BED_LEVELING
++
++// There are 2 different ways to pick the X and Y locations to probe:
++
++//  - "grid" mode
++//    Probe every point in a rectangular grid
++//    You must specify the rectangle, and the density of sample points
++//    This mode is preferred because there are more measurements.
++//    It used to be called ACCURATE_BED_LEVELING but "grid" is more descriptive
++
++//  - "3-point" mode
++//    Probe 3 arbitrary points on the bed (that aren't colinear)
++//    You must specify the X & Y coordinates of all 3 points
++
++  #define AUTO_BED_LEVELING_GRID
++  // with AUTO_BED_LEVELING_GRID, the bed is sampled in a
++  // AUTO_BED_LEVELING_GRID_POINTSxAUTO_BED_LEVELING_GRID_POINTS grid
++  // and least squares solution is calculated
++  // Note: this feature occupies 10'206 byte
++  #ifdef AUTO_BED_LEVELING_GRID
++
++    // set the rectangle in which to probe
++    #define LEFT_PROBE_BED_POSITION 15
++    #define RIGHT_PROBE_BED_POSITION 170
++    #define BACK_PROBE_BED_POSITION 180
++    #define FRONT_PROBE_BED_POSITION 20
++
++     // set the number of grid points per dimension
++     // I wouldn't see a reason to go above 3 (=9 probing points on the bed)
++    #define AUTO_BED_LEVELING_GRID_POINTS 2
++
++
++  #else  // not AUTO_BED_LEVELING_GRID
++    // with no grid, just probe 3 arbitrary points.  A simple cross-product
++    // is used to esimate the plane of the print bed
++
++      #define ABL_PROBE_PT_1_X 15
++      #define ABL_PROBE_PT_1_Y 180
++      #define ABL_PROBE_PT_2_X 15
++      #define ABL_PROBE_PT_2_Y 20
++      #define ABL_PROBE_PT_3_X 170
++      #define ABL_PROBE_PT_3_Y 20
++
++  #endif // AUTO_BED_LEVELING_GRID
++
++
++  // these are the offsets to the probe relative to the extruder tip (Hotend - Probe)
++  #define X_PROBE_OFFSET_FROM_EXTRUDER -25
++  #define Y_PROBE_OFFSET_FROM_EXTRUDER -29
++  #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35
++
++  #define Z_RAISE_BEFORE_HOMING 4       // (in mm) Raise Z before homing (G28) for Probe Clearance.
++                                        // Be sure you have this distance over your Z_MAX_POS in case
++
++  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min
++
++  #define Z_RAISE_BEFORE_PROBING 15    //How much the extruder will be raised before traveling to the first probing point.
++  #define Z_RAISE_BETWEEN_PROBINGS 5  //How much the extruder will be raised when traveling from between next probing points
++
++
++  //If defined, the Probe servo will be turned on only during movement and then turned off to avoid jerk
++  //The value is the delay to turn the servo off after powered on - depends on the servo speed; 300ms is good value, but you can try lower it.
++  // You MUST HAVE the SERVO_ENDSTOPS defined to use here a value higher than zero otherwise your code will not compile.
++
++//  #define PROBE_SERVO_DEACTIVATION_DELAY 300
++
++
++//If you have enabled the Bed Auto Leveling and are using the same Z Probe for Z Homing,
++//it is highly recommended you let this Z_SAFE_HOMING enabled!!!
++
++  #define Z_SAFE_HOMING   // This feature is meant to avoid Z homing with probe outside the bed area.
++                          // When defined, it will:
++                          // - Allow Z homing only after X and Y homing AND stepper drivers still enabled
++                          // - If stepper drivers timeout, it will need X and Y homing again before Z homing
++                          // - Position the probe in a defined XY point before Z Homing when homing all axis (G28)
++                          // - Block Z homing only when the probe is outside bed area.
++
++  #ifdef Z_SAFE_HOMING
++
++    #define Z_SAFE_HOMING_X_POINT (X_MAX_LENGTH/2)    // X point for Z homing when homing all axis (G28)
++    #define Z_SAFE_HOMING_Y_POINT (Y_MAX_LENGTH/2)    // Y point for Z homing when homing all axis (G28)
++
++  #endif
++
++#endif // ENABLE_AUTO_BED_LEVELING
++
++
++// The position of the homing switches
++//#define MANUAL_HOME_POSITIONS  // If defined, MANUAL_*_HOME_POS below will be used
++//#define BED_CENTER_AT_0_0  // If defined, the center of the bed is at (X=0, Y=0)
++
++//Manual homing switch locations:
++// For deltabots this means top and center of the Cartesian print volume.
++#define MANUAL_X_HOME_POS 0
++#define MANUAL_Y_HOME_POS 0
++#define MANUAL_Z_HOME_POS 0
++//#define MANUAL_Z_HOME_POS 402 // For delta: Distance between nozzle and print surface after homing.
++
++//// MOVEMENT SETTINGS
++#define NUM_AXIS 4 // The axis order in all axis related arrays is X, Y, Z, E
++#define HOMING_FEEDRATE {1500, 1500, 120, 0}  // set the homing speeds (mm/min)   ***** MakiBox A6 *****
++
++// default settings
++
++#define DEFAULT_AXIS_STEPS_PER_UNIT   {400, 400, 400, 163}     // default steps per unit for ***** MakiBox A6 *****
++#define DEFAULT_MAX_FEEDRATE          {60, 60, 20, 45}         // (mm/sec)    
++#define DEFAULT_MAX_ACCELERATION      {2000,2000,30,10000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for skeinforge 40+, for older versions raise them a lot.
++
++#define DEFAULT_ACCELERATION          3000    // X, Y, Z and E max acceleration in mm/s^2 for printing moves
++#define DEFAULT_RETRACT_ACCELERATION  3000   // X, Y, Z and E max acceleration in mm/s^2 for retracts
++
++// Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
++// The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
++// For the other hotends it is their distance from the extruder 0 hotend.
++// #define EXTRUDER_OFFSET_X {0.0, 20.00} // (in mm) for each extruder, offset of the hotend on the X axis
++// #define EXTRUDER_OFFSET_Y {0.0, 5.00}  // (in mm) for each extruder, offset of the hotend on the Y axis
++
++// The speed change that does not require acceleration (i.e. the software might assume it can be done instantaneously)
++#define DEFAULT_XYJERK                20.0    // (mm/sec)
++#define DEFAULT_ZJERK                 0.4     // (mm/sec)
++#define DEFAULT_EJERK                 5.0    // (mm/sec)
++
++//===========================================================================
++//=============================Additional Features===========================
++//===========================================================================
++
++// Custom M code points
++#define CUSTOM_M_CODES
++#ifdef CUSTOM_M_CODES
++  #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
++  #define Z_PROBE_OFFSET_RANGE_MIN -15
++  #define Z_PROBE_OFFSET_RANGE_MAX -5
++#endif
++
++
++// EEPROM
++// The microcontroller can store settings in the EEPROM, e.g. max velocity...
++// M500 - stores parameters in EEPROM
++// M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).
++// M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
++//define this to enable EEPROM support
++#define EEPROM_SETTINGS
++//to disable EEPROM Serial responses and decrease program space by ~1700 byte: comment this out:
++// please keep turned on if you can.
++//#define EEPROM_CHITCHAT
++
++// Preheat Constants
++#define PLA_PREHEAT_HOTEND_TEMP 180
++#define PLA_PREHEAT_HPB_TEMP 70
++#define PLA_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
++
++#define ABS_PREHEAT_HOTEND_TEMP 240
++#define ABS_PREHEAT_HPB_TEMP 100
++#define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
++
++//LCD and SD support
++//#define ULTRA_LCD  //general LCD support, also 16x2
++//#define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
++#define SDSUPPORT // Enable SD Card Support in Hardware Console
++#define SDSLOW // Use slower SD transfer mode (not normally needed - uncomment if you're getting volume init error)
++//#define ENCODER_PULSES_PER_STEP 1 // Increase if you have a high resolution encoder
++//#define ENCODER_STEPS_PER_MENU_ITEM 5 // Set according to ENCODER_PULSES_PER_STEP or your liking
++//#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
++//#define ULTIPANEL  //the UltiPanel as on Thingiverse
++//#define LCD_FEEDBACK_FREQUENCY_HZ 1000	// this is the tone frequency the buzzer plays when on UI feedback. ie Screen Click
++//#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100 // the duration the buzzer plays the UI feedback sound. ie Screen Click
++
++// The MaKr3d Makr-Panel with graphic controller and SD support
++// http://reprap.org/wiki/MaKr3d_MaKrPanel
++//#define MAKRPANEL
++
++// The RepRapDiscount Smart Controller (white PCB)
++// http://reprap.org/wiki/RepRapDiscount_Smart_Controller
++//#define REPRAP_DISCOUNT_SMART_CONTROLLER
++
++// The GADGETS3D G3D LCD/SD Controller (blue PCB)
++// http://reprap.org/wiki/RAMPS_1.3/1.4_GADGETS3D_Shield_with_Panel
++//#define G3D_PANEL
++
++// The RepRapDiscount FULL GRAPHIC Smart Controller (quadratic white PCB)
++// http://reprap.org/wiki/RepRapDiscount_Full_Graphic_Smart_Controller
++//
++// ==> REMEMBER TO INSTALL U8glib to your ARDUINO library folder: http://code.google.com/p/u8glib/wiki/u8glib
++//#define REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER
++
++// The RepRapWorld REPRAPWORLD_KEYPAD v1.1
++// http://reprapworld.com/?products_details&products_id=202&cPath=1591_1626
++//#define REPRAPWORLD_KEYPAD
++//#define REPRAPWORLD_KEYPAD_MOVE_STEP 10.0 // how much should be moved when a key is pressed, eg 10.0 means 10mm per click
++
++// The Elefu RA Board Control Panel
++// http://www.elefu.com/index.php?route=product/product&product_id=53
++// REMEMBER TO INSTALL LiquidCrystal_I2C.h in your ARUDINO library folder: https://github.com/kiyoshigawa/LiquidCrystal_I2C
++//#define RA_CONTROL_PANEL
++
++//automatic expansion
++#if defined (MAKRPANEL)
++ #define DOGLCD
++ #define SDSUPPORT
++ #define ULTIPANEL
++ #define NEWPANEL
++ #define DEFAULT_LCD_CONTRAST 17
++#endif
++
++#if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
++ #define DOGLCD
++ #define U8GLIB_ST7920
++ #define REPRAP_DISCOUNT_SMART_CONTROLLER
++#endif
++
++#if defined(ULTIMAKERCONTROLLER) || defined(REPRAP_DISCOUNT_SMART_CONTROLLER) || defined(G3D_PANEL)
++ #define ULTIPANEL
++ #define NEWPANEL
++#endif
++
++#if defined(REPRAPWORLD_KEYPAD)
++  #define NEWPANEL
++  #define ULTIPANEL
++#endif
++#if defined(RA_CONTROL_PANEL)
++ #define ULTIPANEL
++ #define NEWPANEL
++ #define LCD_I2C_TYPE_PCA8574
++ #define LCD_I2C_ADDRESS 0x27   // I2C Address of the port expander
++#endif
++
++//I2C PANELS
++
++//#define LCD_I2C_SAINSMART_YWROBOT
++#ifdef LCD_I2C_SAINSMART_YWROBOT
++  // This uses the LiquidCrystal_I2C library ( https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/Home )
++  // Make sure it is placed in the Arduino libraries directory.
++  #define LCD_I2C_TYPE_PCF8575
++  #define LCD_I2C_ADDRESS 0x27   // I2C Address of the port expander
++  #define NEWPANEL
++  #define ULTIPANEL
++#endif
++
++// PANELOLU2 LCD with status LEDs, separate encoder and click inputs
++//#define LCD_I2C_PANELOLU2
++#ifdef LCD_I2C_PANELOLU2
++  // This uses the LiquidTWI2 library v1.2.3 or later ( https://github.com/lincomatic/LiquidTWI2 )
++  // Make sure the LiquidTWI2 directory is placed in the Arduino or Sketchbook libraries subdirectory.
++  // (v1.2.3 no longer requires you to define PANELOLU in the LiquidTWI2.h library header file)
++  // Note: The PANELOLU2 encoder click input can either be directly connected to a pin
++  //       (if BTN_ENC defined to != -1) or read through I2C (when BTN_ENC == -1).
++  #define LCD_I2C_TYPE_MCP23017
++  #define LCD_I2C_ADDRESS 0x20 // I2C Address of the port expander
++  #define LCD_USE_I2C_BUZZER //comment out to disable buzzer on LCD
++  #define NEWPANEL
++  #define ULTIPANEL
++
++  #ifndef ENCODER_PULSES_PER_STEP
++	#define ENCODER_PULSES_PER_STEP 4
++  #endif
++
++  #ifndef ENCODER_STEPS_PER_MENU_ITEM
++	#define ENCODER_STEPS_PER_MENU_ITEM 1
++  #endif
++
++
++  #ifdef LCD_USE_I2C_BUZZER
++	#define LCD_FEEDBACK_FREQUENCY_HZ 1000
++	#define LCD_FEEDBACK_FREQUENCY_DURATION_MS 100
++  #endif
++
++#endif
++
++// Panucatt VIKI LCD with status LEDs, integrated click & L/R/U/P buttons, separate encoder inputs
++//#define LCD_I2C_VIKI
++#ifdef LCD_I2C_VIKI
++  // This uses the LiquidTWI2 library v1.2.3 or later ( https://github.com/lincomatic/LiquidTWI2 )
++  // Make sure the LiquidTWI2 directory is placed in the Arduino or Sketchbook libraries subdirectory.
++  // Note: The pause/stop/resume LCD button pin should be connected to the Arduino
++  //       BTN_ENC pin (or set BTN_ENC to -1 if not used)
++  #define LCD_I2C_TYPE_MCP23017
++  #define LCD_I2C_ADDRESS 0x20 // I2C Address of the port expander
++  #define LCD_USE_I2C_BUZZER //comment out to disable buzzer on LCD (requires LiquidTWI2 v1.2.3 or later)
++  #define NEWPANEL
++  #define ULTIPANEL
++#endif
++
++// Shift register panels
++// ---------------------
++// 2 wire Non-latching LCD SR from:
++// https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection
++//#define SR_LCD
++#ifdef SR_LCD
++   #define SR_LCD_2W_NL    // Non latching 2 wire shift register
++   //#define NEWPANEL
++#endif
++
++
++#ifdef ULTIPANEL
++//  #define NEWPANEL  //enable this if you have a click-encoder panel
++  #define SDSUPPORT
++  #define ULTRA_LCD
++  #ifdef DOGLCD // Change number of lines to match the DOG graphic display
++    #define LCD_WIDTH 20
++    #define LCD_HEIGHT 5
++  #else
++    #define LCD_WIDTH 20
++    #define LCD_HEIGHT 4
++  #endif
++#else //no panel but just LCD
++  #ifdef ULTRA_LCD
++  #ifdef DOGLCD // Change number of lines to match the 128x64 graphics display
++    #define LCD_WIDTH 20
++    #define LCD_HEIGHT 5
++  #else
++    #define LCD_WIDTH 16
++    #define LCD_HEIGHT 2
++  #endif
++  #endif
++#endif
++
++// default LCD contrast for dogm-like LCD displays
++#ifdef DOGLCD
++# ifndef DEFAULT_LCD_CONTRAST
++#  define DEFAULT_LCD_CONTRAST 32
++# endif
++#endif
++
++// Increase the FAN pwm frequency. Removes the PWM noise but increases heating in the FET/Arduino
++//#define FAST_PWM_FAN
++
++// Temperature status LEDs that display the hotend and bet temperature.
++// If all hotends and bed temperature and temperature setpoint are < 54C then the BLUE led is on.
++// Otherwise the RED led is on. There is 1C hysteresis.
++//#define TEMP_STAT_LEDS
++
++// Use software PWM to drive the fan, as for the heaters. This uses a very low frequency
++// which is not ass annoying as with the hardware PWM. On the other hand, if this frequency
++// is too low, you should also increment SOFT_PWM_SCALE.
++//#define FAN_SOFT_PWM
++
++// Incrementing this by 1 will double the software PWM frequency,
++// affecting heaters, and the fan if FAN_SOFT_PWM is enabled.
++// However, control resolution will be halved for each increment;
++// at zero value, there are 128 effective control positions.
++#define SOFT_PWM_SCALE 0
++
++// M240  Triggers a camera by emulating a Canon RC-1 Remote
++// Data from: http://www.doc-diy.net/photo/rc-1_hacked/
++// #define PHOTOGRAPH_PIN     23
++
++// SF send wrong arc g-codes when using Arc Point as fillet procedure
++//#define SF_ARC_FIX
++
++// Support for the BariCUDA Paste Extruder.
++//#define BARICUDA
++
++//define BlinkM/CyzRgb Support
++//#define BLINKM
++
++/*********************************************************************\
++* R/C SERVO support
++* Sponsored by TrinityLabs, Reworked by codexmas
++**********************************************************************/
++
++// Number of servos
++//
++// If you select a configuration below, this will receive a default value and does not need to be set manually
++// set it manually if you have more servos than extruders and wish to manually control some
++// leaving it undefined or defining as 0 will disable the servo subsystem
++// If unsure, leave commented / disabled
++//
++//#define NUM_SERVOS 3 // Servo index starts with 0 for M280 command
++
++// Servo Endstops
++//
++// This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
++// Use M206 command to correct for switch height offset to actual nozzle height. Store that setting with M500.
++//
++
++#define DIGIPOT_I2C
++
++//#define SERVO_ENDSTOPS {-1, -1, 0} // Servo index for X, Y, Z. Disable with -1
++//#define SERVO_ENDSTOP_ANGLES {0,0, 0,0, 70,0} // X,Y,Z Axis Extend and Retract angles
++
++#include "Configuration_adv.h"
++#include "thermistortables.h"
++
++#endif //__CONFIGURATION_H
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+new file mode 100644
+index 0000000..7883c79
+--- /dev/null
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -0,0 +1,498 @@
++#ifndef CONFIGURATION_ADV_H
++#define CONFIGURATION_ADV_H
++
++//===========================================================================
++//=============================Thermal Settings  ============================
++//===========================================================================
++
++#ifdef BED_LIMIT_SWITCHING
++  #define BED_HYSTERESIS 2 //only disable heating if T>target+BED_HYSTERESIS and enable heating if T>target-BED_HYSTERESIS
++#endif
++#define BED_CHECK_INTERVAL 5000 //ms between checks in bang-bang control
++
++//// Heating sanity check:
++// This waits for the watch period in milliseconds whenever an M104 or M109 increases the target temperature
++// If the temperature has not increased at the end of that period, the target temperature is set to zero.
++// It can be reset with another M104/M109. This check is also only triggered if the target temperature and the current temperature
++//  differ by at least 2x WATCH_TEMP_INCREASE
++//#define WATCH_TEMP_PERIOD 40000 //40 seconds
++//#define WATCH_TEMP_INCREASE 10  //Heat up at least 10 degree in 20 seconds
++
++#ifdef PIDTEMP
++  // this adds an experimental additional term to the heating power, proportional to the extrusion speed.
++  // if Kc is chosen well, the additional required power due to increased melting should be compensated.
++  #define PID_ADD_EXTRUSION_RATE
++  #ifdef PID_ADD_EXTRUSION_RATE
++    #define  DEFAULT_Kc (1) //heating power=Kc*(e_speed)
++  #endif
++#endif
++
++
++//automatic temperature: The hot end target temperature is calculated by all the buffered lines of gcode.
++//The maximum buffered steps/sec of the extruder motor are called "se".
++//You enter the autotemp mode by a M109 S<mintemp> T<maxtemp> F<factor>
++// the target temperature is set to mintemp+factor*se[steps/sec] and limited by mintemp and maxtemp
++// you exit the value by any M109 without F*
++// Also, if the temperature is set to a value <mintemp, it is not changed by autotemp.
++// on an Ultimaker, some initial testing worked with M109 S215 B260 F1 in the start.gcode
++#define AUTOTEMP
++#ifdef AUTOTEMP
++  #define AUTOTEMP_OLDWEIGHT 0.98
++#endif
++
++//Show Temperature ADC value
++//The M105 command return, besides traditional information, the ADC value read from temperature sensors.
++//#define SHOW_TEMP_ADC_VALUES
++
++//  extruder run-out prevention.
++//if the machine is idle, and the temperature over MINTEMP, every couple of SECONDS some filament is extruded
++//#define EXTRUDER_RUNOUT_PREVENT
++#define EXTRUDER_RUNOUT_MINTEMP 190
++#define EXTRUDER_RUNOUT_SECONDS 30.
++#define EXTRUDER_RUNOUT_ESTEPS 14. //mm filament
++#define EXTRUDER_RUNOUT_SPEED 1500.  //extrusion speed
++#define EXTRUDER_RUNOUT_EXTRUDE 100
++
++//These defines help to calibrate the AD595 sensor in case you get wrong temperature measurements.
++//The measured temperature is defined as "actualTemp = (measuredTemp * TEMP_SENSOR_AD595_GAIN) + TEMP_SENSOR_AD595_OFFSET"
++#define TEMP_SENSOR_AD595_OFFSET 0.0
++#define TEMP_SENSOR_AD595_GAIN   1.0
++
++//This is for controlling a fan to cool down the stepper drivers
++//it will turn on when any driver is enabled
++//and turn off after the set amount of seconds from last driver being disabled again
++#define CONTROLLERFAN_PIN -1 //Pin used for the fan to cool controller (-1 to disable)
++#define CONTROLLERFAN_SECS 60 //How many seconds, after all motors were disabled, the fan should run
++#define CONTROLLERFAN_SPEED 255  // == full speed
++
++// When first starting the main fan, run it at full speed for the
++// given number of milliseconds.  This gets the fan spinning reliably
++// before setting a PWM value. (Does not work with software PWM for fan on Sanguinololu)
++//#define FAN_KICKSTART_TIME 100
++
++// Extruder cooling fans
++// Configure fan pin outputs to automatically turn on/off when the associated
++// extruder temperature is above/below EXTRUDER_AUTO_FAN_TEMPERATURE.
++// Multiple extruders can be assigned to the same pin in which case
++// the fan will turn on when any selected extruder is above the threshold.
++#define EXTRUDER_0_AUTO_FAN_PIN   -1
++#define EXTRUDER_1_AUTO_FAN_PIN   -1
++#define EXTRUDER_2_AUTO_FAN_PIN   -1
++#define EXTRUDER_AUTO_FAN_TEMPERATURE 50
++#define EXTRUDER_AUTO_FAN_SPEED   255  // == full speed
++
++
++//===========================================================================
++//=============================Mechanical Settings===========================
++//===========================================================================
++
++#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++
++
++//// AUTOSET LOCATIONS OF LIMIT SWITCHES
++//// Added by ZetaPhoenix 09-15-2012
++#ifdef MANUAL_HOME_POSITIONS  // Use manual limit switch locations
++  #define X_HOME_POS MANUAL_X_HOME_POS
++  #define Y_HOME_POS MANUAL_Y_HOME_POS
++  #define Z_HOME_POS MANUAL_Z_HOME_POS
++#else //Set min/max homing switch positions based upon homing direction and min/max travel limits
++  //X axis
++  #if X_HOME_DIR == -1
++    #ifdef BED_CENTER_AT_0_0
++      #define X_HOME_POS X_MAX_LENGTH * -0.5
++    #else
++      #define X_HOME_POS X_MIN_POS
++    #endif //BED_CENTER_AT_0_0
++  #else
++    #ifdef BED_CENTER_AT_0_0
++      #define X_HOME_POS X_MAX_LENGTH * 0.5
++    #else
++      #define X_HOME_POS X_MAX_POS
++    #endif //BED_CENTER_AT_0_0
++  #endif //X_HOME_DIR == -1
++
++  //Y axis
++  #if Y_HOME_DIR == -1
++    #ifdef BED_CENTER_AT_0_0
++      #define Y_HOME_POS Y_MAX_LENGTH * -0.5
++    #else
++      #define Y_HOME_POS Y_MIN_POS
++    #endif //BED_CENTER_AT_0_0
++  #else
++    #ifdef BED_CENTER_AT_0_0
++      #define Y_HOME_POS Y_MAX_LENGTH * 0.5
++    #else
++      #define Y_HOME_POS Y_MAX_POS
++    #endif //BED_CENTER_AT_0_0
++  #endif //Y_HOME_DIR == -1
++
++  // Z axis
++  #if Z_HOME_DIR == -1 //BED_CENTER_AT_0_0 not used
++    #define Z_HOME_POS Z_MIN_POS
++  #else
++    #define Z_HOME_POS Z_MAX_POS
++  #endif //Z_HOME_DIR == -1
++#endif //End auto min/max positions
++//END AUTOSET LOCATIONS OF LIMIT SWITCHES -ZP
++
++
++//#define Z_LATE_ENABLE // Enable Z the last moment. Needed if your Z driver overheats.
++
++// A single Z stepper driver is usually used to drive 2 stepper motors.
++// Uncomment this define to utilize a separate stepper driver for each Z axis motor.
++// Only a few motherboards support this, like RAMPS, which have dual extruder support (the 2nd, often unused, extruder driver is used
++// to control the 2nd Z axis stepper motor). The pins are currently only defined for a RAMPS motherboards.
++// On a RAMPS (or other 5 driver) motherboard, using this feature will limit you to using 1 extruder.
++//#define Z_DUAL_STEPPER_DRIVERS
++
++#ifdef Z_DUAL_STEPPER_DRIVERS
++  #undef EXTRUDERS
++  #define EXTRUDERS 1
++#endif
++
++// Same again but for Y Axis.
++//#define Y_DUAL_STEPPER_DRIVERS
++
++// Define if the two Y drives need to rotate in opposite directions
++#define INVERT_Y2_VS_Y_DIR true
++
++#ifdef Y_DUAL_STEPPER_DRIVERS
++  #undef EXTRUDERS
++  #define EXTRUDERS 1
++#endif
++
++#if defined (Z_DUAL_STEPPER_DRIVERS) && defined (Y_DUAL_STEPPER_DRIVERS)
++  #error "You cannot have dual drivers for both Y and Z"
++#endif
++
++// Enable this for dual x-carriage printers.
++// A dual x-carriage design has the advantage that the inactive extruder can be parked which
++// prevents hot-end ooze contaminating the print. It also reduces the weight of each x-carriage
++// allowing faster printing speeds.
++//#define DUAL_X_CARRIAGE
++#ifdef DUAL_X_CARRIAGE
++// Configuration for second X-carriage
++// Note: the first x-carriage is defined as the x-carriage which homes to the minimum endstop;
++// the second x-carriage always homes to the maximum endstop.
++#define X2_MIN_POS 80     // set minimum to ensure second x-carriage doesn't hit the parked first X-carriage
++#define X2_MAX_POS 353    // set maximum to the distance between toolheads when both heads are homed
++#define X2_HOME_DIR 1     // the second X-carriage always homes to the maximum endstop position
++#define X2_HOME_POS X2_MAX_POS // default home position is the maximum carriage position
++    // However: In this mode the EXTRUDER_OFFSET_X value for the second extruder provides a software
++    // override for X2_HOME_POS. This also allow recalibration of the distance between the two endstops
++    // without modifying the firmware (through the "M218 T1 X???" command).
++    // Remember: you should set the second extruder x-offset to 0 in your slicer.
++
++// Pins for second x-carriage stepper driver (defined here to avoid further complicating pins.h)
++#define X2_ENABLE_PIN 29
++#define X2_STEP_PIN 25
++#define X2_DIR_PIN 23
++
++// There are a few selectable movement modes for dual x-carriages using M605 S<mode>
++//    Mode 0: Full control. The slicer has full control over both x-carriages and can achieve optimal travel results
++//                           as long as it supports dual x-carriages. (M605 S0)
++//    Mode 1: Auto-park mode. The firmware will automatically park and unpark the x-carriages on tool changes so
++//                           that additional slicer support is not required. (M605 S1)
++//    Mode 2: Duplication mode. The firmware will transparently make the second x-carriage and extruder copy all
++//                           actions of the first x-carriage. This allows the printer to print 2 arbitrary items at
++//                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
++
++// This is the default power-up mode which can be later using M605.
++#define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++
++// As the x-carriages are independent we can now account for any relative Z offset
++#define EXTRUDER1_Z_OFFSET 0.0           // z offset relative to extruder 0
++
++// Default settings in "Auto-park Mode"
++#define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
++#define TOOLCHANGE_UNPARK_ZLIFT 1        // the distance to raise Z axis when unparking an extruder
++
++// Default x offset in duplication mode (typically set to half print bed width)
++#define DEFAULT_DUPLICATION_X_OFFSET 100
++
++#endif //DUAL_X_CARRIAGE
++
++//homing hits the endstop, then retracts by this distance, before it tries to slowly bump again:
++#define X_HOME_RETRACT_MM 5
++#define Y_HOME_RETRACT_MM 5
++#define Z_HOME_RETRACT_MM 2
++//#define QUICK_HOME  //if this is defined, if both x and y are to be homed, a diagonal move will be performed initially.
++
++#define AXIS_RELATIVE_MODES {false, false, false, false}
++
++#define MAX_STEP_FREQUENCY 40000 // Max step frequency for Ultimaker (5000 pps / half step)
++
++//By default pololu step drivers require an active high signal. However, some high power drivers require an active low signal as step.
++#define INVERT_X_STEP_PIN false
++#define INVERT_Y_STEP_PIN false
++#define INVERT_Z_STEP_PIN false
++#define INVERT_E_STEP_PIN false
++
++//default stepper release if idle
++#define DEFAULT_STEPPER_DEACTIVE_TIME 60
++
++#define DEFAULT_MINIMUMFEEDRATE       0.0     // minimum feedrate
++#define DEFAULT_MINTRAVELFEEDRATE     0.0
++
++// Feedrates for manual moves along X, Y, Z, E from panel
++#ifdef ULTIPANEL
++#define MANUAL_FEEDRATE {50*60, 50*60, 4*60, 60}  // set the speeds for manual moves (mm/min)
++#endif
++
++//Comment to disable setting feedrate multiplier via encoder
++#ifdef ULTIPANEL
++    #define ULTIPANEL_FEEDMULTIPLY
++#endif
++
++// minimum time in microseconds that a movement needs to take if the buffer is emptied.
++#define DEFAULT_MINSEGMENTTIME        20000
++
++// If defined the movements slow down when the look ahead buffer is only half full
++#define SLOWDOWN
++
++// Frequency limit
++// See nophead's blog for more info
++// Not working O
++//#define XY_FREQUENCY_LIMIT  15
++
++// Minimum planner junction speed. Sets the default minimum speed the planner plans for at the end
++// of the buffer and all stops. This should not be much greater than zero and should only be changed
++// if unwanted behavior is observed on a user's machine when running at very slow speeds.
++#define MINIMUM_PLANNER_SPEED 0.05// (mm/sec)
++
++// MS1 MS2 Stepper Driver Microstepping mode table
++#define MICROSTEP1 LOW,LOW
++#define MICROSTEP2 HIGH,LOW
++#define MICROSTEP4 LOW,HIGH
++#define MICROSTEP8 HIGH,HIGH
++#define MICROSTEP16 HIGH,HIGH
++
++// Microstep setting (Only functional when stepper driver microstep pins are connected to MCU.
++#define MICROSTEP_MODES {16,16,16,16,16} // [1,2,4,8,16]
++
++// Motor Current setting (Only functional when motor driver current ref pins are connected to a digital trimpot on supported boards)
++#define DIGIPOT_MOTOR_CURRENT {135,135,135,135,135} // Values 0-255 (RAMBO 135 = ~0.75A, 185 = ~1A)
++
++// uncomment to enable an I2C based DIGIPOT like on the Azteeg X3 Pro
++//#define DIGIPOT_I2C
++// Number of channels available for I2C digipot, For Azteeg X3 Pro we have 8
++#define DIGIPOT_I2C_NUM_CHANNELS 4
++// actual motor currents in Amps, need as many here as DIGIPOT_I2C_NUM_CHANNELS
++//#define DIGIPOT_I2C_MOTOR_CURRENTS {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}
++#define DIGIPOT_I2C_MOTOR_CURRENTS {1.7, 1.7, 1.7, 1.7}
++
++//===========================================================================
++//=============================Additional Features===========================
++//===========================================================================
++
++//#define CHDK 4        //Pin for triggering CHDK to take a picture see how to use it here http://captain-slow.dk/2014/03/09/3d-printing-timelapses/
++#define CHDK_DELAY 50 //How long in ms the pin should stay HIGH before going LOW again
++
++#define SD_FINISHED_STEPPERRELEASE true  //if sd support and the file is finished: disable steppers?
++#define SD_FINISHED_RELEASECOMMAND "M84 X Y Z E" // You might want to keep the z enabled so your bed stays in place.
++
++#define SDCARD_RATHERRECENTFIRST  //reverse file order of sd card menu display. Its sorted practically after the file system block order.
++// if a file is deleted, it frees a block. hence, the order is not purely chronological. To still have auto0.g accessible, there is again the option to do that.
++// using:
++//#define MENU_ADDAUTOSTART
++
++// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++//#define USE_WATCHDOG
++
++#ifdef USE_WATCHDOG
++// If you have a watchdog reboot in an ArduinoMega2560 then the device will hang forever, as a watchdog reset will leave the watchdog on.
++// The "WATCHDOG_RESET_MANUAL" goes around this by not using the hardware reset.
++//  However, THIS FEATURE IS UNSAFE!, as it will only work if interrupts are disabled. And the code could hang in an interrupt routine with interrupts disabled.
++//#define WATCHDOG_RESET_MANUAL
++#endif
++
++// Enable the option to stop SD printing when hitting and endstops, needs to be enabled from the LCD menu when this option is enabled.
++//#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
++
++// Babystepping enables the user to control the axis in tiny amounts, independently from the normal printing process
++// it can e.g. be used to change z-positions in the print startup phase in real-time
++// does not respect endstops!
++//#define BABYSTEPPING
++#ifdef BABYSTEPPING
++  #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
++  #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
++  #define BABYSTEP_Z_MULTIPLICATOR 2 //faster z movements
++
++  #ifdef COREXY
++    #error BABYSTEPPING not implemented for COREXY yet.
++  #endif
++
++  #ifdef DELTA
++    #ifdef BABYSTEP_XY
++      #error BABYSTEPPING only implemented for Z axis on deltabots.
++    #endif
++  #endif
++#endif
++
++// extruder advance constant (s2/mm3)
++//
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++//
++// Hooke's law says:		force = k * distance
++// Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
++// so: v ^ 2 is proportional to number of steps we advance the extruder
++//#define ADVANCE
++
++#ifdef ADVANCE
++  #define EXTRUDER_ADVANCE_K .0
++
++  #define D_FILAMENT 2.85
++  #define STEPS_MM_E 836
++  #define EXTRUTION_AREA (0.25 * D_FILAMENT * D_FILAMENT * 3.14159)
++  #define STEPS_PER_CUBIC_MM_E (axis_steps_per_unit[E_AXIS]/ EXTRUTION_AREA)
++
++#endif // ADVANCE
++
++// Arc interpretation settings:
++#define MM_PER_ARC_SEGMENT 1
++#define N_ARC_CORRECTION 25
++
++const unsigned int dropsegments=5; //everything with less than this number of steps will be ignored as move and joined with the next movement
++
++// If you are using a RAMPS board or cheap E-bay purchased boards that do not detect when an SD card is inserted
++// You can get round this by connecting a push button or single throw switch to the pin defined as SDCARDCARDDETECT
++// in the pins.h file.  When using a push button pulling the pin to ground this will need inverted.  This setting should
++// be commented out otherwise
++//#define SDCARDDETECTINVERTED
++
++#ifdef ULTIPANEL
++ #undef SDCARDDETECTINVERTED
++#endif
++
++// Power Signal Control Definitions
++// By default use ATX definition
++#ifndef POWER_SUPPLY
++  #define POWER_SUPPLY 1
++#endif
++// 1 = ATX
++#if (POWER_SUPPLY == 1)
++  #define PS_ON_AWAKE  LOW
++  #define PS_ON_ASLEEP HIGH
++#endif
++// 2 = X-Box 360 203W
++#if (POWER_SUPPLY == 2)
++  #define PS_ON_AWAKE  HIGH
++  #define PS_ON_ASLEEP LOW
++#endif
++
++// Control heater 0 and heater 1 in parallel.
++//#define HEATERS_PARALLEL
++
++//===========================================================================
++//=============================Buffers           ============================
++//===========================================================================
++
++// The number of linear motions that can be in the plan at any give time.
++// THE BLOCK_BUFFER_SIZE NEEDS TO BE A POWER OF 2, i.g. 8,16,32 because shifts and ors are used to do the ring-buffering.
++#if defined SDSUPPORT
++  #define BLOCK_BUFFER_SIZE 16   // SD,LCD,Buttons take more memory, block buffer needs to be smaller
++#else
++  #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
++#endif
++
++
++//The ASCII buffer for receiving from the serial:
++#define MAX_CMD_SIZE 96
++#define BUFSIZE 4
++
++
++// Firmware based and LCD controlled retract
++// M207 and M208 can be used to define parameters for the retraction.
++// The retraction can be called by the slicer using G10 and G11
++// until then, intended retractions can be detected by moves that only extrude and the direction.
++// the moves are than replaced by the firmware controlled ones.
++
++// #define FWRETRACT  //ONLY PARTIALLY TESTED
++#ifdef FWRETRACT
++  #define MIN_RETRACT 0.1                //minimum extruded mm to accept a automatic gcode retraction attempt
++  #define RETRACT_LENGTH 3               //default retract length (positive mm)
++  #define RETRACT_FEEDRATE 45            //default feedrate for retracting (mm/s)
++  #define RETRACT_ZLIFT 0                //default retract Z-lift
++  #define RETRACT_RECOVER_LENGTH 0       //default additional recover length (mm, added to retract length when recovering)
++  #define RETRACT_RECOVER_FEEDRATE 8     //default feedrate for recovering from retraction (mm/s)
++#endif
++
++//adds support for experimental filament exchange support M600; requires display
++#ifdef ULTIPANEL
++  #define FILAMENTCHANGEENABLE
++  #ifdef FILAMENTCHANGEENABLE
++    #define FILAMENTCHANGE_XPOS 3
++    #define FILAMENTCHANGE_YPOS 3
++    #define FILAMENTCHANGE_ZADD 10
++    #define FILAMENTCHANGE_FIRSTRETRACT -2
++    #define FILAMENTCHANGE_FINALRETRACT -100
++  #endif
++#endif
++
++#ifdef FILAMENTCHANGEENABLE
++  #ifdef EXTRUDER_RUNOUT_PREVENT
++    #error EXTRUDER_RUNOUT_PREVENT currently incompatible with FILAMENTCHANGE
++  #endif
++#endif
++
++//===========================================================================
++//=============================  Define Defines  ============================
++//===========================================================================
++#if EXTRUDERS > 1 && defined TEMP_SENSOR_1_AS_REDUNDANT
++  #error "You cannot use TEMP_SENSOR_1_AS_REDUNDANT if EXTRUDERS > 1"
++#endif
++
++#if EXTRUDERS > 1 && defined HEATERS_PARALLEL
++  #error "You cannot use HEATERS_PARALLEL if EXTRUDERS > 1"
++#endif
++
++#if TEMP_SENSOR_0 > 0
++  #define THERMISTORHEATER_0 TEMP_SENSOR_0
++  #define HEATER_0_USES_THERMISTOR
++#endif
++#if TEMP_SENSOR_1 > 0
++  #define THERMISTORHEATER_1 TEMP_SENSOR_1
++  #define HEATER_1_USES_THERMISTOR
++#endif
++#if TEMP_SENSOR_2 > 0
++  #define THERMISTORHEATER_2 TEMP_SENSOR_2
++  #define HEATER_2_USES_THERMISTOR
++#endif
++#if TEMP_SENSOR_BED > 0
++  #define THERMISTORBED TEMP_SENSOR_BED
++  #define BED_USES_THERMISTOR
++#endif
++#if TEMP_SENSOR_0 == -1
++  #define HEATER_0_USES_AD595
++#endif
++#if TEMP_SENSOR_1 == -1
++  #define HEATER_1_USES_AD595
++#endif
++#if TEMP_SENSOR_2 == -1
++  #define HEATER_2_USES_AD595
++#endif
++#if TEMP_SENSOR_BED == -1
++  #define BED_USES_AD595
++#endif
++#if TEMP_SENSOR_0 == -2
++  #define HEATER_0_USES_MAX6675
++#endif
++#if TEMP_SENSOR_0 == 0
++  #undef HEATER_0_MINTEMP
++  #undef HEATER_0_MAXTEMP
++#endif
++#if TEMP_SENSOR_1 == 0
++  #undef HEATER_1_MINTEMP
++  #undef HEATER_1_MAXTEMP
++#endif
++#if TEMP_SENSOR_2 == 0
++  #undef HEATER_2_MINTEMP
++  #undef HEATER_2_MAXTEMP
++#endif
++#if TEMP_SENSOR_BED == 0
++  #undef BED_MINTEMP
++  #undef BED_MAXTEMP
++#endif
++
++
++#endif //__CONFIGURATION_ADV_H
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 0782763..c032aca 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -18,6 +18,8 @@
+ // 9  Finnish
+ // 10 Aragonese
+ // 11 Dutch
++// 12 Catalan
++// 13 Basque-Euskera
+ 
+ #ifndef LANGUAGE_CHOICE
+ 	#define LANGUAGE_CHOICE 1  // Pick your language from the list above
+@@ -34,6 +36,9 @@
+ #elif MOTHERBOARD == 77
+ 	#define MACHINE_NAME "3Drag"
+ 	#define FIRMWARE_URL "http://3dprint.elettronicain.it/"
++#elif MOTHERBOARD == 88
++	#define MACHINE_NAME "Makibox"
++	#define FIRMWARE_URL "https://github.com/ErikZalm/Marlin/"
+ #else
+ 	#ifdef CUSTOM_MENDEL_NAME
+ 		#define MACHINE_NAME CUSTOM_MENDEL_NAME
+@@ -77,8 +82,18 @@
+ 	#define MSG_AUTO_HOME "Auto home"
+ 	#define MSG_SET_ORIGIN "Set origin"
+ 	#define MSG_PREHEAT_PLA "Preheat PLA"
++	#define MSG_PREHEAT_PLA0 "Preheat PLA 1"
++	#define MSG_PREHEAT_PLA1 "Preheat PLA 2"
++	#define MSG_PREHEAT_PLA2 "Preheat PLA 3"
++	#define MSG_PREHEAT_PLA012 "Preheat PLA All"
++	#define MSG_PREHEAT_PLA_BEDONLY "Preheat PLA Bed"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Preheat PLA conf"
+ 	#define MSG_PREHEAT_ABS "Preheat ABS"
++	#define MSG_PREHEAT_ABS0 "Preheat ABS 1"
++	#define MSG_PREHEAT_ABS1 "Preheat ABS 2"
++	#define MSG_PREHEAT_ABS2 "Preheat ABS 3"
++	#define MSG_PREHEAT_ABS012 "Preheat ABS All"
++	#define MSG_PREHEAT_ABS_BEDONLY "Preheat ABS Bed"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Preheat ABS conf"
+ 	#define MSG_COOLDOWN "Cooldown"
+ 	#define MSG_SWITCH_PS_ON "Switch power on"
+@@ -90,6 +105,8 @@
+ 	#define MSG_MOVE_Y "Move Y"
+ 	#define MSG_MOVE_Z "Move Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Move 0.1mm"
+ 	#define MSG_MOVE_1MM "Move 1mm"
+ 	#define MSG_MOVE_10MM "Move 10mm"
+@@ -100,6 +117,9 @@
+ 	#define MSG_BED "Bed"
+ 	#define MSG_FAN_SPEED "Fan speed"
+ 	#define MSG_FLOW "Flow"
++	#define MSG_FLOW0 "Flow 0"
++	#define MSG_FLOW1 "Flow 1"
++	#define MSG_FLOW2 "Flow 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -151,10 +171,10 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
+-	#define MSG_CONTROL_RETRACTF "Retract  F"
++	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD card"
+@@ -192,6 +212,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Invalid extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Invalid extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Invalid extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Invalid extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "No thermistors - no temperature"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Invalid extruder "
+ 	#define MSG_HEATING "Heating..."
+@@ -247,7 +268,6 @@
+ 
+ #if LANGUAGE_CHOICE == 2
+ 
+-
+ // LCD Menu Messages
+ // Please note these are limited to 17 characters!
+ 
+@@ -260,8 +280,18 @@
+ 	#define MSG_AUTO_HOME "Auto. poz. zerowa"
+ 	#define MSG_SET_ORIGIN "Ustaw punkt zero"
+ 	#define MSG_PREHEAT_PLA "Rozgrzej PLA"
++	#define MSG_PREHEAT_PLA0 "Rozgrzej PLA 1"
++	#define MSG_PREHEAT_PLA1 "Rozgrzej PLA 2"
++	#define MSG_PREHEAT_PLA2 "Rozgrzej PLA 3"
++	#define MSG_PREHEAT_PLA012 "Roz. PLA Wszystko"
++	#define MSG_PREHEAT_PLA_BEDONLY "Rozgrzej PLA Loze"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Ustaw. rozg. PLA"
+ 	#define MSG_PREHEAT_ABS "Rozgrzej ABS"
++	#define MSG_PREHEAT_ABS0 "Rozgrzej ABS 1"
++	#define MSG_PREHEAT_ABS1 "Rozgrzej ABS 2"
++	#define MSG_PREHEAT_ABS2 "Rozgrzej ABS 3"
++	#define MSG_PREHEAT_ABS012 "Roz. ABS Wszystko"
++	#define MSG_PREHEAT_ABS_BEDONLY "Rozgrzej ABS Loze"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ustaw. rozg. ABS"
+ 	#define MSG_COOLDOWN "Chlodzenie"
+ 	#define MSG_SWITCH_PS_ON "Wlacz zasilacz"
+@@ -273,6 +303,8 @@
+ 	#define MSG_MOVE_Y "Przesun w Y"
+ 	#define MSG_MOVE_Z "Przesun w Z"
+ 	#define MSG_MOVE_E "Ekstruzja (os E)"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Przesuwaj co .1mm"
+ 	#define MSG_MOVE_1MM "Przesuwaj co 1mm"
+ 	#define MSG_MOVE_10MM "Przesuwaj co 10mm"
+@@ -283,6 +315,9 @@
+ 	#define MSG_BED "Loze"
+ 	#define MSG_FAN_SPEED "Obroty wiatraka"
+ 	#define MSG_FLOW "Przeplyw"
++	#define MSG_FLOW0 "Przeplyw 0"
++	#define MSG_FLOW1 "Przeplyw 1"
++	#define MSG_FLOW2 "Przeplyw 2"
+ 	#define MSG_CONTROL "Kontrola"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -336,10 +371,10 @@
+ 	#define MSG_STOPPED "Zatrzymany. "
+ 	#define MSG_STEPPER_RELEASED "Zwolniony."
+ 	#define MSG_CONTROL_RETRACT  "Wycofaj mm"
+-	#define MSG_CONTROL_RETRACTF "Wycofaj  F"
++	#define MSG_CONTROL_RETRACTF "Wycofaj  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Skok Z mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Cof. wycof. +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  V"
+ 	#define MSG_AUTORETRACT "Auto. wycofanie"
+ 	#define MSG_FILAMENTCHANGE "Zmien filament"
+ 	#define MSG_INIT_SDCARD "Inicjal. karty SD"
+@@ -378,6 +413,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Niepoprawny ekstruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Niepoprawny ekstruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Niepoprawny ekstruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Niepoprawny ekstruder "
+ 	#define MSG_ERR_NO_THERMISTORS "Brak termistorow - brak temperatury :("
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Niepoprawny ekstruder "
+ 	#define MSG_HEATING "Nagrzewanie ekstrudera..."
+@@ -445,8 +481,18 @@
+ 	#define MSG_AUTO_HOME "Home auto."
+ 	#define MSG_SET_ORIGIN "Regler origine"
+ 	#define MSG_PREHEAT_PLA " Prechauffage PLA"
+-	#define MSG_PREHEAT_PLA_SETTINGS " Regl. prech. PLA"
++	#define MSG_PREHEAT_PLA0 "Prechauff. PLA 1"
++        #define MSG_PREHEAT_PLA1 "Prechauff. PLA 2"
++	#define MSG_PREHEAT_PLA2 "Prechauff. PLA 3"
++	#define MSG_PREHEAT_PLA012 "Prech. PLA Tout"
++	#define MSG_PREHEAT_PLA_BEDONLY "Prech. PLA Plateau"
++	#define MSG_PREHEAT_PLA_SETTINGS "Regl. prech. PLA"
+ 	#define MSG_PREHEAT_ABS "Prechauffage ABS"
++	#define MSG_PREHEAT_ABS0 "Prechauff. ABS 1"
++	#define MSG_PREHEAT_ABS1 "Prechauff. ABS 2"
++	#define MSG_PREHEAT_ABS2 "Prechauff. ABS 3"
++	#define MSG_PREHEAT_ABS012 "Prech. ABS Tout"
++	#define MSG_PREHEAT_ABS_BEDONLY "Prech. ABS Plateau"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Regl. prech. ABS"
+ 	#define MSG_COOLDOWN "Refroidir"
+ 	#define MSG_SWITCH_PS_ON "Allumer alim."
+@@ -460,6 +506,8 @@
+ 	#define MSG_MOVE_Y "Move Y"
+ 	#define MSG_MOVE_Z "Move Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Move 0.1mm"
+ 	#define MSG_MOVE_1MM "Move 1mm"
+ 	#define MSG_MOVE_10MM "Move 10mm"
+@@ -470,6 +518,9 @@
+ 	#define MSG_BED "Plateau"
+ 	#define MSG_FAN_SPEED "Vite. ventilateur"
+ 	#define MSG_FLOW "Flux"
++	#define MSG_FLOW0 "Flux 0"
++	#define MSG_FLOW1 "Flux 1"
++	#define MSG_FLOW2 "Flux 2"
+ 	#define MSG_CONTROL "Controler"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -521,10 +572,10 @@
+ 	#define MSG_STOPPED "STOPPE."
+ 	#define MSG_STEPPER_RELEASED "RELACHE."
+ 	#define MSG_CONTROL_RETRACT "Retraction mm"
+-	#define MSG_CONTROL_RETRACTF "Retraction F"
++	#define MSG_CONTROL_RETRACTF "Retraction V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet V"
+ 	#define MSG_AUTORETRACT "Retract. Auto."
+ 	#define MSG_FILAMENTCHANGE "Changer filament"
+ 	#define MSG_INIT_SDCARD "Init. la carte SD"
+@@ -563,6 +614,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extruder invalide"
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extruder invalide"
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extruder invalide"
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extruder invalide"
+ 	#define MSG_ERR_NO_THERMISTORS "Pas de thermistor, pas de temperature"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extruder invalide "
+ 	#define MSG_HEATING "En chauffe..."
+@@ -631,8 +683,18 @@
+ 	#define MSG_AUTO_HOME        "Auto Nullpunkt"
+ 	#define MSG_SET_ORIGIN       "Setze Nullpunkt"
+ 	#define MSG_PREHEAT_PLA      "Vorwärmen PLA"
++	#define MSG_PREHEAT_PLA0     "Vorwärmen PLA 1"
++	#define MSG_PREHEAT_PLA1     "Vorwärmen PLA 2"
++	#define MSG_PREHEAT_PLA2     "Vorwärmen PLA 3"
++	#define MSG_PREHEAT_PLA012   "Vorw. PLA Alle"
++	#define MSG_PREHEAT_PLA_BEDONLY "Vorw. PLA Bett"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Vorwärm. PLA Ein."
+ 	#define MSG_PREHEAT_ABS      "Vorwärmen ABS"
++	#define MSG_PREHEAT_ABS0     "Vorwärmen ABS 1"
++	#define MSG_PREHEAT_ABS1     "Vorwärmen ABS 2"
++	#define MSG_PREHEAT_ABS2     "Vorwärmen ABS 3"
++	#define MSG_PREHEAT_ABS012   "Vorw. ABS Alle"
++	#define MSG_PREHEAT_ABS_BEDONLY "Vorw. ABS Bett"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Vorwärm. ABS Ein."
+ 	#define MSG_COOLDOWN         "Abkühlen"
+ 	#define MSG_SWITCH_PS_ON     "Switch Power On"
+@@ -644,6 +706,8 @@
+ 	#define MSG_MOVE_Y           "Y bewegen"
+ 	#define MSG_MOVE_Z           "Z bewegen"
+ 	#define MSG_MOVE_E           "Extruder"
++	#define MSG_MOVE_E1 		 "Extruder2"
++	#define MSG_MOVE_E2 		 "Extruder3"
+ 	#define MSG_MOVE_01MM        "0.1mm bewegen"
+ 	#define MSG_MOVE_1MM         "1mm bewegen"
+ 	#define MSG_MOVE_10MM        "10mm bewegen"
+@@ -654,6 +718,9 @@
+ 	#define MSG_BED              "Bett"
+ 	#define MSG_FAN_SPEED        "Lüftergeschw."
+ 	#define MSG_FLOW             "Fluss"
++	#define MSG_FLOW0            "Fluss 0"
++	#define MSG_FLOW1            "Fluss 1"
++	#define MSG_FLOW2            "Fluss 2"
+ 	#define MSG_CONTROL          "Einstellungen"
+ 	#define MSG_MIN              "\002 Min"
+ 	#define MSG_MAX              "\002 Max"
+@@ -707,10 +774,10 @@
+ 	#define MSG_STOPPED          "GESTOPPT"
+ 	#define MSG_STEPPER_RELEASED "Stepper frei"
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
+-	#define MSG_CONTROL_RETRACTF "Retract  F"
++	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT      "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Filament wechseln"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+@@ -749,6 +816,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Invalid extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Invalid extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Invalid extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Invalid extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "No thermistors - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Invalid extruder "
+ 	#define MSG_HEATING "Heating..."
+@@ -816,8 +884,18 @@
+ 	#define MSG_AUTO_HOME "Llevar al origen"
+ 	#define MSG_SET_ORIGIN "Establecer cero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
++	#define MSG_PREHEAT_PLA0 "Precalentar PLA 1"
++	#define MSG_PREHEAT_PLA1 "Precalentar PLA 2"
++	#define MSG_PREHEAT_PLA2 "Precalentar PLA 3"
++	#define MSG_PREHEAT_PLA012 "Precal. PLA Todo"
++	#define MSG_PREHEAT_PLA_BEDONLY "Precal. PLA Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Ajustar temp. PLA"
+ 	#define MSG_PREHEAT_ABS "Precalentar ABS"
++	#define MSG_PREHEAT_ABS0 "Precalentar ABS 1"
++	#define MSG_PREHEAT_ABS1 "Precalentar ABS 2"
++	#define MSG_PREHEAT_ABS2 "Precalentar ABS 3"
++	#define MSG_PREHEAT_ABS012 "Precal. ABS Todo"
++	#define MSG_PREHEAT_ABS_BEDONLY "Precal. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+ 	#define MSG_SWITCH_PS_ON "Switch Power On"
+@@ -825,13 +903,15 @@
+ 	#define MSG_EXTRUDE "Extruir"
+ 	#define MSG_RETRACT "Retraer"
+ 	#define MSG_MOVE_AXIS "Mover ejes"
+-	#define MSG_MOVE_X "Move X"
+-	#define MSG_MOVE_Y "Move Y"
+-	#define MSG_MOVE_Z "Move Z"
+-	#define MSG_MOVE_E "Extruder"
+-	#define MSG_MOVE_01MM "Move 0.1mm"
+-	#define MSG_MOVE_1MM "Move 1mm"
+-	#define MSG_MOVE_10MM "Move 10mm"
++	#define MSG_MOVE_X "Mover X"
++	#define MSG_MOVE_Y "Mover Y"
++	#define MSG_MOVE_Z "Mover Z"
++	#define MSG_MOVE_E "Extrusor"
++	#define MSG_MOVE_E1 "Extrusor2"
++	#define MSG_MOVE_E2 "Extrusor3"
++	#define MSG_MOVE_01MM "Mover 0.1mm"
++	#define MSG_MOVE_1MM "Mover 1mm"
++	#define MSG_MOVE_10MM "Mover 10mm"
+ 	#define MSG_SPEED "Velocidad"
+ 	#define MSG_NOZZLE "Nozzle"
+ 	#define MSG_NOZZLE1 "Nozzle2"
+@@ -839,6 +919,9 @@
+ 	#define MSG_BED "Base"
+ 	#define MSG_FAN_SPEED "Ventilador"
+ 	#define MSG_FLOW "Flujo"
++	#define MSG_FLOW0 "Flujo 0"
++	#define MSG_FLOW1 "Flujo 1"
++	#define MSG_FLOW2 "Flujo 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN "\002 Min"
+ 	#define MSG_MAX "\002 Max"
+@@ -889,12 +972,12 @@
+ 	#define MSG_KILLED "PARADA DE EMERG."
+ 	#define MSG_STOPPED "PARADA"
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
+-	#define MSG_CONTROL_RETRACTF "Retraer  F"
++	#define MSG_CONTROL_RETRACTF "Retraer  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+-	#define MSG_FILAMENTCHANGE "Change filament"
++	#define MSG_FILAMENTCHANGE "Cambiar filamento"
+ 	#define MSG_INIT_SDCARD "Iniciando tarjeta"
+ 	#define MSG_CNG_SDCARD "Cambiar tarjeta"
+ 	#define MSG_RECTRACT_WIDE "Retraer"
+@@ -940,6 +1023,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor Invalido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor Invalido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor Invalido "
+ 	#define MSG_ERR_NO_THERMISTORS "No hay termistores - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalido "
+ 	#define MSG_HEATING "Calentando..."
+@@ -949,7 +1033,7 @@
+ 	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
+ 	#define MSG_COUNT_X " Cuenta X:"
+ 	#define MSG_ERR_KILLED "¡¡Impresora Parada con kill()!!"
+-	#define MSG_ERR_STOPPED "¡Impresora parada por errores. Arregle el error y use M999 Para reiniciar!. (La temperatura se reestablece. Ajustela antes de continuar)"
++	#define MSG_ERR_STOPPED "¡Impresora parada por errores. Arregle el error y use M999 Para reiniciar!. (La temperatura se reestablece. Ajustela despues de continuar)"
+ 	#define MSG_RESEND "Reenviar:"
+ 	#define MSG_UNKNOWN_COMMAND "Comando Desconocido:\""
+ 	#define MSG_ACTIVE_EXTRUDER "Extrusor Activo: "
+@@ -997,17 +1081,27 @@
+ // LCD Menu Messages
+ // Please note these are limited to 17 characters!
+ 
+-	#define WELCOME_MSG MACHINE_NAME			" Готов."
++	#define WELCOME_MSG MACHINE_NAME			        "Готов."
+ 	#define MSG_SD_INSERTED						"Карта вставлена"
+ 	#define MSG_SD_REMOVED						"Карта извлечена"
+-	#define MSG_MAIN							"Меню            \003"
++	#define MSG_MAIN							"Меню \003"
+ 	#define MSG_AUTOSTART						"Автостарт"
+ 	#define MSG_DISABLE_STEPPERS 				"Выкл. двигатели"
+ 	#define MSG_AUTO_HOME						"Парковка"
+ 	#define MSG_SET_ORIGIN						"Запомнить ноль"
+ 	#define MSG_PREHEAT_PLA 					"Преднагрев PLA"
++	#define MSG_PREHEAT_PLA0					"Преднагрев PLA0"
++	#define MSG_PREHEAT_PLA1					"Преднагрев PLA1"
++	#define MSG_PREHEAT_PLA2					"Преднагрев PLA2"
++	#define MSG_PREHEAT_PLA012 					"Преднаг. PLA все"
++	#define MSG_PREHEAT_PLA_BEDONLY 			"Пред. PLA Кровать"
+ 	#define MSG_PREHEAT_PLA_SETTINGS  			"Настройки PLA"
+ 	#define MSG_PREHEAT_ABS						"Преднагрев ABS"
++	#define MSG_PREHEAT_ABS0					"Преднагрев ABS0"
++	#define MSG_PREHEAT_ABS1					"Преднагрев ABS1"
++	#define MSG_PREHEAT_ABS2					"Преднагрев ABS2"
++	#define MSG_PREHEAT_ABS012 					"Преднаг. ABS все "
++	#define MSG_PREHEAT_ABS_BEDONLY 			"Пред. ABS Кровать"
+ 	#define MSG_PREHEAT_ABS_SETTINGS  			"Настройки ABS"
+ 	#define MSG_COOLDOWN						"Охлаждение"
+ 	#define MSG_SWITCH_PS_ON					"Switch Power On"
+@@ -1019,6 +1113,8 @@
+ 	#define MSG_MOVE_Y                          "Move Y"
+ 	#define MSG_MOVE_Z                          "Move Z"
+ 	#define MSG_MOVE_E                          "Extruder"
++	#define MSG_MOVE_E1 						"Extruder2"
++	#define MSG_MOVE_E2 						"Extruder3"
+ 	#define MSG_MOVE_01MM                       "Move 0.1mm"
+ 	#define MSG_MOVE_1MM                        "Move 1mm"
+ 	#define MSG_MOVE_10MM                       "Move 10mm"
+@@ -1029,6 +1125,9 @@
+ 	#define MSG_BED								"\002 Кровать:"
+ 	#define MSG_FAN_SPEED						"Куллер:"
+ 	#define MSG_FLOW							"Поток:"
++	#define MSG_FLOW0 " Поток0:"
++	#define MSG_FLOW1 " Поток1:"
++	#define MSG_FLOW2 " Поток2:"
+ 	#define MSG_CONTROL							"Настройки \003"
+ 	#define MSG_MIN								"\002 Минимум:"
+ 	#define MSG_MAX								"\002 Максимум:"
+@@ -1068,8 +1167,8 @@
+ 	#define MSG_WATCH							"Обзор           \003"
+ 	#define MSG_PREPARE							"Действия        \x7E"
+ 	#define MSG_TUNE							"Настройки       \x7E"
+-	#define MSG_RESUME_PRINT  					"Продолжить печать"
+-	#define MSG_RESUME_PRINT					"Продолжить печать"
++	#define MSG_PAUSE_PRINT  					"Продолжить печать"
++	#define MSG_RESUME_PRINT					"возобн. печать"
+ 	#define MSG_STOP_PRINT 						"Остановить печать"
+ 	#define MSG_CARD_MENU						"Меню карты      \x7E"
+ 	#define MSG_NO_CARD							"Нет карты"
+@@ -1080,10 +1179,10 @@
+ 	#define MSG_KILLED							"УБИТО."
+ 	#define MSG_STOPPED							"ОСТАНОВЛЕНО."
+ 	#define MSG_CONTROL_RETRACT					"Откат mm:"
+-	#define MSG_CONTROL_RETRACTF				"Откат  F:"
++	#define MSG_CONTROL_RETRACTF				"Откат  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT			"Прыжок mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER			"Возврат +mm:"
+-	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  F:"
++	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  V:"
+ 	#define MSG_AUTORETRACT						"АвтоОткат:"
+ 	#define MSG_FILAMENTCHANGE 					"Change filament"
+ 	#define MSG_INIT_SDCARD 					"Init. SD-Card"
+@@ -1122,6 +1221,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER			"M105 ошибка экструдера "
+ 	#define MSG_M200_INVALID_EXTRUDER			"M200 ошибка экструдера "
+ 	#define MSG_M218_INVALID_EXTRUDER			"M218 ошибка экструдера "
++	#define MSG_M221_INVALID_EXTRUDER			"M221 ошибка экструдера "
+ 	#define MSG_ERR_NO_THERMISTORS				"Нет термистра - нет температуры"
+ 	#define MSG_M109_INVALID_EXTRUDER			"M109 ошибка экструдера "
+ 	#define MSG_HEATING							"Нагрев...  "
+@@ -1187,8 +1287,18 @@
+ 	#define MSG_AUTO_HOME            "Auto Home"
+ 	#define MSG_SET_ORIGIN           "Imposta Origine"
+ 	#define MSG_PREHEAT_PLA          "Preriscalda PLA"
++	#define MSG_PREHEAT_PLA0         "Preriscalda PLA 1"
++	#define MSG_PREHEAT_PLA1         "Preriscalda PLA 2"
++	#define MSG_PREHEAT_PLA2         "Preriscalda PLA 3"
++	#define MSG_PREHEAT_PLA012       "Preris. PLA Tutto"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Preri. PLA Piatto"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Preris. PLA Conf"
+ 	#define MSG_PREHEAT_ABS          "Preriscalda ABS"
++	#define MSG_PREHEAT_ABS0         "Preriscalda ABS 1"
++	#define MSG_PREHEAT_ABS1         "Preriscalda ABS 2"
++	#define MSG_PREHEAT_ABS2         "Preriscalda ABS 3"
++	#define MSG_PREHEAT_ABS012       "Preris. ABS Tutto"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Preri. ABS Piatto"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Preris. ABS Conf"
+ 	#define MSG_COOLDOWN             "Raffredda"
+ 	#define MSG_SWITCH_PS_ON         "Switch Power On"
+@@ -1200,6 +1310,8 @@
+ 	#define MSG_MOVE_Y               "Move Y"
+ 	#define MSG_MOVE_Z               "Move Z"
+ 	#define MSG_MOVE_E               "Extruder"
++	#define MSG_MOVE_E1 			 "Extruder2"
++	#define MSG_MOVE_E2 			 "Extruder3"
+ 	#define MSG_MOVE_01MM            "Move 0.1mm"
+ 	#define MSG_MOVE_1MM             "Move 1mm"
+ 	#define MSG_MOVE_10MM            "Move 10mm"
+@@ -1210,6 +1322,9 @@
+ 	#define MSG_BED                  "Piatto"
+ 	#define MSG_FAN_SPEED            "Ventola"
+ 	#define MSG_FLOW                 "Flusso"
++	#define MSG_FLOW0                "Flusso 0"
++	#define MSG_FLOW1                "Flusso 1"
++	#define MSG_FLOW2                "Flusso 2"
+ 	#define MSG_CONTROL              "Controllo"
+ 	#define MSG_MIN                  " \002 Min:"
+ 	#define MSG_MAX                  " \002 Max:"
+@@ -1261,10 +1376,10 @@
+ 	#define MSG_KILLED               "UCCISO. "
+ 	#define MSG_STOPPED              "ARRESTATO. "
+ 	#define MSG_CONTROL_RETRACT      "Ritrai mm"
+-	#define MSG_CONTROL_RETRACTF     "Ritrai  F"
++	#define MSG_CONTROL_RETRACTF     "Ritrai  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Salta mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT          "AutoArretramento"
+ 	#define MSG_FILAMENTCHANGE       "Cambia filamento"
+ 	#define MSG_INIT_SDCARD          "Iniz. SD-Card"
+@@ -1303,6 +1418,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Estrusore non valido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Estrusore non valido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Estrusore non valido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Estrusore non valido "
+ 	#define MSG_ERR_NO_THERMISTORS   "Nessun Termistore - nessuna temperatura"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Estrusore non valido "
+ 	#define MSG_HEATING              "Riscaldamento..."
+@@ -1370,8 +1486,18 @@
+ 	#define MSG_AUTO_HOME "Ir para origen"
+ 	#define MSG_SET_ORIGIN "Estabelecer orig."
+ 	#define MSG_PREHEAT_PLA "Pre-aquecer PLA"
++	#define MSG_PREHEAT_PLA0 " pre-aquecer PLA 1"
++	#define MSG_PREHEAT_PLA1 " pre-aquecer PLA 2"
++	#define MSG_PREHEAT_PLA2 " pre-aquecer PLA 3"
++	#define MSG_PREHEAT_PLA012 " pre-aq. PLA Tudo"
++	#define MSG_PREHEAT_PLA_BEDONLY  " pre-aq. PLA \002Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "PLA setting"
+ 	#define MSG_PREHEAT_ABS "Pre-aquecer ABS"
++	#define MSG_PREHEAT_ABS0 " pre-aquecer ABS 1"
++	#define MSG_PREHEAT_ABS1 " pre-aquecer ABS 2"
++	#define MSG_PREHEAT_ABS2 " pre-aquecer ABS 3"
++	#define MSG_PREHEAT_ABS012 " pre-aq. ABS Tudo"
++	#define MSG_PREHEAT_ABS_BEDONLY  " pre-aq. ABS \002Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "ABS setting"
+ 	#define MSG_COOLDOWN "Esfriar"
+ 	#define MSG_SWITCH_PS_ON "Switch Power On"
+@@ -1385,6 +1511,8 @@
+ 	#define MSG_MOVE_Y "Move Y"
+ 	#define MSG_MOVE_Z "Move Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Move 0.1mm"
+ 	#define MSG_MOVE_1MM "Move 1mm"
+ 	#define MSG_MOVE_10MM "Move 10mm"
+@@ -1395,6 +1523,9 @@
+ 	#define MSG_BED "\002Base:"
+ 	#define MSG_FAN_SPEED "Velocidade vento."
+ 	#define MSG_FLOW "Fluxo:"
++	#define MSG_FLOW0 "Fluxo0:"
++	#define MSG_FLOW1 "Fluxo1:"
++	#define MSG_FLOW2 "Fluxo2:"
+ 	#define MSG_CONTROL "Controle \003"
+ 	#define MSG_MIN "\002 Min:"
+ 	#define MSG_MAX "\002 Max:"
+@@ -1450,10 +1581,10 @@
+ 	#define MSG_STOPPED "PARADA. "
+ 	#define MSG_STEPPER_RELEASED "Lancado."
+ 	#define MSG_CONTROL_RETRACT  " Retrair mm:"
+-	#define MSG_CONTROL_RETRACTF " Retrair  F:"
++	#define MSG_CONTROL_RETRACTF " Retrair  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+-	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  F:"
++	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  V:"
+ 	#define MSG_AUTORETRACT " AutoRetr.:"
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+@@ -1492,6 +1623,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor inválido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor inválido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor inválido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor inválido "
+ 	#define MSG_ERR_NO_THERMISTORS "Nao ha termistor - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor inválido "
+ 	#define MSG_HEATING "Aquecendo..."
+@@ -1560,8 +1692,18 @@
+ 	#define MSG_AUTO_HOME "Aja referenssiin"
+ 	#define MSG_SET_ORIGIN "Aseta origo"
+ 	#define MSG_PREHEAT_PLA "Esilammita PLA"
++	#define MSG_PREHEAT_PLA0 "Esilammita PLA 1"
++	#define MSG_PREHEAT_PLA1 "Esilammita PLA 2"
++	#define MSG_PREHEAT_PLA2 "Esilammita PLA 3"
++	#define MSG_PREHEAT_PLA012 "Esila. PLA Kaikki"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Esila. PLA Alusta"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Esilamm. PLA konf"
+ 	#define MSG_PREHEAT_ABS "Esilammita ABS"
++	#define MSG_PREHEAT_ABS0 "Esilammita ABS 1"
++	#define MSG_PREHEAT_ABS1 "Esilammita ABS 2"
++	#define MSG_PREHEAT_ABS2 "Esilammita ABS 3"
++	#define MSG_PREHEAT_ABS012 "Esila. ABS Kaikki"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Esila. ABS Alusta"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Esilamm. ABS konf"
+ 	#define MSG_COOLDOWN "Jaahdyta"
+ 	#define MSG_SWITCH_PS_ON "Virta paalle"
+@@ -1573,6 +1715,8 @@
+ 	#define MSG_MOVE_Y "Move Y"
+ 	#define MSG_MOVE_Z "Move Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Move 0.1mm"
+ 	#define MSG_MOVE_1MM "Move 1mm"
+ 	#define MSG_MOVE_10MM "Move 10mm"
+@@ -1583,6 +1727,9 @@
+ 	#define MSG_BED "Alusta"
+ 	#define MSG_FAN_SPEED "Tuul. nopeus"
+ 	#define MSG_FLOW "Virtaus"
++	#define MSG_FLOW0 "Virtaus 0"
++	#define MSG_FLOW1 "Virtaus 1"
++	#define MSG_FLOW2 "Virtaus 2"
+ 	#define MSG_CONTROL "Kontrolli"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -1634,10 +1781,10 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Veda mm"
+-	#define MSG_CONTROL_RETRACTF "Veda F"
++	#define MSG_CONTROL_RETRACTF "Veda V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Z mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoVeto."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+@@ -1675,6 +1822,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Virheellinen suutin "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Virheellinen suutin "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Virheellinen suutin "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Virheellinen suutin "
+ 	#define MSG_ERR_NO_THERMISTORS "Ei termistoreja - ei lampotiloja"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Virheellinen suutin "
+ 	#define MSG_HEATING "Lammitan..."
+@@ -1743,8 +1891,18 @@
+ 	#define MSG_AUTO_HOME "Levar a l'orichen"
+ 	#define MSG_SET_ORIGIN "Establir zero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
++	#define MSG_PREHEAT_PLA0 "Precalentar PLA0"
++	#define MSG_PREHEAT_PLA1 "Precalentar PLA1"
++	#define MSG_PREHEAT_PLA2 "Precalentar PLA2"
++	#define MSG_PREHEAT_PLA012 "Precalentar PLA a"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Prec. PLA Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Achustar tem. PLA"
+ 	#define MSG_PREHEAT_ABS "Precalentar ABS"
++	#define MSG_PREHEAT_ABS0 "Precalentar ABS0"
++	#define MSG_PREHEAT_ABS1 "Precalentar ABS1"
++	#define MSG_PREHEAT_ABS2 "Precalentar ABS2"
++	#define MSG_PREHEAT_ABS012 "Precalentar ABS a"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Prec. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Achustar tem. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+ 	#define MSG_SWITCH_PS_ON "Enchegar Fuent"
+@@ -1756,6 +1914,8 @@
+ 	#define MSG_MOVE_Y "Move Y"
+ 	#define MSG_MOVE_Z "Move Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Move 0.1mm"
+ 	#define MSG_MOVE_1MM "Move 1mm"
+ 	#define MSG_MOVE_10MM "Move 10mm"
+@@ -1766,6 +1926,9 @@
+ 	#define MSG_BED "Base"
+ 	#define MSG_FAN_SPEED "Ixoriador"
+ 	#define MSG_FLOW "Fluxo"
++	#define MSG_FLOW0 "Fluxo 0"
++	#define MSG_FLOW1 "Fluxo 1"
++	#define MSG_FLOW2 "Fluxo 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN "\002 Min"
+ 	#define MSG_MAX "\002 Max"
+@@ -1867,6 +2030,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor Invalido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor Invalido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor Invalido "
+ 	#define MSG_ERR_NO_THERMISTORS "No i hai termistores - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalido "
+ 	#define MSG_HEATING "Calentando..."
+@@ -1932,8 +2096,18 @@
+ 	#define MSG_AUTO_HOME "Auto home"
+ 	#define MSG_SET_ORIGIN "Nulpunt instellen"
+ 	#define MSG_PREHEAT_PLA "PLA voorverwarmen"
++	#define MSG_PREHEAT_PLA0 "PLA voorverw. 0"
++	#define MSG_PREHEAT_PLA1 "PLA voorverw. 1"
++	#define MSG_PREHEAT_PLA2 "PLA voorverw. 2"
++	#define MSG_PREHEAT_PLA012 "PLA voorverw. aan"
++	#define MSG_PREHEAT_PLA_BEDONLY  "PLA voorverw. Bed"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "PLA verw. conf"
+ 	#define MSG_PREHEAT_ABS "ABS voorverwarmen"
++	#define MSG_PREHEAT_ABS0 "ABS voorverw. 0"
++	#define MSG_PREHEAT_ABS1 "ABS voorverw. 1"
++	#define MSG_PREHEAT_ABS2 "ABS voorverw. 2"
++	#define MSG_PREHEAT_ABS012 "ABS voorverw. aan"
++	#define MSG_PREHEAT_ABS_BEDONLY  "ABS voorverw. Bed"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "ABS verw. conf"
+ 	#define MSG_COOLDOWN "Afkoelen"
+ 	#define MSG_SWITCH_PS_ON "Stroom aan"
+@@ -1945,6 +2119,8 @@
+ 	#define MSG_MOVE_Y "Verplaats Y"
+ 	#define MSG_MOVE_Z "Verplaats Z"
+ 	#define MSG_MOVE_E "Extruder"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
+ 	#define MSG_MOVE_01MM "Verplaats 0.1mm"
+ 	#define MSG_MOVE_1MM "Verplaats 1mm"
+ 	#define MSG_MOVE_10MM "Verplaats 10mm"
+@@ -1955,6 +2131,9 @@
+ 	#define MSG_BED "Bed"
+ 	#define MSG_FAN_SPEED "Fan snelheid"
+ 	#define MSG_FLOW "Flow"
++	#define MSG_FLOW0 "Flow 0"
++	#define MSG_FLOW1 "Flow 1"
++	#define MSG_FLOW2 "Flow 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -2047,6 +2226,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Ongeldige extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Ongeldige extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Ongeldige extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Ongeldige extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "Geen thermistors - geen temperatuur"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Ongeldige extruder "
+ 	#define MSG_HEATING "Opwarmen..."
+@@ -2099,4 +2279,401 @@
+ 
+ #endif
+ 
++
++#if LANGUAGE_CHOICE == 12
++
++// LCD Menu Messages
++
++// Please note these are limited to 17 characters!
++
++	#define WELCOME_MSG MACHINE_NAME " preparada."
++	#define MSG_SD_INSERTED "SD detectada."
++	#define MSG_SD_REMOVED "SD expulsada."
++	#define MSG_MAIN "Menu principal"
++	#define MSG_AUTOSTART "Inici automatic"
++	#define MSG_DISABLE_STEPPERS "Apagar motors"
++	#define MSG_AUTO_HOME "Home global"
++	#define MSG_SET_ORIGIN "Establir origen"
++	#define MSG_PREHEAT_PLA "Preescalfar PLA"
++	#define MSG_PREHEAT_PLA0 "Preescalfar PLA 1"
++	#define MSG_PREHEAT_PLA1 "Preescalfar PLA 2"
++	#define MSG_PREHEAT_PLA2 "Preescalfar PLA 3"
++	#define MSG_PREHEAT_PLA012 "Preesc. tot PLA"
++	#define MSG_PREHEAT_PLA_BEDONLY "Preesc. llit PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS "Configuració PLA"
++	#define MSG_PREHEAT_ABS "Preescalfar ABS"
++	#define MSG_PREHEAT_ABS0 "Preescalfar ABS 1"
++	#define MSG_PREHEAT_ABS1 "Preescalfar ABS 2"
++	#define MSG_PREHEAT_ABS2 "Preescalfar ABS 3"
++	#define MSG_PREHEAT_ABS012 "Preesc. tot ABS"
++	#define MSG_PREHEAT_ABS_BEDONLY "Preesc. llit ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS "Configuració ABS"
++	#define MSG_COOLDOWN "Refredar"
++	#define MSG_SWITCH_PS_ON "Switch power on"
++	#define MSG_SWITCH_PS_OFF "Switch power off"
++	#define MSG_EXTRUDE "Extruir"
++	#define MSG_RETRACT "Refredar"
++	#define MSG_MOVE_AXIS "Moure eixos"
++	#define MSG_MOVE_X "Moure X"
++	#define MSG_MOVE_Y "Moure Y"
++	#define MSG_MOVE_Z "Moure Z"
++	#define MSG_MOVE_E "Extrusor"
++	#define MSG_MOVE_E1 "Extruder2"
++	#define MSG_MOVE_E2 "Extruder3"
++	#define MSG_MOVE_01MM "Moure 0.1mm"
++	#define MSG_MOVE_1MM "Moure 1mm"
++	#define MSG_MOVE_10MM "Moure 10mm"
++	#define MSG_SPEED "Velocitat"
++	#define MSG_NOZZLE "Nozzle"
++	#define MSG_NOZZLE1 "Nozzle2"
++	#define MSG_NOZZLE2 "Nozzle3"
++	#define MSG_BED "Llit"
++	#define MSG_FAN_SPEED "Vel. Ventilador"
++	#define MSG_FLOW "Fluxe"
++	#define MSG_FLOW0 "Fluxe 0"
++	#define MSG_FLOW1 "Fluxe 1"
++	#define MSG_FLOW2 "Fluxe 2"
++	#define MSG_CONTROL "Control"
++	#define MSG_MIN " \002 Min"
++	#define MSG_MAX " \002 Max"
++	#define MSG_FACTOR " \002 Fact"
++	#define MSG_AUTOTEMP "Autotemp"
++	#define MSG_ON "On "
++	#define MSG_OFF "Off"
++	#define MSG_PID_P "PID-P"
++	#define MSG_PID_I "PID-I"
++	#define MSG_PID_D "PID-D"
++	#define MSG_PID_C "PID-C"
++	#define MSG_ACC  "Accel"
++	#define MSG_VXY_JERK "Vxy-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VMAX "Vmax "
++	#define MSG_X "x"
++	#define MSG_Y "y"
++	#define MSG_Z "z"
++	#define MSG_E "e"
++	#define MSG_VMIN "Vmin"
++	#define MSG_VTRAV_MIN "VTrav min"
++	#define MSG_AMAX "Amax "
++	#define MSG_A_RETRACT "A-retract"
++	#define MSG_XSTEPS "Xpassos/mm"
++	#define MSG_YSTEPS "Ypassos/mm"
++	#define MSG_ZSTEPS "Zpassos/mm"
++	#define MSG_ESTEPS "Epassos/mm"
++	#define MSG_RECTRACT "Retreure"
++	#define MSG_TEMPERATURE "Temperatura"
++	#define MSG_MOTION "Moviment"
++	#define MSG_CONTRAST "Contrast de LCD"
++	#define MSG_STORE_EPROM "Desar a memoria"
++	#define MSG_LOAD_EPROM "Carregar de mem."
++	#define MSG_RESTORE_FAILSAFE "Rest. emergencia"
++	#define MSG_REFRESH "Refrescar"
++	#define MSG_WATCH "Pantalla Info."
++	#define MSG_PREPARE "Preparar"
++	#define MSG_TUNE "Calibrar"
++	#define MSG_PAUSE_PRINT "Pausa imp."
++	#define MSG_RESUME_PRINT "Reprendre imp."
++	#define MSG_STOP_PRINT "Parar inp."
++	#define MSG_CARD_MENU "Imprimir de SD"
++	#define MSG_NO_CARD "-Sense targeta SD"
++	#define MSG_DWELL "Repos..."
++	#define MSG_USERWAIT "Esperant usuari.."
++	#define MSG_RESUMING "Reprenent imp."
++	#define MSG_NO_MOVE "Sense moviment."
++	#define MSG_KILLED "PARADA DE EMERG. "
++	#define MSG_STOPPED "ATURAT. "
++	#define MSG_CONTROL_RETRACT  "Retreure mm"
++	#define MSG_CONTROL_RETRACTF "Retreure  F"
++	#define MSG_CONTROL_RETRACT_ZLIFT "Aixecar mm"
++	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet  F"
++	#define MSG_AUTORETRACT "AutoRetr."
++	#define MSG_FILAMENTCHANGE "Canviar filament"
++	#define MSG_INIT_SDCARD "Iniciant SD"
++	#define MSG_CNG_SDCARD "Canviar SD"
++	#define MSG_ZPROBE_OUT "Z probe out. bed"
++	#define MSG_POSITION_UNKNOWN "Home X/Y abans Z"
++	#define MSG_ZPROBE_ZOFFSET "Z Offset"
++	#define MSG_BABYSTEP_X "Babystep X"
++	#define MSG_BABYSTEP_Y "Babystep Y"
++	#define MSG_BABYSTEP_Z "Babystep Z"
++	#define MSG_ENDSTOP_ABORT "Endstop abort"
++
++// Serial Console Messages
++
++	#define MSG_Enqueing "en cua \""
++	#define MSG_POWERUP "PowerUp"
++	#define MSG_EXTERNAL_RESET " Reset Extern"
++	#define MSG_BROWNOUT_RESET " Reset per Voltatge Incorrecte"
++	#define MSG_WATCHDOG_RESET " Reset per Bloqueix"
++	#define MSG_SOFTWARE_RESET " Reset per Software"
++	#define MSG_AUTHOR " | Author: "
++	#define MSG_CONFIGURATION_VER "Ultima actualitzacio: "
++	#define MSG_FREE_MEMORY " Memoria lliure: "
++	#define MSG_PLANNER_BUFFER_BYTES "  PlannerBufferBytes: "
++	#define MSG_OK "ok"
++	#define MSG_FILE_SAVED "Fitxer desat."
++	#define MSG_ERR_LINE_NO "El Numero de la Linia no es igual al Ultimo Numero de Linia+1, Ultima Linia:"
++	#define MSG_ERR_CHECKSUM_MISMATCH "el checksum no coincideix, Ultima Linia:"
++	#define MSG_ERR_NO_CHECKSUM "No s'ha trobat el Checksum amb el numero de linea, Ultima Linea:"
++	#define MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM "No s'ha trobat Numero de Linea amb el Checksum, Ultima Linea:"
++	#define MSG_FILE_PRINTED "Impresio acabada"
++	#define MSG_BEGIN_FILE_LIST "Inici de la llista d'arxius"
++	#define MSG_END_FILE_LIST "Fi de la llista d'arxius"
++	#define MSG_M104_INVALID_EXTRUDER "M104 Extrusor Invalid "
++	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalid "
++	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor Invalid "
++	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor Invalid "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor Invalid "
++	#define MSG_ERR_NO_THERMISTORS "No hi ha termistors - sense temperatura"
++	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalid "
++	#define MSG_HEATING "Escalfant..."
++	#define MSG_HEATING_COMPLETE "Escalfament acabat."
++	#define MSG_BED_HEATING "Escalfant llit."
++	#define MSG_BED_DONE "Llit Calent."
++	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
++	#define MSG_COUNT_X " Count X: "
++	#define MSG_ERR_KILLED "Impressora Parada per kill()!"
++	#define MSG_ERR_STOPPED "Impressora Parada per errors. Repara l'error i utilitza M999 per reiniciar!. (Hi ha un reset de temperatura, cal ajustarla abans de continuuar)"
++	#define MSG_RESEND "Reenviar: "
++	#define MSG_UNKNOWN_COMMAND "Comanda Desconeguda: \""
++	#define MSG_ACTIVE_EXTRUDER "Extrusor Actiu: "
++	#define MSG_INVALID_EXTRUDER "Extrusor Invalid"
++	#define MSG_X_MIN "x_min: "
++	#define MSG_X_MAX "x_max: "
++	#define MSG_Y_MIN "y_min: "
++	#define MSG_Y_MAX "y_max: "
++	#define MSG_Z_MIN "z_min: "
++	#define MSG_Z_MAX "z_max: "
++	#define MSG_M119_REPORT "Comprobant finals de carrera."
++	#define MSG_ENDSTOP_HIT "Activat"
++	#define MSG_ENDSTOP_OPEN "obert"
++	#define MSG_HOTEND_OFFSET "Hotend offsets:"
++
++	#define MSG_SD_CANT_OPEN_SUBDIR "No s'ha pogut obrir la carpeta"
++	#define MSG_SD_INIT_FAIL "Error al iniciar la SD"
++	#define MSG_SD_VOL_INIT_FAIL "Error al montar el volum"
++	#define MSG_SD_OPENROOT_FAIL "Error al obrir la carpeta arrel"
++	#define MSG_SD_CARD_OK "Targeta SD OK"
++	#define MSG_SD_WORKDIR_FAIL "Error al obrir la carpeta de treball"
++	#define MSG_SD_OPEN_FILE_FAIL "Error al obrir, Fitxer: "
++	#define MSG_SD_FILE_OPENED "Fitxer obert:"
++	#define MSG_SD_SIZE " Mida: "
++	#define MSG_SD_FILE_SELECTED "Fitxer Seleccionat"
++	#define MSG_SD_WRITE_TO_FILE "Desant al fitxer: "
++	#define MSG_SD_PRINTING_BYTE "SD imprimint el byte "
++	#define MSG_SD_NOT_PRINTING "No s'està imprimint amb SD"
++	#define MSG_SD_ERR_WRITE_TO_FILE "Error al esciure al fitxer"
++	#define MSG_SD_CANT_ENTER_SUBDIR "No es pot obrir la carpeta: "
++
++	#define MSG_STEPPER_TOO_HIGH "Steprate massa alt: "
++	#define MSG_ENDSTOPS_HIT "S'ha tocat el final de carrera: "
++	#define MSG_ERR_COLD_EXTRUDE_STOP " extrusio freda evitada"
++	#define MSG_ERR_LONG_EXTRUDE_STOP " extrusio massa llarga evitada"
++	#define MSG_BABYSTEPPING_X "Babystepping X"
++	#define MSG_BABYSTEPPING_Y "Babystepping Y"
++	#define MSG_BABYSTEPPING_Z "Babystepping Z"
++	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Error a l'estructura dels menus"
++
++#endif
++
++//Basque-Euskera
++#if LANGUAGE_CHOICE == 13
++
++// LCD Menu Messages
++// Please note these are limited to 17 characters!
++
++	#define WELCOME_MSG MACHINE_NAME " prest."
++	#define MSG_SD_INSERTED "Txartela sartuta"
++	#define MSG_SD_REMOVED "Txartela kenduta"
++	#define MSG_MAIN "Menu nagusia"
++	#define MSG_AUTOSTART "Auto hasiera"
++	#define MSG_DISABLE_STEPPERS "Itzali motoreak"
++	#define MSG_AUTO_HOME "Hasierara joan"
++	#define MSG_SET_ORIGIN "Hasiera ipini"
++	#define MSG_PREHEAT_PLA "Aurreberotu PLA"
++	#define MSG_PREHEAT_PLA0 "Aurreberotu PLA1"
++	#define MSG_PREHEAT_PLA1 "Aurreberotu PLA2"
++	#define MSG_PREHEAT_PLA2 "Aurreberotu PLA3"
++	#define MSG_PREHEAT_PLA012 "Berotu PLA Guztia"
++	#define MSG_PREHEAT_PLA_BEDONLY "Berotu PLA Ohea"
++	#define MSG_PREHEAT_PLA_SETTINGS "Berotu PLA Konfig"
++	#define MSG_PREHEAT_ABS "Aurreberotu ABS"
++	#define MSG_PREHEAT_ABS0 "Aurreberotu ABS 1"
++	#define MSG_PREHEAT_ABS1 "Aurreberotu ABS 2"
++	#define MSG_PREHEAT_ABS2 "Aurreberotu ABS 3"
++	#define MSG_PREHEAT_ABS012 "Berotu ABS Guztia"
++	#define MSG_PREHEAT_ABS_BEDONLY "Berotu ABS Ohea"
++	#define MSG_PREHEAT_ABS_SETTINGS "Berotu ABS Konfig"
++	#define MSG_COOLDOWN "Hoztu"
++	#define MSG_SWITCH_PS_ON "Energia piztu"
++	#define MSG_SWITCH_PS_OFF "Energia itzali"
++	#define MSG_EXTRUDE "Estruitu"
++	#define MSG_RETRACT "Atzera eragin"
++	#define MSG_MOVE_AXIS "Ardatzak mugitu"
++	#define MSG_MOVE_X "Mugitu X"
++	#define MSG_MOVE_Y "Mugitu Y"
++	#define MSG_MOVE_Z "Mugitu Z"
++	#define MSG_MOVE_E "Estrusorea"
++	#define MSG_MOVE_E1 "Estrusorea2"
++	#define MSG_MOVE_E2 "Estrusorea3"
++	#define MSG_MOVE_01MM "Mugitu 0.1mm"
++	#define MSG_MOVE_1MM "Mugitu 1mm"
++	#define MSG_MOVE_10MM "Mugitu 10mm"
++	#define MSG_SPEED "Abiadura"
++	#define MSG_NOZZLE "Pita"
++	#define MSG_NOZZLE1 "Pita2"
++	#define MSG_NOZZLE2 "Pita3"
++	#define MSG_BED "Ohea"
++	#define MSG_FAN_SPEED "Haizagailua"
++	#define MSG_FLOW "Fluxua"
++	#define MSG_FLOW0 "Fluxua 0"
++	#define MSG_FLOW1 "Fluxua 1"
++	#define MSG_FLOW2 "Fluxua 2"
++	#define MSG_CONTROL "Kontrola"
++	#define MSG_MIN " \002 Min"
++	#define MSG_MAX " \002 Max"
++	#define MSG_FACTOR " \002 Faktorea"
++	#define MSG_AUTOTEMP "Auto tenperatura"
++	#define MSG_ON "On "
++	#define MSG_OFF "Off"
++	#define MSG_PID_P "PID-P"
++	#define MSG_PID_I "PID-I"
++	#define MSG_PID_D "PID-D"
++	#define MSG_PID_C "PID-C"
++	#define MSG_ACC  "Azelerazioa"
++	#define MSG_VXY_JERK "Vxy-astindua"
++	#define MSG_VZ_JERK "Vz-astindua"
++	#define MSG_VE_JERK "Ve-astindua"
++	#define MSG_VMAX "Vmax "
++	#define MSG_X "x"
++	#define MSG_Y "y"
++	#define MSG_Z "z"
++	#define MSG_E "e"
++	#define MSG_VMIN "Vmin"
++	#define MSG_VTRAV_MIN "VTrav min"
++	#define MSG_AMAX "Amax "
++	#define MSG_A_RETRACT "A-retrakt"
++	#define MSG_XSTEPS "X pausoak/mm"
++	#define MSG_YSTEPS "Y pausoak/mm"
++	#define MSG_ZSTEPS "Z pausoak/mm"
++	#define MSG_ESTEPS "E pausoak/mm"
++	#define MSG_RECTRACT "Atzera eragin"
++	#define MSG_TEMPERATURE "Tenperatura"
++	#define MSG_MOTION "Mugimendua"
++	#define MSG_CONTRAST "LCD kontrastea"
++	#define MSG_STORE_EPROM "Gorde memoria"
++	#define MSG_LOAD_EPROM "Kargatu memoria"
++	#define MSG_RESTORE_FAILSAFE "Larri. berriz."
++	#define MSG_REFRESH "Berriz kargatu"
++	#define MSG_WATCH "Pantaila info"
++	#define MSG_PREPARE "Prestatu"
++	#define MSG_TUNE "Doitu"
++	#define MSG_PAUSE_PRINT "Pausatu inprimak."
++	#define MSG_RESUME_PRINT "Jarraitu inprima."
++	#define MSG_STOP_PRINT "Gelditu inprima."
++	#define MSG_CARD_MENU "SD-tik inprimatu"
++	#define MSG_NO_CARD "Ez dago txartelik"
++	#define MSG_DWELL "Lo egin..."
++	#define MSG_USERWAIT "Aginduak zain..."
++	#define MSG_RESUMING "Jarraitzen inpri."
++	#define MSG_NO_MOVE "Mugimendu gabe"
++	#define MSG_KILLED "LARRIALDI GELDIA"
++	#define MSG_STOPPED "GELDITUTA. "
++	#define MSG_CONTROL_RETRACT  "Atzera egin mm"
++	#define MSG_CONTROL_RETRACTF "Atzera egin V"
++	#define MSG_CONTROL_RETRACT_ZLIFT "Igo mm"
++	#define MSG_CONTROL_RETRACT_RECOVER "Atzera egin +mm"
++	#define MSG_CONTROL_RETRACT_RECOVERF "Atzera egin V"
++	#define MSG_AUTORETRACT "Atzera egin"
++	#define MSG_FILAMENTCHANGE "Aldatu filament."
++	#define MSG_INIT_SDCARD "Hasieratu txartela"
++	#define MSG_CNG_SDCARD "Aldatu txartela"
++	#define MSG_ZPROBE_OUT "Z ohe hasiera"
++	#define MSG_POSITION_UNKNOWN "Posizio ezezaguna"
++	#define MSG_ZPROBE_ZOFFSET "Z konpentsatu"
++	#define MSG_BABYSTEP_X "Babystep X"
++	#define MSG_BABYSTEP_Y "Babystep Y"
++	#define MSG_BABYSTEP_Z "Babystep Z"
++	#define MSG_ENDSTOP_ABORT "Endstop deuseztat"
++	
++// Serial Console Messages
++
++	#define MSG_Enqueing "Zerrendan \""
++	#define MSG_POWERUP "Pizketa"
++	#define MSG_EXTERNAL_RESET " Kanpoko Reset"
++	#define MSG_BROWNOUT_RESET " Tentsio Okerra Reset"
++	#define MSG_WATCHDOG_RESET " Reset Blokeoa"
++	#define MSG_SOFTWARE_RESET " Software Reset"
++	#define MSG_AUTHOR " | Egilea: "
++	#define MSG_CONFIGURATION_VER " Azken Aktualizazio: "
++	#define MSG_FREE_MEMORY " Aske Memoria: "
++	#define MSG_PLANNER_BUFFER_BYTES "  PlannerBufferBytes: "
++	#define MSG_OK "ok"
++	#define MSG_FILE_SAVED "Gordetuta."
++	#define MSG_ERR_LINE_NO "Lerro zenbakia ez da azken zenbakia+1 berdina, Azken Lerroa: "
++	#define MSG_ERR_CHECKSUM_MISMATCH "checksum-ak ez du aldiberekotasuna, Azken Lerroa: "
++	#define MSG_ERR_NO_CHECKSUM "Ez da checksum-ik aurkitu lerro zenbakian, Azken Lerroa: "
++	#define MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM "Ez da lerro zenbakia aurkitu checksum-arekin, Azken Lerroa: "
++	#define MSG_FILE_PRINTED "Inprimaketa bukatua"
++	#define MSG_BEGIN_FILE_LIST "Hasi artxibo zerrenda"
++	#define MSG_END_FILE_LIST "Amaitu artxibo zerrenda"
++	#define MSG_M104_INVALID_EXTRUDER "M104 Balio gabeko Estrusorea "
++	#define MSG_M105_INVALID_EXTRUDER "M105 Balio gabeko Estrusorea "
++	#define MSG_M200_INVALID_EXTRUDER "M200 Balio gabeko Estrusorea "
++	#define MSG_M218_INVALID_EXTRUDER "M218 Balio gabeko Estrusorea "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Balio gabeko Estrusorea "
++	#define MSG_ERR_NO_THERMISTORS "Termistorerik ez dago - Tenperaturarik gabe"
++	#define MSG_M109_INVALID_EXTRUDER "M109 Balio gabeko Estrusorea "
++	#define MSG_HEATING "Berotzen..."
++	#define MSG_HEATING_COMPLETE "berotuta."
++	#define MSG_BED_HEATING "Ohea berotzen."
++	#define MSG_BED_DONE "Ohea berotuta."
++	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:" STRINGIFY(EXTRUDERS) " UUID:" MACHINE_UUID "\n"
++	#define MSG_COUNT_X " X Kontu: "
++	#define MSG_ERR_KILLED "Inprimagailua geldituta. kill() called!"
++	#define MSG_ERR_STOPPED "Akatsen eraginez inprimagailua geldituta. Errorea konpondu eta M999 erabili berrabiarazteko. (Tenperatura galdu egin da. Berriro ipini)"
++	#define MSG_RESEND "Bidali berriro: "
++	#define MSG_UNKNOWN_COMMAND "Agindu ezezaguna: \""
++	#define MSG_ACTIVE_EXTRUDER "Estrusore Aktiboa: "
++	#define MSG_INVALID_EXTRUDER "Balio gabeko Estrusorea"
++	#define MSG_X_MIN "x_min: "
++	#define MSG_X_MAX "x_max: "
++	#define MSG_Y_MIN "y_min: "
++	#define MSG_Y_MAX "y_max: "
++	#define MSG_Z_MIN "z_min: "
++	#define MSG_Z_MAX "z_max: "
++	#define MSG_M119_REPORT "Bide amaiera egiaztatzen"
++	#define MSG_ENDSTOP_HIT "Sakatuta"
++	#define MSG_ENDSTOP_OPEN "irekia"
++	#define MSG_HOTEND_OFFSET "Hotend offsets:"
++
++	#define MSG_SD_CANT_OPEN_SUBDIR "Azpidirektorio ezin da ireki"
++	#define MSG_SD_INIT_FAIL "Akatsa txartela hasterakoan"
++	#define MSG_SD_VOL_INIT_FAIL "Akatsa partizioa hasterakoan"
++	#define MSG_SD_OPENROOT_FAIL "Akatsa direktorio nagusian"
++	#define MSG_SD_CARD_OK "SD card ok"
++	#define MSG_SD_WORKDIR_FAIL "Akatsa lan direktorioan"
++	#define MSG_SD_OPEN_FILE_FAIL "Akatsa irekitzean, File: "
++	#define MSG_SD_FILE_OPENED "Artxiboa irekita: "
++	#define MSG_SD_SIZE " Tamaina: "
++	#define MSG_SD_FILE_SELECTED "Artxiboa aukeratuta"
++	#define MSG_SD_WRITE_TO_FILE "Artxiboa idazten: "
++	#define MSG_SD_PRINTING_BYTE "SD byte idazten "
++	#define MSG_SD_NOT_PRINTING "Ez dago SD-tik inprimatzen"
++	#define MSG_SD_ERR_WRITE_TO_FILE "Akatsak artxiboa idazten"
++	#define MSG_SD_CANT_ENTER_SUBDIR "Azpidirektorio ezin da ireki: "
++
++	#define MSG_STEPPER_TOO_HIGH "Motorra oso goi dago: "
++	#define MSG_ENDSTOPS_HIT "Bide amaiera ukitu da: "
++	#define MSG_ERR_COLD_EXTRUDE_STOP " estrusio hotza saihestua"
++	#define MSG_ERR_LONG_EXTRUDE_STOP " estrusio oso luzea saihestua"
++	#define MSG_BABYSTEPPING_X "Babystepping X"
++	#define MSG_BABYSTEPPING_Y "Babystepping Y"
++	#define MSG_BABYSTEPPING_Z "Babystepping Z"
++	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Akatsak menu-an"
++	
++#endif
++
+ #endif // ifndef LANGUAGE_H
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 9976d43..14eff02 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -1,6 +1,7 @@
+ #ifndef PINS_H
+ #define PINS_H
+ 
++#if MOTHERBOARD != 88
+ #define X_MS1_PIN -1
+ #define X_MS2_PIN -1
+ #define Y_MS1_PIN -1
+@@ -12,6 +13,91 @@
+ #define E1_MS1_PIN -1
+ #define E1_MS2_PIN -1
+ #define DIGIPOTSS_PIN -1
++#endif
++
++/****************************************************************************************
++* 5DPrint D8 Driver board
++* https://bitbucket.org/makible/5dprint-d8-controller-board
++****************************************************************************************/
++
++#if MOTHERBOARD == 88
++
++#define KNOWN_BOARD 1
++#define AT90USB 1286  // Disable MarlinSerial etc.
++
++#ifndef __AVR_AT90USB1286__
++#error Oops!  Make sure you have 'Teensy++ 2.0' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define LARGE_FLASH        true
++
++#define X_STEP_PIN          0
++#define X_DIR_PIN           1
++#define X_ENABLE_PIN       23
++#define X_STOP_PIN         37
++
++#define Y_STEP_PIN          2
++#define Y_DIR_PIN           3
++#define Y_ENABLE_PIN       19
++#define Y_STOP_PIN         36
++
++#define Z_STEP_PIN          4
++#define Z_DIR_PIN           5
++#define Z_ENABLE_PIN       18
++#define Z_STOP_PIN         39
++
++#define E0_STEP_PIN         6
++#define E0_DIR_PIN          7
++#define E0_ENABLE_PIN      17
++
++#define HEATER_0_PIN       21  // Extruder
++#define HEATER_1_PIN       -1
++#define HEATER_2_PIN       -1
++#define HEATER_BED_PIN     20  // Bed
++// You may need to change FAN_PIN to 16 because Marlin isn't using fastio.h
++// for the fan and Teensyduino uses a different pin mapping.
++#define FAN_PIN            16  // Fan
++
++#define TEMP_0_PIN          1  // Extruder / Analog pin numbering
++#define TEMP_BED_PIN        0  // Bed / Analog pin numbering
++
++#define TEMP_1_PIN         -1
++#define TEMP_2_PIN         -1
++
++#define SDPOWER            -1
++#define LED_PIN            -1
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1
++#define ALARM_PIN          -1
++
++// The SDSS pin uses a different pin mapping from file Sd2PinMap.h
++#define SDSS               20
++
++#ifndef SDSUPPORT
++// these pins are defined in the SD library if building with SD support
++  #define SCK_PIN           9
++  #define MISO_PIN         11
++  #define MOSI_PIN         10
++#endif
++
++// Microstepping pins
++// Note that the pin mapping is not from fastio.h
++// See Sd2PinMap.h for the pin configurations
++#define X_MS1_PIN 25
++#define X_MS2_PIN 26
++#define Y_MS1_PIN 9
++#define Y_MS2_PIN 8
++#define Z_MS1_PIN 7
++#define Z_MS2_PIN 6
++#define E0_MS1_PIN 5
++#define E0_MS2_PIN 4
++
++#endif /* 88 */
++
++/****************************************************************************************
++*
++*
++****************************************************************************************/
+ 
+ #if MOTHERBOARD == 99
+ #define KNOWN_BOARD 1
+@@ -502,7 +588,7 @@
+   #endif
+ 
+   #if MOTHERBOARD == 35
+-    #define CONTROLLERFAN_PIN  10 //Pin used for the fan to cool controller
++    #define CONTROLLERFAN_PIN  -1 //Pin used for the fan to cool controller
+   #endif
+ 
+   #define PS_ON_PIN          12
+@@ -1054,6 +1140,22 @@
+  #define FAN_PIN            4
+ #endif
+ 
++#ifdef NUM_SERVOS
++  #define SERVO0_PIN          -1
++
++  #if NUM_SERVOS > 1
++    #define SERVO1_PIN        -1
++  #endif
++
++  #if NUM_SERVOS > 2
++    #define SERVO2_PIN        -1
++  #endif
++
++  #if NUM_SERVOS > 3
++    #define SERVO3_PIN        -1
++  #endif
++#endif
++
+ #define PS_ON_PIN          -1
+ #define KILL_PIN           -1
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index eaba436..9bc8eb8 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -191,7 +191,7 @@ void checkHitEndstops()
+    endstop_x_hit=false;
+    endstop_y_hit=false;
+    endstop_z_hit=false;
+-#ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
++#if defined(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED) && defined(SDSUPPORT)
+    if (abort_on_endstop_hit)
+    {
+      card.sdprinting = false;
+@@ -1228,13 +1228,22 @@ void digipot_current(uint8_t driver, int current)
+ 
+ void microstep_init()
+ {
+-  #if defined(X_MS1_PIN) && X_MS1_PIN > -1
+   const uint8_t microstep_modes[] = MICROSTEP_MODES;
+-  pinMode(X_MS2_PIN,OUTPUT);
++
++  #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
++  pinMode(E1_MS1_PIN,OUTPUT);
++  pinMode(E1_MS2_PIN,OUTPUT); 
++  #endif
++
++  #if defined(X_MS1_PIN) && X_MS1_PIN > -1
++  pinMode(X_MS1_PIN,OUTPUT);
++  pinMode(X_MS2_PIN,OUTPUT);  
++  pinMode(Y_MS1_PIN,OUTPUT);
+   pinMode(Y_MS2_PIN,OUTPUT);
+-  pinMode(Z_MS2_PIN,OUTPUT);
++  pinMode(Z_MS1_PIN,OUTPUT);
++  pinMode(Z_MS2_PIN,OUTPUT);  
++  pinMode(E0_MS1_PIN,OUTPUT);
+   pinMode(E0_MS2_PIN,OUTPUT);
+-  pinMode(E1_MS2_PIN,OUTPUT);
+   for(int i=0;i<=4;i++) microstep_mode(i,microstep_modes[i]);
+   #endif
+ }
+@@ -1247,7 +1256,9 @@ void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2)
+     case 1: digitalWrite( Y_MS1_PIN,ms1); break;
+     case 2: digitalWrite( Z_MS1_PIN,ms1); break;
+     case 3: digitalWrite(E0_MS1_PIN,ms1); break;
++    #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
+     case 4: digitalWrite(E1_MS1_PIN,ms1); break;
++    #endif
+   }
+   if(ms2 > -1) switch(driver)
+   {
+@@ -1255,7 +1266,9 @@ void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2)
+     case 1: digitalWrite( Y_MS2_PIN,ms2); break;
+     case 2: digitalWrite( Z_MS2_PIN,ms2); break;
+     case 3: digitalWrite(E0_MS2_PIN,ms2); break;
++    #if defined(E1_MS2_PIN) && E1_MS2_PIN > -1
+     case 4: digitalWrite(E1_MS2_PIN,ms2); break;
++    #endif
+   }
+ }
+ 
+@@ -1286,8 +1299,10 @@ void microstep_readings()
+       SERIAL_PROTOCOLPGM("E0: ");
+       SERIAL_PROTOCOL(   digitalRead(E0_MS1_PIN));
+       SERIAL_PROTOCOLLN( digitalRead(E0_MS2_PIN));
++      #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
+       SERIAL_PROTOCOLPGM("E1: ");
+       SERIAL_PROTOCOL(   digitalRead(E1_MS1_PIN));
+       SERIAL_PROTOCOLLN( digitalRead(E1_MS2_PIN));
++      #endif
+ }
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 6be3177..aac6ca6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -179,7 +179,7 @@ void PID_autotune(float temp, int extruder, int ncycles)
+   float Kp, Ki, Kd;
+   float max = 0, min = 10000;
+ 
+-  if ((extruder > EXTRUDERS)
++  if ((extruder >= EXTRUDERS)
+   #if (TEMP_BED_PIN <= -1)
+        ||(extruder < 0)
+   #endif
+@@ -258,14 +258,14 @@ void PID_autotune(float temp, int extruder, int ncycles)
+               Kp = 0.33*Ku;
+               Ki = Kp/Tu;
+               Kd = Kp*Tu/3;
+-              SERIAL_PROTOCOLLNPGM(" Some overshoot ")
++              SERIAL_PROTOCOLLNPGM(" Some overshoot ");
+               SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(Kp);
+               SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(Ki);
+               SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(Kd);
+               Kp = 0.2*Ku;
+               Ki = 2*Kp/Tu;
+               Kd = Kp*Tu/3;
+-              SERIAL_PROTOCOLLNPGM(" No overshoot ")
++              SERIAL_PROTOCOLLNPGM(" No overshoot ");
+               SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(Kp);
+               SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(Ki);
+               SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(Kd);
+@@ -609,6 +609,7 @@ static float analog2temp(int raw, uint8_t e) {
+       SERIAL_ERROR((int)e);
+       SERIAL_ERRORLNPGM(" - Invalid extruder number !");
+       kill();
++      return 0.0;
+   } 
+   #ifdef HEATER_0_USES_MAX6675
+     if (e == 0)
+@@ -909,7 +910,7 @@ void disable_heater()
+    #endif
+   #endif
+      
+-  #if defined(TEMP_1_PIN) && TEMP_1_PIN > -1
++  #if defined(TEMP_1_PIN) && TEMP_1_PIN > -1 && EXTRUDERS > 1
+     target_temperature[1]=0;
+     soft_pwm[1]=0;
+     #if defined(HEATER_1_PIN) && HEATER_1_PIN > -1 
+@@ -917,7 +918,7 @@ void disable_heater()
+     #endif
+   #endif
+       
+-  #if defined(TEMP_2_PIN) && TEMP_2_PIN > -1
++  #if defined(TEMP_2_PIN) && TEMP_2_PIN > -1 && EXTRUDERS > 2
+     target_temperature[2]=0;
+     soft_pwm[2]=0;
+     #if defined(HEATER_2_PIN) && HEATER_2_PIN > -1  
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index 1d2b3ca..07b385e 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -563,78 +563,135 @@ const short temptable_10[][2] PROGMEM = {
+    {1016*OVERSAMPLENR, 0}
+ };
+ #endif
+-
+-#if (THERMISTORHEATER_0 == 20) || (THERMISTORHEATER_1 == 20) || (THERMISTORHEATER_2 == 20) || (THERMISTORBED == 20) // PT100 with INA826 amp on Ultimaker v2.0 electronics
+-/* The PT100 in the Ultimaker v2.0 electronics has a high sample value for a high temperature.
+-This does not match the normal thermistor behaviour so we need to set the following defines */
+-#if (THERMISTORHEATER_0 == 20)
+-# define HEATER_0_RAW_HI_TEMP 16383
+-# define HEATER_0_RAW_LO_TEMP 0
+-#endif
+-#if (THERMISTORHEATER_1 == 20)
+-# define HEATER_1_RAW_HI_TEMP 16383
+-# define HEATER_1_RAW_LO_TEMP 0
+-#endif
+-#if (THERMISTORHEATER_2 == 20)
+-# define HEATER_2_RAW_HI_TEMP 16383
+-# define HEATER_2_RAW_LO_TEMP 0
+-#endif
+-#if (THERMISTORBED == 20)
+-# define HEATER_BED_RAW_HI_TEMP 16383
+-# define HEATER_BED_RAW_LO_TEMP 0
+-#endif
+-const short temptable_20[][2] PROGMEM = {
+-{         0*OVERSAMPLENR ,       0     },
+-{       227*OVERSAMPLENR ,       1     },
+-{       236*OVERSAMPLENR ,       10     },
+-{       245*OVERSAMPLENR ,       20     },
+-{       253*OVERSAMPLENR ,       30     },
+-{       262*OVERSAMPLENR ,       40     },
+-{       270*OVERSAMPLENR ,       50     },
+-{       279*OVERSAMPLENR ,       60     },
+-{       287*OVERSAMPLENR ,       70     },
+-{       295*OVERSAMPLENR ,       80     },
+-{       304*OVERSAMPLENR ,       90     },
+-{       312*OVERSAMPLENR ,       100     },
+-{       320*OVERSAMPLENR ,       110     },
+-{       329*OVERSAMPLENR ,       120     },
+-{       337*OVERSAMPLENR ,       130     },
+-{       345*OVERSAMPLENR ,       140     },
+-{       353*OVERSAMPLENR ,       150     },
+-{       361*OVERSAMPLENR ,       160     },
+-{       369*OVERSAMPLENR ,       170     },
+-{       377*OVERSAMPLENR ,       180     },
+-{       385*OVERSAMPLENR ,       190     },
+-{       393*OVERSAMPLENR ,       200     },
+-{       401*OVERSAMPLENR ,       210     },
+-{       409*OVERSAMPLENR ,       220     },
+-{       417*OVERSAMPLENR ,       230     },
+-{       424*OVERSAMPLENR ,       240     },
+-{       432*OVERSAMPLENR ,       250     },
+-{       440*OVERSAMPLENR ,       260     },
+-{       447*OVERSAMPLENR ,       270     },
+-{       455*OVERSAMPLENR ,       280     },
+-{       463*OVERSAMPLENR ,       290     },
+-{       470*OVERSAMPLENR ,       300     },
+-{       478*OVERSAMPLENR ,       310     },
+-{       485*OVERSAMPLENR ,       320     },
+-{       493*OVERSAMPLENR ,       330     },
+-{       500*OVERSAMPLENR ,       340     },
+-{       507*OVERSAMPLENR ,       350     },
+-{       515*OVERSAMPLENR ,       360     },
+-{       522*OVERSAMPLENR ,       370     },
+-{       529*OVERSAMPLENR ,       380     },
+-{       537*OVERSAMPLENR ,       390     },
+-{       544*OVERSAMPLENR ,       400     },
+-{       614*OVERSAMPLENR ,       500     },
+-{       681*OVERSAMPLENR ,       600     },
+-{       744*OVERSAMPLENR ,       700     },
+-{       805*OVERSAMPLENR ,       800     },
+-{       862*OVERSAMPLENR ,       900     },
+-{       917*OVERSAMPLENR ,       1000     },
+-{       968*OVERSAMPLENR ,       1100     }
+-};
+-#endif
++
++#if (THERMISTORHEATER_0 == 11) || (THERMISTORHEATER_1 == 11) || (THERMISTORHEATER_2 == 11) || (THERMISTORBED == 11) 
++// QU-BD silicone bed QWG-104F-3950 thermistor
++
++const short temptable_11[][2] PROGMEM = {
++         {1*OVERSAMPLENR,        938},
++         {31*OVERSAMPLENR,       314},
++         {41*OVERSAMPLENR,       290},
++         {51*OVERSAMPLENR,       272},
++         {61*OVERSAMPLENR,       258},
++         {71*OVERSAMPLENR,       247},
++         {81*OVERSAMPLENR,       237},
++         {91*OVERSAMPLENR,       229},
++         {101*OVERSAMPLENR,      221},
++         {111*OVERSAMPLENR,      215},
++         {121*OVERSAMPLENR,      209},
++         {131*OVERSAMPLENR,      204},
++         {141*OVERSAMPLENR,      199},
++         {151*OVERSAMPLENR,      195},
++         {161*OVERSAMPLENR,      190},
++         {171*OVERSAMPLENR,      187},
++         {181*OVERSAMPLENR,      183},
++         {191*OVERSAMPLENR,      179},
++         {201*OVERSAMPLENR,      176},
++         {221*OVERSAMPLENR,      170},
++         {241*OVERSAMPLENR,      165},
++         {261*OVERSAMPLENR,      160},
++         {281*OVERSAMPLENR,      155},
++         {301*OVERSAMPLENR,      150},
++         {331*OVERSAMPLENR,      144},
++         {361*OVERSAMPLENR,      139},
++         {391*OVERSAMPLENR,      133},
++         {421*OVERSAMPLENR,      128},
++         {451*OVERSAMPLENR,      123},
++         {491*OVERSAMPLENR,      117},
++         {531*OVERSAMPLENR,      111},
++         {571*OVERSAMPLENR,      105},
++         {611*OVERSAMPLENR,      100},
++         {641*OVERSAMPLENR,      95},
++         {681*OVERSAMPLENR,      90},
++         {711*OVERSAMPLENR,      85},
++         {751*OVERSAMPLENR,      79},
++         {791*OVERSAMPLENR,      72},
++         {811*OVERSAMPLENR,      69},
++         {831*OVERSAMPLENR,      65},
++         {871*OVERSAMPLENR,      57},
++         {881*OVERSAMPLENR,      55},
++         {901*OVERSAMPLENR,      51},
++         {921*OVERSAMPLENR,      45},
++         {941*OVERSAMPLENR,      39},
++         {971*OVERSAMPLENR,      28},
++         {981*OVERSAMPLENR,      23},
++         {991*OVERSAMPLENR,      17},
++         {1001*OVERSAMPLENR,     9},
++         {1021*OVERSAMPLENR,     -27}
++};
++#endif
++
++#if (THERMISTORHEATER_0 == 20) || (THERMISTORHEATER_1 == 20) || (THERMISTORHEATER_2 == 20) || (THERMISTORBED == 20) // PT100 with INA826 amp on Ultimaker v2.0 electronics
++/* The PT100 in the Ultimaker v2.0 electronics has a high sample value for a high temperature.
++This does not match the normal thermistor behaviour so we need to set the following defines */
++#if (THERMISTORHEATER_0 == 20)
++# define HEATER_0_RAW_HI_TEMP 16383
++# define HEATER_0_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORHEATER_1 == 20)
++# define HEATER_1_RAW_HI_TEMP 16383
++# define HEATER_1_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORHEATER_2 == 20)
++# define HEATER_2_RAW_HI_TEMP 16383
++# define HEATER_2_RAW_LO_TEMP 0
++#endif
++#if (THERMISTORBED == 20)
++# define HEATER_BED_RAW_HI_TEMP 16383
++# define HEATER_BED_RAW_LO_TEMP 0
++#endif
++const short temptable_20[][2] PROGMEM = {
++{         0*OVERSAMPLENR ,       0     },
++{       227*OVERSAMPLENR ,       1     },
++{       236*OVERSAMPLENR ,       10     },
++{       245*OVERSAMPLENR ,       20     },
++{       253*OVERSAMPLENR ,       30     },
++{       262*OVERSAMPLENR ,       40     },
++{       270*OVERSAMPLENR ,       50     },
++{       279*OVERSAMPLENR ,       60     },
++{       287*OVERSAMPLENR ,       70     },
++{       295*OVERSAMPLENR ,       80     },
++{       304*OVERSAMPLENR ,       90     },
++{       312*OVERSAMPLENR ,       100     },
++{       320*OVERSAMPLENR ,       110     },
++{       329*OVERSAMPLENR ,       120     },
++{       337*OVERSAMPLENR ,       130     },
++{       345*OVERSAMPLENR ,       140     },
++{       353*OVERSAMPLENR ,       150     },
++{       361*OVERSAMPLENR ,       160     },
++{       369*OVERSAMPLENR ,       170     },
++{       377*OVERSAMPLENR ,       180     },
++{       385*OVERSAMPLENR ,       190     },
++{       393*OVERSAMPLENR ,       200     },
++{       401*OVERSAMPLENR ,       210     },
++{       409*OVERSAMPLENR ,       220     },
++{       417*OVERSAMPLENR ,       230     },
++{       424*OVERSAMPLENR ,       240     },
++{       432*OVERSAMPLENR ,       250     },
++{       440*OVERSAMPLENR ,       260     },
++{       447*OVERSAMPLENR ,       270     },
++{       455*OVERSAMPLENR ,       280     },
++{       463*OVERSAMPLENR ,       290     },
++{       470*OVERSAMPLENR ,       300     },
++{       478*OVERSAMPLENR ,       310     },
++{       485*OVERSAMPLENR ,       320     },
++{       493*OVERSAMPLENR ,       330     },
++{       500*OVERSAMPLENR ,       340     },
++{       507*OVERSAMPLENR ,       350     },
++{       515*OVERSAMPLENR ,       360     },
++{       522*OVERSAMPLENR ,       370     },
++{       529*OVERSAMPLENR ,       380     },
++{       537*OVERSAMPLENR ,       390     },
++{       544*OVERSAMPLENR ,       400     },
++{       614*OVERSAMPLENR ,       500     },
++{       681*OVERSAMPLENR ,       600     },
++{       744*OVERSAMPLENR ,       700     },
++{       805*OVERSAMPLENR ,       800     },
++{       862*OVERSAMPLENR ,       900     },
++{       917*OVERSAMPLENR ,       1000     },
++{       968*OVERSAMPLENR ,       1100     }
++};
++#endif
+ 
+ #if (THERMISTORHEATER_0 == 51) || (THERMISTORHEATER_1 == 51) || (THERMISTORHEATER_2 == 51) || (THERMISTORBED == 51)
+ // 100k EPCOS (WITH 1kohm RESISTOR FOR PULLUP, R9 ON SANGUINOLOLU! NOT FOR 4.7kohm PULLUP! THIS IS NOT NORMAL!)
+@@ -781,6 +838,14 @@ const short temptable_55[][2] PROGMEM = {
+ #endif
+ 
+ #if (THERMISTORHEATER_0 == 60) || (THERMISTORHEATER_1 == 60) || (THERMISTORHEATER_2 == 60) || (THERMISTORBED == 60) // Maker's Tool Works Kapton Bed Thermister
++// ./createTemperatureLookup.py --r0=100000 --t0=25 --r1=0 --r2=4700 --beta=3950 
++// r0: 100000
++// t0: 25
++// r1: 0 (parallel with rTherm)
++// r2: 4700 (series with rTherm)
++// beta: 3950
++// min adc: 1 at 0.0048828125 V
++// max adc: 1023 at 4.9951171875 V
+ const short temptable_60[][2] PROGMEM = {
+    {51*OVERSAMPLENR, 272},
+    {61*OVERSAMPLENR, 258},
+@@ -856,6 +921,41 @@ const short temptable_60[][2] PROGMEM = {
+    {1008*OVERSAMPLENR, 0},
+ };
+ #endif
++#if (THERMISTORBED == 12) 
++//100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup) (calibrated for Makibox hot bed)
++const short temptable_12[][2] PROGMEM = {
++   {35*OVERSAMPLENR, 180}, //top rating 180C
++   {211*OVERSAMPLENR, 140},
++   {233*OVERSAMPLENR, 135},
++   {261*OVERSAMPLENR, 130},
++   {290*OVERSAMPLENR, 125},
++   {328*OVERSAMPLENR, 120},
++   {362*OVERSAMPLENR, 115},
++   {406*OVERSAMPLENR, 110},
++   {446*OVERSAMPLENR, 105},
++   {496*OVERSAMPLENR, 100},
++   {539*OVERSAMPLENR, 95},
++   {585*OVERSAMPLENR, 90},
++   {629*OVERSAMPLENR, 85},
++   {675*OVERSAMPLENR, 80},
++   {718*OVERSAMPLENR, 75},
++   {758*OVERSAMPLENR, 70},
++   {793*OVERSAMPLENR, 65},
++   {822*OVERSAMPLENR, 60},
++   {841*OVERSAMPLENR, 55},
++   {875*OVERSAMPLENR, 50},
++   {899*OVERSAMPLENR, 45},
++   {926*OVERSAMPLENR, 40},
++   {946*OVERSAMPLENR, 35},
++   {962*OVERSAMPLENR, 30},
++   {977*OVERSAMPLENR, 25},
++   {987*OVERSAMPLENR, 20},
++   {995*OVERSAMPLENR, 15},
++   {1001*OVERSAMPLENR, 10},
++   {1010*OVERSAMPLENR, 0},
++   {1023*OVERSAMPLENR, -40},
++};
++#endif
+ 
+ // Pt1000 and Pt100 handling
+ // 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 3262f2d..f09dd41 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -194,8 +194,10 @@ static void lcd_status_screen()
+         currentMenu = lcd_main_menu;
+         encoderPosition = 0;
+         lcd_quick_feedback();
++        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
+     }
+ 
++#ifdef ULTIPANEL_FEEDMULTIPLY
+     // Dead zone at 100% feedrate
+     if ((feedmultiply < 100 && (feedmultiply + int(encoderPosition)) > 100) ||
+             (feedmultiply > 100 && (feedmultiply + int(encoderPosition)) < 100))
+@@ -219,6 +221,7 @@ static void lcd_status_screen()
+         feedmultiply += int(encoderPosition);
+         encoderPosition = 0;
+     }
++#endif//ULTIPANEL_FEEDMULTIPLY
+ 
+     if (feedmultiply < 10)
+         feedmultiply = 10;
+@@ -302,37 +305,6 @@ static void lcd_autostart_sd()
+ }
+ #endif
+ 
+-void lcd_preheat_pla()
+-{
+-    setTargetHotend0(plaPreheatHotendTemp);
+-    setTargetHotend1(plaPreheatHotendTemp);
+-    setTargetHotend2(plaPreheatHotendTemp);
+-    setTargetBed(plaPreheatHPBTemp);
+-    fanSpeed = plaPreheatFanSpeed;
+-    lcd_return_to_status();
+-    setWatch(); // heater sanity check timer
+-}
+-
+-void lcd_preheat_abs()
+-{
+-    setTargetHotend0(absPreheatHotendTemp);
+-    setTargetHotend1(absPreheatHotendTemp);
+-    setTargetHotend2(absPreheatHotendTemp);
+-    setTargetBed(absPreheatHPBTemp);
+-    fanSpeed = absPreheatFanSpeed;
+-    lcd_return_to_status();
+-    setWatch(); // heater sanity check timer
+-}
+-
+-static void lcd_cooldown()
+-{
+-    setTargetHotend0(0);
+-    setTargetHotend1(0);
+-    setTargetHotend2(0);
+-    setTargetBed(0);
+-    lcd_return_to_status();
+-}
+-
+ #ifdef BABYSTEPPING
+ static void lcd_babystep_x()
+ {
+@@ -412,6 +384,13 @@ static void lcd_tune_menu()
+ #endif
+     MENU_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
+     MENU_ITEM_EDIT(int3, MSG_FLOW, &extrudemultiply, 10, 999);
++    MENU_ITEM_EDIT(int3, MSG_FLOW0, &extruder_multiply[0], 10, 999);
++#if TEMP_SENSOR_1 != 0
++    MENU_ITEM_EDIT(int3, MSG_FLOW1, &extruder_multiply[1], 10, 999);
++#endif
++#if TEMP_SENSOR_2 != 0
++    MENU_ITEM_EDIT(int3, MSG_FLOW2, &extruder_multiply[2], 10, 999);
++#endif
+ 
+ #ifdef BABYSTEPPING
+     #ifdef BABYSTEP_XY
+@@ -426,6 +405,154 @@ static void lcd_tune_menu()
+     END_MENU();
+ }
+ 
++void lcd_preheat_pla0()
++{
++    setTargetHotend0(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs0()
++{
++    setTargetHotend0(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++#if TEMP_SENSOR_1 != 0 //2nd extruder preheat
++void lcd_preheat_pla1()
++{
++    setTargetHotend1(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs1()
++{
++    setTargetHotend1(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //2nd extruder preheat
++
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++void lcd_preheat_pla2()
++{
++    setTargetHotend2(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs2()
++{
++    setTargetHotend2(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //3 extruder preheat
++
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //more than one extruder present
++void lcd_preheat_pla012()
++{
++    setTargetHotend0(plaPreheatHotendTemp);
++    setTargetHotend1(plaPreheatHotendTemp);
++    setTargetHotend2(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs012()
++{
++    setTargetHotend0(absPreheatHotendTemp);
++    setTargetHotend1(absPreheatHotendTemp);
++    setTargetHotend2(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //more than one extruder present
++
++void lcd_preheat_pla_bedonly()
++{
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs_bedonly()
++{
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++static void lcd_preheat_pla_menu()
++{
++    START_MENU();
++    MENU_ITEM(back, MSG_PREPARE, lcd_prepare_menu);
++    MENU_ITEM(function, MSG_PREHEAT_PLA0, lcd_preheat_pla0);
++#if TEMP_SENSOR_1 != 0 //2 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA1, lcd_preheat_pla1);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA2, lcd_preheat_pla2);
++#endif //3 extruder preheat
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //all extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA012, lcd_preheat_pla012);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_BED != 0
++    MENU_ITEM(function, MSG_PREHEAT_PLA_BEDONLY, lcd_preheat_pla_bedonly);
++#endif
++    END_MENU();
++}
++
++static void lcd_preheat_abs_menu()
++{
++    START_MENU();
++    MENU_ITEM(back, MSG_PREPARE, lcd_prepare_menu);
++    MENU_ITEM(function, MSG_PREHEAT_ABS0, lcd_preheat_abs0);
++#if TEMP_SENSOR_1 != 0 //2 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS1, lcd_preheat_abs1);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS2, lcd_preheat_abs2);
++#endif //3 extruder preheat
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //all extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS012, lcd_preheat_abs012);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_BED != 0
++    MENU_ITEM(function, MSG_PREHEAT_ABS_BEDONLY, lcd_preheat_abs_bedonly);
++#endif
++    END_MENU();
++}
++
++void lcd_cooldown()
++{
++    setTargetHotend0(0);
++    setTargetHotend1(0);
++    setTargetHotend2(0);
++    setTargetBed(0);
++    fanSpeed = 0;
++    lcd_return_to_status();
++}
++
+ static void lcd_prepare_menu()
+ {
+     START_MENU();
+@@ -438,8 +565,15 @@ static void lcd_prepare_menu()
+     MENU_ITEM(gcode, MSG_DISABLE_STEPPERS, PSTR("M84"));
+     MENU_ITEM(gcode, MSG_AUTO_HOME, PSTR("G28"));
+     //MENU_ITEM(gcode, MSG_SET_ORIGIN, PSTR("G92 X0 Y0 Z0"));
+-    MENU_ITEM(function, MSG_PREHEAT_PLA, lcd_preheat_pla);
+-    MENU_ITEM(function, MSG_PREHEAT_ABS, lcd_preheat_abs);
++#if TEMP_SENSOR_0 != 0
++  #if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 || TEMP_SENSOR_BED != 0
++    MENU_ITEM(submenu, MSG_PREHEAT_PLA, lcd_preheat_pla_menu);
++    MENU_ITEM(submenu, MSG_PREHEAT_ABS, lcd_preheat_abs_menu);
++  #else
++    MENU_ITEM(function, MSG_PREHEAT_PLA, lcd_preheat_pla0);
++    MENU_ITEM(function, MSG_PREHEAT_ABS, lcd_preheat_abs0);
++  #endif
++#endif
+     MENU_ITEM(function, MSG_COOLDOWN, lcd_cooldown);
+ #if PS_ON_PIN > -1
+     if (powersupply)
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 932895b..11e0a95 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -297,7 +297,7 @@ static void lcd_implementation_init()
+         B00000
+     }; //thanks Sonny Mounicou
+ 
+-#if defined(LCDI2C_TYPE_PCF8575)
++#if defined(LCD_I2C_TYPE_PCF8575)
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+   #ifdef LCD_I2C_PIN_BL
+     lcd.setBacklightPin(LCD_I2C_PIN_BL,POSITIVE);
+diff --git a/README.md b/README.md
+index 443799e..17e920e 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,8 @@
+ ==========================
+ Marlin 3D Printer Firmware
+ ==========================
++[![Coverity Scan Build Status](https://scan.coverity.com/projects/2224/badge.svg)](https://scan.coverity.com/projects/2224)
++
+ Marlin has a GPL license because I believe in open development.
+ Please do not use this code in products (3D printers, CNC etc) that are closed source or are crippled by a patent.
+ 
+@@ -205,15 +207,15 @@ M Codes
+ *  M140 - Set bed target temp
+ *  M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
+ *         Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+-*  M200 - Set filament diameter
++*  M200 D<millimeters>- set filament diameter and set E axis units to cubic millimeters (use S0 to set back to millimeters).
+ *  M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ *  M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+ *  M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+ *  M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
+ *  M205 -  advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk, E=maximum E jerk
+ *  M206 - set additional homeing offset
+-*  M207 - set retract length S[positive mm] F[feedrate mm/sec] Z[additional zlift/hop]
+-*  M208 - set recover=unretract length S[positive mm surplus to the M207 S*] F[feedrate mm/sec]
++*  M207 - set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop], stays in mm regardless of M200 setting
++*  M208 - set recover=unretract length S[positive mm surplus to the M207 S*] F[feedrate mm/min]
+ *  M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
+ *  M218 - set hotend offset (in mm): T<extruder_number> X<offset_on_X> Y<offset_on_Y>
+ *  M220 S<factor in percent>- set speed factor override percentage
+

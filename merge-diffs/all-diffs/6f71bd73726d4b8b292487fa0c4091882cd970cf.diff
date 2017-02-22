@@ -1,0 +1,746 @@
+commit 6f71bd73726d4b8b292487fa0c4091882cd970cf (from cbe9ab902c892d576a7e73f64587f85ff55f8c6e)
+Merge: cbe9ab9 9bf78ef
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Sep 2 12:27:43 2016 -0500
+
+    Merge pull request #4754 from thinkyhead/rc_mixing_regression
+    
+    Unify counter_m and counter_M
+
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 364e66d..947fcb6 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -115,7 +115,7 @@ volatile long Stepper::count_position[NUM_AXIS] = { 0 };
+ volatile signed char Stepper::count_direction[NUM_AXIS] = { 1, 1, 1, 1 };
+ 
+ #if ENABLED(MIXING_EXTRUDER)
+-  long Stepper::counter_M[MIXING_STEPPERS];
++  long Stepper::counter_m[MIXING_STEPPERS];
+ #endif
+ 
+ unsigned short Stepper::acc_step_rate; // needed for deceleration start point
+@@ -340,7 +340,7 @@ void Stepper::isr() {
+ 
+       #if ENABLED(MIXING_EXTRUDER)
+         MIXING_STEPPERS_LOOP(i)
+-          counter_M[i] = -(current_block->mix_event_count[i] >> 1);
++          counter_m[i] = -(current_block->mix_event_count[i] >> 1);
+       #endif
+ 
+       step_events_completed = 0;
+@@ -392,12 +392,12 @@ void Stepper::isr() {
+ 
+         #if ENABLED(MIXING_EXTRUDER)
+           // Step mixing steppers proportionally
+-          long dir = motor_direction(E_AXIS) ? -1 : 1;
++          bool dir = motor_direction(E_AXIS);
+           MIXING_STEPPERS_LOOP(j) {
+             counter_m[j] += current_block->steps[E_AXIS];
+             if (counter_m[j] > 0) {
+               counter_m[j] -= current_block->mix_event_count[j];
+-              e_steps[j] += dir;
++              dir ? --e_steps[j] : ++e_steps[j];
+             }
+           }
+         #endif
+@@ -433,12 +433,12 @@ void Stepper::isr() {
+         #if ENABLED(MIXING_EXTRUDER)
+ 
+           // Step mixing steppers proportionally
+-          long dir = motor_direction(E_AXIS) ? -1 : 1;
++          bool dir = motor_direction(E_AXIS);
+           MIXING_STEPPERS_LOOP(j) {
+             counter_m[j] += current_block->steps[E_AXIS];
+             if (counter_m[j] > 0) {
+               counter_m[j] -= current_block->mix_event_count[j];
+-              e_steps[j] += dir;
++              dir ? --e_steps[j] : ++e_steps[j];
+             }
+           }
+ 
+@@ -487,9 +487,9 @@ void Stepper::isr() {
+           // Tick the counters used for this mix
+           MIXING_STEPPERS_LOOP(j) {
+             // Step mixing steppers (proportionally)
+-            counter_M[j] += current_block->steps[E_AXIS];
++            counter_m[j] += current_block->steps[E_AXIS];
+             // Step when the counter goes over zero
+-            if (counter_M[j] > 0) En_STEP_WRITE(j, !INVERT_E_STEP_PIN);
++            if (counter_m[j] > 0) En_STEP_WRITE(j, !INVERT_E_STEP_PIN);
+           }
+         #else // !MIXING_EXTRUDER
+           PULSE_START(E);
+@@ -520,8 +520,8 @@ void Stepper::isr() {
+             count_position[E_AXIS] += count_direction[E_AXIS];
+           }
+           MIXING_STEPPERS_LOOP(j) {
+-            if (counter_M[j] > 0) {
+-              counter_M[j] -= current_block->mix_event_count[j];
++            if (counter_m[j] > 0) {
++              counter_m[j] -= current_block->mix_event_count[j];
+               En_STEP_WRITE(j, INVERT_E_STEP_PIN);
+             }
+           }
+@@ -691,7 +691,7 @@ void Stepper::isr() {
+ 
+     #define STOP_E_PULSE(INDEX) \
+       if (e_steps[INDEX]) { \
+-        e_steps[INDEX] < 0 ? ++e_steps[INDEX] : --e_steps[INDEX]; \
++        e_steps[INDEX] <= 0 ? ++e_steps[INDEX] : --e_steps[INDEX]; \
+         E## INDEX ##_STEP_WRITE(!INVERT_E_STEP_PIN); \
+       }
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index b38b0e8..4a2287c 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -152,7 +152,7 @@ class Stepper {
+     // Mixing extruder mix counters
+     //
+     #if ENABLED(MIXING_EXTRUDER)
+-      static long counter_M[MIXING_STEPPERS];
++      static long counter_m[MIXING_STEPPERS];
+       #define MIXING_STEPPERS_LOOP(VAR) \
+         for (uint8_t VAR = 0; VAR < MIXING_STEPPERS; VAR++) \
+           if (current_block->mix_event_count[VAR])
+
+commit 6f71bd73726d4b8b292487fa0c4091882cd970cf (from 9bf78ef46567b2aed71ca7575fe6a81b50cb7f95)
+Merge: cbe9ab9 9bf78ef
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Sep 2 12:27:43 2016 -0500
+
+    Merge pull request #4754 from thinkyhead/rc_mixing_regression
+    
+    Unify counter_m and counter_M
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 62aa501..9dadb9e 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/duration_t.h b/Marlin/duration_t.h
+index 8e08791..926fc13 100644
+--- a/Marlin/duration_t.h
++++ b/Marlin/duration_t.h
+@@ -146,11 +146,14 @@ struct duration_t {
+    *  11d 12:33
+    */
+   void toDigital(char *buffer, bool with_days=false) const {
+-    int m = this->minute() % 60;
++    uint16_t h = uint16_t(this->hour()),
++             m = uint16_t(this->minute() % 60UL);
+     if (with_days)
+-      sprintf_P(buffer, PSTR("%id %02i:%02i"), this->day(), this->hour() % 24, m);
++      sprintf_P(buffer, PSTR("%ud %02u:%02u"), this->day(), h, m);
++    else if (h < 100)
++      sprintf_P(buffer, PSTR("%02u:%02u"), h % 24, m);
+     else
+-      sprintf_P(buffer, PSTR("%02i:%02i"), this->hour(), m);
++      sprintf_P(buffer, PSTR("%u:%02u"), h, m);
+   }
+ };
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index fe7c3c1..48b0fbf 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  10000   // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index a222fc8..3997675 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -427,7 +427,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  5000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 863ae7b..5862f35 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -425,7 +425,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  5000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index d82938e..c9bd55e 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -436,7 +436,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  1000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 71ecca0..412cf24 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -438,7 +438,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 5986582..4aacf0c 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -461,7 +461,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  1000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   1000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index aa31de8..925e65d 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  6000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 98d2877..7ae51f4 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  6000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 81562af..850d50c 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index d312769..335fc61 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -442,7 +442,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  1000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                8.0     // (mm/sec)
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index d2313a2..a709f5d 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -452,7 +452,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  2000   // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   400    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                5.0     // (mm/sec)
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index b10b542..97c7816 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -465,7 +465,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                 8.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index f228d3b..b8e600c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -436,7 +436,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                10.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 17fea4b..6a88346 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -444,7 +444,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index e73f405..e37d2d2 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -487,7 +487,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                15.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 1192234..09c52df 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -487,7 +487,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 864f58f..1b17850 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -487,7 +487,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 7f1e444..34a3181 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -483,7 +483,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 075c800..2794567 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -493,7 +493,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index eb29895..1c49c60 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -447,7 +447,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000    // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   3000    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index dc6f809..1767467 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -438,7 +438,7 @@
+ #define DEFAULT_RETRACT_ACCELERATION  3000   // E acceleration in mm/s^2 for retracts
+ #define DEFAULT_TRAVEL_ACCELERATION   500    // X, Y, Z acceleration in mm/s^2 for travel (non printing) moves
+ 
+-// "Jerk" specifies the minumum speed change that requires acceleration.
++// "Jerk" specifies the minimum speed change that requires acceleration.
+ // When changing speed and direction, if the difference is less than the
+ // value set here, it may happen instantaneously.
+ #define DEFAULT_XYJERK                20.0    // (mm/sec)
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 53d174f..947fcb6 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -426,7 +426,7 @@ void Stepper::isr() {
+           counter_E -= current_block->step_event_count;
+           #if DISABLED(MIXING_EXTRUDER)
+             // Don't step E here for mixing extruder
+-            e_steps[TOOL_E_INDEX] += motor_direction(E_AXIS) ? -1 : 1;
++            motor_direction(E_AXIS) ? --e_steps[TOOL_E_INDEX] : ++e_steps[TOOL_E_INDEX];
+           #endif
+         }
+ 
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index 8defa94..aeed61f 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -189,29 +189,32 @@ static void lcd_setFont(char font_nr) {
+   }
+ }
+ 
+-char lcd_print(char c) {
++void lcd_print(char c) {
++  if ((c > 0) && (c <= LCD_STR_SPECIAL_MAX)) {
++    u8g.setFont(FONT_SPECIAL_NAME);
++    u8g.print(c);
++    lcd_setFont(currentfont);
++  }
++  else charset_mapper(c);
++}
++
++char lcd_print_and_count(char c) {
+   if ((c > 0) && (c <= LCD_STR_SPECIAL_MAX)) {
+     u8g.setFont(FONT_SPECIAL_NAME);
+     u8g.print(c);
+     lcd_setFont(currentfont);
+     return 1;
+-  } else {
+-    return charset_mapper(c);
+   }
++  else return charset_mapper(c);
+ }
+ 
+-char lcd_print(const char* str) {
+-  int i = 0;
+-  char c, n = 0;
+-  while ((c = str[i++])) n += lcd_print(c);
+-  return n;
++void lcd_print(const char* str) {
++  for (uint8_t i = 0; char c = str[i]; ++i) lcd_print(c);
+ }
+ 
+-// Needed for Arduino < 1.0.0
+-char lcd_printPGM(const char* str) {
+-  char c, n = 0;
+-  while ((c = pgm_read_byte(str++))) n += lcd_print(c);
+-  return n;
++/* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
++void lcd_printPGM(const char* str) {
++  for (; char c = pgm_read_byte(str); ++str) lcd_print(c);
+ }
+ 
+ // Initialize or re-initializw the LCD
+@@ -337,11 +340,11 @@ FORCE_INLINE void _draw_axis_label(AxisEnum axis, const char *pstr, bool blink)
+     lcd_printPGM(pstr);
+   else {
+     if (!axis_homed[axis])
+-      lcd_printPGM(PSTR("?"));
++      u8g.print('?');
+     else {
+       #if DISABLED(DISABLE_REDUCED_ACCURACY_WARNING)
+         if (!axis_known_position[axis])
+-          lcd_printPGM(PSTR(" "));
++          u8g.print(' ');
+         else
+       #endif
+       lcd_printPGM(pstr);
+@@ -349,6 +352,8 @@ FORCE_INLINE void _draw_axis_label(AxisEnum axis, const char *pstr, bool blink)
+   }
+ }
+ 
++//#define DOGM_SD_PERCENT
++
+ static void lcd_implementation_status_screen() {
+   u8g.setColorIndex(1); // black on white
+ 
+@@ -380,6 +385,13 @@ static void lcd_implementation_status_screen() {
+     if (IS_SD_PRINTING) {
+       // Progress bar solid part
+       u8g.drawBox(55, 50, (unsigned int)(71 * card.percentDone() * 0.01), 2 - (TALL_FONT_CORRECTION));
++    
++      #if ENABLED(DOGM_SD_PERCENT)
++        // Percent complete
++        u8g.setPrintPos(55, 48);
++        u8g.print(itostr3(card.percentDone()));
++        u8g.print('%');
++      #endif
+     }
+ 
+     char buffer[10];
+@@ -387,7 +399,13 @@ static void lcd_implementation_status_screen() {
+     bool has_days = (elapsed.value > 60*60*24L);
+     elapsed.toDigital(buffer, has_days);
+ 
+-    u8g.setPrintPos(has_days ? 71 : 80, 48);
++    #if DISABLED(DOGM_SD_PERCENT)
++      #define SD_DURATION_X 71
++    #else
++      #define SD_DURATION_X 89
++    #endif
++
++    u8g.setPrintPos(SD_DURATION_X + (has_days ? 0 : 9), 48);
+     lcd_print(buffer);
+ 
+   #endif
+@@ -406,7 +424,7 @@ static void lcd_implementation_status_screen() {
+     int per = ((fanSpeeds[0] + 1) * 100) / 256;
+     if (per) {
+       lcd_print(itostr3(per));
+-      lcd_print('%');
++      u8g.print('%');
+     }
+   #endif
+ 
+@@ -448,7 +466,7 @@ static void lcd_implementation_status_screen() {
+   lcd_setFont(FONT_STATUSMENU);
+   u8g.setPrintPos(12, 49);
+   lcd_print(itostr3(feedrate_percentage));
+-  lcd_print('%');
++  u8g.print('%');
+ 
+   // Status line
+   #if ENABLED(USE_SMALL_INFOFONT)
+@@ -467,7 +485,7 @@ static void lcd_implementation_status_screen() {
+       lcd_print(ftostr12ns(filament_width_meas));
+       lcd_printPGM(PSTR(" factor:"));
+       lcd_print(itostr3(100.0 * volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]));
+-      lcd_print('%');
++      u8g.print('%');
+     }
+   #endif
+ }
+@@ -499,17 +517,17 @@ static void lcd_implementation_status_screen() {
+ 
+       if (center && !valstr) {
+         int8_t pad = (LCD_WIDTH - lcd_strlen_P(pstr)) / 2;
+-        while (--pad >= 0) { lcd_print(' '); n--; }
++        while (--pad >= 0) { u8g.print(' '); n--; }
+       }
+       while (n > 0 && (c = pgm_read_byte(pstr))) {
+-        n -= lcd_print(c);
++        n -= lcd_print_and_count(c);
+         pstr++;
+       }
+       if (valstr) while (n > 0 && (c = *valstr)) {
+-        n -= lcd_print(c);
++        n -= lcd_print_and_count(c);
+         valstr++;
+       }
+-      while (n-- > 0) lcd_print(' ');
++      while (n-- > 0) u8g.print(' ');
+     }
+ 
+   #endif // LCD_INFO_MENU || FILAMENT_CHANGE_FEATURE
+@@ -524,13 +542,13 @@ static void lcd_implementation_status_screen() {
+     lcd_implementation_mark_as_selected(row, isSelected);
+ 
+     while (c = pgm_read_byte(pstr)) {
+-      n -= lcd_print(c);
++      n -= lcd_print_and_count(c);
+       pstr++;
+     }
+-    while (n--) lcd_print(' ');
++    while (n--) u8g.print(' ');
+     u8g.setPrintPos(LCD_PIXEL_WIDTH - (DOG_CHAR_WIDTH), (row + 1) * (DOG_CHAR_HEIGHT));
+     lcd_print(post_char);
+-    lcd_print(' ');
++    u8g.print(' ');
+   }
+ 
+   // Macros for specific types of menu items
+@@ -548,11 +566,11 @@ static void lcd_implementation_status_screen() {
+     lcd_implementation_mark_as_selected(row, isSelected);
+ 
+     while (c = pgm_read_byte(pstr)) {
+-      n -= lcd_print(c);
++      n -= lcd_print_and_count(c);
+       pstr++;
+     }
+-    lcd_print(':');
+-    while (n--) lcd_print(' ');
++    u8g.print(':');
++    while (n--) u8g.print(' ');
+     u8g.setPrintPos(LCD_PIXEL_WIDTH - (DOG_CHAR_WIDTH) * vallen, (row + 1) * (DOG_CHAR_HEIGHT));
+     if (pgm)  lcd_printPGM(data);  else  lcd_print((char*)data);
+   }
+@@ -606,7 +624,7 @@ static void lcd_implementation_status_screen() {
+     u8g.setPrintPos(0, rowHeight + kHalfChar);
+     lcd_printPGM(pstr);
+     if (value != NULL) {
+-      lcd_print(':');
++      u8g.print(':');
+       u8g.setPrintPos((lcd_width - 1 - vallen) * char_width, rows * rowHeight + kHalfChar);
+       lcd_print(value);
+     }
+@@ -628,10 +646,10 @@ static void lcd_implementation_status_screen() {
+ 
+       if (isDir) lcd_print(LCD_STR_FOLDER[0]);
+       while ((c = *filename)) {
+-        n -= lcd_print(c);
++        n -= lcd_print_and_count(c);
+         filename++;
+       }
+-      while (n--) lcd_print(' ');
++      while (n--) u8g.print(' ');
+     }
+ 
+     #define lcd_implementation_drawmenu_sdfile(sel, row, pstr, filename, longFilename) _drawmenu_sd(sel, row, pstr, filename, longFilename, false)
+diff --git a/Marlin/ultralcd_impl_HD44780.h b/Marlin/ultralcd_impl_HD44780.h
+index 44d0bb9..3babc65 100644
+--- a/Marlin/ultralcd_impl_HD44780.h
++++ b/Marlin/ultralcd_impl_HD44780.h
+@@ -375,20 +375,15 @@ static void lcd_implementation_init(
+ static void lcd_implementation_clear() { lcd.clear(); }
+ 
+ /* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
+-char lcd_printPGM(const char* str) {
+-  char c, n = 0;
+-  while ((c = pgm_read_byte(str++))) n += charset_mapper(c);
+-  return n;
++void lcd_printPGM(const char *str) {
++  for (; char c = pgm_read_byte(str); ++str) charset_mapper(c);
+ }
+ 
+-char lcd_print(const char* str) {
+-  char c, n = 0;
+-  unsigned char i = 0;
+-  while ((c = str[i++])) n += charset_mapper(c);
+-  return n;
++void lcd_print(const char* str) {
++  for (uint8_t i = 0; char c = str[i]; ++i) charset_mapper(c);
+ }
+ 
+-unsigned lcd_print(char c) { return charset_mapper(c); }
++void lcd_print(char c) { charset_mapper(c); }
+ 
+ #if ENABLED(SHOW_BOOTSCREEN)
+ 
+@@ -556,11 +551,11 @@ FORCE_INLINE void _draw_axis_label(AxisEnum axis, const char *pstr, bool blink)
+     lcd_printPGM(pstr);
+   else {
+     if (!axis_homed[axis])
+-      lcd_printPGM(PSTR("?"));
++      lcd.print('?');
+     else {
+       #if DISABLED(DISABLE_REDUCED_ACCURACY_WARNING)
+         if (!axis_known_position[axis])
+-          lcd_printPGM(PSTR(" "));
++          lcd.print(' ');
+         else
+       #endif
+       lcd_printPGM(pstr);
+@@ -694,7 +689,7 @@ static void lcd_implementation_status_screen() {
+         _draw_axis_label(X_AXIS, PSTR(MSG_X), blink);
+         lcd.print(ftostr4sign(current_position[X_AXIS]));
+ 
+-        lcd_printPGM(PSTR(" "));
++        lcd.print(' ');
+ 
+         _draw_axis_label(Y_AXIS, PSTR(MSG_Y), blink);
+         lcd.print(ftostr4sign(current_position[Y_AXIS]));
+@@ -803,11 +798,11 @@ static void lcd_implementation_status_screen() {
+         while (--pad >= 0) { lcd.print(' '); n--; }
+       }
+       while (n > 0 && (c = pgm_read_byte(pstr))) {
+-        n -= lcd_print(c);
++        n -= charset_mapper(c);
+         pstr++;
+       }
+       if (valstr) while (n > 0 && (c = *valstr)) {
+-        n -= lcd_print(c);
++        n -= charset_mapper(c);
+         valstr++;
+       }
+       while (n-- > 0) lcd.print(' ');
+@@ -821,7 +816,7 @@ static void lcd_implementation_status_screen() {
+     lcd.setCursor(0, row);
+     lcd.print(sel ? pre_char : ' ');
+     while ((c = pgm_read_byte(pstr)) && n > 0) {
+-      n -= lcd_print(c);
++      n -= charset_mapper(c);
+       pstr++;
+     }
+     while (n--) lcd.print(' ');
+@@ -834,7 +829,7 @@ static void lcd_implementation_status_screen() {
+     lcd.setCursor(0, row);
+     lcd.print(sel ? pre_char : ' ');
+     while ((c = pgm_read_byte(pstr)) && n > 0) {
+-      n -= lcd_print(c);
++      n -= charset_mapper(c);
+       pstr++;
+     }
+     lcd.print(':');
+@@ -847,7 +842,7 @@ static void lcd_implementation_status_screen() {
+     lcd.setCursor(0, row);
+     lcd.print(sel ? pre_char : ' ');
+     while ((c = pgm_read_byte(pstr)) && n > 0) {
+-      n -= lcd_print(c);
++      n -= charset_mapper(c);
+       pstr++;
+     }
+     lcd.print(':');
+@@ -899,7 +894,7 @@ static void lcd_implementation_status_screen() {
+         longFilename[n] = '\0';
+       }
+       while ((c = *filename) && n > 0) {
+-        n -= lcd_print(c);
++        n -= charset_mapper(c);
+         filename++;
+       }
+       while (n--) lcd.print(' ');
+

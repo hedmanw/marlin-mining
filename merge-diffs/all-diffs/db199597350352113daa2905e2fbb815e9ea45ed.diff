@@ -1,0 +1,1127 @@
+commit db199597350352113daa2905e2fbb815e9ea45ed (from ee876dcd7aad4042a235fa42c948dec33cc5e705)
+Merge: ee876dc 2e96276
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Jun 27 20:46:26 2016 -0700
+
+    Merge pull request #4161 from thinkyhead/rc_general_cleanup
+    
+    Reduce storage requirements for strings, make some PGM
+
+diff --git a/Marlin/M100_Free_Mem_Chk.cpp b/Marlin/M100_Free_Mem_Chk.cpp
+index 521b759..c302779 100644
+--- a/Marlin/M100_Free_Mem_Chk.cpp
++++ b/Marlin/M100_Free_Mem_Chk.cpp
+@@ -86,7 +86,7 @@ void gcode_M100() {
+     sp = top_of_stack();
+     SERIAL_ECHOPGM("\nStack Pointer : ");
+     prt_hex_word((unsigned int) sp);
+-    SERIAL_ECHOPGM("\n");
++    SERIAL_EOL;
+     sp = (unsigned char*)((unsigned long) sp | 0x000f);
+     n = sp - ptr;
+     //
+@@ -94,25 +94,25 @@ void gcode_M100() {
+     //
+     while (ptr < sp) {
+       prt_hex_word((unsigned int) ptr); // Print the address
+-      SERIAL_ECHOPGM(":");
++      SERIAL_CHAR(':');
+       for (i = 0; i < 16; i++) {      // and 16 data bytes
+         prt_hex_byte(*(ptr + i));
+-        SERIAL_ECHOPGM(" ");
++        SERIAL_CHAR(' ');
+         delay(2);
+       }
+-      SERIAL_ECHO("|");         // now show where non 0xE5's are
++      SERIAL_CHAR('|');         // now show where non 0xE5's are
+       for (i = 0; i < 16; i++) {
+         delay(2);
+         if (*(ptr + i) == 0xe5)
+-          SERIAL_ECHOPGM(" ");
++          SERIAL_CHAR(' ');
+         else
+-          SERIAL_ECHOPGM("?");
++          SERIAL_CHAR('?');
+       }
+-      SERIAL_ECHO("\n");
++      SERIAL_EOL;
+       ptr += 16;
+       delay(2);
+     }
+-    SERIAL_ECHOLNPGM("Done.\n");
++    SERIAL_ECHOLNPGM("Done.");
+     return;
+   }
+ #endif
+@@ -137,7 +137,7 @@ void gcode_M100() {
+           SERIAL_ECHOPAIR("Found ", j);
+           SERIAL_ECHOPGM(" bytes free at 0x");
+           prt_hex_word((int) ptr + i);
+-          SERIAL_ECHOPGM("\n");
++          SERIAL_EOL;
+           i += j;
+           block_cnt++;
+         }
+@@ -150,8 +150,8 @@ void gcode_M100() {
+       }
+     }
+     if (block_cnt > 1)
+-      SERIAL_ECHOLNPGM("\nMemory Corruption detected in free memory area.\n");
+-    SERIAL_ECHO("\nDone.\n");
++      SERIAL_ECHOLNPGM("\nMemory Corruption detected in free memory area.");
++    SERIAL_ECHOLNPGM("\nDone.");
+     return;
+   }
+   //
+@@ -173,7 +173,7 @@ void gcode_M100() {
+     j = n / (x + 1);
+     for (i = 1; i <= x; i++) {
+       *(ptr + (i * j)) = i;
+-      SERIAL_ECHO("\nCorrupting address: 0x");
++      SERIAL_ECHOPGM("\nCorrupting address: 0x");
+       prt_hex_word((unsigned int)(ptr + (i * j)));
+     }
+     SERIAL_ECHOLNPGM("\n");
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 17a1c42..c4298aa 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -84,8 +84,9 @@ typedef unsigned long millis_t;
+ #define SERIAL_PROTOCOL_F(x,y) MYSERIAL.print(x,y)
+ #define SERIAL_PROTOCOLPGM(x) serialprintPGM(PSTR(x))
+ #define SERIAL_PROTOCOLLN(x) do{ MYSERIAL.print(x); SERIAL_EOL; }while(0)
+-#define SERIAL_PROTOCOLLNPGM(x) do{ serialprintPGM(PSTR(x)); SERIAL_EOL; }while(0)
++#define SERIAL_PROTOCOLLNPGM(x) do{ serialprintPGM(PSTR(x "\n")); }while(0)
+ 
++#define SERIAL_PROTOCOLPAIR(name, value) SERIAL_ECHOPAIR(name, value)
+ 
+ extern const char errormagic[] PROGMEM;
+ extern const char echomagic[] PROGMEM;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index aaddca0..293d165 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1442,8 +1442,8 @@ static void set_home_offset(AxisEnum axis, float v) {
+ static void set_axis_is_at_home(AxisEnum axis) {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+-      SERIAL_ECHOPAIR("set_axis_is_at_home(", axis);
+-      SERIAL_ECHOLNPGM(") >>>");
++      SERIAL_ECHOPAIR(">>> set_axis_is_at_home(", axis);
++      SERIAL_ECHOLNPGM(")");
+     }
+   #endif
+ 
+@@ -1993,7 +1993,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       long start_steps = stepper.position(Z_AXIS);
+ 
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("run_z_probe (DELTA) 1");
++        if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe (DELTA) 1", current_position);
+       #endif
+ 
+       // move down slowly until you find the bed
+@@ -2015,8 +2015,6 @@ static void clean_up_after_endstop_or_probe_move() {
+         if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe (DELTA) 2", current_position);
+       #endif
+ 
+-      SYNC_PLAN_POSITION_KINEMATIC();
+-
+     #else // !DELTA
+ 
+       #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+@@ -2054,14 +2052,14 @@ static void clean_up_after_endstop_or_probe_move() {
+       // Get the current stepper position after bumping an endstop
+       current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
+ 
+-      SYNC_PLAN_POSITION_KINEMATIC();
+-
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe", current_position);
+       #endif
+ 
+     #endif // !DELTA
+ 
++    SYNC_PLAN_POSITION_KINEMATIC();
++
+     feedrate = old_feedrate;
+ 
+     return current_position[Z_AXIS];
+@@ -2083,9 +2081,10 @@ static void clean_up_after_endstop_or_probe_move() {
+   static float probe_pt(float x, float y, bool stow = true, int verbose_level = 1) {
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) {
+-        SERIAL_ECHOLNPGM("probe_pt >>>");
+-        SERIAL_ECHOPAIR("> stow:", stow);
+-        SERIAL_EOL;
++        SERIAL_ECHOPAIR(">>> probe_pt(", x);
++        SERIAL_ECHOPAIR(", ", y);
++        SERIAL_ECHOPAIR(", ", stow ? "stow" : "no stow");
++        SERIAL_ECHOLNPGM(")");
+         DEBUG_POS("", current_position);
+       }
+     #endif
+@@ -2107,7 +2106,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     do_blocking_move_to_xy(x - (X_PROBE_OFFSET_FROM_EXTRUDER), y - (Y_PROBE_OFFSET_FROM_EXTRUDER));
+ 
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+-      if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> deploy_z_probe");
++      if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+     #endif
+     deploy_z_probe();
+ 
+@@ -2115,7 +2114,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+     if (stow) {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> stow_z_probe");
++        if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+       #endif
+       stow_z_probe();
+     }
+@@ -2329,7 +2328,7 @@ static void homeaxis(AxisEnum axis) {
+     #if HAS_BED_PROBE
+       if (axis == Z_AXIS && axis_home_dir < 0) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM(" > deploy_z_probe()");
++          if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+         #endif
+         deploy_z_probe();
+       }
+@@ -2453,7 +2452,7 @@ static void homeaxis(AxisEnum axis) {
+     #if HAS_BED_PROBE
+       if (axis == Z_AXIS && axis_home_dir < 0) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM(" > stow_z_probe()");
++          if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+         #endif
+         stow_z_probe();
+       }
+@@ -2543,7 +2542,7 @@ void unknown_command_error() {
+   SERIAL_ECHO_START;
+   SERIAL_ECHOPGM(MSG_UNKNOWN_COMMAND);
+   SERIAL_ECHO(current_command);
+-  SERIAL_ECHOPGM("\"\n");
++  SERIAL_ECHOLNPGM("\"");
+ }
+ 
+ #if ENABLED(HOST_KEEPALIVE_FEATURE)
+@@ -2741,7 +2740,7 @@ inline void gcode_G4() {
+ inline void gcode_G28() {
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+-    if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("gcode_G28 >>>");
++    if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM(">>> gcode_G28");
+   #endif
+ 
+   // Wait for planner moves to finish!
+@@ -3187,19 +3186,11 @@ inline void gcode_G28() {
+     switch (state) {
+       case MeshReport:
+         if (mbl.has_mesh()) {
+-          SERIAL_PROTOCOLPGM("State: ");
+-          if (mbl.active())
+-            SERIAL_PROTOCOLPGM("On");
+-          else
+-            SERIAL_PROTOCOLPGM("Off");
+-          SERIAL_PROTOCOLPGM("\nNum X,Y: ");
+-          SERIAL_PROTOCOL(MESH_NUM_X_POINTS);
+-          SERIAL_PROTOCOLCHAR(',');
+-          SERIAL_PROTOCOL(MESH_NUM_Y_POINTS);
+-          SERIAL_PROTOCOLPGM("\nZ search height: ");
+-          SERIAL_PROTOCOL(MESH_HOME_SEARCH_Z);
+-          SERIAL_PROTOCOLPGM("\nZ offset: ");
+-          SERIAL_PROTOCOL_F(mbl.z_offset, 5);
++          SERIAL_PROTOCOLPAIR("State: ", mbl.active() ? "On" : "Off");
++          SERIAL_PROTOCOLPAIR("\nNum X,Y: ", MESH_NUM_X_POINTS);
++          SERIAL_PROTOCOLCHAR(','); SERIAL_PROTOCOL(MESH_NUM_Y_POINTS);
++          SERIAL_PROTOCOLPAIR("\nZ search height: ", MESH_HOME_SEARCH_Z);
++          SERIAL_PROTOCOLPGM("\nZ offset: "); SERIAL_PROTOCOL_F(mbl.z_offset, 5);
+           SERIAL_PROTOCOLLNPGM("\nMeasured points:");
+           for (py = 0; py < MESH_NUM_Y_POINTS; py++) {
+             for (px = 0; px < MESH_NUM_X_POINTS; px++) {
+@@ -3268,30 +3259,30 @@ inline void gcode_G28() {
+         if (code_seen('X')) {
+           px = code_value_int() - 1;
+           if (px < 0 || px >= MESH_NUM_X_POINTS) {
+-            SERIAL_PROTOCOLPGM("X out of range (1-" STRINGIFY(MESH_NUM_X_POINTS) ").\n");
++            SERIAL_PROTOCOLLNPGM("X out of range (1-" STRINGIFY(MESH_NUM_X_POINTS) ").");
+             return;
+           }
+         }
+         else {
+-          SERIAL_PROTOCOLPGM("X not entered.\n");
++          SERIAL_PROTOCOLLNPGM("X not entered.");
+           return;
+         }
+         if (code_seen('Y')) {
+           py = code_value_int() - 1;
+           if (py < 0 || py >= MESH_NUM_Y_POINTS) {
+-            SERIAL_PROTOCOLPGM("Y out of range (1-" STRINGIFY(MESH_NUM_Y_POINTS) ").\n");
++            SERIAL_PROTOCOLLNPGM("Y out of range (1-" STRINGIFY(MESH_NUM_Y_POINTS) ").");
+             return;
+           }
+         }
+         else {
+-          SERIAL_PROTOCOLPGM("Y not entered.\n");
++          SERIAL_PROTOCOLLNPGM("Y not entered.");
+           return;
+         }
+         if (code_seen('Z')) {
+           z = code_value_axis_units(Z_AXIS);
+         }
+         else {
+-          SERIAL_PROTOCOLPGM("Z not entered.\n");
++          SERIAL_PROTOCOLLNPGM("Z not entered.");
+           return;
+         }
+         mbl.z_values[py][px] = z;
+@@ -3302,7 +3293,7 @@ inline void gcode_G28() {
+           z = code_value_axis_units(Z_AXIS);
+         }
+         else {
+-          SERIAL_PROTOCOLPGM("Z not entered.\n");
++          SERIAL_PROTOCOLLNPGM("Z not entered.");
+           return;
+         }
+         mbl.z_offset = z;
+@@ -3368,7 +3359,7 @@ inline void gcode_G28() {
+ 
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) {
+-        SERIAL_ECHOLNPGM("gcode_G29 >>>");
++        SERIAL_ECHOLNPGM(">>> gcode_G29");
+         DEBUG_POS("", current_position);
+       }
+     #endif
+@@ -3397,8 +3388,8 @@ inline void gcode_G28() {
+       #endif
+ 
+       if (verbose_level > 0) {
+-        SERIAL_PROTOCOLPGM("G29 Auto Bed Leveling\n");
+-        if (dryrun) SERIAL_ECHOLNPGM("Running in DRY-RUN mode");
++        SERIAL_PROTOCOLLNPGM("G29 Auto Bed Leveling");
++        if (dryrun) SERIAL_PROTOCOLLNPGM("Running in DRY-RUN mode");
+       }
+ 
+       int auto_bed_leveling_grid_points = AUTO_BED_LEVELING_GRID_POINTS;
+@@ -3406,7 +3397,7 @@ inline void gcode_G28() {
+       #if DISABLED(DELTA)
+         if (code_seen('P')) auto_bed_leveling_grid_points = code_value_int();
+         if (auto_bed_leveling_grid_points < 2) {
+-          SERIAL_PROTOCOLPGM("?Number of probed (P)oints is implausible (2 minimum).\n");
++          SERIAL_PROTOCOLLNPGM("?Number of probed (P)oints is implausible (2 minimum).");
+           return;
+         }
+       #endif
+@@ -3637,17 +3628,17 @@ inline void gcode_G28() {
+         // Show the Topography map if enabled
+         if (do_topography_map) {
+ 
+-          SERIAL_PROTOCOLPGM(" \nBed Height Topography: \n");
+-          SERIAL_PROTOCOLPGM("   +--- BACK --+\n");
+-          SERIAL_PROTOCOLPGM("   |           |\n");
+-          SERIAL_PROTOCOLPGM(" L |    (+)    | R\n");
+-          SERIAL_PROTOCOLPGM(" E |           | I\n");
+-          SERIAL_PROTOCOLPGM(" F | (-) N (+) | G\n");
+-          SERIAL_PROTOCOLPGM(" T |           | H\n");
+-          SERIAL_PROTOCOLPGM("   |    (-)    | T\n");
+-          SERIAL_PROTOCOLPGM("   |           |\n");
+-          SERIAL_PROTOCOLPGM("   O-- FRONT --+\n");
+-          SERIAL_PROTOCOLPGM(" (0,0)\n");
++          SERIAL_PROTOCOLLNPGM("\nBed Height Topography:\n"
++                                 "   +--- BACK --+\n"
++                                 "   |           |\n"
++                                 " L |    (+)    | R\n"
++                                 " E |           | I\n"
++                                 " F | (-) N (+) | G\n"
++                                 " T |           | H\n"
++                                 "   |    (-)    | T\n"
++                                 "   |           |\n"
++                                 "   O-- FRONT --+\n"
++                                 " (0,0)");
+ 
+           float min_diff = 999;
+ 
+@@ -3674,7 +3665,7 @@ inline void gcode_G28() {
+           } // yy
+           SERIAL_EOL;
+           if (verbose_level > 3) {
+-            SERIAL_PROTOCOLPGM(" \nCorrected Bed Height vs. Bed Topology: \n");
++            SERIAL_PROTOCOLLNPGM("\nCorrected Bed Height vs. Bed Topology:");
+ 
+             for (int yy = auto_bed_leveling_grid_points - 1; yy >= 0; yy--) {
+               for (int xx = 0; xx < auto_bed_leveling_grid_points; xx++) {
+@@ -3703,7 +3694,7 @@ inline void gcode_G28() {
+ 
+     #if DISABLED(DELTA)
+       if (verbose_level > 0)
+-        planner.bed_level_matrix.debug(" \n\nBed Level Correction Matrix:");
++        planner.bed_level_matrix.debug("\n\nBed Level Correction Matrix:");
+ 
+       if (!dryrun) {
+         /**
+@@ -3747,7 +3738,7 @@ inline void gcode_G28() {
+     #ifdef Z_PROBE_END_SCRIPT
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) {
+-          SERIAL_ECHO("Z Probe End Script: ");
++          SERIAL_ECHOPGM("Z Probe End Script: ");
+           SERIAL_ECHOLNPGM(Z_PROBE_END_SCRIPT);
+         }
+       #endif
+@@ -4130,16 +4121,16 @@ inline void gcode_M42() {
+ 
+     int8_t verbose_level = code_seen('V') ? code_value_byte() : 1;
+     if (verbose_level < 0 || verbose_level > 4) {
+-      SERIAL_PROTOCOLPGM("?Verbose Level not plausible (0-4).\n");
++      SERIAL_PROTOCOLLNPGM("?Verbose Level not plausible (0-4).");
+       return;
+     }
+ 
+     if (verbose_level > 0)
+-      SERIAL_PROTOCOLPGM("M48 Z-Probe Repeatability test\n");
++      SERIAL_PROTOCOLLNPGM("M48 Z-Probe Repeatability test");
+ 
+     int8_t n_samples = code_seen('P') ? code_value_byte() : 10;
+     if (n_samples < 4 || n_samples > 50) {
+-      SERIAL_PROTOCOLPGM("?Sample size not plausible (4-50).\n");
++      SERIAL_PROTOCOLLNPGM("?Sample size not plausible (4-50).");
+       return;
+     }
+ 
+@@ -4168,7 +4159,7 @@ inline void gcode_M42() {
+       }
+     #else
+       if (sqrt(X_probe_location * X_probe_location + Y_probe_location * Y_probe_location) > DELTA_PROBEABLE_RADIUS) {
+-        SERIAL_PROTOCOLPGM("? (X,Y) location outside of probeable radius.\n");
++        SERIAL_PROTOCOLLNPGM("? (X,Y) location outside of probeable radius.");
+         return;
+       }
+     #endif
+@@ -4176,7 +4167,7 @@ inline void gcode_M42() {
+     bool seen_L = code_seen('L');
+     uint8_t n_legs = seen_L ? code_value_byte() : 0;
+     if (n_legs > 15) {
+-      SERIAL_PROTOCOLPGM("?Number of legs in movement not plausible (0-15).\n");
++      SERIAL_PROTOCOLLNPGM("?Number of legs in movement not plausible (0-15).");
+       return;
+     }
+     if (n_legs == 1) n_legs = 2;
+@@ -4190,7 +4181,7 @@ inline void gcode_M42() {
+      * we don't want to use that as a starting point for each probe.
+      */
+     if (verbose_level > 2)
+-      SERIAL_PROTOCOLPGM("Positioning the probe...\n");
++      SERIAL_PROTOCOLLNPGM("Positioning the probe...");
+ 
+     #if ENABLED(DELTA)
+       // we don't do bed level correction in M48 because we want the raw data when we probe
+@@ -4223,9 +4214,9 @@ inline void gcode_M42() {
+         if (verbose_level > 3) {
+           SERIAL_ECHOPAIR("Starting radius: ", radius);
+           SERIAL_ECHOPAIR("   angle: ", angle);
+-          SERIAL_ECHO(" Direction: ");
+-          if (dir > 0) SERIAL_ECHO("Counter ");
+-          SERIAL_ECHOLN("Clockwise");
++          SERIAL_ECHOPGM(" Direction: ");
++          if (dir > 0) SERIAL_ECHOPGM("Counter-");
++          SERIAL_ECHOLNPGM("Clockwise");
+         }
+ 
+         for (uint8_t l = 0; l < n_legs - 1; l++) {
+@@ -4268,10 +4259,10 @@ inline void gcode_M42() {
+             }
+           #endif
+           if (verbose_level > 3) {
+-            SERIAL_PROTOCOL("Going to:");
+-            SERIAL_ECHOPAIR("x: ", X_current);
+-            SERIAL_ECHOPAIR("y: ", Y_current);
+-            SERIAL_ECHOPAIR("  z: ", current_position[Z_AXIS]);
++            SERIAL_PROTOCOLPGM("Going to:");
++            SERIAL_ECHOPAIR(" X", X_current);
++            SERIAL_ECHOPAIR(" Y", Y_current);
++            SERIAL_ECHOPAIR(" Z", current_position[Z_AXIS]);
+             SERIAL_EOL;
+           }
+           do_blocking_move_to_xy(X_current, Y_current);
+@@ -5542,9 +5533,9 @@ inline void gcode_M226() {
+     }
+     else if (servo_index >= 0) {
+       SERIAL_ECHO_START;
+-      SERIAL_ECHO(" Servo ");
++      SERIAL_ECHOPGM(" Servo ");
+       SERIAL_ECHO(servo_index);
+-      SERIAL_ECHO(": ");
++      SERIAL_ECHOPGM(": ");
+       SERIAL_ECHOLN(servo[servo_index].read());
+     }
+   }
+@@ -5601,17 +5592,17 @@ inline void gcode_M226() {
+       thermalManager.updatePID();
+       SERIAL_ECHO_START;
+       #if ENABLED(PID_PARAMS_PER_HOTEND)
+-        SERIAL_ECHO(" e:"); // specify extruder in serial output
++        SERIAL_ECHOPGM(" e:"); // specify extruder in serial output
+         SERIAL_ECHO(e);
+       #endif // PID_PARAMS_PER_HOTEND
+-      SERIAL_ECHO(" p:");
++      SERIAL_ECHOPGM(" p:");
+       SERIAL_ECHO(PID_PARAM(Kp, e));
+-      SERIAL_ECHO(" i:");
++      SERIAL_ECHOPGM(" i:");
+       SERIAL_ECHO(unscalePID_i(PID_PARAM(Ki, e)));
+-      SERIAL_ECHO(" d:");
++      SERIAL_ECHOPGM(" d:");
+       SERIAL_ECHO(unscalePID_d(PID_PARAM(Kd, e)));
+       #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-        SERIAL_ECHO(" c:");
++        SERIAL_ECHOPGM(" c:");
+         //Kc does not have scaling applied above, or in resetting defaults
+         SERIAL_ECHO(PID_PARAM(Kc, e));
+       #endif
+@@ -5635,11 +5626,11 @@ inline void gcode_M226() {
+     thermalManager.updatePID();
+ 
+     SERIAL_ECHO_START;
+-    SERIAL_ECHO(" p:");
++    SERIAL_ECHOPGM(" p:");
+     SERIAL_ECHO(thermalManager.bedKp);
+-    SERIAL_ECHO(" i:");
++    SERIAL_ECHOPGM(" i:");
+     SERIAL_ECHO(unscalePID_i(thermalManager.bedKi));
+-    SERIAL_ECHO(" d:");
++    SERIAL_ECHOPGM(" d:");
+     SERIAL_ECHOLN(unscalePID_d(thermalManager.bedKd));
+   }
+ 
+@@ -5739,7 +5730,7 @@ inline void gcode_M303() {
+ #if ENABLED(SCARA)
+   bool SCARA_move_to_cal(uint8_t delta_x, uint8_t delta_y) {
+     //SoftEndsEnabled = false;              // Ignore soft endstops during calibration
+-    //SERIAL_ECHOLN(" Soft endstops disabled ");
++    //SERIAL_ECHOLNPGM(" Soft endstops disabled");
+     if (IsRunning()) {
+       //gcode_get_destination(); // For X Y Z E F
+       delta[X_AXIS] = delta_x;
+@@ -5758,7 +5749,7 @@ inline void gcode_M303() {
+    * M360: SCARA calibration: Move to cal-position ThetaA (0 deg calibration)
+    */
+   inline bool gcode_M360() {
+-    SERIAL_ECHOLN(" Cal: Theta 0 ");
++    SERIAL_ECHOLNPGM(" Cal: Theta 0");
+     return SCARA_move_to_cal(0, 120);
+   }
+ 
+@@ -5766,7 +5757,7 @@ inline void gcode_M303() {
+    * M361: SCARA calibration: Move to cal-position ThetaB (90 deg calibration - steps per degree)
+    */
+   inline bool gcode_M361() {
+-    SERIAL_ECHOLN(" Cal: Theta 90 ");
++    SERIAL_ECHOLNPGM(" Cal: Theta 90");
+     return SCARA_move_to_cal(90, 130);
+   }
+ 
+@@ -5774,7 +5765,7 @@ inline void gcode_M303() {
+    * M362: SCARA calibration: Move to cal-position PsiA (0 deg calibration)
+    */
+   inline bool gcode_M362() {
+-    SERIAL_ECHOLN(" Cal: Psi 0 ");
++    SERIAL_ECHOLNPGM(" Cal: Psi 0");
+     return SCARA_move_to_cal(60, 180);
+   }
+ 
+@@ -5782,7 +5773,7 @@ inline void gcode_M303() {
+    * M363: SCARA calibration: Move to cal-position PsiB (90 deg calibration - steps per degree)
+    */
+   inline bool gcode_M363() {
+-    SERIAL_ECHOLN(" Cal: Psi 90 ");
++    SERIAL_ECHOLNPGM(" Cal: Psi 90");
+     return SCARA_move_to_cal(50, 90);
+   }
+ 
+@@ -5790,7 +5781,7 @@ inline void gcode_M303() {
+    * M364: SCARA calibration: Move to cal-position PSIC (90 deg to Theta calibration position)
+    */
+   inline bool gcode_M364() {
+-    SERIAL_ECHOLN(" Cal: Theta-Psi 90 ");
++    SERIAL_ECHOLNPGM(" Cal: Theta-Psi 90");
+     return SCARA_move_to_cal(45, 135);
+   }
+ 
+@@ -6109,6 +6100,7 @@ inline void gcode_M503() {
+       else {
+         SERIAL_ECHOPGM(MSG_Z_MIN);
+         SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MIN);
++        SERIAL_CHAR(' ');
+         SERIAL_ECHOPGM(MSG_Z_MAX);
+         SERIAL_ECHO(Z_PROBE_OFFSET_RANGE_MAX);
+       }
+@@ -6625,7 +6617,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+   #endif
+ 
+   SERIAL_ECHO_START;
+-  SERIAL_ECHO(MSG_ACTIVE_EXTRUDER);
++  SERIAL_ECHOPGM(MSG_ACTIVE_EXTRUDER);
+   SERIAL_PROTOCOLLN((int)active_extruder);
+ }
+ 
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 3910bee..4b7aaf6 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -102,7 +102,7 @@ void CardReader::lsDive(const char *prepend, SdFile parent, const char * const m
+       if (!dir.open(parent, lfilename, O_READ)) {
+         if (lsAction == LS_SerialPrint) {
+           SERIAL_ECHO_START;
+-          SERIAL_ECHOLN(MSG_SD_CANT_OPEN_SUBDIR);
++          SERIAL_ECHOPGM(MSG_SD_CANT_OPEN_SUBDIR);
+           SERIAL_ECHOLN(lfilename);
+         }
+       }
+@@ -357,8 +357,8 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+     dirname_start = &name[1];
+     while (dirname_start != NULL) {
+       dirname_end = strchr(dirname_start, '/');
+-      //SERIAL_ECHO("start:");SERIAL_ECHOLN((int)(dirname_start - name));
+-      //SERIAL_ECHO("end  :");SERIAL_ECHOLN((int)(dirname_end - name));
++      //SERIAL_ECHOPGM("start:");SERIAL_ECHOLN((int)(dirname_start - name));
++      //SERIAL_ECHOPGM("end  :");SERIAL_ECHOLN((int)(dirname_end - name));
+       if (dirname_end != NULL && dirname_end > dirname_start) {
+         char subdirname[FILENAME_LENGTH];
+         strncpy(subdirname, dirname_start, dirname_end - dirname_start);
+@@ -371,7 +371,7 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+           return;
+         }
+         else {
+-          //SERIAL_ECHOLN("dive ok");
++          //SERIAL_ECHOLNPGM("dive ok");
+         }
+ 
+         curDir = &myDir;
+@@ -379,7 +379,7 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+       }
+       else { // the remainder after all /fsa/fdsa/ is the filename
+         fname = dirname_start;
+-        //SERIAL_ECHOLN("remainder");
++        //SERIAL_ECHOLNPGM("remainder");
+         //SERIAL_ECHOLN(fname);
+         break;
+       }
+@@ -392,10 +392,9 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+   if (read) {
+     if (file.open(curDir, fname, O_READ)) {
+       filesize = file.fileSize();
+-      SERIAL_PROTOCOLPGM(MSG_SD_FILE_OPENED);
+-      SERIAL_PROTOCOL(fname);
+-      SERIAL_PROTOCOLPGM(MSG_SD_SIZE);
+-      SERIAL_PROTOCOLLN(filesize);
++      SERIAL_PROTOCOLPAIR(MSG_SD_FILE_OPENED, fname);
++      SERIAL_PROTOCOLPAIR(MSG_SD_SIZE, filesize);
++      SERIAL_EOL;
+       sdpos = 0;
+ 
+       SERIAL_PROTOCOLLNPGM(MSG_SD_FILE_SELECTED);
+@@ -403,21 +402,20 @@ void CardReader::openFile(char* name, bool read, bool push_current/*=false*/) {
+       lcd_setstatus(longFilename[0] ? longFilename : fname);
+     }
+     else {
+-      SERIAL_PROTOCOLPGM(MSG_SD_OPEN_FILE_FAIL);
+-      SERIAL_PROTOCOL(fname);
+-      SERIAL_PROTOCOLPGM(".\n");
++      SERIAL_PROTOCOLPAIR(MSG_SD_OPEN_FILE_FAIL, fname);
++      SERIAL_PROTOCOLCHAR('.');
++      SERIAL_EOL;
+     }
+   }
+   else { //write
+     if (!file.open(curDir, fname, O_CREAT | O_APPEND | O_WRITE | O_TRUNC)) {
+-      SERIAL_PROTOCOLPGM(MSG_SD_OPEN_FILE_FAIL);
+-      SERIAL_PROTOCOL(fname);
+-      SERIAL_PROTOCOLPGM(".\n");
++      SERIAL_PROTOCOLPAIR(MSG_SD_OPEN_FILE_FAIL, fname);
++      SERIAL_PROTOCOLCHAR('.');
++      SERIAL_EOL;
+     }
+     else {
+       saving = true;
+-      SERIAL_PROTOCOLPGM(MSG_SD_WRITE_TO_FILE);
+-      SERIAL_PROTOCOLLN(name);
++      SERIAL_PROTOCOLPAIR(MSG_SD_WRITE_TO_FILE, name);
+       lcd_setstatus(fname);
+     }
+   }
+@@ -438,21 +436,20 @@ void CardReader::removeFile(char* name) {
+     dirname_start = strchr(name, '/') + 1;
+     while (dirname_start != NULL) {
+       dirname_end = strchr(dirname_start, '/');
+-      //SERIAL_ECHO("start:");SERIAL_ECHOLN((int)(dirname_start - name));
+-      //SERIAL_ECHO("end  :");SERIAL_ECHOLN((int)(dirname_end - name));
++      //SERIAL_ECHOPGM("start:");SERIAL_ECHOLN((int)(dirname_start - name));
++      //SERIAL_ECHOPGM("end  :");SERIAL_ECHOLN((int)(dirname_end - name));
+       if (dirname_end != NULL && dirname_end > dirname_start) {
+         char subdirname[FILENAME_LENGTH];
+         strncpy(subdirname, dirname_start, dirname_end - dirname_start);
+         subdirname[dirname_end - dirname_start] = 0;
+         SERIAL_ECHOLN(subdirname);
+         if (!myDir.open(curDir, subdirname, O_READ)) {
+-          SERIAL_PROTOCOLPGM("open failed, File: ");
+-          SERIAL_PROTOCOL(subdirname);
++          SERIAL_PROTOCOLPAIR("open failed, File: ", subdirname);
+           SERIAL_PROTOCOLCHAR('.');
+           return;
+         }
+         else {
+-          //SERIAL_ECHOLN("dive ok");
++          //SERIAL_ECHOLNPGM("dive ok");
+         }
+ 
+         curDir = &myDir;
+@@ -460,7 +457,7 @@ void CardReader::removeFile(char* name) {
+       }
+       else { // the remainder after all /fsa/fdsa/ is the filename
+         fname = dirname_start;
+-        //SERIAL_ECHOLN("remainder");
++        //SERIAL_ECHOLNPGM("remainder");
+         //SERIAL_ECHOLN(fname);
+         break;
+       }
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 3def1c3..ea81b0c 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -344,7 +344,9 @@ void Config_RetrieveSettings() {
+   char stored_ver[4];
+   char ver[4] = EEPROM_VERSION;
+   EEPROM_READ_VAR(i, stored_ver); //read stored version
+-  //  SERIAL_ECHOLN("Version: [" << ver << "] Stored version: [" << stored_ver << "]");
++  //  SERIAL_ECHOPAIR("Version: [", ver);
++  //  SERIAL_ECHOPAIR("] Stored version: [", stored_ver);
++  //  SERIAL_ECHOLNPGM("]");
+ 
+   if (strncmp(ver, stored_ver, 3) != 0) {
+     Config_ResetDefault();
+@@ -717,7 +719,7 @@ void Config_PrintSettings(bool forReplay) {
+ 
+   CONFIG_ECHO_START;
+   if (!forReplay) {
+-    SERIAL_ECHOLNPGM("Home offset (mm):");
++    SERIAL_ECHOLNPGM("Home offset (mm)");
+     CONFIG_ECHO_START;
+   }
+   SERIAL_ECHOPAIR("  M206 X", home_offset[X_AXIS]);
+@@ -883,7 +885,7 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Auto-Retract: S=0 to disable, 1 to interpret extrude-only moves as retracts or recoveries");
+       CONFIG_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("  M209 S", (autoretract_enabled ? 1 : 0));
++    SERIAL_ECHOPAIR("  M209 S", autoretract_enabled ? 1 : 0);
+     SERIAL_EOL;
+ 
+   #endif // FWRETRACT
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 945b615..81a080e 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -197,7 +197,7 @@ void Endstops::report_state() {
+ } // Endstops::report_state
+ 
+ void Endstops::M119() {
+-  SERIAL_PROTOCOLLN(MSG_M119_REPORT);
++  SERIAL_PROTOCOLLNPGM(MSG_M119_REPORT);
+   #if HAS_X_MIN
+     SERIAL_PROTOCOLPGM(MSG_X_MIN);
+     SERIAL_PROTOCOLLN(((READ(X_MIN_PIN)^X_MIN_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
+diff --git a/Marlin/language.h b/Marlin/language.h
+index f7ac147..eb378fe 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -157,7 +157,7 @@
+ #define MSG_ENDSTOP_OPEN                    "open"
+ #define MSG_HOTEND_OFFSET                   "Hotend offsets:"
+ 
+-#define MSG_SD_CANT_OPEN_SUBDIR             "Cannot open subdir"
++#define MSG_SD_CANT_OPEN_SUBDIR             "Cannot open subdir "
+ #define MSG_SD_INIT_FAIL                    "SD init fail"
+ #define MSG_SD_VOL_INIT_FAIL                "volume.init failed"
+ #define MSG_SD_OPENROOT_FAIL                "openRoot failed"
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index b544cd6..300bd28 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -1103,7 +1103,7 @@ void Stepper::microstep_mode(uint8_t driver, uint8_t stepping_mode) {
+ }
+ 
+ void Stepper::microstep_readings() {
+-  SERIAL_PROTOCOLPGM("MS1,MS2 Pins\n");
++  SERIAL_PROTOCOLLNPGM("MS1,MS2 Pins");
+   SERIAL_PROTOCOLPGM("X: ");
+   SERIAL_PROTOCOL(digitalRead(X_MS1_PIN));
+   SERIAL_PROTOCOLLN(digitalRead(X_MS2_PIN));
+diff --git a/Marlin/stepper_dac.cpp b/Marlin/stepper_dac.cpp
+index 2663ab9..6c71b89 100644
+--- a/Marlin/stepper_dac.cpp
++++ b/Marlin/stepper_dac.cpp
+@@ -103,7 +103,7 @@
+     SERIAL_ECHOPAIR(" (",   dac_amps(2));
+     SERIAL_ECHOPAIR(") E:", dac_perc(3));
+     SERIAL_ECHOPAIR(" (",   dac_amps(3));
+-    SERIAL_ECHOLN(")");
++    SERIAL_ECHOLNPGM(")");
+   }
+ 
+   void dac_commit_eeprom() {
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 4a19968..a011b77 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -304,37 +304,37 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+               bias = constrain(bias, 20, max_pow - 20);
+               d = (bias > max_pow / 2) ? max_pow - 1 - bias : bias;
+ 
+-              SERIAL_PROTOCOLPGM(MSG_BIAS); SERIAL_PROTOCOL(bias);
+-              SERIAL_PROTOCOLPGM(MSG_D);    SERIAL_PROTOCOL(d);
+-              SERIAL_PROTOCOLPGM(MSG_T_MIN);  SERIAL_PROTOCOL(min);
+-              SERIAL_PROTOCOLPGM(MSG_T_MAX);  SERIAL_PROTOCOLLN(max);
++              SERIAL_PROTOCOLPAIR(MSG_BIAS, bias);
++              SERIAL_PROTOCOLPAIR(MSG_D, d);
++              SERIAL_PROTOCOLPAIR(MSG_T_MIN, min);
++              SERIAL_PROTOCOLPAIR(MSG_T_MAX, max);
+               if (cycles > 2) {
+                 Ku = (4.0 * d) / (3.14159265 * (max - min) / 2.0);
+                 Tu = ((float)(t_low + t_high) / 1000.0);
+-                SERIAL_PROTOCOLPGM(MSG_KU); SERIAL_PROTOCOL(Ku);
+-                SERIAL_PROTOCOLPGM(MSG_TU); SERIAL_PROTOCOLLN(Tu);
++                SERIAL_PROTOCOLPAIR(MSG_KU, Ku);
++                SERIAL_PROTOCOLPAIR(MSG_TU, Tu);
+                 workKp = 0.6 * Ku;
+                 workKi = 2 * workKp / Tu;
+                 workKd = workKp * Tu / 8;
+                 SERIAL_PROTOCOLLNPGM(MSG_CLASSIC_PID);
+-                SERIAL_PROTOCOLPGM(MSG_KP); SERIAL_PROTOCOLLN(workKp);
+-                SERIAL_PROTOCOLPGM(MSG_KI); SERIAL_PROTOCOLLN(workKi);
+-                SERIAL_PROTOCOLPGM(MSG_KD); SERIAL_PROTOCOLLN(workKd);
++                SERIAL_PROTOCOLPAIR(MSG_KP, workKp);
++                SERIAL_PROTOCOLPAIR(MSG_KI, workKi);
++                SERIAL_PROTOCOLPAIR(MSG_KD, workKd);
+                 /**
+                 workKp = 0.33*Ku;
+                 workKi = workKp/Tu;
+                 workKd = workKp*Tu/3;
+-                SERIAL_PROTOCOLLNPGM(" Some overshoot ");
+-                SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
+-                SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
+-                SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
++                SERIAL_PROTOCOLLNPGM(" Some overshoot");
++                SERIAL_PROTOCOLPAIR(" Kp: ", workKp);
++                SERIAL_PROTOCOLPAIR(" Ki: ", workKi);
++                SERIAL_PROTOCOLPAIR(" Kd: ", workKd);
+                 workKp = 0.2*Ku;
+                 workKi = 2*workKp/Tu;
+                 workKd = workKp*Tu/3;
+-                SERIAL_PROTOCOLLNPGM(" No overshoot ");
+-                SERIAL_PROTOCOLPGM(" Kp: "); SERIAL_PROTOCOLLN(workKp);
+-                SERIAL_PROTOCOLPGM(" Ki: "); SERIAL_PROTOCOLLN(workKi);
+-                SERIAL_PROTOCOLPGM(" Kd: "); SERIAL_PROTOCOLLN(workKd);
++                SERIAL_PROTOCOLLNPGM(" No overshoot");
++                SERIAL_PROTOCOLPAIR(" Kp: ", workKp);
++                SERIAL_PROTOCOLPAIR(" Ki: ", workKi);
++                SERIAL_PROTOCOLPAIR(" Kd: ", workKd);
+                 */
+               }
+             }
+@@ -377,17 +377,17 @@ unsigned char Temperature::soft_pwm[HOTENDS];
+ 
+         #if HAS_PID_FOR_BOTH
+           const char* estring = hotend < 0 ? "bed" : "";
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kp "); SERIAL_PROTOCOLLN(workKp);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Ki "); SERIAL_PROTOCOLLN(workKi);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_"); SERIAL_PROTOCOL(estring); SERIAL_PROTOCOLPGM("Kd "); SERIAL_PROTOCOLLN(workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kp ", workKp);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Ki ", workKi);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_", estring); SERIAL_PROTOCOLPAIR("Kd ", workKd);
+         #elif ENABLED(PIDTEMP)
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_Kp "); SERIAL_PROTOCOLLN(workKp);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_Ki "); SERIAL_PROTOCOLLN(workKi);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_Kd "); SERIAL_PROTOCOLLN(workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kp ", workKp);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Ki ", workKi);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_Kd ", workKd);
+         #else
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKp "); SERIAL_PROTOCOLLN(workKp);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKi "); SERIAL_PROTOCOLLN(workKi);
+-          SERIAL_PROTOCOLPGM("#define  DEFAULT_bedKd "); SERIAL_PROTOCOLLN(workKd);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKp ", workKp);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKi ", workKi);
++          SERIAL_PROTOCOLPAIR("#define  DEFAULT_bedKd ", workKd);
+         #endif
+ 
+         #define _SET_BED_PID() \
+@@ -626,16 +626,16 @@ float Temperature::get_pid_output(int e) {
+ 
+     #if ENABLED(PID_BED_DEBUG)
+       SERIAL_ECHO_START;
+-      SERIAL_ECHO(" PID_BED_DEBUG ");
+-      SERIAL_ECHO(": Input ");
++      SERIAL_ECHOPGM(" PID_BED_DEBUG ");
++      SERIAL_ECHOPGM(": Input ");
+       SERIAL_ECHO(current_temperature_bed);
+-      SERIAL_ECHO(" Output ");
++      SERIAL_ECHOPGM(" Output ");
+       SERIAL_ECHO(pid_output);
+-      SERIAL_ECHO(" pTerm ");
++      SERIAL_ECHOPGM(" pTerm ");
+       SERIAL_ECHO(pTerm_bed);
+-      SERIAL_ECHO(" iTerm ");
++      SERIAL_ECHOPGM(" iTerm ");
+       SERIAL_ECHO(iTerm_bed);
+-      SERIAL_ECHO(" dTerm ");
++      SERIAL_ECHOPGM(" dTerm ");
+       SERIAL_ECHOLN(dTerm_bed);
+     #endif //PID_BED_DEBUG
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index ea8d8c7..7fd0e9f 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2266,14 +2266,11 @@ void lcd_update() {
+ 
+                 #if ENABLED(ENCODER_RATE_MULTIPLIER_DEBUG)
+                   SERIAL_ECHO_START;
+-                  SERIAL_ECHO("Enc Step Rate: ");
+-                  SERIAL_ECHO(encoderStepRate);
+-                  SERIAL_ECHO("  Multiplier: ");
+-                  SERIAL_ECHO(encoderMultiplier);
+-                  SERIAL_ECHO("  ENCODER_10X_STEPS_PER_SEC: ");
+-                  SERIAL_ECHO(ENCODER_10X_STEPS_PER_SEC);
+-                  SERIAL_ECHO("  ENCODER_100X_STEPS_PER_SEC: ");
+-                  SERIAL_ECHOLN(ENCODER_100X_STEPS_PER_SEC);
++                  SERIAL_ECHOPAIR("Enc Step Rate: ", encoderStepRate);
++                  SERIAL_ECHOPAIR("  Multiplier: ", encoderMultiplier);
++                  SERIAL_ECHOPAIR("  ENCODER_10X_STEPS_PER_SEC: ", ENCODER_10X_STEPS_PER_SEC);
++                  SERIAL_ECHOPAIR("  ENCODER_100X_STEPS_PER_SEC: ", ENCODER_100X_STEPS_PER_SEC);
++                  SERIAL_EOL;
+                 #endif //ENCODER_RATE_MULTIPLIER_DEBUG
+               }
+ 
+
+commit db199597350352113daa2905e2fbb815e9ea45ed (from 2e96276bf4a477de495fa59ef40915de35209f53)
+Merge: ee876dc 2e96276
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Jun 27 20:46:26 2016 -0700
+
+    Merge pull request #4161 from thinkyhead/rc_general_cleanup
+    
+    Reduce storage requirements for strings, make some PGM
+
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index e85e682..ae03bde 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -40,6 +40,7 @@
+ #define BOARD_RAMPS_13_SF       38   // RAMPS 1.3 (Power outputs: Spindle, Controller Fan)
+ #define BOARD_FELIX2            37   // Felix 2.0+ Electronics Board (RAMPS like)
+ #define BOARD_RIGIDBOARD        42   // Invent-A-Part RigidBoard
++#define BOARD_RIGIDBOARD_V2     52   // Invent-A-Part RigidBoard V2
+ #define BOARD_RAMPS_14_EFB      43   // RAMPS 1.4 (Power outputs: Hotend, Fan, Bed)
+ #define BOARD_RAMPS_14_EEB      44   // RAMPS 1.4 (Power outputs: Hotend0, Hotend1, Bed)
+ #define BOARD_RAMPS_14_EFF      45   // RAMPS 1.4 (Power outputs: Hotend, Fan0, Fan1)
+diff --git a/Marlin/dac_mcp4728.cpp b/Marlin/dac_mcp4728.cpp
+index 3060e6e..01e38ed 100644
+--- a/Marlin/dac_mcp4728.cpp
++++ b/Marlin/dac_mcp4728.cpp
+@@ -43,9 +43,9 @@ void mcp4728_init() {
+   Wire.begin();
+   Wire.requestFrom(int(DAC_DEV_ADDRESS), 24);
+   while(Wire.available()) {
+-    int deviceID = Wire.receive();
+-    int hiByte = Wire.receive();
+-    int loByte = Wire.receive();
++    int deviceID = Wire.read();
++    int hiByte = Wire.read();
++    int loByte = Wire.read();
+ 
+     int isEEPROM = (deviceID & 0B00001000) >> 3;
+     int channel = (deviceID & 0B00110000) >> 4;
+@@ -70,10 +70,10 @@ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value) {
+  */
+ uint8_t mcp4728_eepromWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(SEQWRITE);
++  Wire.write(SEQWRITE);
+   for (uint8_t channel=0; channel <= 3; channel++) {
+-    Wire.send(DAC_STEPPER_VREF << 7 | 0 << 5 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
+-    Wire.send(lowByte(mcp4728_values[channel]));
++    Wire.write(DAC_STEPPER_VREF << 7 | 0 << 5 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
++    Wire.write(lowByte(mcp4728_values[channel]));
+   }
+   return Wire.endTransmission();
+ }
+@@ -83,7 +83,7 @@ uint8_t mcp4728_eepromWrite() {
+  */
+ uint8_t mcp4728_setVref_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(VREFWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(VREFWRITE | value << 3 | value << 2 | value << 1 | value);
+   return Wire.endTransmission();
+ }
+ /**
+@@ -91,7 +91,7 @@ uint8_t mcp4728_setVref_all(uint8_t value) {
+  */
+ uint8_t mcp4728_setGain_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(GAINWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(GAINWRITE | value << 3 | value << 2 | value << 1 | value);
+   return Wire.endTransmission();
+ }
+ 
+@@ -120,8 +120,8 @@ uint16_t mcp4728_getVout(uint8_t channel) {
+ uint8_t mcp4728_fastWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+   for (uint8_t channel=0; channel <= 3; channel++) {
+-    Wire.send(highByte(mcp4728_values[channel]));
+-    Wire.send(lowByte(mcp4728_values[channel]));
++    Wire.write(highByte(mcp4728_values[channel]));
++    Wire.write(lowByte(mcp4728_values[channel]));
+   }
+   return Wire.endTransmission();
+ }
+@@ -131,7 +131,7 @@ uint8_t mcp4728_fastWrite() {
+  */
+ uint8_t mcp4728_simpleCommand(byte simpleCommand) {
+   Wire.beginTransmission(GENERALCALL);
+-  Wire.send(simpleCommand);
++  Wire.write(simpleCommand);
+   return Wire.endTransmission();
+ }
+ 
+diff --git a/Marlin/dac_mcp4728.h b/Marlin/dac_mcp4728.h
+index e1739c5..18d22f2 100644
+--- a/Marlin/dac_mcp4728.h
++++ b/Marlin/dac_mcp4728.h
+@@ -31,9 +31,7 @@
+ #include "Configuration_adv.h"
+ 
+ #if ENABLED(DAC_STEPPER_CURRENT)
+-#include "WProgram.h"
+ #include "Wire.h"
+-//#include <Wire.h>
+ 
+ #define defaultVDD 5000
+ #define BASE_ADDR 0x60
+@@ -50,7 +48,9 @@
+ #define GAINWRITE 0B11000000
+ 
+ // This is taken from the original lib, makes it easy to edit if needed
+-#define DAC_DEV_ADDRESS (BASE_ADDR | 0x00)
++// DAC_OR_ADDRESS defined in pins_BOARD.h  file
++#define DAC_DEV_ADDRESS (BASE_ADDR | DAC_OR_ADDRESS)
++
+ 
+ void mcp4728_init();
+ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value);
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 91e5dba..a0abbed 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -117,8 +117,11 @@
+ 
+ // The following define selects which electronics board you have.
+ // Please choose the name from boards.h that matches your setup
++// for Rigidbot version 1 : #define MOTHERBOARD BOARD_RIGIDBOARD
++// for Rigidbot Version 2 : #define MOTHERBOARD BOARD_RIGIDBOARD_V2
++
+ #ifndef MOTHERBOARD
+-  #define MOTHERBOARD BOARD_RIGIDBOARD
++  #define MOTHERBOARD BOARD_RIGIDBOARD_V2
+ #endif
+ 
+ // Optional custom name for your RepStrap or other custom machine
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 4a090f3..bbabe53 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -129,6 +129,8 @@
+   #include "pins_MKS_BASE.h"
+ #elif MB(RIGIDBOARD)
+   #include "pins_RIGIDBOARD.h"
++#elif MB(RIGIDBOARD_V2)
++  #include "pins_RIGIDBOARD_V2.h"
+ #elif MB(MEGACONTROLLER)
+   #include "pins_MEGACONTROLLER.h"
+ #elif MB(BQ_ZUM_MEGA_3D)
+diff --git a/Marlin/pins_PRINTRBOARD_REVF.h b/Marlin/pins_PRINTRBOARD_REVF.h
+index c677346..799eb37 100644
+--- a/Marlin/pins_PRINTRBOARD_REVF.h
++++ b/Marlin/pins_PRINTRBOARD_REVF.h
+@@ -89,6 +89,7 @@
+ #define DAC_STEPPER_MAX   3520
+ #define DAC_STEPPER_VREF     1 //internal Vref, gain 1x = 2.048V
+ #define DAC_STEPPER_GAIN     0
++#define DAC_OR_ADDRESS    0x00
+ 
+ #if DISABLED(SDSUPPORT)
+   // these pins are defined in the SD library if building with SD support
+diff --git a/Marlin/pins_RIGIDBOARD_V2.h b/Marlin/pins_RIGIDBOARD_V2.h
+new file mode 100644
+index 0000000..1226c56
+--- /dev/null
++++ b/Marlin/pins_RIGIDBOARD_V2.h
+@@ -0,0 +1,40 @@
++/**
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++/**
++ * RIGIDBOARD V2 Arduino Mega with RAMPS v1.4 pin assignments
++ */
++
++#include "pins_RIGIDBOARD.h"
++
++// I2C based DAC like on the Printrboard REVF
++#define DAC_STEPPER_CURRENT
++// Channels available for DAC, For Rigidboard there are 4
++#define DAC_STEPPER_ORDER {0,1,2,3}
++
++#define DAC_STEPPER_SENSE    0.11
++#define DAC_STEPPER_ADDRESS  0
++#define DAC_STEPPER_MAX   5000
++#define DAC_STEPPER_VREF     1 //internal Vref, gain 1x = 2.048V
++#define DAC_STEPPER_GAIN     0
++#define DAC_DISABLE_PIN     42 //  set low to enable DAC
++#define DAC_OR_ADDRESS    0x01
+diff --git a/Marlin/stepper_dac.cpp b/Marlin/stepper_dac.cpp
+index cb07857..6c71b89 100644
+--- a/Marlin/stepper_dac.cpp
++++ b/Marlin/stepper_dac.cpp
+@@ -51,6 +51,11 @@
+   const uint8_t dac_order[NUM_AXIS] = DAC_STEPPER_ORDER;
+ 
+   int dac_init() {
++    #if PIN_EXISTS(DAC_DISABLE)
++      pinMode(DAC_DISABLE_PIN, OUTPUT);
++      digitalWrite(DAC_DISABLE_PIN, LOW);  // set pin low to enable DAC
++    #endif
++
+     mcp4728_init();
+ 
+     if (mcp4728_simpleCommand(RESET)) return -1;
+

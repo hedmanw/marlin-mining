@@ -1,0 +1,415 @@
+commit e03da4805b38280068fedd00cbd8fe854e5b3b89 (from 5b2c67f4c3767a040060bb801040ed560932d8ef)
+Merge: 5b2c67f a9ed39b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 7 19:24:46 2015 -0700
+
+    Merge pull request #1774 from epatel/Development
+    
+    Mesh bed leveling: Added G29 S3 + finer display steps during manual input + bug fix
+
+diff --git a/Documentation/MeshBedLeveling.md b/Documentation/MeshBedLeveling.md
+index 21eabb6..09c1ec9 100644
+--- a/Documentation/MeshBedLeveling.md
++++ b/Documentation/MeshBedLeveling.md
+@@ -7,7 +7,7 @@ Background
+ 
+ This mesh based method of leveling/compensating can compensate for an non-flat bed. There are various opinions about doing this. It was primarily written to compensate a RigidBot BIG bed (40x30cm) that was somewhat bent.
+ 
+-Currently there is no automatic way to probe the bed like the Auto Bed Leveling feature. This might soon be implemented though, stay tuned.
++Currently there is no automatic way to probe the bed like the Auto Bed Leveling feature. So, you can not enable `ENABLE_AUTO_BED_LEVELING` at the same time. This might soon be implemented though, stay tuned.
+ 
+ Theory
+ ------
+@@ -28,6 +28,10 @@ In `Configuration.h` there are two options that can be enabled.
+ 
+ There are also some values that can be set.
+ 
++The following will set the step distance used when manually turning the display encoder. Default is 0.025
++
++`MBL_Z_STEP` 
++
+ Following four define the area to cover. Default 10mm from max bed size
+ 
+ `MESH_MIN_X`<br/>
+@@ -55,14 +59,14 @@ When selecting this option the printer will first do a homing, and then travel t
+ 
+ If the EEPROM has been enable it can be good to issue a `M500` to get these points saved.
+ 
+-Issuing a `G29` will return the state of the mesh leveling.
++Issuing a `G29` will return the state of the mesh leveling and report the probed points.
+ 
+ Probing the bed with G-codes
+ ----------------------------
+ 
+ Probing the bed by G-codes follows the sequence much like doing it with the display.
+ 
+-`G29` or `G29 S0` will return the state bed leveling.
++`G29` or `G29 S0` will return the state of the bed leveling and report the probed points. Where X=1 Y=1 is the top-left value and X=MESH_NUM_X_POINTS Y=MESH_NUM_Y_POINTS is bottom-right value. X per column and Y per row.
+ 
+ `G29 S1` will initiate the bed leveling, homing and traveling to the first point to probe.
+ 
+@@ -70,6 +74,8 @@ Then use your preferred Printer controller program, i.e. Printrun, to lower the
+ 
+ `G29 S2` will store the point and travel to the next point until last point has been probed.
+ 
++`G29 S3 Xn Yn Zn.nn` will modify a single probed point. This can be used to tweak a badly probed point. Specify probe point where `Xn` and `Yn`, where `n` in `Xn` is between 1 and `MESH_NUM_X_POINTS`. Likewise for `Yn`. `Zn.nn` is the new Z value in that probed point. 
++
+ Note
+ ----
+ 
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 33a419b..788ee58 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -426,6 +426,10 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025  // Step size while manually probing Z axis
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 5439982..132c353 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2013,7 +2013,7 @@ inline void gcode_G28() {
+ 
+ #ifdef MESH_BED_LEVELING
+ 
+-  enum MeshLevelingState { MeshReport, MeshStart, MeshNext };
++  enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet };
+ 
+   /**
+    * G29: Mesh-based Z-Probe, probes a grid and produces a
+@@ -2021,20 +2021,31 @@ inline void gcode_G28() {
+    *
+    * Parameters With MESH_BED_LEVELING:
+    *
+-   *  S0 Produce a mesh report
+-   *  S1 Start probing mesh points
+-   *  S2 Probe the next mesh point
++   *  S0              Produce a mesh report
++   *  S1              Start probing mesh points
++   *  S2              Probe the next mesh point
++   *  S3 Xn Yn Zn.nn  Manually modify a single point
+    *
++   * The S0 report the points as below
++   *
++   *  +----> X-axis
++   *  |
++   *  |
++   *  v Y-axis
++   *  
+    */
+   inline void gcode_G29() {
+ 
+     static int probe_point = -1;
+     MeshLevelingState state = code_seen('S') || code_seen('s') ? (MeshLevelingState)code_value_short() : MeshReport;
+-    if (state < 0 || state > 2) {
+-      SERIAL_PROTOCOLLNPGM("S out of range (0-2).");
++    if (state < 0 || state > 3) {
++      SERIAL_PROTOCOLLNPGM("S out of range (0-3).");
+       return;
+     }
+ 
++    int ix, iy;
++    float z;
++
+     switch(state) {
+       case MeshReport:
+         if (mbl.active) {
+@@ -2068,7 +2079,6 @@ inline void gcode_G28() {
+           SERIAL_PROTOCOLLNPGM("Start mesh probing with \"G29 S1\" first.");
+           return;
+         }
+-        int ix, iy;
+         if (probe_point == 0) {
+           // Set Z to a positive value before recording the first Z.
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+@@ -2102,6 +2112,36 @@ inline void gcode_G28() {
+           mbl.active = 1;
+           enquecommands_P(PSTR("G28"));
+         }
++        break;
++
++      case MeshSet:
++        if (code_seen('X') || code_seen('x')) {
++          ix = code_value_long()-1;
++          if (ix < 0 || ix >= MESH_NUM_X_POINTS) {
++            SERIAL_PROTOCOLPGM("X out of range (1-" STRINGIFY(MESH_NUM_X_POINTS) ").\n");
++            return;
++          }
++        } else {
++            SERIAL_PROTOCOLPGM("X not entered.\n");
++            return;
++        }
++        if (code_seen('Y') || code_seen('y')) {
++          iy = code_value_long()-1;
++          if (iy < 0 || iy >= MESH_NUM_Y_POINTS) {
++            SERIAL_PROTOCOLPGM("Y out of range (1-" STRINGIFY(MESH_NUM_Y_POINTS) ").\n");
++            return;
++          }
++        } else {
++            SERIAL_PROTOCOLPGM("Y not entered.\n");
++            return;
++        }
++        if (code_seen('Z') || code_seen('z')) {
++          z = code_value();
++        } else {
++          SERIAL_PROTOCOLPGM("Z not entered.\n");
++          return;
++        }
++        mbl.z_values[iy][ix] = z;
+ 
+     } // switch(state)
+   }
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index d92938c..d1be770 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -92,6 +92,18 @@
+   #endif
+ 
+   /**
++   * Mesh Bed Leveling
++   */
++  #ifdef MESH_BED_LEVELING
++    #ifdef DELTA
++      #error MESH_BED_LEVELING does not yet support DELTA printers
++    #endif
++    #ifdef ENABLE_AUTO_BED_LEVELING
++      #error Select ENABLE_AUTO_BED_LEVELING or MESH_BED_LEVELING, not both
++    #endif
++  #endif
++
++  /**
+    * Auto Bed Leveling
+    */
+   #ifdef ENABLE_AUTO_BED_LEVELING
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index 52d0d4b..e513053 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -426,6 +426,10 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 7778488..9ed9472 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -364,6 +364,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index bc644f8..d320e9e 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -387,6 +387,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 9d741d4..fdbb32a 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -392,6 +392,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 8bdb407..96e05e6 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -416,6 +416,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index d308fbd..2bbe509 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -386,6 +386,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 8bb4b3a..c5ab70d 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -414,6 +414,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index d594cde..22f4f3f 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -414,6 +414,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6c4bdc2..fffc81c 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -384,6 +384,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 81f4dab..eb0e5a2 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -386,6 +386,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+ // #define MESH_BED_LEVELING    // Enable mesh bed leveling
+ 
++#ifdef MANUAL_BED_LEVELING
++  #define MBL_Z_STEP 0.025
++#endif  // MANUAL_BED_LEVELING
++
+ #ifdef MESH_BED_LEVELING
+   #define MESH_MIN_X 10
+   #define MESH_MAX_X (X_MAX_POS - MESH_MIN_X)
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index fc271f4..d657682 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1800,20 +1800,23 @@ static void _lcd_level_bed()
+ {
+   if (encoderPosition != 0) {
+     refresh_cmd_timeout();
+-    current_position[Z_AXIS] += float((int)encoderPosition) * 0.05;
++    current_position[Z_AXIS] += float((int)encoderPosition) * MBL_Z_STEP;
+     if (min_software_endstops && current_position[Z_AXIS] < Z_MIN_POS) current_position[Z_AXIS] = Z_MIN_POS;
+     if (max_software_endstops && current_position[Z_AXIS] > Z_MAX_POS) current_position[Z_AXIS] = Z_MAX_POS;
+     encoderPosition = 0;
+     plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[Z_AXIS]/60, active_extruder);
+     lcdDrawUpdate = 1;
+   }
+-  if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR("Z"), ftostr32(current_position[Z_AXIS]));
++  if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR("Z"), ftostr43(current_position[Z_AXIS]));
+   static bool debounce_click = false;
+   if (LCD_CLICKED) {
+     if (!debounce_click) {
+       debounce_click = true;
+       int ix = _lcd_level_bed_position % MESH_NUM_X_POINTS;
+       int iy = _lcd_level_bed_position / MESH_NUM_X_POINTS;
++      if (iy&1) { // Zig zag
++        ix = (MESH_NUM_X_POINTS - 1) - ix;
++      }
+       mbl.set_z(ix, iy, current_position[Z_AXIS]);
+       _lcd_level_bed_position++;
+       if (_lcd_level_bed_position == MESH_NUM_X_POINTS*MESH_NUM_Y_POINTS) {
+
+commit e03da4805b38280068fedd00cbd8fe854e5b3b89 (from a9ed39b12dc37f71a39c36154bf9ec60bbb8ec1e)
+Merge: 5b2c67f a9ed39b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Apr 7 19:24:46 2015 -0700
+
+    Merge pull request #1774 from epatel/Development
+    
+    Mesh bed leveling: Added G29 S3 + finer display steps during manual input + bug fix
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c53a638..132c353 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2180,7 +2180,7 @@ inline void gcode_G28() {
+    *
+    * Global Parameters:
+    *
+-   * E/e By default G29 will engages the probe, test the bed, then disengage.
++   * E/e By default G29 will engage the probe, test the bed, then disengage.
+    *     Include "E" to engage/disengage the probe for each sample.
+    *     There's no extra effect if you have a fixed probe.
+    *     Usage: "G29 E" or "G29 e"
+@@ -2358,7 +2358,7 @@ inline void gcode_G28() {
+           ProbeAction act;
+           if (deploy_probe_for_each_reading) // G29 E - Stow between probes
+             act = ProbeDeployAndStow;
+-          else if (yCount == 0 && xCount == 0)
++          else if (yCount == 0 && xCount == xStart)
+             act = ProbeDeploy;
+           else if (yCount == auto_bed_leveling_grid_points - 1 && xCount == xStop - xInc)
+             act = ProbeStow;
+diff --git a/Marlin/language_ru.h b/Marlin/language_ru.h
+index 4ab618e..61a3312 100644
+--- a/Marlin/language_ru.h
++++ b/Marlin/language_ru.h
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  * Russian
+  *
+  * LCD Menu Messages
+

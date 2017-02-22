@@ -1,0 +1,375 @@
+commit 254970c92a0c0419b890be4b324a5a5a7c8e18a4 (from d3660d22ae32bd2b821dfa830ece813fceb8c597)
+Merge: d3660d2 ba27f90
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Mar 6 15:09:35 2015 -0800
+
+    Merge pull request #1570 from C-o-r-E/escape_fix
+    
+    Fixes gCode handling of comments and escaped characters
+
+diff --git a/Documentation/GCodes.md b/Documentation/GCodes.md
+index 253fb7f..fde8435 100644
+--- a/Documentation/GCodes.md
++++ b/Documentation/GCodes.md
+@@ -101,3 +101,25 @@
+ *  M908 - Control digital trimpot directly.
+ *  M928 - Start SD logging (M928 filename.g) - ended by M29
+ *  M999 - Restart after being stopped by error
++
++# Comments
++
++Comments start at a `;` (semicolon) and end with the end of the line:
++
++    N3 T0*57 ; This is a comment
++    N4 G92 E0*67
++    ; So is this
++    N5 G28*22
++
++(example taken from the [RepRap wiki](http://reprap.org/wiki/Gcode#Comments))
++
++If you need to use a literal `;` somewhere (for example within `M117`), you can escape semicolons with a `\`
++(backslash):
++
++     M117 Hello \;)
++
++`\` can also be used to escape `\` itself, if you need a literal `\` in front of a `;`:
++
++    M117 backslash: \\;and a comment
++
++Please note that hosts should strip any comments before sending GCODE to the printer in order to save bandwidth.
+\ No newline at end of file
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b2ebbbe..ca1af60 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -730,103 +730,113 @@ void get_command()
+     serial_char = MYSERIAL.read();
+     if(serial_char == '\n' ||
+        serial_char == '\r' ||
+-       (serial_char == ':' && comment_mode == false) ||
+        serial_count >= (MAX_CMD_SIZE - 1) )
+     {
+-      if(!serial_count) { //if empty line
+-        comment_mode = false; //for new command
++      // end of line == end of comment
++      comment_mode = false;
++
++      if(!serial_count) {
++        // short cut for empty lines
+         return;
+       }
+       cmdbuffer[bufindw][serial_count] = 0; //terminate string
+-      if(!comment_mode){
+-        comment_mode = false; //for new command
+-        fromsd[bufindw] = false;
+-        if(strchr(cmdbuffer[bufindw], 'N') != NULL)
++
++      fromsd[bufindw] = false;
++      if(strchr(cmdbuffer[bufindw], 'N') != NULL)
++      {
++        strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
++        gcode_N = (strtol(strchr_pointer + 1, NULL, 10));
++        if(gcode_N != gcode_LastN+1 && (strstr_P(cmdbuffer[bufindw], PSTR("M110")) == NULL) ) {
++          SERIAL_ERROR_START;
++          SERIAL_ERRORPGM(MSG_ERR_LINE_NO);
++          SERIAL_ERRORLN(gcode_LastN);
++          //Serial.println(gcode_N);
++          FlushSerialRequestResend();
++          serial_count = 0;
++          return;
++        }
++
++        if(strchr(cmdbuffer[bufindw], '*') != NULL)
+         {
+-          strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
+-          gcode_N = (strtol(strchr_pointer + 1, NULL, 10));
+-          if(gcode_N != gcode_LastN+1 && (strstr_P(cmdbuffer[bufindw], PSTR("M110")) == NULL) ) {
+-            SERIAL_ERROR_START;
+-            SERIAL_ERRORPGM(MSG_ERR_LINE_NO);
+-            SERIAL_ERRORLN(gcode_LastN);
+-            //Serial.println(gcode_N);
+-            FlushSerialRequestResend();
+-            serial_count = 0;
+-            return;
+-          }
++          byte checksum = 0;
++          byte count = 0;
++          while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
++          strchr_pointer = strchr(cmdbuffer[bufindw], '*');
+ 
+-          if(strchr(cmdbuffer[bufindw], '*') != NULL)
+-          {
+-            byte checksum = 0;
+-            byte count = 0;
+-            while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
+-            strchr_pointer = strchr(cmdbuffer[bufindw], '*');
+-
+-            if( (int)(strtod(strchr_pointer + 1, NULL)) != checksum) {
+-              SERIAL_ERROR_START;
+-              SERIAL_ERRORPGM(MSG_ERR_CHECKSUM_MISMATCH);
+-              SERIAL_ERRORLN(gcode_LastN);
+-              FlushSerialRequestResend();
+-              serial_count = 0;
+-              return;
+-            }
+-            //if no errors, continue parsing
+-          }
+-          else
+-          {
++          if( (int)(strtod(strchr_pointer + 1, NULL)) != checksum) {
+             SERIAL_ERROR_START;
+-            SERIAL_ERRORPGM(MSG_ERR_NO_CHECKSUM);
++            SERIAL_ERRORPGM(MSG_ERR_CHECKSUM_MISMATCH);
+             SERIAL_ERRORLN(gcode_LastN);
+             FlushSerialRequestResend();
+             serial_count = 0;
+             return;
+           }
+-
+-          gcode_LastN = gcode_N;
+           //if no errors, continue parsing
+         }
+-        else  // if we don't receive 'N' but still see '*'
++        else
+         {
+-          if((strchr(cmdbuffer[bufindw], '*') != NULL))
+-          {
+-            SERIAL_ERROR_START;
+-            SERIAL_ERRORPGM(MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM);
+-            SERIAL_ERRORLN(gcode_LastN);
+-            serial_count = 0;
+-            return;
+-          }
++          SERIAL_ERROR_START;
++          SERIAL_ERRORPGM(MSG_ERR_NO_CHECKSUM);
++          SERIAL_ERRORLN(gcode_LastN);
++          FlushSerialRequestResend();
++          serial_count = 0;
++          return;
+         }
+-        if((strchr(cmdbuffer[bufindw], 'G') != NULL)){
+-          strchr_pointer = strchr(cmdbuffer[bufindw], 'G');
+-          switch((int)((strtod(strchr_pointer + 1, NULL)))){
+-          case 0:
+-          case 1:
+-          case 2:
+-          case 3:
+-            if (Stopped == true) {
+-              SERIAL_ERRORLNPGM(MSG_ERR_STOPPED);
+-              LCD_MESSAGEPGM(MSG_STOPPED);
+-            }
+-            break;
+-          default:
+-            break;
+-          }
+ 
++        gcode_LastN = gcode_N;
++        //if no errors, continue parsing
++      }
++      else  // if we don't receive 'N' but still see '*'
++      {
++        if((strchr(cmdbuffer[bufindw], '*') != NULL))
++        {
++          SERIAL_ERROR_START;
++          SERIAL_ERRORPGM(MSG_ERR_NO_LINENUMBER_WITH_CHECKSUM);
++          SERIAL_ERRORLN(gcode_LastN);
++          serial_count = 0;
++          return;
++        }
++      }
++      if((strchr(cmdbuffer[bufindw], 'G') != NULL)){
++        strchr_pointer = strchr(cmdbuffer[bufindw], 'G');
++        switch((int)((strtod(strchr_pointer + 1, NULL)))){
++        case 0:
++        case 1:
++        case 2:
++        case 3:
++          if (Stopped == true) {
++            SERIAL_ERRORLNPGM(MSG_ERR_STOPPED);
++            LCD_MESSAGEPGM(MSG_STOPPED);
++          }
++          break;
++        default:
++          break;
+         }
+ 
+-        //If command was e-stop process now
+-        if(strcmp(cmdbuffer[bufindw], "M112") == 0)
+-          kill();
+-        
+-        bufindw = (bufindw + 1)%BUFSIZE;
+-        buflen += 1;
+       }
++
++      //If command was e-stop process now
++      if(strcmp(cmdbuffer[bufindw], "M112") == 0)
++        kill();
++
++      bufindw = (bufindw + 1)%BUFSIZE;
++      buflen += 1;
++
+       serial_count = 0; //clear buffer
+     }
+-    else
+-    {
+-      if(serial_char == ';') comment_mode = true;
+-      if(!comment_mode) cmdbuffer[bufindw][serial_count++] = serial_char;
++    else if(serial_char == '\\') {  //Handle escapes
++       
++        if(MYSERIAL.available() > 0  && buflen < BUFSIZE) {
++            // if we have one more character, copy it over
++            serial_char = MYSERIAL.read();
++            cmdbuffer[bufindw][serial_count++] = serial_char;
++        }
++
++        //otherwise do nothing        
++    }
++    else { // its not a newline, carriage return or escape char
++        if(serial_char == ';') comment_mode = true;
++        if(!comment_mode) cmdbuffer[bufindw][serial_count++] = serial_char;
+     }
+   }
+   #ifdef SDSUPPORT
+
+commit 254970c92a0c0419b890be4b324a5a5a7c8e18a4 (from ba27f90e36d873ed89efadd5fcd84cd8d455e3a0)
+Merge: d3660d2 ba27f90
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Mar 6 15:09:35 2015 -0800
+
+    Merge pull request #1570 from C-o-r-E/escape_fix
+    
+    Fixes gCode handling of comments and escaped characters
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c759a78..ca1af60 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1782,8 +1782,6 @@ inline void gcode_G28() {
+ 
+   inline void gcode_G29() {
+ 
+-    float x_tmp, y_tmp, z_tmp, real_z;
+-
+     // Prevent user from running a G29 without first homing in X and Y
+     if (!axis_known_position[X_AXIS] || !axis_known_position[Y_AXIS]) {
+       LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
+@@ -1792,27 +1790,25 @@ inline void gcode_G28() {
+       return;
+     }
+ 
++    int verbose_level = 1;
++    float x_tmp, y_tmp, z_tmp, real_z;
++
++    if (code_seen('V') || code_seen('v')) {
++      verbose_level = code_value_long();
++      if (verbose_level < 0 || verbose_level > 4) {
++        SERIAL_PROTOCOLPGM("?(V)erbose Level is implausible (0-4).\n");
++        return;
++      }
++    }
++
+     bool enhanced_g29 = code_seen('E') || code_seen('e');
+ 
+     #ifdef AUTO_BED_LEVELING_GRID
+ 
+-      // Example Syntax:  G29 N4 V2 E T
+-      int verbose_level = 1;
+-
+-      bool topo_flag = code_seen('T') || code_seen('t');
++      bool topo_flag = verbose_level > 2 || code_seen('T') || code_seen('t');
+ 
+-      if (code_seen('V') || code_seen('v')) {
+-        verbose_level = code_value();
+-        if (verbose_level < 0 || verbose_level > 4) {
+-          SERIAL_PROTOCOLPGM("?(V)erbose Level is implausible (0-4).\n");
+-          return;
+-        }
+-        if (verbose_level > 0) {
+-          SERIAL_PROTOCOLPGM("G29 Enhanced Auto Bed Leveling Code V1.25:\n");
+-          SERIAL_PROTOCOLPGM("Full support at: http://3dprintboard.com/forum.php\n");
+-          if (verbose_level > 2) topo_flag = true;
+-        }
+-      }
++      if (verbose_level > 0)
++        SERIAL_PROTOCOLPGM("G29 Auto Bed Leveling\n");
+ 
+       int auto_bed_leveling_grid_points = code_seen('P') ? code_value_long() : AUTO_BED_LEVELING_GRID_POINTS;
+       if (auto_bed_leveling_grid_points < 2 || auto_bed_leveling_grid_points > AUTO_BED_LEVELING_GRID_POINTS) {
+@@ -2428,10 +2424,8 @@ inline void gcode_M42() {
+       }
+     }
+ 
+-    if (verbose_level > 0)   {
+-      SERIAL_PROTOCOLPGM("M48 Z-Probe Repeatability test.   Version 2.00\n");
+-      SERIAL_PROTOCOLPGM("Full support at: http://3dprintboard.com/forum.php\n");
+-    }
++    if (verbose_level > 0)
++      SERIAL_PROTOCOLPGM("M48 Z-Probe Repeatability test\n");
+ 
+     if (code_seen('n')) {
+       n_samples = code_value();
+@@ -2445,7 +2439,7 @@ inline void gcode_M42() {
+     Y_current = Y_probe_location = st_get_position_mm(Y_AXIS);
+     Z_current = st_get_position_mm(Z_AXIS);
+     Z_start_location = st_get_position_mm(Z_AXIS) + Z_RAISE_BEFORE_PROBING;
+-    ext_position   = st_get_position_mm(E_AXIS);
++    ext_position = st_get_position_mm(E_AXIS);
+ 
+     if (code_seen('E') || code_seen('e'))
+       engage_probe_for_each_reading++;
+diff --git a/Marlin/language.h b/Marlin/language.h
+index dc32bea..f894a27 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -169,8 +169,8 @@
+ #define MSG_PID_TIMEOUT                     MSG_PID_AUTOTUNE_FAILED " timeout"
+ #define MSG_BIAS                            " bias: "
+ #define MSG_D                               " d: "
+-#define MSG_MIN                             " min: "
+-#define MSG_MAX                             " max: "
++#define MSG_T_MIN                           " min: "
++#define MSG_T_MAX                           " max: "
+ #define MSG_KU                              " Ku: "
+ #define MSG_TU                              " Tu: "
+ #define MSG_CLASSIC_PID                     " Classic PID "
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index ae9e5f4..f41743b 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -296,8 +296,8 @@ void PID_autotune(float temp, int extruder, int ncycles)
+ 
+             SERIAL_PROTOCOLPGM(MSG_BIAS); SERIAL_PROTOCOL(bias);
+             SERIAL_PROTOCOLPGM(MSG_D);    SERIAL_PROTOCOL(d);
+-            SERIAL_PROTOCOLPGM(MSG_MIN);  SERIAL_PROTOCOL(min);
+-            SERIAL_PROTOCOLPGM(MSG_MAX);  SERIAL_PROTOCOLLN(max);
++            SERIAL_PROTOCOLPGM(MSG_T_MIN);  SERIAL_PROTOCOL(min);
++            SERIAL_PROTOCOLPGM(MSG_T_MAX);  SERIAL_PROTOCOLLN(max);
+             if (cycles > 2) {
+               Ku = (4.0 * d) / (3.14159265 * (max - min) / 2.0);
+               Tu = ((float)(t_low + t_high) / 1000.0);
+diff --git a/README.md b/README.md
+index c804d53..5107cf0 100644
+--- a/README.md
++++ b/README.md
+@@ -41,7 +41,7 @@ The current Marlin dev team consists of:
+ 
+  - Erik van der Zalm ([@ErikZalm](https://github.com/ErikZalm))
+  - [@daid](https://github.com/daid)
+- 
++
+ Sprinters lead developers are Kliment and caru.
+ Grbls lead developer is Simen Svale Skogsrud.
+ Sonney Jeon (Chamnit) improved some parts of grbl
+@@ -52,9 +52,9 @@ More features have been added by:
+   - Bradley Feldman,
+   - and others...
+ 
+-## Licence
++## License
+ 
+-Marlin is published unde the [GPL license](/Documentation/COPYING.md) because I believe in open development.
++Marlin is published under the [GPL license](/Documentation/COPYING.md) because I believe in open development.
+ Please do not use this code in products (3D printers, CNC etc) that are closed source or are crippled by a patent.
+ 
+ [![Flattr this git repo](http://api.flattr.com/button/flattr-badge-large.png)](https://flattr.com/submit/auto?user_id=ErikZalm&url=https://github.com/MarlinFirmware/Marlin&title=Marlin&language=&tags=github&category=software)
+

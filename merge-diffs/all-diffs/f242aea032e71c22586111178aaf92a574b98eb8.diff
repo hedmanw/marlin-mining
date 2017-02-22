@@ -1,0 +1,3132 @@
+commit f242aea032e71c22586111178aaf92a574b98eb8 (from 0342661b3f34e527286956acd87365b876d2ef5f)
+Merge: 0342661 f38553b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 14:07:52 2016 -0700
+
+    Merge pull request #4319 from thinkyhead/rc_feedrates_to_mess_with_you
+    
+    Wrangle feed rate variables
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 3c0ab80..a2143ca 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -297,8 +297,18 @@ inline void refresh_cmd_timeout() { previous_cmd_ms = millis(); }
+   #define CRITICAL_SECTION_END    SREG = _sreg;
+ #endif
+ 
++/**
++ * Feedrate scaling and conversion
++ */
++extern int feedrate_percentage;
++
++#define MMM_TO_MMS(MM_M) ((MM_M)/60.0)
++#define MMS_TO_MMM(MM_S) ((MM_S)*60.0)
++#define MMM_SCALED(MM_M) ((MM_M)*feedrate_percentage/100.0)
++#define MMS_SCALED(MM_S) MMM_SCALED(MM_S)
++#define MMM_TO_MMS_SCALED(MM_M) (MMS_SCALED(MMM_TO_MMS(MM_M)))
++
+ extern bool axis_relative_modes[];
+-extern int feedrate_multiplier;
+ extern bool volumetric_enabled;
+ extern int extruder_multiplier[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
+ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in millimeters), typically around 1.75 or 2.85, 0 disables the volumetric calculations for the extruder.
+@@ -386,7 +396,7 @@ float code_value_temp_diff();
+   extern bool autoretract_enabled;
+   extern bool retracted[EXTRUDERS]; // extruder[n].retracted
+   extern float retract_length, retract_length_swap, retract_feedrate_mm_s, retract_zlift;
+-  extern float retract_recover_length, retract_recover_length_swap, retract_recover_feedrate;
++  extern float retract_recover_length, retract_recover_length_swap, retract_recover_feedrate_mm_s;
+ #endif
+ 
+ // Print job timer
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 3e152e1..ad163d7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -280,7 +280,6 @@ bool Running = true;
+ 
+ uint8_t marlin_debug_flags = DEBUG_NONE;
+ 
+-static float feedrate = 1500.0, saved_feedrate;
+ float current_position[NUM_AXIS] = { 0.0 };
+ static float destination[NUM_AXIS] = { 0.0 };
+ bool axis_known_position[3] = { false };
+@@ -302,11 +301,15 @@ static uint8_t cmd_queue_index_r = 0,
+   TempUnit input_temp_units = TEMPUNIT_C;
+ #endif
+ 
+-const float homing_feedrate[] = HOMING_FEEDRATE;
++/**
++ * Feed rates are often configured with mm/m
++ * but the planner and stepper like mm/s units.
++ */
++const float homing_feedrate_mm_m[] = HOMING_FEEDRATE;
++static float feedrate_mm_m = 1500.0, saved_feedrate_mm_m;
++int feedrate_percentage = 100, saved_feedrate_percentage;
+ 
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+-int feedrate_multiplier = 100; //100->1 200->2
+-int saved_feedrate_multiplier;
+ int extruder_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DIA);
+@@ -382,16 +385,16 @@ static uint8_t target_extruder;
+   float zprobe_zoffset = Z_PROBE_OFFSET_FROM_EXTRUDER;
+ #endif
+ 
+-#define PLANNER_XY_FEEDRATE() (min(planner.max_feedrate[X_AXIS], planner.max_feedrate[Y_AXIS]))
++#define PLANNER_XY_FEEDRATE() (min(planner.max_feedrate_mm_s[X_AXIS], planner.max_feedrate_mm_s[Y_AXIS]))
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-  int xy_probe_speed = XY_PROBE_SPEED;
++  int xy_probe_feedrate_mm_m = XY_PROBE_SPEED;
+   bool bed_leveling_in_progress = false;
+-  #define XY_PROBE_FEEDRATE xy_probe_speed
++  #define XY_PROBE_FEEDRATE_MM_M xy_probe_feedrate_mm_m
+ #elif defined(XY_PROBE_SPEED)
+-  #define XY_PROBE_FEEDRATE XY_PROBE_SPEED
++  #define XY_PROBE_FEEDRATE_MM_M XY_PROBE_SPEED
+ #else
+-  #define XY_PROBE_FEEDRATE (PLANNER_XY_FEEDRATE() * 60)
++  #define XY_PROBE_FEEDRATE_MM_M MMS_TO_MMM(PLANNER_XY_FEEDRATE())
+ #endif
+ 
+ #if ENABLED(Z_DUAL_ENDSTOPS) && DISABLED(DELTA)
+@@ -430,7 +433,7 @@ static uint8_t target_extruder;
+   float retract_zlift = RETRACT_ZLIFT;
+   float retract_recover_length = RETRACT_RECOVER_LENGTH;
+   float retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
+-  float retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
++  float retract_recover_feedrate_mm_s = RETRACT_RECOVER_FEEDRATE;
+ 
+ #endif // FWRETRACT
+ 
+@@ -1599,7 +1602,7 @@ inline void set_homing_bump_feedrate(AxisEnum axis) {
+     SERIAL_ECHO_START;
+     SERIAL_ECHOLNPGM("Warning: Homing Bump Divisor < 1");
+   }
+-  feedrate = homing_feedrate[axis] / hbd;
++  feedrate_mm_m = homing_feedrate_mm_m[axis] / hbd;
+ }
+ //
+ // line_to_current_position
+@@ -1607,19 +1610,19 @@ inline void set_homing_bump_feedrate(AxisEnum axis) {
+ // (or from wherever it has been told it is located).
+ //
+ inline void line_to_current_position() {
+-  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], feedrate / 60, active_extruder);
++  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
+ }
+ inline void line_to_z(float zPosition) {
+-  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], zPosition, current_position[E_AXIS], feedrate / 60, active_extruder);
++  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], zPosition, current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
+ }
+ //
+ // line_to_destination
+ // Move the planner, not necessarily synced with current_position
+ //
+-inline void line_to_destination(float mm_m) {
+-  planner.buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], mm_m / 60, active_extruder);
++inline void line_to_destination(float fr_mm_m) {
++  planner.buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], MMM_TO_MMS(fr_mm_m), active_extruder);
+ }
+-inline void line_to_destination() { line_to_destination(feedrate); }
++inline void line_to_destination() { line_to_destination(feedrate_mm_m); }
+ 
+ /**
+  * sync_plan_position
+@@ -1647,7 +1650,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     #endif
+     refresh_cmd_timeout();
+     calculate_delta(destination);
+-    planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], (feedrate / 60) * (feedrate_multiplier / 100.0), active_extruder);
++    planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], MMM_TO_MMS_SCALED(feedrate_mm_m), active_extruder);
+     set_current_to_destination();
+   }
+ #endif
+@@ -1656,8 +1659,8 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+  *  Plan a move to (X, Y, Z) and set the current_position
+  *  The final current_position may not be the one that was requested
+  */
+-static void do_blocking_move_to(float x, float y, float z, float feed_rate = 0.0) {
+-  float old_feedrate = feedrate;
++static void do_blocking_move_to(float x, float y, float z, float fr_mm_m = 0.0) {
++  float old_feedrate_mm_m = feedrate_mm_m;
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) print_xyz(PSTR("do_blocking_move_to"), NULL, x, y, z);
+@@ -1665,7 +1668,7 @@ static void do_blocking_move_to(float x, float y, float z, float feed_rate = 0.0
+ 
+   #if ENABLED(DELTA)
+ 
+-    feedrate = (feed_rate != 0.0) ? feed_rate : XY_PROBE_FEEDRATE;
++    feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : XY_PROBE_FEEDRATE_MM_M;
+ 
+     destination[X_AXIS] = x;
+     destination[Y_AXIS] = y;
+@@ -1680,19 +1683,19 @@ static void do_blocking_move_to(float x, float y, float z, float feed_rate = 0.0
+ 
+     // If Z needs to raise, do it before moving XY
+     if (current_position[Z_AXIS] < z) {
+-      feedrate = (feed_rate != 0.0) ? feed_rate : homing_feedrate[Z_AXIS];
++      feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : homing_feedrate_mm_m[Z_AXIS];
+       current_position[Z_AXIS] = z;
+       line_to_current_position();
+     }
+ 
+-    feedrate = (feed_rate != 0.0) ? feed_rate : XY_PROBE_FEEDRATE;
++    feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : XY_PROBE_FEEDRATE_MM_M;
+     current_position[X_AXIS] = x;
+     current_position[Y_AXIS] = y;
+     line_to_current_position();
+ 
+     // If Z needs to lower, do it after moving XY
+     if (current_position[Z_AXIS] > z) {
+-      feedrate = (feed_rate != 0.0) ? feed_rate : homing_feedrate[Z_AXIS];
++      feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : homing_feedrate_mm_m[Z_AXIS];
+       current_position[Z_AXIS] = z;
+       line_to_current_position();
+     }
+@@ -1701,23 +1704,23 @@ static void do_blocking_move_to(float x, float y, float z, float feed_rate = 0.0
+ 
+   stepper.synchronize();
+ 
+-  feedrate = old_feedrate;
++  feedrate_mm_m = old_feedrate_mm_m;
+ }
+ 
+-inline void do_blocking_move_to_x(float x, float feed_rate = 0.0) {
+-  do_blocking_move_to(x, current_position[Y_AXIS], current_position[Z_AXIS], feed_rate);
++inline void do_blocking_move_to_x(float x, float fr_mm_m = 0.0) {
++  do_blocking_move_to(x, current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+ }
+ 
+ inline void do_blocking_move_to_y(float y) {
+   do_blocking_move_to(current_position[X_AXIS], y, current_position[Z_AXIS]);
+ }
+ 
+-inline void do_blocking_move_to_xy(float x, float y, float feed_rate = 0.0) {
+-  do_blocking_move_to(x, y, current_position[Z_AXIS], feed_rate);
++inline void do_blocking_move_to_xy(float x, float y, float fr_mm_m = 0.0) {
++  do_blocking_move_to(x, y, current_position[Z_AXIS], fr_mm_m);
+ }
+ 
+-inline void do_blocking_move_to_z(float z, float feed_rate = 0.0) {
+-  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z, feed_rate);
++inline void do_blocking_move_to_z(float z, float fr_mm_m = 0.0) {
++  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z, fr_mm_m);
+ }
+ 
+ //
+@@ -1733,9 +1736,9 @@ static void setup_for_endstop_or_probe_move() {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("setup_for_endstop_or_probe_move", current_position);
+   #endif
+-  saved_feedrate = feedrate;
+-  saved_feedrate_multiplier = feedrate_multiplier;
+-  feedrate_multiplier = 100;
++  saved_feedrate_mm_m = feedrate_mm_m;
++  saved_feedrate_percentage = feedrate_percentage;
++  feedrate_percentage = 100;
+   refresh_cmd_timeout();
+ }
+ 
+@@ -1743,8 +1746,8 @@ static void clean_up_after_endstop_or_probe_move() {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("clean_up_after_endstop_or_probe_move", current_position);
+   #endif
+-  feedrate = saved_feedrate;
+-  feedrate_multiplier = saved_feedrate_multiplier;
++  feedrate_mm_m = saved_feedrate_mm_m;
++  feedrate_percentage = saved_feedrate_percentage;
+   refresh_cmd_timeout();
+ }
+ 
+@@ -2003,6 +2006,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       if (DEBUGGING(LEVELING)) {
+         DEBUG_POS("set_probe_deployed", current_position);
+         SERIAL_ECHOPAIR("deploy: ", deploy);
++        SERIAL_EOL;
+       }
+     #endif
+ 
+@@ -2062,7 +2066,7 @@ static void clean_up_after_endstop_or_probe_move() {
+   // at the height where the probe triggered.
+   static float run_z_probe() {
+ 
+-    float old_feedrate = feedrate;
++    float old_feedrate_mm_m = feedrate_mm_m;
+ 
+     // Prevent stepper_inactive_time from running out and EXTRUDER_RUNOUT_PREVENT from extruding
+     refresh_cmd_timeout();
+@@ -2077,7 +2081,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       #endif
+ 
+       // move down slowly until you find the bed
+-      feedrate = homing_feedrate[Z_AXIS] / 4;
++      feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS] / 4;
+       destination[Z_AXIS] = -10;
+       prepare_move_to_destination_raw(); // this will also set_current_to_destination
+       stepper.synchronize();
+@@ -2101,7 +2105,7 @@ static void clean_up_after_endstop_or_probe_move() {
+         planner.bed_level_matrix.set_to_identity();
+       #endif
+ 
+-      feedrate = homing_feedrate[Z_AXIS];
++      feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS];
+ 
+       // Move down until the Z probe (or endstop?) is triggered
+       float zPosition = -(Z_MAX_LENGTH + 10);
+@@ -2140,7 +2144,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+     SYNC_PLAN_POSITION_KINEMATIC();
+ 
+-    feedrate = old_feedrate;
++    feedrate_mm_m = old_feedrate_mm_m;
+ 
+     return current_position[Z_AXIS];
+   }
+@@ -2165,7 +2169,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       }
+     #endif
+ 
+-    float old_feedrate = feedrate;
++    float old_feedrate_mm_m = feedrate_mm_m;
+ 
+     // Ensure a minimum height before moving the probe
+     do_probe_raise(Z_RAISE_BETWEEN_PROBINGS);
+@@ -2178,7 +2182,7 @@ static void clean_up_after_endstop_or_probe_move() {
+         SERIAL_ECHOLNPGM(")");
+       }
+     #endif
+-    feedrate = XY_PROBE_FEEDRATE;
++    feedrate_mm_m = XY_PROBE_FEEDRATE_MM_M;
+     do_blocking_move_to_xy(x - (X_PROBE_OFFSET_FROM_EXTRUDER), y - (Y_PROBE_OFFSET_FROM_EXTRUDER));
+ 
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -2215,7 +2219,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("<<< probe_pt");
+     #endif
+ 
+-    feedrate = old_feedrate;
++    feedrate_mm_m = old_feedrate_mm_m;
+ 
+     return measured_z;
+   }
+@@ -2416,7 +2420,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+   // Move towards the endstop until an endstop is triggered
+   destination[axis] = 1.5 * max_length(axis) * axis_home_dir;
+-  feedrate = homing_feedrate[axis];
++  feedrate_mm_m = homing_feedrate_mm_m[axis];
+   line_to_destination();
+   stepper.synchronize();
+ 
+@@ -2456,7 +2460,7 @@ static void homeaxis(AxisEnum axis) {
+       sync_plan_position();
+ 
+       // Move to the adjusted endstop height
+-      feedrate = homing_feedrate[axis];
++      feedrate_mm_m = homing_feedrate_mm_m[axis];
+       destination[Z_AXIS] = adj;
+       line_to_destination();
+       stepper.synchronize();
+@@ -2520,13 +2524,13 @@ static void homeaxis(AxisEnum axis) {
+ 
+     if (retracting == retracted[active_extruder]) return;
+ 
+-    float old_feedrate = feedrate;
++    float old_feedrate_mm_m = feedrate_mm_m;
+ 
+     set_destination_to_current();
+ 
+     if (retracting) {
+ 
+-      feedrate = retract_feedrate_mm_s * 60;
++      feedrate_mm_m = MMS_TO_MMM(retract_feedrate_mm_s);
+       current_position[E_AXIS] += (swapping ? retract_length_swap : retract_length) / volumetric_multiplier[active_extruder];
+       sync_plan_position_e();
+       prepare_move_to_destination();
+@@ -2544,14 +2548,14 @@ static void homeaxis(AxisEnum axis) {
+         SYNC_PLAN_POSITION_KINEMATIC();
+       }
+ 
+-      feedrate = retract_recover_feedrate * 60;
++      feedrate_mm_m = MMM_TO_MMS(retract_recover_feedrate_mm_s);
+       float move_e = swapping ? retract_length_swap + retract_recover_length_swap : retract_length + retract_recover_length;
+       current_position[E_AXIS] -= move_e / volumetric_multiplier[active_extruder];
+       sync_plan_position_e();
+       prepare_move_to_destination();
+     }
+ 
+-    feedrate = old_feedrate;
++    feedrate_mm_m = old_feedrate_mm_m;
+     retracted[active_extruder] = retracting;
+ 
+   } // retract()
+@@ -2613,10 +2617,10 @@ void gcode_get_destination() {
+   }
+ 
+   if (code_seen('F') && code_value_linear_units() > 0.0)
+-    feedrate = code_value_linear_units();
++    feedrate_mm_m = code_value_linear_units();
+ 
+   #if ENABLED(PRINTCOUNTER)
+-    if(!DEBUGGING(DRYRUN))
++    if (!DEBUGGING(DRYRUN))
+       print_job_timer.incFilamentUsed(destination[E_AXIS] - current_position[E_AXIS]);
+   #endif
+ 
+@@ -2846,7 +2850,7 @@ inline void gcode_G4() {
+ 
+     destination[X_AXIS] = 1.5 * mlx * x_axis_home_dir;
+     destination[Y_AXIS] = 1.5 * mly * home_dir(Y_AXIS);
+-    feedrate = min(homing_feedrate[X_AXIS], homing_feedrate[Y_AXIS]) * sqrt(mlratio * mlratio + 1);
++    feedrate_mm_m = min(homing_feedrate_mm_m[X_AXIS], homing_feedrate_mm_m[Y_AXIS]) * sqrt(sq(mlratio) + 1);
+     line_to_destination();
+     stepper.synchronize();
+     endstops.hit_on_purpose(); // clear endstop hit flags
+@@ -2943,7 +2947,7 @@ inline void gcode_G28() {
+ 
+     // Move all carriages up together until the first endstop is hit.
+     for (int i = X_AXIS; i <= Z_AXIS; i++) destination[i] = 3 * (Z_MAX_LENGTH);
+-    feedrate = 1.732 * homing_feedrate[X_AXIS];
++    feedrate_mm_m = 1.732 * homing_feedrate_mm_m[X_AXIS];
+     line_to_destination();
+     stepper.synchronize();
+     endstops.hit_on_purpose(); // clear endstop hit flags
+@@ -3164,7 +3168,7 @@ inline void gcode_G28() {
+         #if ENABLED(MESH_G28_REST_ORIGIN)
+           current_position[Z_AXIS] = 0.0;
+           set_destination_to_current();
+-          feedrate = homing_feedrate[Z_AXIS];
++          feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS];
+           line_to_destination();
+           stepper.synchronize();
+           #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -3224,8 +3228,8 @@ inline void gcode_G28() {
+   enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet, MeshSetZOffset, MeshReset };
+ 
+   inline void _mbl_goto_xy(float x, float y) {
+-    float old_feedrate = feedrate;
+-    feedrate = homing_feedrate[X_AXIS];
++    float old_feedrate_mm_m = feedrate_mm_m;
++    feedrate_mm_m = homing_feedrate_mm_m[X_AXIS];
+ 
+     current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+       #if Z_RAISE_BETWEEN_PROBINGS > MIN_Z_HEIGHT_FOR_HOMING
+@@ -3245,7 +3249,7 @@ inline void gcode_G28() {
+       line_to_current_position();
+     #endif
+ 
+-    feedrate = old_feedrate;
++    feedrate_mm_m = old_feedrate_mm_m;
+     stepper.synchronize();
+   }
+ 
+@@ -3492,7 +3496,7 @@ inline void gcode_G28() {
+         }
+       #endif
+ 
+-      xy_probe_speed = code_seen('S') ? (int)code_value_linear_units() : XY_PROBE_SPEED;
++      xy_probe_feedrate_mm_m = code_seen('S') ? (int)code_value_linear_units() : XY_PROBE_SPEED;
+ 
+       int left_probe_bed_position = code_seen('L') ? (int)code_value_axis_units(X_AXIS) : LEFT_PROBE_BED_POSITION,
+           right_probe_bed_position = code_seen('R') ? (int)code_value_axis_units(X_AXIS) : RIGHT_PROBE_BED_POSITION,
+@@ -3594,7 +3598,7 @@ inline void gcode_G28() {
+          * so Vx = -a Vy = -b Vz = 1 (we want the vector facing towards positive Z
+          */
+ 
+-        int abl2 = auto_bed_leveling_grid_points * auto_bed_leveling_grid_points;
++        int abl2 = sq(auto_bed_leveling_grid_points);
+ 
+         double eqnAMatrix[abl2 * 3], // "A" matrix of the linear system of equations
+                eqnBVector[abl2],     // "B" vector of Z points
+@@ -3627,7 +3631,7 @@ inline void gcode_G28() {
+ 
+           #if ENABLED(DELTA)
+             // Avoid probing the corners (outside the round or hexagon print surface) on a delta printer.
+-            float distance_from_center = sqrt(xProbe * xProbe + yProbe * yProbe);
++            float distance_from_center = HYPOT(xProbe, yProbe);
+             if (distance_from_center > DELTA_PROBEABLE_RADIUS) continue;
+           #endif //DELTA
+ 
+@@ -4250,7 +4254,7 @@ inline void gcode_M42() {
+         return;
+       }
+     #else
+-      if (sqrt(X_probe_location * X_probe_location + Y_probe_location * Y_probe_location) > DELTA_PROBEABLE_RADIUS) {
++      if (HYPOT(X_probe_location, Y_probe_location) > DELTA_PROBEABLE_RADIUS) {
+         SERIAL_PROTOCOLLNPGM("? (X,Y) location outside of probeable radius.");
+         return;
+       }
+@@ -4340,7 +4344,7 @@ inline void gcode_M42() {
+           #else
+             // If we have gone out too far, we can do a simple fix and scale the numbers
+             // back in closer to the origin.
+-            while (sqrt(X_current * X_current + Y_current * Y_current) > DELTA_PROBEABLE_RADIUS) {
++            while (HYPOT(X_current, Y_current) > DELTA_PROBEABLE_RADIUS) {
+               X_current /= 1.25;
+               Y_current /= 1.25;
+               if (verbose_level > 3) {
+@@ -4376,10 +4380,9 @@ inline void gcode_M42() {
+        * data points we have so far
+        */
+       sum = 0.0;
+-      for (uint8_t j = 0; j <= n; j++) {
+-        float ss = sample_set[j] - mean;
+-        sum += ss * ss;
+-      }
++      for (uint8_t j = 0; j <= n; j++)
++        sum += sq(sample_set[j] - mean);
++
+       sigma = sqrt(sum / (n + 1));
+       if (verbose_level > 0) {
+         if (verbose_level > 1) {
+@@ -5163,7 +5166,7 @@ inline void gcode_M92() {
+         if (value < 20.0) {
+           float factor = planner.axis_steps_per_mm[i] / value; // increase e constants if M92 E14 is given for netfab.
+           planner.max_e_jerk *= factor;
+-          planner.max_feedrate[i] *= factor;
++          planner.max_feedrate_mm_s[i] *= factor;
+           planner.max_acceleration_steps_per_s2[i] *= factor;
+         }
+         planner.axis_steps_per_mm[i] = value;
+@@ -5372,7 +5375,7 @@ inline void gcode_M201() {
+ inline void gcode_M203() {
+   for (int8_t i = 0; i < NUM_AXIS; i++)
+     if (code_seen(axis_codes[i]))
+-      planner.max_feedrate[i] = code_value_axis_units(i);
++      planner.max_feedrate_mm_s[i] = code_value_axis_units(i);
+ }
+ 
+ /**
+@@ -5418,8 +5421,8 @@ inline void gcode_M204() {
+  *    E = Max E Jerk (units/sec^2)
+  */
+ inline void gcode_M205() {
+-  if (code_seen('S')) planner.min_feedrate = code_value_linear_units();
+-  if (code_seen('T')) planner.min_travel_feedrate = code_value_linear_units();
++  if (code_seen('S')) planner.min_feedrate_mm_s = code_value_linear_units();
++  if (code_seen('T')) planner.min_travel_feedrate_mm_s = code_value_linear_units();
+   if (code_seen('B')) planner.min_segment_time = code_value_millis();
+   if (code_seen('X')) planner.max_xy_jerk = code_value_linear_units();
+   if (code_seen('Z')) planner.max_z_jerk = code_value_axis_units(Z_AXIS);
+@@ -5517,7 +5520,7 @@ inline void gcode_M206() {
+    */
+   inline void gcode_M207() {
+     if (code_seen('S')) retract_length = code_value_axis_units(E_AXIS);
+-    if (code_seen('F')) retract_feedrate_mm_s = code_value_axis_units(E_AXIS) / 60;
++    if (code_seen('F')) retract_feedrate_mm_s = MMM_TO_MMS(code_value_axis_units(E_AXIS));
+     if (code_seen('Z')) retract_zlift = code_value_axis_units(Z_AXIS);
+     #if EXTRUDERS > 1
+       if (code_seen('W')) retract_length_swap = code_value_axis_units(E_AXIS);
+@@ -5529,11 +5532,11 @@ inline void gcode_M206() {
+    *
+    *   S[+units]    retract_recover_length (in addition to M207 S*)
+    *   W[+units]    retract_recover_length_swap (multi-extruder)
+-   *   F[units/min] retract_recover_feedrate
++   *   F[units/min] retract_recover_feedrate_mm_s
+    */
+   inline void gcode_M208() {
+     if (code_seen('S')) retract_recover_length = code_value_axis_units(E_AXIS);
+-    if (code_seen('F')) retract_recover_feedrate = code_value_axis_units(E_AXIS) / 60;
++    if (code_seen('F')) retract_recover_feedrate_mm_s = MMM_TO_MMS(code_value_axis_units(E_AXIS));
+     #if EXTRUDERS > 1
+       if (code_seen('W')) retract_recover_length_swap = code_value_axis_units(E_AXIS);
+     #endif
+@@ -5604,7 +5607,7 @@ inline void gcode_M206() {
+  * M220: Set speed percentage factor, aka "Feed Rate" (M220 S95)
+  */
+ inline void gcode_M220() {
+-  if (code_seen('S')) feedrate_multiplier = code_value_int();
++  if (code_seen('S')) feedrate_percentage = code_value_int();
+ }
+ 
+ /**
+@@ -6308,10 +6311,10 @@ inline void gcode_M503() {
+ 
+     // Define runplan for move axes
+     #if ENABLED(DELTA)
+-      #define RUNPLAN(RATE) calculate_delta(destination); \
+-                            planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], RATE, active_extruder);
++      #define RUNPLAN(RATE_MM_S) calculate_delta(destination); \
++                                 planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], RATE_MM_S, active_extruder);
+     #else
+-      #define RUNPLAN(RATE) line_to_destination(RATE * 60);
++      #define RUNPLAN(RATE_MM_S) line_to_destination(MMS_TO_MMM(RATE_MM_S));
+     #endif
+ 
+     KEEPALIVE_STATE(IN_HANDLER);
+@@ -6726,14 +6729,14 @@ inline void gcode_T(uint8_t tmp_extruder) {
+         return;
+       }
+ 
+-      float old_feedrate = feedrate;
++      float old_feedrate_mm_m = feedrate_mm_m;
+ 
+       if (code_seen('F')) {
+-        float next_feedrate = code_value_axis_units(X_AXIS);
+-        if (next_feedrate > 0.0) old_feedrate = feedrate = next_feedrate;
++        float next_feedrate_mm_m = code_value_axis_units(X_AXIS);
++        if (next_feedrate_mm_m > 0.0) old_feedrate_mm_m = feedrate_mm_m = next_feedrate_mm_m;
+       }
+       else
+-        feedrate = XY_PROBE_FEEDRATE;
++        feedrate_mm_m = XY_PROBE_FEEDRATE_MM_M;
+ 
+       if (tmp_extruder != active_extruder) {
+         bool no_move = code_seen('S') && code_value_bool();
+@@ -6776,7 +6779,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+                 current_position[Y_AXIS],
+                 current_position[Z_AXIS] + (i == 2 ? 0 : TOOLCHANGE_PARK_ZLIFT),
+                 current_position[E_AXIS],
+-                planner.max_feedrate[i == 1 ? X_AXIS : Z_AXIS],
++                planner.max_feedrate_mm_s[i == 1 ? X_AXIS : Z_AXIS],
+                 active_extruder
+               );
+             stepper.synchronize();
+@@ -6839,7 +6842,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+               current_position[Y_AXIS],
+               current_position[Z_AXIS] + z_raise,
+               current_position[E_AXIS],
+-              planner.max_feedrate[Z_AXIS],
++              planner.max_feedrate_mm_s[Z_AXIS],
+               active_extruder
+             );
+             stepper.synchronize();
+@@ -6854,7 +6857,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+                 current_position[Y_AXIS],
+                 current_position[Z_AXIS] + z_diff,
+                 current_position[E_AXIS],
+-                planner.max_feedrate[Z_AXIS],
++                planner.max_feedrate_mm_s[Z_AXIS],
+                 active_extruder
+               );
+               stepper.synchronize();
+@@ -6985,7 +6988,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+         enable_solenoid_on_active_extruder();
+       #endif // EXT_SOLENOID
+ 
+-      feedrate = old_feedrate;
++      feedrate_mm_m = old_feedrate_mm_m;
+ 
+     #else // HOTENDS <= 1
+ 
+@@ -7838,9 +7841,9 @@ void clamp_to_software_endstops(float target[3]) {
+ #if ENABLED(MESH_BED_LEVELING)
+ 
+ // This function is used to split lines on mesh borders so each segment is only part of one mesh area
+-void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate, const uint8_t& extruder, uint8_t x_splits = 0xff, uint8_t y_splits = 0xff) {
++void mesh_buffer_line(float x, float y, float z, const float e, float fr_mm_s, const uint8_t& extruder, uint8_t x_splits = 0xff, uint8_t y_splits = 0xff) {
+   if (!mbl.active()) {
+-    planner.buffer_line(x, y, z, e, feed_rate, extruder);
++    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
+     set_current_to_destination();
+     return;
+   }
+@@ -7854,7 +7857,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+   NOMORE(cy,  MESH_NUM_Y_POINTS - 2);
+   if (pcx == cx && pcy == cy) {
+     // Start and end on same mesh square
+-    planner.buffer_line(x, y, z, e, feed_rate, extruder);
++    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
+     set_current_to_destination();
+     return;
+   }
+@@ -7893,7 +7896,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+   }
+   else {
+     // Already split on a border
+-    planner.buffer_line(x, y, z, e, feed_rate, extruder);
++    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
+     set_current_to_destination();
+     return;
+   }
+@@ -7902,12 +7905,12 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+   destination[Y_AXIS] = ny;
+   destination[Z_AXIS] = nz;
+   destination[E_AXIS] = ne;
+-  mesh_buffer_line(nx, ny, nz, ne, feed_rate, extruder, x_splits, y_splits);
++  mesh_buffer_line(nx, ny, nz, ne, fr_mm_s, extruder, x_splits, y_splits);
+   destination[X_AXIS] = x;
+   destination[Y_AXIS] = y;
+   destination[Z_AXIS] = z;
+   destination[E_AXIS] = e;
+-  mesh_buffer_line(x, y, z, e, feed_rate, extruder, x_splits, y_splits);
++  mesh_buffer_line(x, y, z, e, fr_mm_s, extruder, x_splits, y_splits);
+ }
+ #endif  // MESH_BED_LEVELING
+ 
+@@ -7920,8 +7923,8 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+     float cartesian_mm = sqrt(sq(difference[X_AXIS]) + sq(difference[Y_AXIS]) + sq(difference[Z_AXIS]));
+     if (cartesian_mm < 0.000001) cartesian_mm = abs(difference[E_AXIS]);
+     if (cartesian_mm < 0.000001) return false;
+-    float _feedrate = feedrate * feedrate_multiplier / 6000.0;
+-    float seconds = cartesian_mm / _feedrate;
++    float _feedrate_mm_s = MMM_TO_MMS_SCALED(feedrate_mm_m);
++    float seconds = cartesian_mm / _feedrate_mm_s;
+     int steps = max(1, int(delta_segments_per_second * seconds));
+     float inv_steps = 1.0/steps;
+ 
+@@ -7945,7 +7948,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+       //DEBUG_POS("prepare_delta_move_to", target);
+       //DEBUG_POS("prepare_delta_move_to", delta);
+ 
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], _feedrate, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], _feedrate_mm_s, active_extruder);
+     }
+     return true;
+   }
+@@ -7964,7 +7967,7 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+         // move duplicate extruder into correct duplication position.
+         planner.set_position_mm(inactive_extruder_x_pos, current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+         planner.buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset,
+-                         current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate[X_AXIS], 1);
++                         current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[X_AXIS], 1);
+         SYNC_PLAN_POSITION_KINEMATIC();
+         stepper.synchronize();
+         extruder_duplication_enabled = true;
+@@ -7984,9 +7987,9 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+         }
+         delayed_move_time = 0;
+         // unpark extruder: 1) raise, 2) move into starting XY position, 3) lower
+-        planner.buffer_line(raised_parked_position[X_AXIS], raised_parked_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate[Z_AXIS], active_extruder);
++        planner.buffer_line(raised_parked_position[X_AXIS], raised_parked_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+         planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], PLANNER_XY_FEEDRATE(), active_extruder);
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate[Z_AXIS], active_extruder);
++        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+         active_extruder_parked = false;
+       }
+     }
+@@ -7998,16 +8001,16 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+ #if DISABLED(DELTA) && DISABLED(SCARA)
+ 
+   inline bool prepare_move_to_destination_cartesian() {
+-    // Do not use feedrate_multiplier for E or Z only moves
++    // Do not use feedrate_percentage for E or Z only moves
+     if (current_position[X_AXIS] == destination[X_AXIS] && current_position[Y_AXIS] == destination[Y_AXIS]) {
+       line_to_destination();
+     }
+     else {
+       #if ENABLED(MESH_BED_LEVELING)
+-        mesh_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], (feedrate / 60) * (feedrate_multiplier / 100.0), active_extruder);
++        mesh_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], MMM_TO_MMS_SCALED(feedrate_mm_m), active_extruder);
+         return false;
+       #else
+-        line_to_destination(feedrate * feedrate_multiplier / 100.0);
++        line_to_destination(MMM_SCALED(feedrate_mm_m));
+       #endif
+     }
+     return true;
+@@ -8082,7 +8085,7 @@ void prepare_move_to_destination() {
+     uint8_t clockwise       // Clockwise?
+   ) {
+ 
+-    float radius = hypot(offset[X_AXIS], offset[Y_AXIS]),
++    float radius = HYPOT(offset[X_AXIS], offset[Y_AXIS]),
+           center_X = current_position[X_AXIS] + offset[X_AXIS],
+           center_Y = current_position[Y_AXIS] + offset[Y_AXIS],
+           linear_travel = target[Z_AXIS] - current_position[Z_AXIS],
+@@ -8101,7 +8104,7 @@ void prepare_move_to_destination() {
+     if (angular_travel == 0 && current_position[X_AXIS] == target[X_AXIS] && current_position[Y_AXIS] == target[Y_AXIS])
+       angular_travel += RADIANS(360);
+ 
+-    float mm_of_travel = hypot(angular_travel * radius, fabs(linear_travel));
++    float mm_of_travel = HYPOT(angular_travel * radius, fabs(linear_travel));
+     if (mm_of_travel < 0.001) return;
+     uint16_t segments = floor(mm_of_travel / (MM_PER_ARC_SEGMENT));
+     if (segments == 0) segments = 1;
+@@ -8137,7 +8140,7 @@ void prepare_move_to_destination() {
+      * This is important when there are successive arc motions.
+      */
+     // Vector rotation matrix values
+-    float cos_T = 1 - 0.5 * theta_per_segment * theta_per_segment; // Small angle approximation
++    float cos_T = 1 - 0.5 * sq(theta_per_segment); // Small angle approximation
+     float sin_T = theta_per_segment;
+ 
+     float arc_target[NUM_AXIS];
+@@ -8151,7 +8154,7 @@ void prepare_move_to_destination() {
+     // Initialize the extruder axis
+     arc_target[E_AXIS] = current_position[E_AXIS];
+ 
+-    float feed_rate = feedrate * feedrate_multiplier / 60 / 100.0;
++    float fr_mm_s = MMM_TO_MMS_SCALED(feedrate_mm_m);
+ 
+     millis_t next_idle_ms = millis() + 200UL;
+ 
+@@ -8195,9 +8198,9 @@ void prepare_move_to_destination() {
+         #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+           adjust_delta(arc_target);
+         #endif
+-        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], arc_target[E_AXIS], feed_rate, active_extruder);
++        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], arc_target[E_AXIS], fr_mm_s, active_extruder);
+       #else
+-        planner.buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate, active_extruder);
++        planner.buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], fr_mm_s, active_extruder);
+       #endif
+     }
+ 
+@@ -8207,9 +8210,9 @@ void prepare_move_to_destination() {
+       #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+         adjust_delta(target);
+       #endif
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], feed_rate, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], target[E_AXIS], fr_mm_s, active_extruder);
+     #else
+-      planner.buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], feed_rate, active_extruder);
++      planner.buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], target[E_AXIS], fr_mm_s, active_extruder);
+     #endif
+ 
+     // As far as the parser is concerned, the position is now == target. In reality the
+@@ -8222,7 +8225,7 @@ void prepare_move_to_destination() {
+ #if ENABLED(BEZIER_CURVE_SUPPORT)
+ 
+   void plan_cubic_move(const float offset[4]) {
+-    cubic_b_spline(current_position, destination, offset, feedrate * feedrate_multiplier / 60 / 100.0, active_extruder);
++    cubic_b_spline(current_position, destination, offset, MMM_TO_MMS_SCALED(feedrate_mm_m), active_extruder);
+ 
+     // As far as the parser is concerned, the position is now == target. In reality the
+     // motion control system might still be processing the action and the real tool position
+@@ -8548,7 +8551,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+       float oldepos = current_position[E_AXIS], oldedes = destination[E_AXIS];
+       planner.buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS],
+                        destination[E_AXIS] + (EXTRUDER_RUNOUT_EXTRUDE) * (EXTRUDER_RUNOUT_ESTEPS) / planner.axis_steps_per_mm[E_AXIS],
+-                       (EXTRUDER_RUNOUT_SPEED) / 60. * (EXTRUDER_RUNOUT_ESTEPS) / planner.axis_steps_per_mm[E_AXIS], active_extruder);
++                       MMM_TO_MMS(EXTRUDER_RUNOUT_SPEED) * (EXTRUDER_RUNOUT_ESTEPS) / planner.axis_steps_per_mm[E_AXIS], active_extruder);
+       current_position[E_AXIS] = oldepos;
+       destination[E_AXIS] = oldedes;
+       planner.set_e_position_mm(oldepos);
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index b74cc8d..ab5af80 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -49,13 +49,13 @@
+  *  104  EEPROM Checksum (uint16_t)
+  *
+  *  106  M92 XYZE  planner.axis_steps_per_mm (float x4)
+- *  122  M203 XYZE planner.max_feedrate (float x4)
++ *  122  M203 XYZE planner.max_feedrate_mm_s (float x4)
+  *  138  M201 XYZE planner.max_acceleration_mm_per_s2 (uint32_t x4)
+  *  154  M204 P    planner.acceleration (float)
+  *  158  M204 R    planner.retract_acceleration (float)
+  *  162  M204 T    planner.travel_acceleration (float)
+- *  166  M205 S    planner.min_feedrate (float)
+- *  170  M205 T    planner.min_travel_feedrate (float)
++ *  166  M205 S    planner.min_feedrate_mm_s (float)
++ *  170  M205 T    planner.min_travel_feedrate_mm_s (float)
+  *  174  M205 B    planner.min_segment_time (ulong)
+  *  178  M205 X    planner.max_xy_jerk (float)
+  *  182  M205 Z    planner.max_z_jerk (float)
+@@ -116,7 +116,7 @@
+  *  406  M207 Z    retract_zlift (float)
+  *  410  M208 S    retract_recover_length (float)
+  *  414  M208 W    retract_recover_length_swap (float)
+- *  418  M208 F    retract_recover_feedrate (float)
++ *  418  M208 F    retract_recover_feedrate_mm_s (float)
+  *
+  * Volumetric Extrusion:
+  *  422  M200 D    volumetric_enabled (bool)
+@@ -202,13 +202,13 @@ void Config_StoreSettings()  {
+   eeprom_checksum = 0; // clear before first "real data"
+ 
+   EEPROM_WRITE_VAR(i, planner.axis_steps_per_mm);
+-  EEPROM_WRITE_VAR(i, planner.max_feedrate);
++  EEPROM_WRITE_VAR(i, planner.max_feedrate_mm_s);
+   EEPROM_WRITE_VAR(i, planner.max_acceleration_mm_per_s2);
+   EEPROM_WRITE_VAR(i, planner.acceleration);
+   EEPROM_WRITE_VAR(i, planner.retract_acceleration);
+   EEPROM_WRITE_VAR(i, planner.travel_acceleration);
+-  EEPROM_WRITE_VAR(i, planner.min_feedrate);
+-  EEPROM_WRITE_VAR(i, planner.min_travel_feedrate);
++  EEPROM_WRITE_VAR(i, planner.min_feedrate_mm_s);
++  EEPROM_WRITE_VAR(i, planner.min_travel_feedrate_mm_s);
+   EEPROM_WRITE_VAR(i, planner.min_segment_time);
+   EEPROM_WRITE_VAR(i, planner.max_xy_jerk);
+   EEPROM_WRITE_VAR(i, planner.max_z_jerk);
+@@ -343,7 +343,7 @@ void Config_StoreSettings()  {
+       dummy = 0.0f;
+       EEPROM_WRITE_VAR(i, dummy);
+     #endif
+-    EEPROM_WRITE_VAR(i, retract_recover_feedrate);
++    EEPROM_WRITE_VAR(i, retract_recover_feedrate_mm_s);
+   #endif // FWRETRACT
+ 
+   EEPROM_WRITE_VAR(i, volumetric_enabled);
+@@ -389,14 +389,14 @@ void Config_RetrieveSettings() {
+ 
+     // version number match
+     EEPROM_READ_VAR(i, planner.axis_steps_per_mm);
+-    EEPROM_READ_VAR(i, planner.max_feedrate);
++    EEPROM_READ_VAR(i, planner.max_feedrate_mm_s);
+     EEPROM_READ_VAR(i, planner.max_acceleration_mm_per_s2);
+ 
+     EEPROM_READ_VAR(i, planner.acceleration);
+     EEPROM_READ_VAR(i, planner.retract_acceleration);
+     EEPROM_READ_VAR(i, planner.travel_acceleration);
+-    EEPROM_READ_VAR(i, planner.min_feedrate);
+-    EEPROM_READ_VAR(i, planner.min_travel_feedrate);
++    EEPROM_READ_VAR(i, planner.min_feedrate_mm_s);
++    EEPROM_READ_VAR(i, planner.min_travel_feedrate_mm_s);
+     EEPROM_READ_VAR(i, planner.min_segment_time);
+     EEPROM_READ_VAR(i, planner.max_xy_jerk);
+     EEPROM_READ_VAR(i, planner.max_z_jerk);
+@@ -525,7 +525,7 @@ void Config_RetrieveSettings() {
+       #else
+         EEPROM_READ_VAR(i, dummy);
+       #endif
+-      EEPROM_READ_VAR(i, retract_recover_feedrate);
++      EEPROM_READ_VAR(i, retract_recover_feedrate_mm_s);
+     #endif // FWRETRACT
+ 
+     EEPROM_READ_VAR(i, volumetric_enabled);
+@@ -565,7 +565,7 @@ void Config_ResetDefault() {
+   long tmp3[] = DEFAULT_MAX_ACCELERATION;
+   for (uint8_t i = 0; i < NUM_AXIS; i++) {
+     planner.axis_steps_per_mm[i] = tmp1[i];
+-    planner.max_feedrate[i] = tmp2[i];
++    planner.max_feedrate_mm_s[i] = tmp2[i];
+     planner.max_acceleration_mm_per_s2[i] = tmp3[i];
+     #if ENABLED(SCARA)
+       if (i < COUNT(axis_scaling))
+@@ -576,9 +576,9 @@ void Config_ResetDefault() {
+   planner.acceleration = DEFAULT_ACCELERATION;
+   planner.retract_acceleration = DEFAULT_RETRACT_ACCELERATION;
+   planner.travel_acceleration = DEFAULT_TRAVEL_ACCELERATION;
+-  planner.min_feedrate = DEFAULT_MINIMUMFEEDRATE;
++  planner.min_feedrate_mm_s = DEFAULT_MINIMUMFEEDRATE;
+   planner.min_segment_time = DEFAULT_MINSEGMENTTIME;
+-  planner.min_travel_feedrate = DEFAULT_MINTRAVELFEEDRATE;
++  planner.min_travel_feedrate_mm_s = DEFAULT_MINTRAVELFEEDRATE;
+   planner.max_xy_jerk = DEFAULT_XYJERK;
+   planner.max_z_jerk = DEFAULT_ZJERK;
+   planner.max_e_jerk = DEFAULT_EJERK;
+@@ -654,7 +654,7 @@ void Config_ResetDefault() {
+     #if EXTRUDERS > 1
+       retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
+     #endif
+-    retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
++    retract_recover_feedrate_mm_s = RETRACT_RECOVER_FEEDRATE;
+   #endif
+ 
+   volumetric_enabled = false;
+@@ -715,10 +715,10 @@ void Config_PrintSettings(bool forReplay) {
+     SERIAL_ECHOLNPGM("Maximum feedrates (mm/s):");
+     CONFIG_ECHO_START;
+   }
+-  SERIAL_ECHOPAIR("  M203 X", planner.max_feedrate[X_AXIS]);
+-  SERIAL_ECHOPAIR(" Y", planner.max_feedrate[Y_AXIS]);
+-  SERIAL_ECHOPAIR(" Z", planner.max_feedrate[Z_AXIS]);
+-  SERIAL_ECHOPAIR(" E", planner.max_feedrate[E_AXIS]);
++  SERIAL_ECHOPAIR("  M203 X", planner.max_feedrate_mm_s[X_AXIS]);
++  SERIAL_ECHOPAIR(" Y", planner.max_feedrate_mm_s[Y_AXIS]);
++  SERIAL_ECHOPAIR(" Z", planner.max_feedrate_mm_s[Z_AXIS]);
++  SERIAL_ECHOPAIR(" E", planner.max_feedrate_mm_s[E_AXIS]);
+   SERIAL_EOL;
+ 
+   CONFIG_ECHO_START;
+@@ -746,8 +746,8 @@ void Config_PrintSettings(bool forReplay) {
+     SERIAL_ECHOLNPGM("Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (ms), X=maximum XY jerk (mm/s),  Z=maximum Z jerk (mm/s),  E=maximum E jerk (mm/s)");
+     CONFIG_ECHO_START;
+   }
+-  SERIAL_ECHOPAIR("  M205 S", planner.min_feedrate);
+-  SERIAL_ECHOPAIR(" T", planner.min_travel_feedrate);
++  SERIAL_ECHOPAIR("  M205 S", planner.min_feedrate_mm_s);
++  SERIAL_ECHOPAIR(" T", planner.min_travel_feedrate_mm_s);
+   SERIAL_ECHOPAIR(" B", planner.min_segment_time);
+   SERIAL_ECHOPAIR(" X", planner.max_xy_jerk);
+   SERIAL_ECHOPAIR(" Z", planner.max_z_jerk);
+@@ -903,7 +903,7 @@ void Config_PrintSettings(bool forReplay) {
+     #if EXTRUDERS > 1
+       SERIAL_ECHOPAIR(" W", retract_length_swap);
+     #endif
+-    SERIAL_ECHOPAIR(" F", retract_feedrate_mm_s * 60);
++    SERIAL_ECHOPAIR(" F", MMS_TO_MMM(retract_feedrate_mm_s));
+     SERIAL_ECHOPAIR(" Z", retract_zlift);
+     SERIAL_EOL;
+     CONFIG_ECHO_START;
+@@ -915,7 +915,7 @@ void Config_PrintSettings(bool forReplay) {
+     #if EXTRUDERS > 1
+       SERIAL_ECHOPAIR(" W", retract_recover_length_swap);
+     #endif
+-    SERIAL_ECHOPAIR(" F", retract_recover_feedrate * 60);
++    SERIAL_ECHOPAIR(" F", MMS_TO_MMM(retract_recover_feedrate_mm_s));
+     SERIAL_EOL;
+     CONFIG_ECHO_START;
+     if (!forReplay) {
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index b1dd403..8edb204 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -450,7 +450,7 @@ static void lcd_implementation_status_screen() {
+ 
+   lcd_setFont(FONT_STATUSMENU);
+   u8g.setPrintPos(12, 49);
+-  lcd_print(itostr3(feedrate_multiplier));
++  lcd_print(itostr3(feedrate_percentage));
+   lcd_print('%');
+ 
+   // Status line
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index 7dbadee..bf2d071 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -36,6 +36,7 @@
+ // Macros for maths shortcuts
+ #define RADIANS(d) ((d)*M_PI/180.0)
+ #define DEGREES(r) ((r)*180.0/M_PI)
++#define HYPOT(x,y) sqrt(sq(x)+sq(y))
+ 
+ // Macros to contrain values
+ #define NOLESS(v,n) do{ if (v < n) v = n; }while(0)
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 900866e..0379610 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -80,20 +80,20 @@ block_t Planner::block_buffer[BLOCK_BUFFER_SIZE];
+ volatile uint8_t Planner::block_buffer_head = 0;           // Index of the next block to be pushed
+ volatile uint8_t Planner::block_buffer_tail = 0;
+ 
+-float Planner::max_feedrate[NUM_AXIS]; // Max speeds in mm per second
++float Planner::max_feedrate_mm_s[NUM_AXIS]; // Max speeds in mm per second
+ float Planner::axis_steps_per_mm[NUM_AXIS];
+ unsigned long Planner::max_acceleration_steps_per_s2[NUM_AXIS];
+ unsigned long Planner::max_acceleration_mm_per_s2[NUM_AXIS]; // Use M201 to override by software
+ 
+ millis_t Planner::min_segment_time;
+-float Planner::min_feedrate;
++float Planner::min_feedrate_mm_s;
+ float Planner::acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
+ float Planner::retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
+ float Planner::travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
+ float Planner::max_xy_jerk;          // The largest speed change requiring no acceleration
+ float Planner::max_z_jerk;
+ float Planner::max_e_jerk;
+-float Planner::min_travel_feedrate;
++float Planner::min_travel_feedrate_mm_s;
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+   matrix_3x3 Planner::bed_level_matrix; // Transform to compensate for bed level
+@@ -171,8 +171,8 @@ void Planner::calculate_trapezoid_for_block(block_t* block, float entry_factor,
+   }
+ 
+   #if ENABLED(ADVANCE)
+-    volatile long initial_advance = block->advance * entry_factor * entry_factor;
+-    volatile long final_advance = block->advance * exit_factor * exit_factor;
++    volatile long initial_advance = block->advance * sq(entry_factor);
++    volatile long final_advance = block->advance * sq(exit_factor);
+   #endif // ADVANCE
+ 
+   // block->accelerate_until = accelerate_steps;
+@@ -527,14 +527,14 @@ void Planner::check_axes_activity() {
+  * Add a new linear movement to the buffer.
+  *
+  *  x,y,z,e   - target position in mm
+- *  feed_rate - (target) speed of the move
++ *  fr_mm_s   - (target) speed of the move
+  *  extruder  - target extruder
+  */
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(MESH_BED_LEVELING)
+-  void Planner::buffer_line(float x, float y, float z, const float& e, float feed_rate, const uint8_t extruder)
++  void Planner::buffer_line(float x, float y, float z, const float& e, float fr_mm_s, const uint8_t extruder)
+ #else
+-  void Planner::buffer_line(const float& x, const float& y, const float& z, const float& e, float feed_rate, const uint8_t extruder)
++  void Planner::buffer_line(const float& x, const float& y, const float& z, const float& e, float fr_mm_s, const uint8_t extruder)
+ #endif  // AUTO_BED_LEVELING_FEATURE
+ {
+   // Calculate the buffer head after we push this byte
+@@ -768,9 +768,9 @@ void Planner::check_axes_activity() {
+   }
+ 
+   if (block->steps[E_AXIS])
+-    NOLESS(feed_rate, min_feedrate);
++    NOLESS(fr_mm_s, min_feedrate_mm_s);
+   else
+-    NOLESS(feed_rate, min_travel_feedrate);
++    NOLESS(fr_mm_s, min_travel_feedrate_mm_s);
+ 
+   /**
+    * This part of the code calculates the total length of the movement.
+@@ -815,20 +815,20 @@ void Planner::check_axes_activity() {
+   else {
+     block->millimeters = sqrt(
+       #if ENABLED(COREXY)
+-        square(delta_mm[X_HEAD]) + square(delta_mm[Y_HEAD]) + square(delta_mm[Z_AXIS])
++        sq(delta_mm[X_HEAD]) + sq(delta_mm[Y_HEAD]) + sq(delta_mm[Z_AXIS])
+       #elif ENABLED(COREXZ)
+-        square(delta_mm[X_HEAD]) + square(delta_mm[Y_AXIS]) + square(delta_mm[Z_HEAD])
++        sq(delta_mm[X_HEAD]) + sq(delta_mm[Y_AXIS]) + sq(delta_mm[Z_HEAD])
+       #elif ENABLED(COREYZ)
+-        square(delta_mm[X_AXIS]) + square(delta_mm[Y_HEAD]) + square(delta_mm[Z_HEAD])
++        sq(delta_mm[X_AXIS]) + sq(delta_mm[Y_HEAD]) + sq(delta_mm[Z_HEAD])
+       #else
+-        square(delta_mm[X_AXIS]) + square(delta_mm[Y_AXIS]) + square(delta_mm[Z_AXIS])
++        sq(delta_mm[X_AXIS]) + sq(delta_mm[Y_AXIS]) + sq(delta_mm[Z_AXIS])
+       #endif
+     );
+   }
+   float inverse_millimeters = 1.0 / block->millimeters;  // Inverse millimeters to remove multiple divides
+ 
+   // Calculate moves/second for this move. No divide by zero due to previous checks.
+-  float inverse_second = feed_rate * inverse_millimeters;
++  float inverse_second = fr_mm_s * inverse_millimeters;
+ 
+   int moves_queued = movesplanned();
+ 
+@@ -836,7 +836,7 @@ void Planner::check_axes_activity() {
+   #if ENABLED(OLD_SLOWDOWN) || ENABLED(SLOWDOWN)
+     bool mq = moves_queued > 1 && moves_queued < (BLOCK_BUFFER_SIZE) / 2;
+     #if ENABLED(OLD_SLOWDOWN)
+-      if (mq) feed_rate *= 2.0 * moves_queued / (BLOCK_BUFFER_SIZE);
++      if (mq) fr_mm_s *= 2.0 * moves_queued / (BLOCK_BUFFER_SIZE);
+     #endif
+     #if ENABLED(SLOWDOWN)
+       //  segment time im micro seconds
+@@ -895,7 +895,7 @@ void Planner::check_axes_activity() {
+   float speed_factor = 1.0; //factor <=1 do decrease speed
+   for (int i = 0; i < NUM_AXIS; i++) {
+     current_speed[i] = delta_mm[i] * inverse_second;
+-    float cs = fabs(current_speed[i]), mf = max_feedrate[i];
++    float cs = fabs(current_speed[i]), mf = max_feedrate_mm_s[i];
+     if (cs > mf) speed_factor = min(speed_factor, mf / cs);
+   }
+ 
+@@ -1030,7 +1030,7 @@ void Planner::check_axes_activity() {
+           dsy = current_speed[Y_AXIS] - previous_speed[Y_AXIS],
+           dsz = fabs(csz - previous_speed[Z_AXIS]),
+           dse = fabs(cse - previous_speed[E_AXIS]),
+-          jerk = sqrt(dsx * dsx + dsy * dsy);
++          jerk = HYPOT(dsx, dsy);
+ 
+     //    if ((fabs(previous_speed[X_AXIS]) > 0.0001) || (fabs(previous_speed[Y_AXIS]) > 0.0001)) {
+     vmax_junction = block->nominal_speed;
+@@ -1086,7 +1086,7 @@ void Planner::check_axes_activity() {
+     }
+     else {
+       long acc_dist = estimate_acceleration_distance(0, block->nominal_rate, block->acceleration_steps_per_s2);
+-      float advance = ((STEPS_PER_CUBIC_MM_E) * (EXTRUDER_ADVANCE_K)) * (cse * cse * (EXTRUSION_AREA) * (EXTRUSION_AREA)) * 256;
++      float advance = ((STEPS_PER_CUBIC_MM_E) * (EXTRUDER_ADVANCE_K)) * HYPOT(cse, EXTRUSION_AREA) * 256;
+       block->advance = advance;
+       block->advance_rate = acc_dist ? advance / (float)acc_dist : 0;
+     }
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index d963fba..74abd1c 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -119,20 +119,20 @@ class Planner {
+     static volatile uint8_t block_buffer_head;           // Index of the next block to be pushed
+     static volatile uint8_t block_buffer_tail;
+ 
+-    static float max_feedrate[NUM_AXIS]; // Max speeds in mm per second
++    static float max_feedrate_mm_s[NUM_AXIS]; // Max speeds in mm per second
+     static float axis_steps_per_mm[NUM_AXIS];
+     static unsigned long max_acceleration_steps_per_s2[NUM_AXIS];
+     static unsigned long max_acceleration_mm_per_s2[NUM_AXIS]; // Use M201 to override by software
+ 
+     static millis_t min_segment_time;
+-    static float min_feedrate;
++    static float min_feedrate_mm_s;
+     static float acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
+     static float retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
+     static float travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
+     static float max_xy_jerk;          // The largest speed change requiring no acceleration
+     static float max_z_jerk;
+     static float max_e_jerk;
+-    static float min_travel_feedrate;
++    static float min_travel_feedrate_mm_s;
+ 
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+       static matrix_3x3 bed_level_matrix; // Transform to compensate for bed level
+@@ -211,10 +211,10 @@ class Planner {
+        * Add a new linear movement to the buffer.
+        *
+        *  x,y,z,e   - target position in mm
+-       *  feed_rate - (target) speed of the move
++       *  fr_mm_s   - (target) speed of the move (mm/s)
+        *  extruder  - target extruder
+        */
+-      static void buffer_line(float x, float y, float z, const float& e, float feed_rate, const uint8_t extruder);
++      static void buffer_line(float x, float y, float z, const float& e, float fr_mm_s, const uint8_t extruder);
+ 
+       /**
+        * Set the planner.position and individual stepper positions.
+@@ -229,7 +229,7 @@ class Planner {
+ 
+     #else
+ 
+-      static void buffer_line(const float& x, const float& y, const float& z, const float& e, float feed_rate, const uint8_t extruder);
++      static void buffer_line(const float& x, const float& y, const float& z, const float& e, float fr_mm_s, const uint8_t extruder);
+       static void set_position_mm(const float& x, const float& y, const float& z, const float& e);
+ 
+     #endif // AUTO_BED_LEVELING_FEATURE || MESH_BED_LEVELING
+@@ -290,7 +290,7 @@ class Planner {
+      */
+     static float estimate_acceleration_distance(float initial_rate, float target_rate, float accel) {
+       if (accel == 0) return 0; // accel was 0, set acceleration distance to 0
+-      return (target_rate * target_rate - initial_rate * initial_rate) / (accel * 2);
++      return (sq(target_rate) - sq(initial_rate)) / (accel * 2);
+     }
+ 
+     /**
+@@ -303,7 +303,7 @@ class Planner {
+      */
+     static float intersection_distance(float initial_rate, float final_rate, float accel, float distance) {
+       if (accel == 0) return 0; // accel was 0, set intersection distance to 0
+-      return (accel * 2 * distance - initial_rate * initial_rate + final_rate * final_rate) / (accel * 4);
++      return (accel * 2 * distance - sq(initial_rate) + sq(final_rate)) / (accel * 4);
+     }
+ 
+     /**
+@@ -312,7 +312,7 @@ class Planner {
+      * 'distance'.
+      */
+     static float max_allowable_speed(float accel, float target_velocity, float distance) {
+-      return sqrt(target_velocity * target_velocity - 2 * accel * distance);
++      return sqrt(sq(target_velocity) - 2 * accel * distance);
+     }
+ 
+     static void calculate_trapezoid_for_block(block_t* block, float entry_factor, float exit_factor);
+diff --git a/Marlin/planner_bezier.cpp b/Marlin/planner_bezier.cpp
+index b789b3d..ad3319a 100644
+--- a/Marlin/planner_bezier.cpp
++++ b/Marlin/planner_bezier.cpp
+@@ -105,7 +105,7 @@ inline static float dist1(float x1, float y1, float x2, float y2) { return fabs(
+  * the mitigation offered by MIN_STEP and the small computational
+  * power available on Arduino, I think it is not wise to implement it.
+  */
+-void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS], const float offset[4], float feed_rate, uint8_t extruder) {
++void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS], const float offset[4], float fr_mm_s, uint8_t extruder) {
+   // Absolute first and second control points are recovered.
+   float first0 = position[X_AXIS] + offset[0];
+   float first1 = position[Y_AXIS] + offset[1];
+@@ -193,9 +193,9 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+       #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+         adjust_delta(bez_target);
+       #endif
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], bez_target[E_AXIS], feed_rate, extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], bez_target[E_AXIS], fr_mm_s, extruder);
+     #else
+-      planner.buffer_line(bez_target[X_AXIS], bez_target[Y_AXIS], bez_target[Z_AXIS], bez_target[E_AXIS], feed_rate, extruder);
++      planner.buffer_line(bez_target[X_AXIS], bez_target[Y_AXIS], bez_target[Z_AXIS], bez_target[E_AXIS], fr_mm_s, extruder);
+     #endif
+   }
+ }
+diff --git a/Marlin/planner_bezier.h b/Marlin/planner_bezier.h
+index 61026b8..d17e7c8 100644
+--- a/Marlin/planner_bezier.h
++++ b/Marlin/planner_bezier.h
+@@ -36,7 +36,7 @@ void cubic_b_spline(
+               const float position[NUM_AXIS], // current position
+               const float target[NUM_AXIS],   // target position
+               const float offset[4],          // a pair of offsets
+-              float feed_rate,
++              float fr_mm_s,
+               uint8_t extruder
+             );
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2b415cc..f96d74c 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -104,7 +104,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+   #if HAS_POWER_SWITCH
+     extern bool powersupply;
+   #endif
+-  const float manual_feedrate[] = MANUAL_FEEDRATE;
++  const float manual_feedrate_mm_m[] = MANUAL_FEEDRATE;
+   static void lcd_main_menu();
+   static void lcd_tune_menu();
+   static void lcd_prepare_menu();
+@@ -254,10 +254,10 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+    *     lcd_implementation_drawmenu_function(sel, row, PSTR(MSG_PAUSE_PRINT), lcd_sdcard_pause)
+    *     menu_action_function(lcd_sdcard_pause)
+    *
+-   *   MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_multiplier, 10, 999)
+-   *   MENU_ITEM(setting_edit_int3, MSG_SPEED, PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
+-   *     lcd_implementation_drawmenu_setting_edit_int3(sel, row, PSTR(MSG_SPEED), PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
+-   *     menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
++   *   MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_percentage, 10, 999)
++   *   MENU_ITEM(setting_edit_int3, MSG_SPEED, PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
++   *     lcd_implementation_drawmenu_setting_edit_int3(sel, row, PSTR(MSG_SPEED), PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
++   *     menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
+    *
+    */
+   #define _MENU_ITEM_PART_1(TYPE, LABEL, ARGS...) \
+@@ -523,29 +523,29 @@ static void lcd_status_screen() {
+     }
+ 
+     #if ENABLED(ULTIPANEL_FEEDMULTIPLY)
+-      int new_frm = feedrate_multiplier + (int32_t)encoderPosition;
++      int new_frm = feedrate_percentage + (int32_t)encoderPosition;
+       // Dead zone at 100% feedrate
+-      if ((feedrate_multiplier < 100 && new_frm > 100) || (feedrate_multiplier > 100 && new_frm < 100)) {
+-        feedrate_multiplier = 100;
++      if ((feedrate_percentage < 100 && new_frm > 100) || (feedrate_percentage > 100 && new_frm < 100)) {
++        feedrate_percentage = 100;
+         encoderPosition = 0;
+       }
+-      else if (feedrate_multiplier == 100) {
++      else if (feedrate_percentage == 100) {
+         if ((int32_t)encoderPosition > ENCODER_FEEDRATE_DEADZONE) {
+-          feedrate_multiplier += (int32_t)encoderPosition - (ENCODER_FEEDRATE_DEADZONE);
++          feedrate_percentage += (int32_t)encoderPosition - (ENCODER_FEEDRATE_DEADZONE);
+           encoderPosition = 0;
+         }
+         else if ((int32_t)encoderPosition < -(ENCODER_FEEDRATE_DEADZONE)) {
+-          feedrate_multiplier += (int32_t)encoderPosition + ENCODER_FEEDRATE_DEADZONE;
++          feedrate_percentage += (int32_t)encoderPosition + ENCODER_FEEDRATE_DEADZONE;
+           encoderPosition = 0;
+         }
+       }
+       else {
+-        feedrate_multiplier = new_frm;
++        feedrate_percentage = new_frm;
+         encoderPosition = 0;
+       }
+     #endif // ULTIPANEL_FEEDMULTIPLY
+ 
+-    feedrate_multiplier = constrain(feedrate_multiplier, 10, 999);
++    feedrate_percentage = constrain(feedrate_percentage, 10, 999);
+ 
+   #endif //ULTIPANEL
+ }
+@@ -573,9 +573,9 @@ void kill_screen(const char* lcd_msg) {
+   inline void line_to_current(AxisEnum axis) {
+     #if ENABLED(DELTA)
+       calculate_delta(current_position);
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[axis]/60, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[axis]), active_extruder);
+     #else // !DELTA
+-      planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[axis]/60, active_extruder);
++      planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[axis]), active_extruder);
+     #endif // !DELTA
+   }
+ 
+@@ -757,7 +757,7 @@ void kill_screen(const char* lcd_msg) {
+     //
+     // Speed:
+     //
+-    MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_multiplier, 10, 999);
++    MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_percentage, 10, 999);
+ 
+     // Manual bed leveling, Bed Z:
+     #if ENABLED(MANUAL_BED_LEVELING)
+@@ -1020,7 +1020,7 @@ void kill_screen(const char* lcd_msg) {
+       line_to_current(Z_AXIS);
+       current_position[X_AXIS] = x + home_offset[X_AXIS];
+       current_position[Y_AXIS] = y + home_offset[Y_AXIS];
+-      line_to_current(manual_feedrate[X_AXIS] <= manual_feedrate[Y_AXIS] ? X_AXIS : Y_AXIS);
++      line_to_current(manual_feedrate_mm_m[X_AXIS] <= manual_feedrate_mm_m[Y_AXIS] ? X_AXIS : Y_AXIS);
+       #if MIN_Z_HEIGHT_FOR_HOMING > 0
+         current_position[Z_AXIS] = MESH_HOME_SEARCH_Z; // How do condition and action match?
+         line_to_current(Z_AXIS);
+@@ -1310,9 +1310,9 @@ void kill_screen(const char* lcd_msg) {
+     if (manual_move_axis != (int8_t)NO_AXIS && ELAPSED(millis(), manual_move_start_time) && !planner.is_full()) {
+       #if ENABLED(DELTA)
+         calculate_delta(current_position);
+-        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, manual_move_e_index);
++        planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[manual_move_axis]), manual_move_e_index);
+       #else
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, manual_move_e_index);
++        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(manual_feedrate_mm_m[manual_move_axis]), manual_move_e_index);
+       #endif
+       manual_move_axis = (int8_t)NO_AXIS;
+     }
+@@ -1356,7 +1356,7 @@ void kill_screen(const char* lcd_msg) {
+   }
+   #if ENABLED(DELTA)
+     static float delta_clip_radius_2 =  (DELTA_PRINTABLE_RADIUS) * (DELTA_PRINTABLE_RADIUS);
+-    static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - a*a); }
++    static int delta_clip( float a ) { return sqrt(delta_clip_radius_2 - sq(a)); }
+     static void lcd_move_x() { int clip = delta_clip(current_position[Y_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_X), X_AXIS, max(sw_endstop_min[X_AXIS], -clip), min(sw_endstop_max[X_AXIS], clip)); }
+     static void lcd_move_y() { int clip = delta_clip(current_position[X_AXIS]); _lcd_move_xyz(PSTR(MSG_MOVE_Y), Y_AXIS, max(sw_endstop_min[Y_AXIS], -clip), min(sw_endstop_max[Y_AXIS], clip)); }
+   #else
+@@ -1800,12 +1800,12 @@ void kill_screen(const char* lcd_msg) {
+       MENU_ITEM_EDIT(float52, MSG_VZ_JERK, &planner.max_z_jerk, 0.1, 990);
+     #endif
+     MENU_ITEM_EDIT(float3, MSG_VE_JERK, &planner.max_e_jerk, 1, 990);
+-    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_X, &planner.max_feedrate[X_AXIS], 1, 999);
+-    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Y, &planner.max_feedrate[Y_AXIS], 1, 999);
+-    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Z, &planner.max_feedrate[Z_AXIS], 1, 999);
+-    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_E, &planner.max_feedrate[E_AXIS], 1, 999);
+-    MENU_ITEM_EDIT(float3, MSG_VMIN, &planner.min_feedrate, 0, 999);
+-    MENU_ITEM_EDIT(float3, MSG_VTRAV_MIN, &planner.min_travel_feedrate, 0, 999);
++    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_X, &planner.max_feedrate_mm_s[X_AXIS], 1, 999);
++    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Y, &planner.max_feedrate_mm_s[Y_AXIS], 1, 999);
++    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Z, &planner.max_feedrate_mm_s[Z_AXIS], 1, 999);
++    MENU_ITEM_EDIT(float3, MSG_VMAX MSG_E, &planner.max_feedrate_mm_s[E_AXIS], 1, 999);
++    MENU_ITEM_EDIT(float3, MSG_VMIN, &planner.min_feedrate_mm_s, 0, 999);
++    MENU_ITEM_EDIT(float3, MSG_VTRAV_MIN, &planner.min_travel_feedrate_mm_s, 0, 999);
+     MENU_ITEM_EDIT_CALLBACK(long5, MSG_AMAX MSG_X, &planner.max_acceleration_mm_per_s2[X_AXIS], 100, 99000, _reset_acceleration_rates);
+     MENU_ITEM_EDIT_CALLBACK(long5, MSG_AMAX MSG_Y, &planner.max_acceleration_mm_per_s2[Y_AXIS], 100, 99000, _reset_acceleration_rates);
+     MENU_ITEM_EDIT_CALLBACK(long5, MSG_AMAX MSG_Z, &planner.max_acceleration_mm_per_s2[Z_AXIS], 10, 99000, _reset_acceleration_rates);
+@@ -1905,7 +1905,7 @@ void kill_screen(const char* lcd_msg) {
+       #if EXTRUDERS > 1
+         MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_RECOVER_SWAP, &retract_recover_length_swap, 0, 100);
+       #endif
+-      MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACT_RECOVERF, &retract_recover_feedrate, 1, 999);
++      MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACT_RECOVERF, &retract_recover_feedrate_mm_s, 1, 999);
+       END_MENU();
+     }
+   #endif // FWRETRACT
+@@ -2257,15 +2257,15 @@ void kill_screen(const char* lcd_msg) {
+    *   static void menu_action_setting_edit_callback_int3(const char* pstr, int* ptr, int minValue, int maxValue, screenFunc_t callback); // edit int with callback
+    *
+    * You can then use one of the menu macros to present the edit interface:
+-   *   MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_multiplier, 10, 999)
++   *   MENU_ITEM_EDIT(int3, MSG_SPEED, &feedrate_percentage, 10, 999)
+    *
+    * This expands into a more primitive menu item:
+-   *   MENU_ITEM(setting_edit_int3, MSG_SPEED, PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
++   *   MENU_ITEM(setting_edit_int3, MSG_SPEED, PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
+    *
+    *
+    * Also: MENU_MULTIPLIER_ITEM_EDIT, MENU_ITEM_EDIT_CALLBACK, and MENU_MULTIPLIER_ITEM_EDIT_CALLBACK
+    *
+-   *       menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_multiplier, 10, 999)
++   *       menu_action_setting_edit_int3(PSTR(MSG_SPEED), &feedrate_percentage, 10, 999)
+    */
+   #define menu_edit_type(_type, _name, _strFunc, scale) \
+     bool _menu_edit_ ## _name () { \
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index b5342bd..d1d047f 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -742,7 +742,7 @@ static void lcd_implementation_status_screen() {
+ 
+     lcd.setCursor(0, 2);
+     lcd.print(LCD_STR_FEEDRATE[0]);
+-    lcd.print(itostr3(feedrate_multiplier));
++    lcd.print(itostr3(feedrate_percentage));
+     lcd.print('%');
+ 
+     #if LCD_WIDTH > 19 && ENABLED(SDSUPPORT)
+
+commit f242aea032e71c22586111178aaf92a574b98eb8 (from f38553b48215e7e5fa3b2351dd928a9cc3c9e3bd)
+Merge: 0342661 f38553b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 14:07:52 2016 -0700
+
+    Merge pull request #4319 from thinkyhead/rc_feedrates_to_mess_with_you
+    
+    Wrangle feed rate variables
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index a70c449..88bcec5 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -369,6 +369,21 @@
+   #endif //!MANUAL_HOME_POSITIONS
+ 
+   /**
++   * The BLTouch Probe emulates a servo probe
++   */
++  #if ENABLED(BLTOUCH)
++    #undef Z_ENDSTOP_SERVO_NR
++    #undef Z_SERVO_ANGLES
++    #define Z_ENDSTOP_SERVO_NR 0
++    #define Z_SERVO_ANGLES {10,90} // For BLTouch 10=deploy, 90=retract
++    #undef DEACTIVATE_SERVOS_AFTER_MOVE
++    #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
++      #undef Z_MIN_ENDSTOP_INVERTING
++      #define Z_MIN_ENDSTOP_INVERTING false
++    #endif
++  #endif
++
++  /**
+    * Auto Bed Leveling and Z Probe Repeatability Test
+    */
+   #define HAS_PROBING_PROCEDURE (ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST))
+@@ -610,35 +625,33 @@
+     #define _XMAX_ 101
+     #define _YMAX_ 201
+     #define _ZMAX_ 301
+-    const bool Z2_MAX_ENDSTOP_INVERTING =
+-      #if Z2_USE_ENDSTOP == _XMAX_
+-        X_MAX_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN X_MAX_PIN
+-        #undef USE_XMAX_PLUG
+-      #elif Z2_USE_ENDSTOP == _YMAX_
+-        Y_MAX_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN Y_MAX_PIN
+-        #undef USE_YMAX_PLUG
+-      #elif Z2_USE_ENDSTOP == _ZMAX_
+-        Z_MAX_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN Z_MAX_PIN
+-        #undef USE_ZMAX_PLUG
+-      #elif Z2_USE_ENDSTOP == _XMIN_
+-        X_MIN_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN X_MIN_PIN
+-        #undef USE_XMIN_PLUG
+-      #elif Z2_USE_ENDSTOP == _YMIN_
+-        Y_MIN_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN Y_MIN_PIN
+-        #undef USE_YMIN_PLUG
+-      #elif Z2_USE_ENDSTOP == _ZMIN_
+-        Z_MIN_ENDSTOP_INVERTING
+-        #define Z2_MAX_PIN Z_MIN_PIN
+-        #undef USE_ZMIN_PLUG
+-      #else
+-        0
+-      #endif
+-    ;
++    #if Z2_USE_ENDSTOP == _XMAX_
++      #define Z2_MAX_ENDSTOP_INVERTING X_MAX_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN X_MAX_PIN
++      #undef USE_XMAX_PLUG
++    #elif Z2_USE_ENDSTOP == _YMAX_
++      #define Z2_MAX_ENDSTOP_INVERTING Y_MAX_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN Y_MAX_PIN
++      #undef USE_YMAX_PLUG
++    #elif Z2_USE_ENDSTOP == _ZMAX_
++      #define Z2_MAX_ENDSTOP_INVERTING Z_MAX_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN Z_MAX_PIN
++      #undef USE_ZMAX_PLUG
++    #elif Z2_USE_ENDSTOP == _XMIN_
++      #define Z2_MAX_ENDSTOP_INVERTING X_MIN_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN X_MIN_PIN
++      #undef USE_XMIN_PLUG
++    #elif Z2_USE_ENDSTOP == _YMIN_
++      #define Z2_MAX_ENDSTOP_INVERTING Y_MIN_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN Y_MIN_PIN
++      #undef USE_YMIN_PLUG
++    #elif Z2_USE_ENDSTOP == _ZMIN_
++      #define Z2_MAX_ENDSTOP_INVERTING Z_MIN_ENDSTOP_INVERTING
++      #define Z2_MAX_PIN Z_MIN_PIN
++      #undef USE_ZMIN_PLUG
++    #else
++      #define Z2_MAX_ENDSTOP_INVERTING false
++    #endif
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index fb59131..aa5c3be 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -437,13 +437,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -465,6 +465,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -596,6 +599,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 027132d..930e931 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index f471e13..a2143ca 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -105,6 +105,7 @@ extern const char echomagic[] PROGMEM;
+ 
+ #define SERIAL_ECHOPAIR(name,value) (serial_echopair_P(PSTR(name),(value)))
+ 
++void serial_echopair_P(const char* s_P, char v);
+ void serial_echopair_P(const char* s_P, int v);
+ void serial_echopair_P(const char* s_P, long v);
+ void serial_echopair_P(const char* s_P, float v);
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 387777a..ad163d7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -575,6 +575,7 @@ void prepare_move_to_destination();
+   void plan_cubic_move(const float offset[4]);
+ #endif
+ 
++void serial_echopair_P(const char* s_P, char v)          { serialprintPGM(s_P); SERIAL_CHAR(v); }
+ void serial_echopair_P(const char* s_P, int v)           { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, long v)          { serialprintPGM(s_P); SERIAL_ECHO(v); }
+ void serial_echopair_P(const char* s_P, float v)         { serialprintPGM(s_P); SERIAL_ECHO(v); }
+@@ -2732,18 +2733,18 @@ inline void gcode_G0_G1() {
+  * G4: Dwell S<seconds> or P<milliseconds>
+  */
+ inline void gcode_G4() {
+-  millis_t codenum = 0;
++  millis_t dwell_ms = 0;
+ 
+-  if (code_seen('P')) codenum = code_value_millis(); // milliseconds to wait
+-  if (code_seen('S')) codenum = code_value_millis_from_seconds(); // seconds to wait
++  if (code_seen('P')) dwell_ms = code_value_millis(); // milliseconds to wait
++  if (code_seen('S')) dwell_ms = code_value_millis_from_seconds(); // seconds to wait
+ 
+   stepper.synchronize();
+   refresh_cmd_timeout();
+-  codenum += previous_cmd_ms;  // keep track of when we started waiting
++  dwell_ms += previous_cmd_ms;  // keep track of when we started waiting
+ 
+   if (!lcd_hasstatus()) LCD_MESSAGEPGM(MSG_DWELL);
+ 
+-  while (PENDING(millis(), codenum)) idle();
++  while (PENDING(millis(), dwell_ms)) idle();
+ }
+ 
+ #if ENABLED(BEZIER_CURVE_SUPPORT)
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 98abffa..0866344 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -680,6 +680,8 @@
+   #error "ABS_PREHEAT_HPB_TEMP is now PREHEAT_2_TEMP_BED. Please update your configuration."
+ #elif defined(ABS_PREHEAT_FAN_SPEED)
+   #error "ABS_PREHEAT_FAN_SPEED is now PREHEAT_2_FAN_SPEED. Please update your configuration."
++#elif defined(ENDSTOPS_ONLY_FOR_HOMING)
++  #error "ENDSTOPS_ONLY_FOR_HOMING is deprecated. Use (disable) ENDSTOPS_ALWAYS_ON_DEFAULT instead."
+ #endif
+ 
+ /**
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 937e105..ab5af80 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -127,6 +127,7 @@
+  */
+ #include "Marlin.h"
+ #include "language.h"
++#include "endstops.h"
+ #include "planner.h"
+ #include "temperature.h"
+ #include "ultralcd.h"
+@@ -660,6 +661,14 @@ void Config_ResetDefault() {
+   for (uint8_t q = 0; q < COUNT(filament_size); q++)
+     filament_size[q] = DEFAULT_NOMINAL_FILAMENT_DIA;
+ 
++  endstops.enable_globally(
++    #if ENABLED(ENDSTOPS_ALWAYS_ON_DEFAULT)
++      (true)
++    #else
++      (false)
++    #endif
++  );
++
+   Config_Postprocess();
+ 
+   SERIAL_ECHO_START;
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 3bfb67a..751296d 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -40,10 +40,10 @@ Endstops endstops;
+ 
+ bool  Endstops::enabled = true,
+       Endstops::enabled_globally =
+-        #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-          false
++        #if ENABLED(ENDSTOPS_ALWAYS_ON_DEFAULT)
++          (true)
+         #else
+-          true
++          (false)
+         #endif
+       ;
+ volatile char Endstops::endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_PROBE as BIT value
+@@ -64,20 +64,6 @@ volatile char Endstops::endstop_hit_bits; // use X_MIN, Y_MIN, Z_MIN and Z_MIN_P
+  * Class and Instance Methods
+  */
+ 
+-Endstops::Endstops() {
+-  enable_globally(
+-    #if ENABLED(ENDSTOPS_ONLY_FOR_HOMING)
+-      false
+-    #else
+-      true
+-    #endif
+-  );
+-  enable(true);
+-  #if HAS_BED_PROBE
+-    enable_z_probe(false);
+-  #endif
+-} // Endstops::Endstops
+-
+ void Endstops::init() {
+ 
+   #if HAS_X_MIN
+diff --git a/Marlin/endstops.h b/Marlin/endstops.h
+index 76b3486..e5d541c 100644
+--- a/Marlin/endstops.h
++++ b/Marlin/endstops.h
+@@ -43,7 +43,7 @@ class Endstops {
+     #endif
+         current_endstop_bits, old_endstop_bits;
+         
+-    Endstops();
++    Endstops() {};
+ 
+     /**
+      * Initialize the endstop pins
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index a61f51b..cceaf1a 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -437,13 +437,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -465,6 +465,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -596,6 +599,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 5fb71ef..9207b57 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 4ad34b0..e55dc33 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -419,13 +419,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -447,6 +447,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -578,6 +581,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 05189ec..3f0729b 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index c1467c5..d2edb9a 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -417,13 +417,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -445,6 +445,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -576,6 +579,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 9d132ad..72e65de 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -429,13 +429,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -457,6 +457,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -588,6 +591,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 1aa7c21..af6bce8 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-//#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 012df06..18e9679 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -431,13 +431,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true;  // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true;  // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true;  // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true;  // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true;  // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -459,6 +459,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ #define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -590,6 +593,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ #define MIN_Z_HEIGHT_FOR_HOMING 5   // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 95b8c89..bfb6b16 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a4252f4..efcd1f8 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -454,13 +454,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -482,6 +482,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -613,6 +616,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR true
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 2d0afdf..3703ce1 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -229,7 +229,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -445,7 +447,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 3addb54..316a2c0 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -414,13 +414,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -442,6 +442,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -573,6 +576,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index ba78a15..11fdbdb 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 992912e..4024761 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -414,13 +414,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -442,6 +442,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -573,6 +576,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 59b2c9d..3ac1fee 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -437,13 +437,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -465,6 +465,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -596,6 +599,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 14c4547..b1ec736 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -434,13 +434,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -462,6 +462,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -593,6 +596,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index e3af83b..3c09682 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 9270801..e538ff0 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -445,13 +445,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -473,6 +473,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -604,6 +607,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index a7285ff..6a0dea8 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 700bc69..201dcad 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -458,13 +458,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -486,6 +486,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -617,6 +620,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR true
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 116c99a..fe9b6ba 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -231,7 +231,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -447,7 +449,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 7110d30..b5eba2c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -429,13 +429,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -457,6 +457,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -588,6 +591,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 1aa7c21..af6bce8 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-//#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 95428fc..707146f 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -437,13 +437,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -465,6 +465,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -596,6 +599,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 5a8faef..7b9e5e5 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -479,13 +479,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -507,6 +507,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -685,6 +688,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 3e9fd86..173cacf 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 3118bf3..8790185 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -479,13 +479,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -507,6 +507,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -679,6 +682,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 1dfeb8c..51a2d2b 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 3d237ec..d677ea1 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -479,13 +479,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -507,6 +507,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -682,6 +685,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 15// (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index e2bb764..90b3c68 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -440,7 +442,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 96c143f..41d48fc 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -468,13 +468,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -496,6 +496,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -676,6 +679,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 3baf693..b8b94f8 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -228,7 +228,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -445,7 +447,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index a7e3f4e..5ac9c8c 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -477,13 +477,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -505,6 +505,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ #define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -677,6 +680,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 3b82e06..74bb7c5 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -441,7 +443,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6a5a8c2..421683f 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -440,13 +440,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING false // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -468,6 +468,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -599,6 +602,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index bdf8209..6e8c6e6 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 5f27ebd..0499e02 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -427,13 +427,13 @@
+ #endif
+ 
+ // Mechanical endstop with COM to ground and NC to Signal uses "false" here (most common setup).
+-const bool X_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool X_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Y_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
+-const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the logic of the endstop.
++#define X_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define X_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Y_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MAX_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
++#define Z_MIN_PROBE_ENDSTOP_INVERTING true  // set to true to invert the logic of the endstop.
+ 
+ //===========================================================================
+ //============================= Z Probe Options =============================
+@@ -455,6 +455,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // its trigger-point if hardware endstops are active.
+ //#define FIX_MOUNTED_PROBE
+ 
++// The BLTouch probe emulates a servo probe.
++//#define BLTOUCH
++
+ // Z Servo Probe, such as an endstop switch on a rotating arm.
+ //#define Z_ENDSTOP_SERVO_NR 0
+ //#define Z_SERVO_ANGLES {70,0} // Z Servo Deploy and Stow angles
+@@ -586,6 +589,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define INVERT_E3_DIR false
+ 
+ // @section homing
++
+ //#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+                                     // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 9c04c46..f72daab 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -223,7 +223,9 @@
+ 
+ // @section homing
+ 
+-#define ENDSTOPS_ONLY_FOR_HOMING // If defined the endstops will only be used for homing
++// If you want endstops to stay on (by default) even when not homing
++// enable this option. Override at any time with M120, M121.
++//#define ENDSTOPS_ALWAYS_ON_DEFAULT
+ 
+ // @section extras
+ 
+@@ -439,7 +441,6 @@
+   // This option allows you to abort SD printing when any endstop is triggered.
+   // This feature must be enabled with "M540 S1" or from the LCD menu.
+   // To have any effect, endstops must be enabled during SD printing.
+-  // With ENDSTOPS_ONLY_FOR_HOMING you must send "M120" to enable endstops.
+   //#define ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+ #endif // SDSUPPORT
+diff --git a/Marlin/pins_RAMPS_14.h b/Marlin/pins_RAMPS_14.h
+index 8731845..c51a8d0 100644
+--- a/Marlin/pins_RAMPS_14.h
++++ b/Marlin/pins_RAMPS_14.h
+@@ -149,19 +149,21 @@
+     #define LCD_PINS_D6 44
+     #define LCD_PINS_D7 64
+   #else
+-    #define BEEPER_PIN 33
+     #define LCD_PINS_RS 16
+     #define LCD_PINS_ENABLE 17
+     #define LCD_PINS_D4 23
+     #define LCD_PINS_D5 25
+     #define LCD_PINS_D6 27
+     #define LCD_PINS_D7 29
+-    // Buttons are attached to a shift register
+-    // Not wired yet
+-    //#define SHIFT_CLK 38
+-    //#define SHIFT_LD 42
+-    //#define SHIFT_OUT 40
+-    //#define SHIFT_EN 17
++    #if DISABLED(NEWPANEL)
++      #define BEEPER_PIN 33
++      // Buttons are attached to a shift register
++      // Not wired yet
++      //#define SHIFT_CLK 38
++      //#define SHIFT_LD 42
++      //#define SHIFT_OUT 40
++      //#define SHIFT_EN 17
++    #endif
+   #endif
+ 
+   #if ENABLED(NEWPANEL)
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 63159a3..90a1ddf 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -359,11 +359,11 @@ void Stepper::isr() {
+   if (current_block) {
+ 
+     // Update endstops state, if enabled
+-    #if HAS_BED_PROBE
+-      if (endstops.enabled || endstops.z_probe_enabled) endstops.update();
+-    #else
+-      if (endstops.enabled) endstops.update();
+-    #endif
++    if (endstops.enabled
++      #if HAS_BED_PROBE
++        || endstops.z_probe_enabled
++      #endif
++    ) endstops.update();
+ 
+     // Take multiple steps per interrupt (For high speed moves)
+     for (int8_t i = 0; i < step_loops; i++) {
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 3e933ee..f96d74c 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2738,7 +2738,18 @@ void lcd_update() {
+   }
+ }
+ 
++void set_utf_strlen(char* s, uint8_t n) {
++  uint8_t i = 0, j = 0;
++  while (s[i] && (j < n)) {
++    if ((s[i] & 0xC0u) != 0x80u) j++;
++    i++;
++  }
++  while (j++ < n) s[i++] = ' ';
++  s[i] = '\0';
++}
++
+ void lcd_finishstatus(bool persist=false) {
++  set_utf_strlen(lcd_status_message, LCD_WIDTH);
+   #if !(ENABLED(LCD_PROGRESS_BAR) && (PROGRESS_MSG_EXPIRE > 0))
+     UNUSED(persist);
+   #endif
+@@ -2760,32 +2771,19 @@ void lcd_finishstatus(bool persist=false) {
+   void dontExpireStatus() { expire_status_ms = 0; }
+ #endif
+ 
+-void set_utf_strlen(char* s, uint8_t n) {
+-  uint8_t i = 0, j = 0;
+-  while (s[i] && (j < n)) {
+-    if ((s[i] & 0xc0u) != 0x80u) j++;
+-    i++;
+-  }
+-  while (j++ < n) s[i++] = ' ';
+-  s[i] = '\0';
+-}
+-
+ bool lcd_hasstatus() { return (lcd_status_message[0] != '\0'); }
+ 
+ void lcd_setstatus(const char* message, bool persist) {
+   if (lcd_status_message_level > 0) return;
+   strncpy(lcd_status_message, message, 3 * (LCD_WIDTH));
+-  set_utf_strlen(lcd_status_message, LCD_WIDTH);
+   lcd_finishstatus(persist);
+ }
+ 
+ void lcd_setstatuspgm(const char* message, uint8_t level) {
+-  if (level >= lcd_status_message_level) {
+-    strncpy_P(lcd_status_message, message, 3 * (LCD_WIDTH));
+-    set_utf_strlen(lcd_status_message, LCD_WIDTH);
+-    lcd_status_message_level = level;
+-    lcd_finishstatus(level > 0);
+-  }
++  if (level < lcd_status_message_level) return;
++  lcd_status_message_level = level;
++  strncpy_P(lcd_status_message, message, 3 * (LCD_WIDTH));
++  lcd_finishstatus(level > 0);
+ }
+ 
+ void lcd_setalertstatuspgm(const char* message) {
+diff --git a/buildroot/share/scripts/createTemperatureLookupMarlin.py b/buildroot/share/scripts/createTemperatureLookupMarlin.py
+index 3a3ed91..9859caa 100755
+--- a/buildroot/share/scripts/createTemperatureLookupMarlin.py
++++ b/buildroot/share/scripts/createTemperatureLookupMarlin.py
+@@ -5,7 +5,7 @@ Generates lookup to temperature values for use in a microcontroller in C format
+ http://en.wikipedia.org/wiki/Steinhart-Hart_equation
+ 
+ The main use is for Arduino programs that read data from the circuit board described here:
+-http://make.rrrf.org/ts-1.0
++http://reprap.org/wiki/Temperature_Sensor_v2.0
+ 
+ Usage: python createTemperatureLookup.py [options]
+ 
+

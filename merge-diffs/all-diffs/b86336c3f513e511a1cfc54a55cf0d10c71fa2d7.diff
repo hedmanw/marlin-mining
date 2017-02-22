@@ -1,0 +1,883 @@
+commit b86336c3f513e511a1cfc54a55cf0d10c71fa2d7 (from 825adbd67bab99442d17bb28116ff40e5a2c4740)
+Merge: 825adbd b69e75c
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Wed Aug 22 06:30:35 2012 -0700
+
+    Merge pull request #221 from daid/Marlin_v1
+    
+    Long filename support for LCD display
+
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index a7b637b..f8ae5b8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -1822,5 +1822,3 @@ void setPwmFrequency(uint8_t pin, int val)
+   }
+ }
+ #endif
+-
+-
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 884fa45..eb38df6 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -369,7 +369,6 @@ bool Sd2Card::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+  *
+  * \param[in] blockNumber Logical block to be read.
+  * \param[out] dst Pointer to the location that will receive the data.
+-
+  * \return The value one, true, is returned for success and
+  * the value zero, false, is returned for failure.
+  */
+@@ -639,5 +638,4 @@ bool Sd2Card::writeStop() {
+   return false;
+ }
+ 
+-
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdBaseFile.cpp b/Marlin/SdBaseFile.cpp
+index b84efc8..c4d5380 100644
+--- a/Marlin/SdBaseFile.cpp
++++ b/Marlin/SdBaseFile.cpp
+@@ -867,7 +867,7 @@ bool SdBaseFile::openParent(SdBaseFile* dir) {
+   }
+   // search for parent in '../..'
+   do {
+-    if (file.readDir(&entry) != 32) goto fail;
++    if (file.readDir(&entry, NULL) != 32) goto fail;
+     c = entry.firstClusterLow;
+     c |= (uint32_t)entry.firstClusterHigh << 16;
+   } while (c != cluster);
+@@ -1108,10 +1108,16 @@ int16_t SdBaseFile::read(void* buf, uint16_t nbyte) {
+  * readDir() called before a directory has been opened, this is not
+  * a directory file or an I/O error occurred.
+  */
+-int8_t SdBaseFile::readDir(dir_t* dir) {
++int8_t SdBaseFile::readDir(dir_t* dir, char* longFilename) {
+   int16_t n;
+   // if not a directory file or miss-positioned return an error
+   if (!isDir() || (0X1F & curPosition_)) return -1;
++  
++  //If we have a longFilename buffer, mark it as invalid. If we find a long filename it will be filled automaticly.
++  if (longFilename != NULL)
++  {
++  	longFilename[0] = '\0';
++  }
+ 
+   while (1) {
+     n = read(dir, sizeof(dir_t));
+@@ -1120,6 +1126,34 @@ int8_t SdBaseFile::readDir(dir_t* dir) {
+     if (dir->name[0] == DIR_NAME_FREE) return 0;
+     // skip empty entries and entry for .  and ..
+     if (dir->name[0] == DIR_NAME_DELETED || dir->name[0] == '.') continue;
++    //Fill the long filename if we have a long filename entry,
++	// long filename entries are stored before the actual filename.
++	if (DIR_IS_LONG_NAME(dir) && longFilename != NULL)
++    {
++    	vfat_t *VFAT = (vfat_t*)dir;
++		//Sanity check the VFAT entry. The first cluster is always set to zero. And th esequence number should be higher then 0
++    	if (VFAT->firstClusterLow == 0 && (VFAT->sequenceNumber & 0x1F) > 0 && (VFAT->sequenceNumber & 0x1F) <= MAX_VFAT_ENTRIES)
++    	{
++			//TODO: Store the filename checksum to verify if a none-long filename aware system modified the file table.
++    		n = ((VFAT->sequenceNumber & 0x1F) - 1) * 13;
++			longFilename[n+0] = VFAT->name1[0];
++			longFilename[n+1] = VFAT->name1[1];
++			longFilename[n+2] = VFAT->name1[2];
++			longFilename[n+3] = VFAT->name1[3];
++			longFilename[n+4] = VFAT->name1[4];
++			longFilename[n+5] = VFAT->name2[0];
++			longFilename[n+6] = VFAT->name2[1];
++			longFilename[n+7] = VFAT->name2[2];
++			longFilename[n+8] = VFAT->name2[3];
++			longFilename[n+9] = VFAT->name2[4];
++			longFilename[n+10] = VFAT->name2[5];
++			longFilename[n+11] = VFAT->name3[0];
++			longFilename[n+12] = VFAT->name3[1];
++			//If this VFAT entry is the last one, add a NUL terminator at the end of the string
++			if (VFAT->sequenceNumber & 0x40)
++				longFilename[n+13] = '\0';
++		}
++    }
+     // return if normal file or subdirectory
+     if (DIR_IS_FILE_OR_SUBDIR(dir)) return n;
+   }
+@@ -1788,4 +1822,4 @@ void (*SdBaseFile::oldDateTime_)(uint16_t& date, uint16_t& time) = 0;  // NOLINT
+ #endif  // ALLOW_DEPRECATED_FUNCTIONS
+ 
+ 
+-#endif
++#endif
+diff --git a/Marlin/SdBaseFile.h b/Marlin/SdBaseFile.h
+index 1bf75f6..dea299a 100644
+--- a/Marlin/SdBaseFile.h
++++ b/Marlin/SdBaseFile.h
+@@ -283,7 +283,7 @@ class SdBaseFile {
+   bool printName();
+   int16_t read();
+   int16_t read(void* buf, uint16_t nbyte);
+-  int8_t readDir(dir_t* dir);
++  int8_t readDir(dir_t* dir, char* longFilename);
+   static bool remove(SdBaseFile* dirFile, const char* path);
+   bool remove();
+   /** Set the file's current position to zero. */
+@@ -455,7 +455,7 @@ class SdBaseFile {
+    * \param[out] dir The dir_t struct that will receive the data.
+    * \return bytes read for success zero for eof or -1 for failure.
+    */
+-  int8_t readDir(dir_t& dir) {return readDir(&dir);}  // NOLINT
++  int8_t readDir(dir_t& dir, char* longFilename) {return readDir(&dir, longFilename);}  // NOLINT
+   /** \deprecated Use:
+    * static uint8_t remove(SdBaseFile* dirFile, const char* path);
+    * \param[in] dirFile The directory that contains the file.
+@@ -480,4 +480,4 @@ class SdBaseFile {
+ };
+ 
+ #endif  // SdBaseFile_h
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdFatConfig.h b/Marlin/SdFatConfig.h
+index 2a78c2a..710b1f7 100644
+--- a/Marlin/SdFatConfig.h
++++ b/Marlin/SdFatConfig.h
+@@ -108,7 +108,14 @@ uint8_t const SOFT_SPI_SCK_PIN = 13;
+  * a pure virtual function is called.
+  */
+ #define USE_CXA_PURE_VIRTUAL 1
++/**
++ * Defines for long (vfat) filenames
++ */
++/** Number of VFAT entries used. Every entry has 13 UTF-16 characters */
++#define MAX_VFAT_ENTRIES (2)
++/** Total size of the buffer used to store the long filenames */
++#define LONG_FILENAME_LENGTH (13*MAX_VFAT_ENTRIES+1)
+ #endif  // SdFatConfig_h
+ 
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/SdFatStructs.h b/Marlin/SdFatStructs.h
+index 7ad88d6..3867216 100644
+--- a/Marlin/SdFatStructs.h
++++ b/Marlin/SdFatStructs.h
+@@ -22,6 +22,8 @@
+ 
+ #ifndef SdFatStructs_h
+ #define SdFatStructs_h
++
++#define PACKED __attribute__((__packed__))
+ /**
+  * \file
+  * \brief FAT file structures
+@@ -95,7 +97,7 @@ struct partitionTable {
+   uint32_t firstSector;
+            /** Length of the partition, in blocks. */
+   uint32_t totalSectors;
+-};
++} PACKED;
+ /** Type name for partitionTable */
+ typedef struct partitionTable part_t;
+ //------------------------------------------------------------------------------
+@@ -119,7 +121,7 @@ struct masterBootRecord {
+   uint8_t  mbrSig0;
+            /** Second MBR signature byte. Must be 0XAA */
+   uint8_t  mbrSig1;
+-};
++} PACKED;
+ /** Type name for masterBootRecord */
+ typedef struct masterBootRecord mbr_t;
+ //------------------------------------------------------------------------------
+@@ -247,7 +249,7 @@ struct fat_boot {
+   uint8_t  bootSectorSig0;
+            /** must be 0XAA */
+   uint8_t  bootSectorSig1;
+-};
++} PACKED;
+ /** Type name for FAT Boot Sector */
+ typedef struct fat_boot fat_boot_t;
+ //------------------------------------------------------------------------------
+@@ -401,7 +403,7 @@ struct fat32_boot {
+   uint8_t  bootSectorSig0;
+            /** must be 0XAA */
+   uint8_t  bootSectorSig1;
+-};
++} PACKED;
+ /** Type name for FAT32 Boot Sector */
+ typedef struct fat32_boot fat32_boot_t;
+ //------------------------------------------------------------------------------
+@@ -441,7 +443,7 @@ struct fat32_fsinfo {
+   uint8_t  reserved2[12];
+            /** must be 0X00, 0X00, 0X55, 0XAA */
+   uint8_t  tailSignature[4];
+-};
++} PACKED;
+ /** Type name for FAT32 FSINFO Sector */
+ typedef struct fat32_fsinfo fat32_fsinfo_t;
+ //------------------------------------------------------------------------------
+@@ -539,12 +541,46 @@ struct directoryEntry {
+   uint16_t firstClusterLow;
+            /** 32-bit unsigned holding this file's size in bytes. */
+   uint32_t fileSize;
+-};
++} PACKED;
++/**
++ * \struct directoryVFATEntry
++ * \brief VFAT long filename directory entry
++ *
++ * directoryVFATEntries are found in the same list as normal directoryEntry.
++ * But have the attribute field set to DIR_ATT_LONG_NAME.
++ * 
++ * Long filenames are saved in multiple directoryVFATEntries.
++ * Each entry containing 13 UTF-16 characters.
++ */
++struct directoryVFATEntry {
++  /**
++   * Sequence number. Consists of 2 parts:
++   *  bit 6:   indicates first long filename block for the next file
++   *  bit 0-4: the position of this long filename block (first block is 1)
++   */
++  uint8_t  sequenceNumber;
++  /** First set of UTF-16 characters */
++  uint16_t name1[5];//UTF-16
++  /** attributes (at the same location as in directoryEntry), always 0x0F */
++  uint8_t  attributes;
++  /** Reserved for use by Windows NT. Always 0. */
++  uint8_t  reservedNT;
++  /** Checksum of the short 8.3 filename, can be used to checked if the file system as modified by a not-long-filename aware implementation. */
++  uint8_t  checksum;
++  /** Second set of UTF-16 characters */
++  uint16_t name2[6];//UTF-16
++  /** firstClusterLow is always zero for longFilenames */
++  uint16_t firstClusterLow;
++  /** Third set of UTF-16 characters */
++  uint16_t name3[2];//UTF-16
++} PACKED;
+ //------------------------------------------------------------------------------
+ // Definitions for directory entries
+ //
+ /** Type name for directoryEntry */
+ typedef struct directoryEntry dir_t;
++/** Type name for directoryVFATEntry */
++typedef struct directoryVFATEntry vfat_t;
+ /** escape for name[0] = 0XE5 */
+ uint8_t const DIR_NAME_0XE5 = 0X05;
+ /** name[0] value for entry that is free after being "deleted" */
+@@ -607,4 +643,4 @@ static inline uint8_t DIR_IS_FILE_OR_SUBDIR(const dir_t* dir) {
+ #endif  // SdFatStructs_h
+ 
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 222632f..47a3fd0 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -51,7 +51,7 @@ void  CardReader::lsDive(const char *prepend,SdFile parent)
+   dir_t p;
+  uint8_t cnt=0;
+  
+-  while (parent.readDir(p) > 0)
++  while (parent.readDir(p, longFilename) > 0)
+   {
+     if( DIR_IS_SUBDIR(&p) && lsAction!=LS_Count && lsAction!=LS_GetFilename) // hence LS_SerialPrint
+     {
+@@ -429,16 +429,16 @@ void CardReader::checkautostart(bool force)
+   
+   char autoname[30];
+   sprintf(autoname,"auto%i.g",lastnr);
+-  for(int8_t i=0;i<(int)strlen(autoname);i++)
++  for(int8_t i=0;i<(int8_t)strlen(autoname);i++)
+     autoname[i]=tolower(autoname[i]);
+   dir_t p;
+ 
+   root.rewind();
+   
+   bool found=false;
+-  while (root.readDir(p) > 0) 
++  while (root.readDir(p, NULL) > 0) 
+   {
+-    for(int8_t i=0;i<(int)strlen((char*)p.name);i++)
++    for(int8_t i=0;i<(int8_t)strlen((char*)p.name);i++)
+     p.name[i]=tolower(p.name[i]);
+     //Serial.print((char*)p.name);
+     //Serial.print(" ");
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 964bbe7..e5c8443 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -45,7 +45,8 @@ public:
+   bool saving;
+   bool sdprinting ;  
+   bool cardOK ;
+-  char filename[12];
++  char filename[13];
++  char longFilename[LONG_FILENAME_LENGTH];
+   bool filenameIsDir;
+   int lastnr; //last number of the autostart;
+ private:
+@@ -72,4 +73,4 @@ private:
+ #define IS_SD_PRINTING (false)
+ 
+ #endif //SDSUPPORT
+-#endif
++#endif
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index aff76a7..511d47f 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -2310,7 +2310,15 @@ void MainMenu::showSD()
+           //Serial.print("Filenr:");Serial.println(i-2);
+           lcd.setCursor(0,line);lcdprintPGM(" ");
+           if(card.filenameIsDir) lcd.print("\005");
+-          lcd.print(card.filename);
++          if (card.longFilename[0])
++          {
++            card.longFilename[LCD_WIDTH-1] = '\0';
++            lcd.print(card.longFilename);
++          }
++          else
++          {
++            lcd.print(card.filename);
++          }
+         }
+         if((activeline==line) && CLICKED)
+         {
+@@ -2335,7 +2343,15 @@ void MainMenu::showSD()
+             enquecommand("M24");
+             beep(); 
+             status=Main_Status;
+-            lcd_status(card.filename);
++            if (card.longFilename[0])
++            {
++              card.longFilename[LCD_WIDTH-1] = '\0';
++              lcd_status(card.longFilename);
++            }
++            else
++            {
++              lcd_status(card.filename);
++            }
+           }
+         } 
+       }
+
+commit b86336c3f513e511a1cfc54a55cf0d10c71fa2d7 (from b69e75c89a0be970b2742cd8bff603baf824d7a9)
+Merge: 825adbd b69e75c
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Wed Aug 22 06:30:35 2012 -0700
+
+    Merge pull request #221 from daid/Marlin_v1
+    
+    Long filename support for LCD display
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 937fabb..5b59885 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -107,7 +107,7 @@ FORCE_INLINE void serialprintPGM(const char *str)
+ void get_command();
+ void process_commands();
+ 
+-void manage_inactivity(byte debug);
++void manage_inactivity();
+ 
+ #if X_ENABLE_PIN > -1
+   #define  enable_x() WRITE(X_ENABLE_PIN, X_ENABLE_ON)
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 2de41a0..f8ae5b8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -245,6 +245,14 @@ void enquecommand(const char *cmd)
+   }
+ }
+ 
++void setup_killpin()
++{
++  #if( KILL_PIN>-1 )
++    pinMode(KILL_PIN,INPUT);
++    WRITE(KILL_PIN,HIGH);
++  #endif
++}
++    
+ void setup_photpin()
+ {
+   #ifdef PHOTOGRAPH_PIN
+@@ -276,7 +284,8 @@ void suicide()
+ }
+ 
+ void setup()
+-{ 
++{
++  setup_killpin(); 
+   setup_powerhold();
+   MYSERIAL.begin(BAUDRATE);
+   SERIAL_PROTOCOLLNPGM("start");
+@@ -365,7 +374,7 @@ void loop()
+   }
+   //check heater every n milliseconds
+   manage_heater();
+-  manage_inactivity(1);
++  manage_inactivity();
+   checkHitEndstops();
+   LCD_STATUS;
+ }
+@@ -653,8 +662,8 @@ void process_commands()
+       previous_millis_cmd = millis();
+       while(millis()  < codenum ){
+         manage_heater();
+-        manage_inactivity(1);
+-		LCD_STATUS;
++        manage_inactivity();
++        LCD_STATUS;
+       }
+       break;
+       #ifdef FWRETRACT  
+@@ -816,21 +825,20 @@ void process_commands()
+       
+       st_synchronize();
+       previous_millis_cmd = millis();
+-	  if (codenum > 0)
+-	  {
++      if (codenum > 0){
+         codenum += millis();  // keep track of when we started waiting
+         while(millis()  < codenum && !CLICKED){
+           manage_heater();
+-          manage_inactivity(1);
+-		  LCD_STATUS;
+-		}
++          manage_inactivity();
++          LCD_STATUS;
++        }
+       }else{
+-        while(!CLICKED) {
++        while(!CLICKED){
+           manage_heater();
+-          manage_inactivity(1);
+-		  LCD_STATUS;
+-		}
+-	  }
++          manage_inactivity();
++          LCD_STATUS;
++        }
++      }
+     }
+     break;
+ #endif
+@@ -1064,7 +1072,7 @@ void process_commands()
+             codenum = millis();
+           }
+           manage_heater();
+-          manage_inactivity(1);
++          manage_inactivity();
+           LCD_STATUS;
+         #ifdef TEMP_RESIDENCY_TIME
+             /* start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+@@ -1102,7 +1110,7 @@ void process_commands()
+             codenum = millis(); 
+           }
+           manage_heater();
+-          manage_inactivity(1);
++          manage_inactivity();
+           LCD_STATUS;
+         }
+         LCD_MESSAGEPGM(MSG_BED_DONE);
+@@ -1664,7 +1672,7 @@ void controllerFan()
+ }
+ #endif
+ 
+-void manage_inactivity(byte debug) 
++void manage_inactivity() 
+ { 
+   if( (millis() - previous_millis_cmd) >  max_inactive_time ) 
+     if(max_inactive_time) 
+@@ -1682,6 +1690,10 @@ void manage_inactivity(byte debug)
+       }
+     }
+   }
++  #if( KILL_PIN>-1 )
++    if( 0 == READ(KILL_PIN) )
++      kill();
++  #endif
+   #ifdef CONTROLLERFAN_PIN
+     controllerFan(); //Check if fan should be turned on to cool stepper drivers down
+   #endif
+@@ -1722,7 +1734,7 @@ void kill()
+   if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,INPUT);
+   SERIAL_ERROR_START;
+   SERIAL_ERRORLNPGM(MSG_ERR_KILLED);
+-  LCD_MESSAGEPGM(MSG_KILLED);
++  LCD_ALERTMESSAGEPGM(MSG_KILLED);
+   suicide();
+   while(1); // Wait for reset
+ }
+diff --git a/Marlin/language.h b/Marlin/language.h
+index a3d8281..8d3d67b 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -1,11 +1,16 @@
+ #ifndef LANGUAGE_H
+ #define LANGUAGE_H
+ 
++// NOTE: IF YOU CHANGE THIS FILE / MERGE THIS FILE WITH CHANGES
++//
++//   ==> ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRALCD" / "SDSUPPORT" #define IN "Configuration.h" 
++//   ==> ALSO TRY ALL AVAILABLE "LANGUAGE_CHOICE" OPTIONS
++
+ // Languages
+-// 1  Custom (For you to add your own messages)
+-// 2  English 
++// 1  English
++// 2  -
+ // 3  French	(Waiting translation)
+-// 4  German	(Waiting translation)
++// 4  German
+ // 5  Spanish
+ // 6  Etc
+ 
+@@ -35,9 +40,13 @@
+ 	#define MSG_DISABLE_STEPPERS " Disable Steppers"
+ 	#define MSG_AUTO_HOME " Auto Home"
+ 	#define MSG_SET_ORIGIN " Set Origin"
++	#define MSG_PREHEAT_PLA " Preheat PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS " Preheat PLA Setting"
++	#define MSG_PREHEAT_ABS " Preheat ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS " Preheat ABS Setting"
+ 	#define MSG_COOLDOWN " Cooldown"
+ 	#define MSG_EXTRUDE " Extrude"
+-	#define MSG_RETRACT " Extract"
++	#define MSG_RETRACT " Retract"
+ 	#define MSG_PREHEAT_PLA " Preheat PLA"
+ 	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+@@ -87,24 +96,19 @@
+ 	#define MSG_PREPARE " Prepare \x7E"
+ 	#define MSG_PREPARE_ALT " Prepare \003"
+ 	#define MSG_CONTROL_ARROW " Control \x7E"
+-	#define MSG_RETRACT_ARROW " Control \x7E"
++	#define MSG_RETRACT_ARROW " Retract \x7E"
+ 	#define MSG_TUNE " Tune    \x7E"
+ 	#define MSG_PAUSE_PRINT " Pause Print \x7E"
+ 	#define MSG_RESUME_PRINT " Resume Print \x7E"
+ 	#define MSG_STOP_PRINT " Stop Print   \x7E"
+ 	#define MSG_CARD_MENU " Card Menu    \x7E"
+ 	#define MSG_NO_CARD " No Card"
+-	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Something is wrong in the MenuStructure."
+ 	#define MSG_DWELL "Sleep..."
+ 	#define MSG_USERWAIT "Wait for user..."
+ 	#define MSG_NO_MOVE "No move."
+ 	#define MSG_PART_RELEASE "Partial Release"
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_PLA_SETTINGS " Preheat PLA Setting"
+-	#define MSG_PREHEAT_ABS_SETTINGS " Preheat ABS Setting"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_STEPPER_RELEASED "Released."
+ 	#define MSG_CONTROL_RETRACT  " Retract mm:"
+ 	#define MSG_CONTROL_RETRACTF " Retract  F:"
+@@ -112,6 +116,7 @@
+ 	#define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
+ 	#define MSG_AUTORETRACT " AutoRetr.:"
++        #define MSG_SERIAL_ERROR_MENU_STRUCTURE "Something is wrong in the MenuStructure."
+ 
+ // Serial Console Messages
+ 
+@@ -184,84 +189,90 @@
+ 
+ // LCD Menu Messages
+ 
+-	#define WELCOME_MSG MACHINE_NAME " Ready."
++	#define WELCOME_MSG MACHINE_NAME " Bereit."
+ 
+-	#define MSG_SD_INSERTED "Card inserted"
+-	#define MSG_SD_REMOVED "Card removed"
+-	#define MSG_MAIN " Main \003"
+-	#define MSG_AUTOSTART " Autostart"
++	#define MSG_SD_INSERTED      "SDKarte erkannt"
++	#define MSG_SD_REMOVED       "SDKarte entfernt"
++	#define MSG_MAIN             " Hauptmneü \003"
++	#define MSG_AUTOSTART        " Autostart"
+ 	#define MSG_DISABLE_STEPPERS " Stepper abschalten"
+-	#define MSG_AUTO_HOME " Auto Heim"
+-	#define MSG_SET_ORIGIN " Position setzen"
+-	#define MSG_PREHEAT_PLA " Aufheizen PLA"
+-	#define MSG_PREHEAT_ABS " Aufheizen ABS"
+-	#define MSG_COOLDOWN " Abkuehlen"
+-	#define MSG_EXTRUDE " Extrude"
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+-	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+-	#define MSG_MOVE_AXIS " Achsen verfahren   \x7E"
+-	#define MSG_SPEED " Geschw:"
+-	#define MSG_NOZZLE " \002Duese:"
+-	#define MSG_NOZZLE1 " \002Duese2:"
+-	#define MSG_NOZZLE2 " \002Duese3:"
+-	#define MSG_BED " \002Bett:"
+-	#define MSG_FAN_SPEED " Luefter geschw.:"
+-	#define MSG_FLOW " Fluss:"
+-	#define MSG_CONTROL " Kontrolle \003"
+-	#define MSG_MIN " \002 Min:"
+-	#define MSG_MAX " \002 Max:"
+-	#define MSG_FACTOR " \002 Faktor:"
+-	#define MSG_AUTOTEMP " AutoTemp:"
+-	#define MSG_ON "Ein "
+-	#define MSG_OFF "Aus "
+-	#define MSG_PID_P " PID-P: "
+-	#define MSG_PID_I " PID-I: "
+-	#define MSG_PID_D " PID-D: "
+-	#define MSG_PID_C " PID-C: "
+-	#define MSG_ACC  " Acc:"
+-	#define MSG_VXY_JERK " Vxy-jerk: "
+-	#define MSG_VMAX " Vmax "
+-	#define MSG_X "x:"
+-	#define MSG_Y "y:"
+-	#define MSG_Z "z:"
+-	#define MSG_E "e:"
+-	#define MSG_VMIN " Vmin:"
+-	#define MSG_VTRAV_MIN " VTrav min:"
+-	#define MSG_AMAX " Amax "
+-	#define MSG_A_RETRACT " A-retract:"
+-	#define MSG_XSTEPS " Xsteps/mm:"
+-	#define MSG_YSTEPS " Ysteps/mm:"
+-	#define MSG_ZSTEPS " Zsteps/mm:"
+-	#define MSG_ESTEPS " Esteps/mm:"
+-	#define MSG_MAIN_WIDE " Main        \003"
+-	#define MSG_TEMPERATURE_WIDE " Temperatur \x7E"
+-	#define MSG_MOTION_WIDE " Motion      \x7E"
+-	#define MSG_STORE_EPROM " EPROM speichern"
+-	#define MSG_LOAD_EPROM "  EPROM laden"
+-	#define MSG_RESTORE_FAILSAFE " Standard Konfig."
+-	#define MSG_REFRESH "\004Refresh"
+-	#define MSG_WATCH " Beobachten   \003"
+-	#define MSG_PREPARE " Prepare \x7E"
+-	#define MSG_PREPARE_ALT " Prepare \003"
+-	#define MSG_CONTROL_ARROW " Control \x7E"
++	#define MSG_AUTO_HOME        " Auto Nullpunkt"
++	#define MSG_SET_ORIGIN       " Setze Nullpunkt"
++	#define MSG_PREHEAT_PLA      " Vorwärmen PLA"
++	#define MSG_PREHEAT_PLA_SETTINGS " Vorwärmen PLA Einstellungen"
++	#define MSG_PREHEAT_ABS      " Vorwärmen ABS"
++	#define MSG_PREHEAT_ABS_SETTINGS "  Vorwärmen ABS Einstellungen"
++	#define MSG_COOLDOWN         " Abkühlen"
++	#define MSG_EXTRUDE          " Extrude"
++	#define MSG_RETRACT          " Retract"
++	#define MSG_MOVE_AXIS        " Achsen bewegen\x7E"
++	#define MSG_SPEED            " Geschw:"
++	#define MSG_NOZZLE           " \002Düse:"
++	#define MSG_NOZZLE1          " \002Düse2:"
++	#define MSG_NOZZLE2          " \002Düse3:"
++	#define MSG_BED              " \002Bett:"
++	#define MSG_FAN_SPEED        " Lüftergeschw.:"
++	#define MSG_FLOW             " Fluß:"
++	#define MSG_CONTROL          " Einstellungen \003"
++	#define MSG_MIN              " \002 Min:"
++	#define MSG_MAX              " \002 Max:"
++	#define MSG_FACTOR           " \002 Faktor:"
++	#define MSG_AUTOTEMP         " AutoTemp:"
++	#define MSG_ON               "Ein "
++	#define MSG_OFF              "Aus "
++	#define MSG_PID_P            " PID-P: "
++	#define MSG_PID_I            " PID-I: "
++	#define MSG_PID_D            " PID-D: "
++	#define MSG_PID_C            " PID-C: "
++	#define MSG_ACC              " Acc:"
++	#define MSG_VXY_JERK         " Vxy-jerk: "
++	#define MSG_VMAX             " Vmax "
++	#define MSG_X                "x:"
++	#define MSG_Y                "y:"
++	#define MSG_Z                "z:"
++	#define MSG_E                "e:"
++	#define MSG_VMIN             " Vmin:"
++	#define MSG_VTRAV_MIN        " VTrav min:"
++	#define MSG_AMAX             " Amax "
++	#define MSG_A_RETRACT        " A-Retract:"
++	#define MSG_XSTEPS           " Xsteps/mm:"
++	#define MSG_YSTEPS           " Ysteps/mm:"
++	#define MSG_ZSTEPS           " Zsteps/mm:"
++	#define MSG_ESTEPS           " Esteps/mm:"
++	#define MSG_MAIN_WIDE        " Hauptmenü     \003"
++	#define MSG_RECTRACT_WIDE    " Rectract      \x7E"
++	#define MSG_WATCH            " Beobachten    \003"
++	#define MSG_TEMPERATURE_WIDE " Temperatur    \x7E"
++        #define MSG_TEMPERATURE_RTN  " Temperatur    \003"
++	#define MSG_MOTION_WIDE      " Bewegung      \x7E"
++	#define MSG_STORE_EPROM      " EPROM speichern"
++	#define MSG_LOAD_EPROM       " EPROM laden"
++	#define MSG_RESTORE_FAILSAFE " Standardkonfig."
++	#define MSG_REFRESH          "\004Aktualisieren"
++	#define MSG_PREPARE          " Vorbereitung  \x7E"
++	#define MSG_PREPARE_ALT      " Vorbereitung  \003"
++	#define MSG_CONTROL_ARROW    " Einstellungen \x7E"
++	#define MSG_TUNE             " Justierung    \x7E"
++	#define MSG_PAUSE_PRINT      " Druck anhalten\x7E"
++	#define MSG_RESUME_PRINT     " Druck fortsetz\x7E"
++	#define MSG_STOP_PRINT       " Druck stoppen \x7E"
++	#define MSG_CARD_MENU        " SDKarten Menü \x7E"
++	#define MSG_NO_CARD          " Keine SDKarte"
++	#define MSG_DWELL            "Warten..."		
++	#define MSG_USERWAIT         "Warte auf Nutzer..."
++	#define MSG_NO_MOVE          "Kein Zug."
++	#define MSG_PART_RELEASE     "Stepper tlw frei"
++	#define MSG_KILLED           "KILLED"
++	#define MSG_STOPPED          "GESTOPPT"
++	#define MSG_STEPPER_RELEASED "Stepper frei"
++        #define MSG_CONTROL_RETRACT  " Retract mm:"
++        #define MSG_CONTROL_RETRACTF " Retract  F:"
++        #define MSG_CONTROL_RETRACT_ZLIFT " Hop mm:"
++        #define MSG_CONTROL_RETRACT_RECOVER " UnRet +mm:"
++        #define MSG_CONTROL_RETRACT_RECOVERF " UnRet  F:"
++        #define MSG_AUTORETRACT      " AutoRetr.:"
++	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Fehler in Menüstruktur."
+ 	
+-	#define MSG_TUNE " Tune    \x7E"
+-	#define MSG_STOP_PRINT " Druck stoppen   \x7E"
+-	#define MSG_CARD_MENU " SDKarten Menue    \x7E"
+-	#define MSG_NO_CARD " Keine SDKarte"
+-	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Fehler in der  Menuestruktur."
+-	#define MSG_DWELL "DWELL..."		
+-	#define MSG_NO_MOVE "No move."
+-	#define MSG_PART_RELEASE "Partial Release"
+-	#define MSG_KILLED "KILLED. "
+-	#define MSG_STOPPED "STOPPED. "
+-	#define MSG_PREHEAT_PLA " Preheat PLA"
+-	#define MSG_PREHEAT_ABS " Preheat ABS"
+-	#define MSG_STEPPER_RELEASED "Released."
+-	
+-
+-
+ // Serial Console Messages
+ 
+ 	#define MSG_Enqueing "enqueing \""
+@@ -343,8 +354,11 @@
+ #define MSG_SET_ORIGIN " Establecer Cero"
+ #define MSG_COOLDOWN " Enfriar"
+ #define MSG_EXTRUDE " Extruir"
++#define MSG_RETRACT " Retract"
+ #define MSG_PREHEAT_PLA " Precalentar PLA"
++#define MSG_PREHEAT_PLA_SETTINGS " Precalentar PLA Setting"
+ #define MSG_PREHEAT_ABS " Precalentar ABS"
++#define MSG_PREHEAT_ABS_SETTINGS " Precalentar ABS Setting"
+ #define MSG_MOVE_AXIS " Mover Ejes      \x7E"
+ #define MSG_SPEED " Velocidad:"
+ #define MSG_NOZZLE " \002Nozzle:"
+@@ -382,6 +396,7 @@
+ #define MSG_MAIN_WIDE " Menu Principal  \003"
+ #define MSG_RECTRACT_WIDE " Retraer         \x7E"
+ #define MSG_TEMPERATURE_WIDE " Temperatura     \x7E"
++#define MSG_TEMPERATURE_RTN  " Temperatura     \003"
+ #define MSG_MOTION_WIDE " Movimiento      \x7E"
+ #define MSG_STORE_EPROM " Guardar Memoria"
+ #define MSG_LOAD_EPROM " Cargar Memoria"
+@@ -393,18 +408,17 @@
+ #define MSG_CONTROL_ARROW " Control  \x7E"
+ #define MSG_RETRACT_ARROW " Control  \x7E"
+ #define MSG_TUNE " Ajustar \x7E"
++#define MSG_PAUSE_PRINT " Pause Print \x7E"
++#define MSG_RESUME_PRINT " Resume Print \x7E"
+ #define MSG_STOP_PRINT " Detener Impresion \x7E"
+ #define MSG_CARD_MENU " Menu de SD    \x7E"
+ #define MSG_NO_CARD " No hay Tarjeta SD"
+-#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Hay un error en la estructura del menu"
+ #define MSG_DWELL "Reposo..."
+ #define MSG_USERWAIT "Esperando Ordenes..."
+ #define MSG_NO_MOVE "Sin movimiento"
+ #define MSG_PART_RELEASE "Desacople Parcial"
+ #define MSG_KILLED "PARADA DE EMERGENCIA. "
+ #define MSG_STOPPED "PARADA. "
+-#define MSG_PREHEAT_PLA " Precalentar PLA"
+-#define MSG_PREHEAT_ABS " Precalentar ABS"
+ #define MSG_STEPPER_RELEASED "Desacoplada."
+ #define MSG_CONTROL_RETRACT  " Retraer mm:"
+ #define MSG_CONTROL_RETRACTF " Retraer  F:"
+@@ -412,6 +426,7 @@
+ #define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+ #define MSG_CONTROL_RETRACT_RECOVERF " DesRet F:"
+ #define MSG_AUTORETRACT " AutoRetr.:"
++#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Hay un error en la estructura del menu"
+ 
+ // Serial Console Messages
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 93bd822..6c47e29 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -501,7 +501,7 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   // Rest here until there is room in the buffer.
+   while(block_buffer_tail == next_buffer_head) { 
+     manage_heater(); 
+-    manage_inactivity(1); 
++    manage_inactivity(); 
+     LCD_STATUS;
+   }
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index a222f15..d5c8164 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -899,7 +899,7 @@ void st_synchronize()
+ {
+     while( blocks_queued()) {
+     manage_heater();
+-    manage_inactivity(1);
++    manage_inactivity();
+     LCD_STATUS;
+   }
+ }
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 5bb6468..d44c2c3 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -144,12 +144,14 @@
+   #define LCD_INIT lcd_init();
+   #define LCD_MESSAGE(x) lcd_status(x);
+   #define LCD_MESSAGEPGM(x) lcd_statuspgm(MYPGM(x));
++  #define LCD_ALERTMESSAGEPGM(x) lcd_alertstatuspgm(MYPGM(x));
+   #define LCD_STATUS lcd_status()
+ #else //no lcd
+   #define LCD_INIT
+   #define LCD_STATUS
+   #define LCD_MESSAGE(x)
+   #define LCD_MESSAGEPGM(x)
++  #define LCD_ALERTMESSAGEPGM(x)
+   FORCE_INLINE void lcd_status() {};
+ 
+   #define CLICKED false
+@@ -157,6 +159,7 @@
+ #endif 
+   
+ void lcd_statuspgm(const char* message);
++void lcd_alertstatuspgm(const char* message);
+   
+ char *ftostr3(const float &x);
+ char *itostr2(const uint8_t &x);
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 5bea7f3..511d47f 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -92,6 +92,12 @@ void lcd_statuspgm(const char* message)
+   *target=0;
+ }
+ 
++void lcd_alertstatuspgm(const char* message)
++{
++  lcd_statuspgm(message); 
++  menu.showStatus(); 
++}
++
+ FORCE_INLINE void clear()
+ {
+   lcd.clear();
+@@ -2938,7 +2944,7 @@ char *ftostr31(const float &x)
+ 
+ char *ftostr32(const float &x)
+ {
+-  int xx=x*100;
++  long xx=x*100;
+   conv[0]=(xx>=0)?'+':'-';
+   xx=abs(xx);
+   conv[1]=(xx/100)%10+'0';
+

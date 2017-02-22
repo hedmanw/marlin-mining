@@ -1,0 +1,1146 @@
+commit 6abfc96165efae21e65f3f195a1a90c0b54c34b0 (from 911f7e436cd080bf11f0eccc898c6634456c1407)
+Merge: 911f7e4 761593b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Oct 2 06:54:54 2016 -0500
+
+    Merge pull request #4936 from thinkyhead/rc_more_debug_homing
+    
+    Put max_jerk vars in array, clean up jerk code
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 0c968f6..2a11156 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1b3c0c2..e8c09fc 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -5548,11 +5548,11 @@ inline void gcode_M92() {
+         float value = code_value_per_axis_unit(i);
+         if (value < 20.0) {
+           float factor = planner.axis_steps_per_mm[i] / value; // increase e constants if M92 E14 is given for netfab.
+-          planner.max_e_jerk *= factor;
+-          planner.max_feedrate_mm_s[i] *= factor;
+-          planner.max_acceleration_steps_per_s2[i] *= factor;
++          planner.max_jerk[E_AXIS] *= factor;
++          planner.max_feedrate_mm_s[E_AXIS] *= factor;
++          planner.max_acceleration_steps_per_s2[E_AXIS] *= factor;
+         }
+-        planner.axis_steps_per_mm[i] = value;
++        planner.axis_steps_per_mm[E_AXIS] = value;
+       }
+       else {
+         planner.axis_steps_per_mm[i] = code_value_per_axis_unit(i);
+@@ -5788,9 +5788,10 @@ inline void gcode_M205() {
+   if (code_seen('S')) planner.min_feedrate_mm_s = code_value_linear_units();
+   if (code_seen('T')) planner.min_travel_feedrate_mm_s = code_value_linear_units();
+   if (code_seen('B')) planner.min_segment_time = code_value_millis();
+-  if (code_seen('X')) planner.max_xy_jerk = code_value_linear_units();
+-  if (code_seen('Z')) planner.max_z_jerk = code_value_axis_units(Z_AXIS);
+-  if (code_seen('E')) planner.max_e_jerk = code_value_axis_units(E_AXIS);
++  if (code_seen('X')) planner.max_jerk[X_AXIS] = code_value_axis_units(X_AXIS);
++  if (code_seen('Y')) planner.max_jerk[Y_AXIS] = code_value_axis_units(Y_AXIS);
++  if (code_seen('Z')) planner.max_jerk[Z_AXIS] = code_value_axis_units(Z_AXIS);
++  if (code_seen('E')) planner.max_jerk[E_AXIS] = code_value_axis_units(E_AXIS);
+ }
+ 
+ /**
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index b2c9bfc..44950ff 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -91,6 +91,8 @@
+   #error "SERVO_ENDSTOP_ANGLES is deprecated. Use Z_SERVO_ANGLES instead."
+ #elif defined(X_ENDSTOP_SERVO_NR) || defined(Y_ENDSTOP_SERVO_NR)
+   #error "X_ENDSTOP_SERVO_NR and Y_ENDSTOP_SERVO_NR are deprecated and should be removed."
++#elif defined(DEFAULT_XYJERK)
++  #error "DEFAULT_XYJERK is deprecated. Use DEFAULT_XJERK and DEFAULT_YJERK instead."
+ #elif defined(XY_TRAVEL_SPEED)
+   #error "XY_TRAVEL_SPEED is deprecated. Use XY_PROBE_SPEED instead."
+ #elif defined(PROBE_SERVO_DEACTIVATION_DELAY)
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index f6d061d..1891651 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -36,7 +36,7 @@
+  *
+  */
+ 
+-#define EEPROM_VERSION "V25"
++#define EEPROM_VERSION "V26"
+ 
+ // Change EEPROM version if these are changed:
+ #define EEPROM_OFFSET 100
+@@ -57,69 +57,70 @@
+  *  166  M205 S    planner.min_feedrate_mm_s (float)
+  *  170  M205 T    planner.min_travel_feedrate_mm_s (float)
+  *  174  M205 B    planner.min_segment_time (ulong)
+- *  178  M205 X    planner.max_xy_jerk (float)
+- *  182  M205 Z    planner.max_z_jerk (float)
+- *  186  M205 E    planner.max_e_jerk (float)
+- *  190  M206 XYZ  home_offset (float x3)
++ *  178  M205 X    planner.max_jerk[X_AXIS] (float)
++ *  182  M205 Y    planner.max_jerk[Y_AXIS] (float)
++ *  186  M205 Z    planner.max_jerk[Z_AXIS] (float)
++ *  190  M205 E    planner.max_jerk[E_AXIS] (float)
++ *  194  M206 XYZ  home_offset (float x3)
+  *
+  * Mesh bed leveling:
+- *  202  M420 S    status (uint8)
+- *  203            z_offset (float)
+- *  207            mesh_num_x (uint8 as set in firmware)
+- *  208            mesh_num_y (uint8 as set in firmware)
+- *  209 G29 S3 XYZ z_values[][] (float x9, by default, up to float x 81)
++ *  206  M420 S    status (uint8)
++ *  207            z_offset (float)
++ *  211            mesh_num_x (uint8 as set in firmware)
++ *  212            mesh_num_y (uint8 as set in firmware)
++ *  213 G29 S3 XYZ z_values[][] (float x9, by default, up to float x 81)
+  *
+  * AUTO BED LEVELING
+- *  245  M851      zprobe_zoffset (float)
++ *  249  M851      zprobe_zoffset (float)
+  *
+  * DELTA:
+- *  249  M666 XYZ  endstop_adj (float x3)
+- *  261  M665 R    delta_radius (float)
+- *  265  M665 L    delta_diagonal_rod (float)
+- *  269  M665 S    delta_segments_per_second (float)
+- *  273  M665 A    delta_diagonal_rod_trim_tower_1 (float)
+- *  277  M665 B    delta_diagonal_rod_trim_tower_2 (float)
+- *  281  M665 C    delta_diagonal_rod_trim_tower_3 (float)
++ *  253  M666 XYZ  endstop_adj (float x3)
++ *  265  M665 R    delta_radius (float)
++ *  269  M665 L    delta_diagonal_rod (float)
++ *  273  M665 S    delta_segments_per_second (float)
++ *  277  M665 A    delta_diagonal_rod_trim_tower_1 (float)
++ *  281  M665 B    delta_diagonal_rod_trim_tower_2 (float)
++ *  285  M665 C    delta_diagonal_rod_trim_tower_3 (float)
+  *
+  * Z_DUAL_ENDSTOPS:
+- *  285  M666 Z    z_endstop_adj (float)
++ *  289  M666 Z    z_endstop_adj (float)
+  *
+  * ULTIPANEL:
+- *  289  M145 S0 H preheatHotendTemp1 (int)
+- *  291  M145 S0 B preheatBedTemp1 (int)
+- *  293  M145 S0 F preheatFanSpeed1 (int)
+- *  295  M145 S1 H preheatHotendTemp2 (int)
+- *  297  M145 S1 B preheatBedTemp2 (int)
+- *  299  M145 S1 F preheatFanSpeed2 (int)
++ *  293  M145 S0 H preheatHotendTemp1 (int)
++ *  295  M145 S0 B preheatBedTemp1 (int)
++ *  297  M145 S0 F preheatFanSpeed1 (int)
++ *  299  M145 S1 H preheatHotendTemp2 (int)
++ *  301  M145 S1 B preheatBedTemp2 (int)
++ *  303  M145 S1 F preheatFanSpeed2 (int)
+  *
+  * PIDTEMP:
+- *  301  M301 E0 PIDC  Kp[0], Ki[0], Kd[0], Kc[0] (float x4)
+- *  317  M301 E1 PIDC  Kp[1], Ki[1], Kd[1], Kc[1] (float x4)
+- *  333  M301 E2 PIDC  Kp[2], Ki[2], Kd[2], Kc[2] (float x4)
+- *  349  M301 E3 PIDC  Kp[3], Ki[3], Kd[3], Kc[3] (float x4)
+- *  365  M301 L        lpq_len (int)
++ *  305  M301 E0 PIDC  Kp[0], Ki[0], Kd[0], Kc[0] (float x4)
++ *  321  M301 E1 PIDC  Kp[1], Ki[1], Kd[1], Kc[1] (float x4)
++ *  337  M301 E2 PIDC  Kp[2], Ki[2], Kd[2], Kc[2] (float x4)
++ *  353  M301 E3 PIDC  Kp[3], Ki[3], Kd[3], Kc[3] (float x4)
++ *  369  M301 L        lpq_len (int)
+  *
+  * PIDTEMPBED:
+- *  367  M304 PID  thermalManager.bedKp, thermalManager.bedKi, thermalManager.bedKd (float x3)
++ *  371  M304 PID  thermalManager.bedKp, thermalManager.bedKi, thermalManager.bedKd (float x3)
+  *
+  * DOGLCD:
+- *  379  M250 C    lcd_contrast (int)
++ *  383  M250 C    lcd_contrast (int)
+  *
+  * FWRETRACT:
+- *  381  M209 S    autoretract_enabled (bool)
+- *  382  M207 S    retract_length (float)
+- *  386  M207 W    retract_length_swap (float)
+- *  390  M207 F    retract_feedrate_mm_s (float)
+- *  394  M207 Z    retract_zlift (float)
+- *  398  M208 S    retract_recover_length (float)
+- *  402  M208 W    retract_recover_length_swap (float)
+- *  406  M208 F    retract_recover_feedrate_mm_s (float)
++ *  385  M209 S    autoretract_enabled (bool)
++ *  386  M207 S    retract_length (float)
++ *  390  M207 W    retract_length_swap (float)
++ *  394  M207 F    retract_feedrate_mm_s (float)
++ *  399  M207 Z    retract_zlift (float)
++ *  402  M208 S    retract_recover_length (float)
++ *  406  M208 W    retract_recover_length_swap (float)
++ *  410  M208 F    retract_recover_feedrate_mm_s (float)
+  *
+  * Volumetric Extrusion:
+- *  410  M200 D    volumetric_enabled (bool)
+- *  411  M200 T D  filament_size (float x4) (T0..3)
++ *  414  M200 D    volumetric_enabled (bool)
++ *  415  M200 T D  filament_size (float x4) (T0..3)
+  *
+- *  427  This Slot is Available!
++ *  431  This Slot is Available!
+  *
+  */
+ #include "Marlin.h"
+@@ -219,9 +220,7 @@ void Config_StoreSettings()  {
+   EEPROM_WRITE(planner.min_feedrate_mm_s);
+   EEPROM_WRITE(planner.min_travel_feedrate_mm_s);
+   EEPROM_WRITE(planner.min_segment_time);
+-  EEPROM_WRITE(planner.max_xy_jerk);
+-  EEPROM_WRITE(planner.max_z_jerk);
+-  EEPROM_WRITE(planner.max_e_jerk);
++  EEPROM_WRITE(planner.max_jerk);
+   EEPROM_WRITE(home_offset);
+ 
+   #if ENABLED(MESH_BED_LEVELING)
+@@ -405,9 +404,7 @@ void Config_RetrieveSettings() {
+     EEPROM_READ(planner.min_feedrate_mm_s);
+     EEPROM_READ(planner.min_travel_feedrate_mm_s);
+     EEPROM_READ(planner.min_segment_time);
+-    EEPROM_READ(planner.max_xy_jerk);
+-    EEPROM_READ(planner.max_z_jerk);
+-    EEPROM_READ(planner.max_e_jerk);
++    EEPROM_READ(planner.max_jerk);
+     EEPROM_READ(home_offset);
+ 
+     uint8_t dummy_uint8 = 0, mesh_num_x = 0, mesh_num_y = 0;
+@@ -576,9 +573,10 @@ void Config_ResetDefault() {
+   planner.min_feedrate_mm_s = DEFAULT_MINIMUMFEEDRATE;
+   planner.min_segment_time = DEFAULT_MINSEGMENTTIME;
+   planner.min_travel_feedrate_mm_s = DEFAULT_MINTRAVELFEEDRATE;
+-  planner.max_xy_jerk = DEFAULT_XYJERK;
+-  planner.max_z_jerk = DEFAULT_ZJERK;
+-  planner.max_e_jerk = DEFAULT_EJERK;
++  planner.max_jerk[X_AXIS] = DEFAULT_XJERK;
++  planner.max_jerk[Y_AXIS] = DEFAULT_YJERK;
++  planner.max_jerk[Z_AXIS] = DEFAULT_ZJERK;
++  planner.max_jerk[E_AXIS] = DEFAULT_EJERK;
+   home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
+ 
+   #if ENABLED(MESH_BED_LEVELING)
+@@ -734,9 +732,10 @@ void Config_PrintSettings(bool forReplay) {
+   SERIAL_ECHOPAIR("  M205 S", planner.min_feedrate_mm_s);
+   SERIAL_ECHOPAIR(" T", planner.min_travel_feedrate_mm_s);
+   SERIAL_ECHOPAIR(" B", planner.min_segment_time);
+-  SERIAL_ECHOPAIR(" X", planner.max_xy_jerk);
+-  SERIAL_ECHOPAIR(" Z", planner.max_z_jerk);
+-  SERIAL_ECHOPAIR(" E", planner.max_e_jerk);
++  SERIAL_ECHOPAIR(" X", planner.max_jerk[X_AXIS]);
++  SERIAL_ECHOPAIR(" Y", planner.max_jerk[Y_AXIS]);
++  SERIAL_ECHOPAIR(" Z", planner.max_jerk[Z_AXIS]);
++  SERIAL_ECHOPAIR(" E", planner.max_jerk[E_AXIS]);
+   SERIAL_EOL;
+ 
+   CONFIG_ECHO_START;
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 883cdc7..318e15d 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 2ef68d9..d5940af 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -481,7 +481,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.3
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 0b5facb..6f39cf5 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -481,7 +481,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.3
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index ad5c820..d461704 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -490,7 +490,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 3eb08e2..945425e 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -492,7 +492,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  2.0
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 5c5c3ec..f9c1aad 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -515,7 +515,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index d3d9d5f..93693ba 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.5
+ #define DEFAULT_EJERK                 20.0
+ 
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 097d177..138651f 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.5
+ #define DEFAULT_EJERK                 20.0
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 289a672..b08323e 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 400caaf..419e1ab 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -496,7 +496,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                8.0
++#define DEFAULT_XJERK                 8.0
++#define DEFAULT_YJERK                 8.0
+ #define DEFAULT_ZJERK                 0.4
+ #define DEFAULT_EJERK                 5.0
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index a9eb8b5..9768a23 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -513,7 +513,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                5.0
++#define DEFAULT_XJERK                 5.0
++#define DEFAULT_YJERK                 5.0
+ #define DEFAULT_ZJERK                 0.4
+ #define DEFAULT_EJERK                 3.0
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 3d60ca6..9ec1e6e 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -519,7 +519,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                 8.0
++#define DEFAULT_XJERK                  8.0
++#define DEFAULT_YJERK                  8.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                 10.0
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index be796c3..9c9a0aa 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -490,7 +490,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                10.0
++#define DEFAULT_XJERK                 10.0
++#define DEFAULT_YJERK                 10.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 6485659..d7e4535 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -498,7 +498,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 154fa77..e6bd25c 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -541,7 +541,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                15.0
++#define DEFAULT_XJERK                 15.0
++#define DEFAULT_YJERK                 15.0
+ #define DEFAULT_ZJERK                 15.0 // Must be same as XY for delta
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 8c786f4..0bafa2b 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -541,7 +541,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                 20.0 // Must be same as XY for delta
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index b34025f..1994e90 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -541,7 +541,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                 20.0 // Must be same as XY for delta
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 72b832c..5ce3bb4 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -537,7 +537,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                 20.0 // Must be same as XY for delta
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 77091bb..27f2a96 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -547,7 +547,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                 20.0
+ #define DEFAULT_EJERK                 20.0
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index f03067f..8c202ae 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -501,7 +501,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 4c90e66..e356a50 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -494,7 +494,8 @@
+  * When changing speed and direction, if the difference is less than the
+  * value set here, it may happen instantaneously.
+  */
+-#define DEFAULT_XYJERK                20.0
++#define DEFAULT_XJERK                 20.0
++#define DEFAULT_YJERK                 20.0
+ #define DEFAULT_ZJERK                  0.4
+ #define DEFAULT_EJERK                  5.0
+ 
+diff --git a/Marlin/language_an.h b/Marlin/language_an.h
+index 9184d33..8d6ccd9 100644
+--- a/Marlin/language_an.h
++++ b/Marlin/language_an.h
+@@ -86,7 +86,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ves-jerk"
+ #define MSG_VMAX                            "Vmax"
+diff --git a/Marlin/language_bg.h b/Marlin/language_bg.h
+index 5d5d322..094aed0 100644
+--- a/Marlin/language_bg.h
++++ b/Marlin/language_bg.h
+@@ -88,7 +88,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_ca.h b/Marlin/language_ca.h
+index efa296f..8bb9706 100644
+--- a/Marlin/language_ca.h
++++ b/Marlin/language_ca.h
+@@ -87,7 +87,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_cn.h b/Marlin/language_cn.h
+index 9afc052..1a1f813 100644
+--- a/Marlin/language_cn.h
++++ b/Marlin/language_cn.h
+@@ -86,7 +86,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index 89158e7..7a441a4 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -98,7 +98,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "Vybrat"
+ #define MSG_ACC                             "Zrychl"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_da.h b/Marlin/language_da.h
+index 2cf28de..8c77092 100644
+--- a/Marlin/language_da.h
++++ b/Marlin/language_da.h
+@@ -96,7 +96,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "Vælg"
+ #define MSG_ACC                             "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index f291a5d..2bc8a8d 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -95,9 +95,10 @@
+ #define MSG_PID_C                           "PID C"
+ #define MSG_SELECT                          "Auswählen"
+ #define MSG_ACC                             "A"
+-#define MSG_VXY_JERK                        "V XY Jerk"
+-#define MSG_VZ_JERK                         "V Z  Jerk"
+-#define MSG_VE_JERK                         "V E  Jerk"
++#define MSG_VX_JERK                         "V X Jerk"
++#define MSG_VY_JERK                         "V Y Jerk"
++#define MSG_VZ_JERK                         "V Z Jerk"
++#define MSG_VE_JERK                         "V E Jerk"
+ #define MSG_VMAX                            "V max " // space by purpose
+ #define MSG_VMIN                            "V min"
+ #define MSG_VTRAV_MIN                       "V min Leerfahrt"
+diff --git a/Marlin/language_el-gr.h b/Marlin/language_el-gr.h
+index 1c18496..0ac443f 100644
+--- a/Marlin/language_el-gr.h
++++ b/Marlin/language_el-gr.h
+@@ -94,7 +94,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Επιτάχυνση"
+-#define MSG_VXY_JERK                        "Vαντίδραση xy"
++#define MSG_VX_JERK                         "Vαντίδραση x"
++#define MSG_VY_JERK                         "Vαντίδραση y"
+ #define MSG_VZ_JERK                         "Vαντίδραση z"
+ #define MSG_VE_JERK                         "Vαντίδραση e"
+ #define MSG_VMAX                            "Vμεγ "
+diff --git a/Marlin/language_el.h b/Marlin/language_el.h
+index 4242969..03b45c3 100644
+--- a/Marlin/language_el.h
++++ b/Marlin/language_el.h
+@@ -94,7 +94,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Επιτάχυνση"
+-#define MSG_VXY_JERK                        "Vαντίδραση xy"
++#define MSG_VX_JERK                         "Vαντίδραση x"
++#define MSG_VY_JERK                         "Vαντίδραση y"
+ #define MSG_VZ_JERK                         "Vαντίδραση z"
+ #define MSG_VE_JERK                         "Vαντίδραση e"
+ #define MSG_VMAX                            "V Μέγιστο"
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index ca2fd61..aa11a13 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -216,8 +216,11 @@
+ #ifndef MSG_ACC
+   #define MSG_ACC                             "Accel"
+ #endif
+-#ifndef MSG_VXY_JERK
+-  #define MSG_VXY_JERK                        "Vxy-jerk"
++#ifndef MSG_VX_JERK
++  #define MSG_VX_JERK                         "Vx-jerk"
++#endif
++#ifndef MSG_VY_JERK
++  #define MSG_VY_JERK                         "Vy-jerk"
+ #endif
+ #ifndef MSG_VZ_JERK
+   #define MSG_VZ_JERK                         "Vz-jerk"
+diff --git a/Marlin/language_es.h b/Marlin/language_es.h
+index 06d79f7..236842d 100644
+--- a/Marlin/language_es.h
++++ b/Marlin/language_es.h
+@@ -92,7 +92,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Aceleracion"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax"
+diff --git a/Marlin/language_eu.h b/Marlin/language_eu.h
+index 64c3fb3..0d66359 100644
+--- a/Marlin/language_eu.h
++++ b/Marlin/language_eu.h
+@@ -86,7 +86,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Azelerazioa"
+-#define MSG_VXY_JERK                        "Vxy-astindua"
++#define MSG_VX_JERK                         "Vx-astindua"
++#define MSG_VY_JERK                         "Vy-astindua"
+ #define MSG_VZ_JERK                         "Vz-astindua"
+ #define MSG_VE_JERK                         "Ve-astindua"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_fi.h b/Marlin/language_fi.h
+index 461bb41..e7db9a2 100644
+--- a/Marlin/language_fi.h
++++ b/Marlin/language_fi.h
+@@ -87,7 +87,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Kiihtyv"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index 34bd383..8a947da 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -94,7 +94,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "Selectionner"
+ #define MSG_ACC                             "Acceleration"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax"
+diff --git a/Marlin/language_gl.h b/Marlin/language_gl.h
+index 5f1b591..19b028b 100644
+--- a/Marlin/language_gl.h
++++ b/Marlin/language_gl.h
+@@ -95,7 +95,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "Escolla"
+ #define MSG_ACC                             "Acel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_hr.h b/Marlin/language_hr.h
+index ebfaeb2..d23e18e 100644
+--- a/Marlin/language_hr.h
++++ b/Marlin/language_hr.h
+@@ -93,7 +93,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index e3a253c..75df0ef 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -102,7 +102,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "Seleziona"
+ #define MSG_ACC                             "Accel"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index f4e1458..add301b 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -103,7 +103,8 @@
+ #define MSG_SELECT                          "\xbe\xdd\xc0\xb8"                                                 // "ｾﾝﾀｸ" ("Select")
+ #if LCD_WIDTH > 19
+   #define MSG_ACC                           "\xb6\xbf\xb8\xc4\xde mm/s2"                                       // "ｶｿｸﾄﾞ mm/s2" ("Accel")
+-  #define MSG_VXY_JERK                      "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                          // "XYｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vxy-jerk")
++  #define MSG_VX_JERK                       "X\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "XYｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vx-jerk")
++  #define MSG_VY_JERK                       "Y\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "XYｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vy-jerk")
+   #define MSG_VZ_JERK                       "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "Zｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vz-jerk")
+   #define MSG_VE_JERK                       "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\x20\xd4\xb8\xc4\xde"         // "ｴｸｽﾄﾙｰﾀﾞｰ ﾔｸﾄﾞ" ("Ve-jerk")
+   #define MSG_VMAX                          "\xbb\xb2\xc0\xde\xb2\xb5\xb8\xd8\xbf\xb8\xc4\xde "                // "ｻｲﾀﾞｲｵｸﾘｿｸﾄﾞ " ("Vmax ")
+@@ -112,7 +113,8 @@
+   #define MSG_AMAX                          "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                        // "ｻｲﾀﾞｲｶｿｸﾄﾞ " ("Amax ")
+ #else
+   #define MSG_ACC                           "\xb6\xbf\xb8\xc4\xde"                                             // "ｶｿｸﾄﾞ" ("Accel")
+-  #define MSG_VXY_JERK                      "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                               // "XYｼﾞｸ ﾔｸﾄﾞ" ("Vxy-jerk")
++  #define MSG_VX_JERK                       "X\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                                // "XYｼﾞｸ ﾔｸﾄﾞ" ("Vx-jerk")
++  #define MSG_VY_JERK                       "Y\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                                // "XYｼﾞｸ ﾔｸﾄﾞ" ("Vy-jerk")
+   #define MSG_VZ_JERK                       "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                                // "Zｼﾞｸ ﾔｸﾄﾞ" ("Vz-jerk")
+   #define MSG_VE_JERK                       "E\x20\xd4\xb8\xc4\xde"                                            // "E ﾔｸﾄﾞ" ("Ve-jerk")
+   #define MSG_VMAX                          "max\xb5\xb8\xd8\xbf\xb8\xc4\xde "                                 // "maxｵｸﾘｿｸﾄﾞ" ("Vmax ")
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 905df71..15712fd 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -100,7 +100,8 @@
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_SELECT                          "センタク"                     // "Select"
+ #define MSG_ACC                             "カソクド mm/s2"               // "Accel"
+-#define MSG_VXY_JERK                        "XYジク ヤクド mm/s"            // "Vxy-jerk"
++#define MSG_VX_JERK                         "Xジク ヤクド mm/s"             // "Vx-jerk"
++#define MSG_VY_JERK                         "Yジク ヤクド mm/s"             // "Vy-jerk"
+ #define MSG_VZ_JERK                         "Zジク ヤクド mm/s"             // "Vz-jerk"
+ #define MSG_VE_JERK                         "エクストルーダー ヤクド"          // "Ve-jerk"
+ #define MSG_VMAX                            "サイダイオクリソクド "            // "Vmax "
+diff --git a/Marlin/language_nl.h b/Marlin/language_nl.h
+index 82f0a69..f21ece8 100644
+--- a/Marlin/language_nl.h
++++ b/Marlin/language_nl.h
+@@ -87,7 +87,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Versn"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_pl.h b/Marlin/language_pl.h
+index efde140..61129ae 100644
+--- a/Marlin/language_pl.h
++++ b/Marlin/language_pl.h
+@@ -90,7 +90,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Przyspieszenie"
+-#define MSG_VXY_JERK                        "Zryw Vxy"
++#define MSG_VX_JERK                         "Zryw Vx"
++#define MSG_VY_JERK                         "Zryw Vy"
+ #define MSG_VZ_JERK                         "Zryw Vz"
+ #define MSG_VE_JERK                         "Zryw Ve"
+ #define MSG_VMAX                            "Vmax "
+diff --git a/Marlin/language_pt-br.h b/Marlin/language_pt-br.h
+index 1db6ae6..fe5b834 100644
+--- a/Marlin/language_pt-br.h
++++ b/Marlin/language_pt-br.h
+@@ -87,7 +87,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "jogo VXY"
++#define MSG_VX_JERK                         "jogo VX"
++#define MSG_VY_JERK                         "jogo VY"
+ #define MSG_VZ_JERK                         "jogo VZ"
+ #define MSG_VE_JERK                         "jogo VE"
+ #define MSG_VMAX                            " Vmax "
+diff --git a/Marlin/language_pt-br_utf8.h b/Marlin/language_pt-br_utf8.h
+index 43e5d54..7fb4117 100644
+--- a/Marlin/language_pt-br_utf8.h
++++ b/Marlin/language_pt-br_utf8.h
+@@ -87,7 +87,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "jogo VXY"
++#define MSG_VX_JERK                         "jogo VX"
++#define MSG_VY_JERK                         "jogo VY"
+ #define MSG_VZ_JERK                         "jogo VZ"
+ #define MSG_VE_JERK                         "jogo VE"
+ #define MSG_VMAX                            " Vmax "
+diff --git a/Marlin/language_pt.h b/Marlin/language_pt.h
+index 5996dd1..d73af9e 100644
+--- a/Marlin/language_pt.h
++++ b/Marlin/language_pt.h
+@@ -91,7 +91,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            " Vmax "
+diff --git a/Marlin/language_pt_utf8.h b/Marlin/language_pt_utf8.h
+index ec56a86..536896b 100644
+--- a/Marlin/language_pt_utf8.h
++++ b/Marlin/language_pt_utf8.h
+@@ -91,7 +91,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
++#define MSG_VX_JERK                         "Vx-jerk"
++#define MSG_VY_JERK                         "Vy-jerk"
+ #define MSG_VZ_JERK                         "Vz-jerk"
+ #define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX                            " Vmax "
+diff --git a/Marlin/language_ru.h b/Marlin/language_ru.h
+index 7fb0e10..7441f34 100644
+--- a/Marlin/language_ru.h
++++ b/Marlin/language_ru.h
+@@ -91,7 +91,8 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-рывок"
++#define MSG_VX_JERK                         "Vx-рывок"
++#define MSG_VY_JERK                         "Vy-рывок"
+ #define MSG_VZ_JERK                         "Vz-рывок"
+ #define MSG_VE_JERK                         "Ve-рывок"
+ #define MSG_VMAX                            "Vмакс "
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 2d4cd10..959b109 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -93,9 +93,7 @@ float Planner::min_feedrate_mm_s,
+       Planner::acceleration,         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
+       Planner::retract_acceleration, // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
+       Planner::travel_acceleration,  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
+-      Planner::max_xy_jerk,          // The largest speed change requiring no acceleration
+-      Planner::max_z_jerk,
+-      Planner::max_e_jerk,
++      Planner::max_jerk[XYZE],       // The largest speed change requiring no acceleration
+       Planner::min_travel_feedrate_mm_s;
+ 
+ #if HAS_ABL
+@@ -152,33 +150,31 @@ void Planner::init() {
+  * by the provided factors.
+  */
+ void Planner::calculate_trapezoid_for_block(block_t* block, float entry_factor, float exit_factor) {
+-  unsigned long initial_rate = ceil(block->nominal_rate * entry_factor),
+-                final_rate = ceil(block->nominal_rate * exit_factor); // (steps per second)
++  uint32_t initial_rate = ceil(block->nominal_rate * entry_factor),
++           final_rate = ceil(block->nominal_rate * exit_factor); // (steps per second)
+ 
+   // Limit minimal step rate (Otherwise the timer will overflow.)
+   NOLESS(initial_rate, 120);
+   NOLESS(final_rate, 120);
+ 
+-  long accel = block->acceleration_steps_per_s2;
+-  int32_t accelerate_steps = ceil(estimate_acceleration_distance(initial_rate, block->nominal_rate, accel));
+-  int32_t decelerate_steps = floor(estimate_acceleration_distance(block->nominal_rate, final_rate, -accel));
+-
+-  // Calculate the size of Plateau of Nominal Rate.
+-  int32_t plateau_steps = block->step_event_count - accelerate_steps - decelerate_steps;
++  int32_t accel = block->acceleration_steps_per_s2,
++          accelerate_steps = ceil(estimate_acceleration_distance(initial_rate, block->nominal_rate, accel)),
++          decelerate_steps = floor(estimate_acceleration_distance(block->nominal_rate, final_rate, -accel)),
++          plateau_steps = block->step_event_count - accelerate_steps - decelerate_steps;
+ 
+   // Is the Plateau of Nominal Rate smaller than nothing? That means no cruising, and we will
+   // have to use intersection_distance() to calculate when to abort accel and start braking
+   // in order to reach the final_rate exactly at the end of this block.
+   if (plateau_steps < 0) {
+     accelerate_steps = ceil(intersection_distance(initial_rate, final_rate, accel, block->step_event_count));
+-    accelerate_steps = max(accelerate_steps, 0); // Check limits due to numerical round-off
++    NOLESS(accelerate_steps, 0); // Check limits due to numerical round-off
+     accelerate_steps = min((uint32_t)accelerate_steps, block->step_event_count);//(We can cast here to unsigned, because the above line ensures that we are above zero)
+     plateau_steps = 0;
+   }
+ 
+   #if ENABLED(ADVANCE)
+-    volatile long initial_advance = block->advance * sq(entry_factor);
+-    volatile long final_advance = block->advance * sq(exit_factor);
++    volatile int32_t initial_advance = block->advance * sq(entry_factor),
++                       final_advance = block->advance * sq(exit_factor);
+   #endif // ADVANCE
+ 
+   // block->accelerate_until = accelerate_steps;
+@@ -268,7 +264,7 @@ void Planner::forward_pass_kernel(block_t* previous, block_t* current) {
+   // If nominal length is true, max junction speed is guaranteed to be reached. No need to recheck.
+   if (!previous->nominal_length_flag) {
+     if (previous->entry_speed < current->entry_speed) {
+-      double entry_speed = min(current->entry_speed,
++      float entry_speed = min(current->entry_speed,
+                                max_allowable_speed(-previous->acceleration, previous->entry_speed, previous->millimeters));
+       // Check for junction speed change
+       if (current->entry_speed != entry_speed) {
+@@ -984,15 +980,13 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+   #endif
+ 
+   // Calculate and limit speed in mm/sec for each axis
+-  float current_speed[NUM_AXIS];
+-  float speed_factor = 1.0; //factor <=1 do decrease speed
++  float current_speed[NUM_AXIS], speed_factor = 1.0; // factor <1 decreases speed
+   LOOP_XYZE(i) {
+-    current_speed[i] = delta_mm[i] * inverse_mm_s;
+-    float cs = fabs(current_speed[i]), mf = max_feedrate_mm_s[i];
+-    if (cs > mf) speed_factor = min(speed_factor, mf / cs);
++    float cs = fabs(current_speed[i] = delta_mm[i] * inverse_mm_s);
++    if (cs > max_feedrate_mm_s[i]) NOMORE(speed_factor, max_feedrate_mm_s[i] / cs);
+   }
+ 
+-  // Max segement time in us.
++  // Max segment time in µs.
+   #ifdef XY_FREQUENCY_LIMIT
+ 
+     // Check and limit the xy direction change frequency
+@@ -1026,7 +1020,7 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+          min_xy_segment_time = min(max_x_segment_time, max_y_segment_time);
+     if (min_xy_segment_time < MAX_FREQ_TIME) {
+       float low_sf = speed_factor * min_xy_segment_time / (MAX_FREQ_TIME);
+-      speed_factor = min(speed_factor, low_sf);
++      NOMORE(speed_factor, low_sf);
+     }
+   #endif // XY_FREQUENCY_LIMIT
+ 
+@@ -1093,45 +1087,40 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+         if (cos_theta > -0.95) {
+           // Compute maximum junction velocity based on maximum acceleration and junction deviation
+           double sin_theta_d2 = sqrt(0.5 * (1.0 - cos_theta)); // Trig half angle identity. Always positive.
+-          vmax_junction = min(vmax_junction,
+-                              sqrt(block->acceleration * junction_deviation * sin_theta_d2 / (1.0 - sin_theta_d2)));
++          NOMORE(vmax_junction, sqrt(block->acceleration * junction_deviation * sin_theta_d2 / (1.0 - sin_theta_d2)));
+         }
+       }
+     }
+   #endif
+ 
+   // Start with a safe speed
+-  float vmax_junction = max_xy_jerk * 0.5,
+-        vmax_junction_factor = 1.0,
+-        mz2 = max_z_jerk * 0.5,
+-        me2 = max_e_jerk * 0.5,
+-        csz = current_speed[Z_AXIS],
+-        cse = current_speed[E_AXIS];
+-  if (fabs(csz) > mz2) vmax_junction = min(vmax_junction, mz2);
+-  if (fabs(cse) > me2) vmax_junction = min(vmax_junction, me2);
+-  vmax_junction = min(vmax_junction, block->nominal_speed);
++  float vmax_junction = max_jerk[X_AXIS] * 0.5, vmax_junction_factor = 1.0;
++  if (max_jerk[Y_AXIS] * 0.5 < fabs(current_speed[Y_AXIS])) NOMORE(vmax_junction, max_jerk[Y_AXIS] * 0.5);
++  if (max_jerk[Z_AXIS] * 0.5 < fabs(current_speed[Z_AXIS])) NOMORE(vmax_junction, max_jerk[Z_AXIS] * 0.5);
++  if (max_jerk[E_AXIS] * 0.5 < fabs(current_speed[E_AXIS])) NOMORE(vmax_junction, max_jerk[E_AXIS] * 0.5);
++  NOMORE(vmax_junction, block->nominal_speed);
+   float safe_speed = vmax_junction;
+ 
+-  if ((moves_queued > 1) && (previous_nominal_speed > 0.0001)) {
+-    float dsx = current_speed[X_AXIS] - previous_speed[X_AXIS],
+-          dsy = current_speed[Y_AXIS] - previous_speed[Y_AXIS],
+-          dsz = fabs(csz - previous_speed[Z_AXIS]),
+-          dse = fabs(cse - previous_speed[E_AXIS]),
+-          jerk = HYPOT(dsx, dsy);
++  if (moves_queued > 1 && previous_nominal_speed > 0.0001) {
++    //if ((fabs(previous_speed[X_AXIS]) > 0.0001) || (fabs(previous_speed[Y_AXIS]) > 0.0001)) {
++        vmax_junction = block->nominal_speed;
++    //}
+ 
+-    //    if ((fabs(previous_speed[X_AXIS]) > 0.0001) || (fabs(previous_speed[Y_AXIS]) > 0.0001)) {
+-    vmax_junction = block->nominal_speed;
+-    //    }
+-    if (jerk > max_xy_jerk) vmax_junction_factor = max_xy_jerk / jerk;
+-    if (dsz > max_z_jerk) vmax_junction_factor = min(vmax_junction_factor, max_z_jerk / dsz);
+-    if (dse > max_e_jerk) vmax_junction_factor = min(vmax_junction_factor, max_e_jerk / dse);
++    float dsx = fabs(current_speed[X_AXIS] - previous_speed[X_AXIS]),
++          dsy = fabs(current_speed[Y_AXIS] - previous_speed[Y_AXIS]),
++          dsz = fabs(current_speed[Z_AXIS] - previous_speed[Z_AXIS]),
++          dse = fabs(current_speed[E_AXIS] - previous_speed[E_AXIS]);
++    if (dsx > max_jerk[X_AXIS]) NOMORE(vmax_junction_factor, max_jerk[X_AXIS] / dsx);
++    if (dsy > max_jerk[Y_AXIS]) NOMORE(vmax_junction_factor, max_jerk[Y_AXIS] / dsy);
++    if (dsz > max_jerk[Z_AXIS]) NOMORE(vmax_junction_factor, max_jerk[Z_AXIS] / dsz);
++    if (dse > max_jerk[E_AXIS]) NOMORE(vmax_junction_factor, max_jerk[E_AXIS] / dse);
+ 
+     vmax_junction = min(previous_nominal_speed, vmax_junction * vmax_junction_factor); // Limit speed to max previous speed
+   }
+   block->max_entry_speed = vmax_junction;
+ 
+   // Initialize block entry speed. Compute based on deceleration to user-defined MINIMUM_PLANNER_SPEED.
+-  double v_allowable = max_allowable_speed(-block->acceleration, MINIMUM_PLANNER_SPEED, block->millimeters);
++  float v_allowable = max_allowable_speed(-block->acceleration, MINIMUM_PLANNER_SPEED, block->millimeters);
+   block->entry_speed = min(vmax_junction, v_allowable);
+ 
+   // Initialize planner efficiency flags
+@@ -1173,7 +1162,7 @@ void Planner::buffer_line(ARG_X, ARG_Y, ARG_Z, const float &e, float fr_mm_s, co
+     }
+     else {
+       long acc_dist = estimate_acceleration_distance(0, block->nominal_rate, block->acceleration_steps_per_s2);
+-      float advance = ((STEPS_PER_CUBIC_MM_E) * (EXTRUDER_ADVANCE_K)) * HYPOT(cse, EXTRUSION_AREA) * 256;
++      float advance = ((STEPS_PER_CUBIC_MM_E) * (EXTRUDER_ADVANCE_K)) * HYPOT(current_speed[E_AXIS], EXTRUSION_AREA) * 256;
+       block->advance = advance;
+       block->advance_rate = acc_dist ? advance / (float)acc_dist : 0;
+     }
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index c198f08..0e95be4 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -132,9 +132,7 @@ class Planner {
+     static float acceleration;         // Normal acceleration mm/s^2  DEFAULT ACCELERATION for all printing moves. M204 SXXXX
+     static float retract_acceleration; // Retract acceleration mm/s^2 filament pull-back and push-forward while standing still in the other axes M204 TXXXX
+     static float travel_acceleration;  // Travel acceleration mm/s^2  DEFAULT ACCELERATION for all NON printing moves. M204 MXXXX
+-    static float max_xy_jerk;          // The largest speed change requiring no acceleration
+-    static float max_z_jerk;
+-    static float max_e_jerk;
++    static float max_jerk[XYZE];       // The largest speed change requiring no acceleration
+     static float min_travel_feedrate_mm_s;
+ 
+     #if HAS_ABL
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 5e57188..c3053cd 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -265,8 +265,8 @@ uint8_t Temperature::soft_pwm[HOTENDS];
+           #endif
+         ;
+ 
+-        max = max(max, input);
+-        min = min(min, input);
++        NOLESS(max, input);
++        NOMORE(min, input);
+ 
+         #if HAS_AUTO_FAN
+           if (ELAPSED(ms, next_auto_fan_check_ms)) {
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index da5440c..884c644 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1812,13 +1812,14 @@ void kill_screen(const char* lcd_msg) {
+       MENU_ITEM_EDIT(float43, MSG_BED_Z, &mbl.z_offset, -1, 1);
+     #endif
+     MENU_ITEM_EDIT(float5, MSG_ACC, &planner.acceleration, 10, 99000);
+-    MENU_ITEM_EDIT(float3, MSG_VXY_JERK, &planner.max_xy_jerk, 1, 990);
++    MENU_ITEM_EDIT(float3, MSG_VX_JERK, &planner.max_jerk[X_AXIS], 1, 990);
++    MENU_ITEM_EDIT(float3, MSG_VY_JERK, &planner.max_jerk[Y_AXIS], 1, 990);
+     #if ENABLED(DELTA)
+-      MENU_ITEM_EDIT(float3, MSG_VZ_JERK, &planner.max_z_jerk, 1, 990);
++      MENU_ITEM_EDIT(float3, MSG_VZ_JERK, &planner.max_jerk[Y_AXIS], 1, 990);
+     #else
+-      MENU_ITEM_EDIT(float52, MSG_VZ_JERK, &planner.max_z_jerk, 0.1, 990);
++      MENU_ITEM_EDIT(float52, MSG_VZ_JERK, &planner.max_jerk[Z_AXIS], 0.1, 990);
+     #endif
+-    MENU_ITEM_EDIT(float3, MSG_VE_JERK, &planner.max_e_jerk, 1, 990);
++    MENU_ITEM_EDIT(float3, MSG_VE_JERK, &planner.max_jerk[E_AXIS], 1, 990);
+     MENU_ITEM_EDIT(float3, MSG_VMAX MSG_X, &planner.max_feedrate_mm_s[X_AXIS], 1, 999);
+     MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Y, &planner.max_feedrate_mm_s[Y_AXIS], 1, 999);
+     MENU_ITEM_EDIT(float3, MSG_VMAX MSG_Z, &planner.max_feedrate_mm_s[Z_AXIS], 1, 999);
+

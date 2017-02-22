@@ -1,0 +1,1039 @@
+commit 3ecf38d32e9d2bae36a059e253cff4717a0b2ed4 (from 843aa90b5a957cb670b21d4bfd91abf6e4dbf237)
+Merge: 843aa90 dd3a06a
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 8 20:35:53 2016 -0700
+
+    Merge pull request #3436 from thinkyhead/rc_experimental_twibus
+    
+    M155 and M156, a generic TWI/I2C interface for Marlin
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 4dd7739..3b26237 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index f67461b..f9bb9de 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -77,6 +77,10 @@
+   #include "stepper_dac.h"
+ #endif
+ 
++#if ENABLED(EXPERIMENTAL_I2CBUS)
++  #include "twibus.h"
++#endif
++
+ /**
+  * Look here for descriptions of G-codes:
+  *  - http://linuxcnc.org/handbook/gcode/g-code.html
+@@ -248,6 +252,10 @@
+   CardReader card;
+ #endif
+ 
++#if ENABLED(EXPERIMENTAL_I2CBUS)
++  TWIBus i2c;
++#endif
++
+ bool Running = true;
+ 
+ uint8_t marlin_debug_flags = DEBUG_NONE;
+@@ -4771,6 +4779,57 @@ inline void gcode_M121() { enable_endstops_globally(false); }
+ 
+ #endif // BLINKM
+ 
++#if ENABLED(EXPERIMENTAL_I2CBUS)
++
++  /**
++   * M155: Send data to a I2C slave device
++   *
++   * This is a PoC, the formating and arguments for the GCODE will
++   * change to be more compatible, the current proposal is:
++   *
++   *  M155 A<slave device address base 10> ; Sets the I2C slave address the data will be sent to
++   *
++   *  M155 B<byte-1 value in base 10>
++   *  M155 B<byte-2 value in base 10>
++   *  M155 B<byte-3 value in base 10>
++   *
++   *  M155 S1 ; Send the buffered data and reset the buffer
++   *  M155 R1 ; Reset the buffer without sending data
++   *
++   */
++  inline void gcode_M155() {
++    // Set the target address
++    if (code_seen('A'))
++      i2c.address((uint8_t) code_value_short());
++
++    // Add a new byte to the buffer
++    else if (code_seen('B'))
++      i2c.addbyte((int) code_value_short());
++
++    // Flush the buffer to the bus
++    else if (code_seen('S')) i2c.send();
++
++    // Reset and rewind the buffer
++    else if (code_seen('R')) i2c.reset();
++  }
++
++  /**
++   * M156: Request X bytes from I2C slave device
++   *
++   * Usage: M156 A<slave device address base 10> B<number of bytes>
++   */
++  inline void gcode_M156() {
++    uint8_t addr = code_seen('A') ? code_value_short() : 0;
++    int bytes    = code_seen('B') ? code_value_short() : 0;
++
++    if (addr && bytes) {
++      i2c.address(addr);
++      i2c.reqbytes(bytes);
++    }
++  }
++
++#endif //EXPERIMENTAL_I2CBUS
++
+ /**
+  * M200: Set filament diameter and set E axis units to cubic millimeters
+  *
+@@ -6439,6 +6498,18 @@ void process_next_command() {
+ 
+       #endif //BLINKM
+ 
++      #if ENABLED(EXPERIMENTAL_I2CBUS)
++
++        case 155:
++          gcode_M155();
++          break;
++
++        case 156:
++          gcode_M156();
++          break;
++
++      #endif //EXPERIMENTAL_I2CBUS
++
+       case 200: // M200 D<millimeters> set filament diameter and set E axis units to cubic millimeters (use S0 to set back to millimeters).
+         gcode_M200();
+         break;
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index d5b2942..e8e2c18 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index b92a737..ab8000a 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index b5a451c..be87d38 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 5c47bde..429a1ad 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -659,6 +659,38 @@ const unsigned int dropsegments = 2; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 17e19b0..6985ddb 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 1b09057..7af0110 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 62dde97..f96f202 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -661,6 +661,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index b92a737..ab8000a 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 491cf38..da192eb 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -655,6 +655,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 414d4de..b2bf328 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -655,6 +655,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index a9de9f4..fa0da7c 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -654,6 +654,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 29d9607..6ace77f 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -659,6 +659,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 23829cb..f42f877 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 301f362..16f00bb 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 0c62e79..c8ddbd6 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -653,6 +653,38 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ #endif
+ 
++/**
++ * TWI/I2C BUS
++ *
++ * This feature is an EXPERIMENTAL feature so it shall not be used on production
++ * machines. Enabling this will allow you to send and receive I2C data from slave
++ * devices on the bus.
++ *
++ * ; Example #1
++ * ; This macro send the string "Marlin" to the slave device with address 0x63
++ * ; It uses multiple M155 commands with one B<base 10> arg
++ * M155 A63  ; Target slave address
++ * M155 B77  ; M
++ * M155 B97  ; a
++ * M155 B114 ; r
++ * M155 B108 ; l
++ * M155 B105 ; i
++ * M155 B110 ; n
++ * M155 S1   ; Send the current buffer
++ *
++ * ; Example #2
++ * ; Request 6 bytes from slave device with address 0x63
++ * M156 A63 B5
++ *
++ * ; Example #3
++ * ; Example serial output of a M156 request
++ * echo:i2c-reply: from:63 bytes:5 data:hello
++ */
++
++// @section i2cbus
++
++//#define EXPERIMENTAL_I2CBUS
++
+ #include "Conditionals.h"
+ #include "SanityCheck.h"
+ 
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+new file mode 100644
+index 0000000..3131060
+--- /dev/null
++++ b/Marlin/twibus.cpp
+@@ -0,0 +1,104 @@
++/*
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "Marlin.h"
++
++#if ENABLED(EXPERIMENTAL_I2CBUS)
++
++#include "twibus.h"
++
++#include <Wire.h>
++
++TWIBus::twibus() {
++  Wire.begin(); // We use no address so we will join the BUS as the master
++  this->reset();
++}
++
++void TWIBus::reset() {
++  this->addr = 0;
++  this->buffer_s = 0;
++  this->buffer[0] = 0x00;
++}
++
++void TWIBus::address(uint8_t addr) {
++  this->addr = addr;
++
++  if (DEBUGGING(INFO)) {
++    SERIAL_ECHOPAIR("TWIBus::sendto: ", this->addr);
++    SERIAL_EOL;
++  }
++}
++
++void TWIBus::addbyte(char c) {
++  if (buffer_s >= sizeof(this->buffer)) return;
++  this->buffer[this->buffer_s++] = c;
++
++  if (DEBUGGING(INFO)) {
++    SERIAL_ECHOPAIR("TWIBus::addbyte: ", this->buffer[this->buffer_s -1]);
++    SERIAL_EOL;
++  }
++}
++
++void TWIBus::send() {
++  if (!this->addr) return;
++  if (DEBUGGING(INFO)) SERIAL_ECHOLNPGM("TWIBus::send()");
++
++  Wire.beginTransmission(this->addr);
++  Wire.write(this->buffer, this->buffer_s);
++  Wire.endTransmission();
++
++    // Reset the buffer after sending the data
++  this->reset();
++}
++
++void TWIBus::reqbytes(uint8_t bytes) {
++  if (!this->addr) return;
++  if (DEBUGGING(INFO)) {
++    SERIAL_ECHOPAIR("TWIBus::reqbytes(): ", bytes);
++    SERIAL_EOL;
++  }
++
++  millis_t t = millis();
++  Wire.requestFrom(this->addr, bytes);
++
++    // requestFrom() is a blocking function
++  while (Wire.available() < bytes) {
++    if (millis() - t >= this->timeout) break;
++    else continue;
++  }
++
++  SERIAL_ECHO_START;
++  SERIAL_ECHOPAIR("i2c-reply: from:", this->addr);
++  SERIAL_ECHOPAIR(" bytes:", Wire.available());
++  SERIAL_ECHOPGM (" data:");
++
++    // Protect against buffer overflows if the number of received bytes
++    // is less than the number of requested bytes
++  uint8_t wba = Wire.available();
++  for (int i = 0; i < wba; i++) SERIAL_CHAR(Wire.read());
++  SERIAL_EOL;
++
++  // Reset the buffer after sending the data
++  this->reset();
++}
++
++#endif //EXPERIMENTAL_I2CBUS
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+new file mode 100644
+index 0000000..5ab7257
+--- /dev/null
++++ b/Marlin/twibus.h
+@@ -0,0 +1,122 @@
++/*
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef TWIBUS_H
++#define TWIBUS_H
++
++/**
++ * TWIBUS class
++ *
++ * This class implements a wrapper around the two wire (I2C) bus, it allows
++ * Marlin to send and request data from any slave device on the bus. This is
++ * an experimental feature and it's inner workings as well as public facing
++ * interface are prune to change in the future.
++ *
++ * The two main consumers of this class are M155 and M156, where M155 allows
++ * Marlin to send a I2C packet to a device (please be aware that no repeated
++ * starts are possible), this can be done in caching method by calling multiple
++ * times M155 B<byte-1 value in base 10> or a one liner M155, have a look at
++ * the gcode_M155() function for more information. M156 allows Marlin to
++ * request data from a device, the received data is then relayed into the serial
++ * line for host interpretation.
++ *
++ */
++class TWIBus {
++  private:
++    /**
++     * @brief Timeout value in milliseconds
++     * @details For blocking operations this constant value will set the max
++     * amount of time Marlin will keep waiting for a reply. Useful is something
++     * goes wrong on the bus and the SDA/SCL lines are held up by another device.
++     */
++    const int timeout = 5;
++
++    /**
++     * @brief Target device address
++     * @description This stores, until the buffer is flushed, the target device
++     * address, take not we do follow Arduino 7bit addressing.
++     */
++    uint8_t addr = 0;
++
++    /**
++     * @brief Number of bytes on buffer
++     * @description This var holds the total number of bytes on our buffer
++     * waiting to be flushed to the bus.
++     */
++    uint8_t buffer_s = 0;
++
++    /**
++     * @brief Internal buffer
++     * @details This is a fixed buffer, TWI command cannot be longer than this
++     */
++    char buffer[30];
++
++
++  public:
++    /**
++     * @brief Class constructor
++     * @details Initialized the TWI bus and clears the buffer
++     */
++    TWIBus();
++
++    /**
++     * @brief Reset the buffer
++     * @details Brings the internal buffer to a known-empty state
++     */
++    void reset();
++
++    /**
++     * @brief Send the buffer data to the bus
++     * @details Flushed the buffer into the bus targeting the cached slave device
++     * address.
++     */
++    void send();
++
++    /**
++     * @brief Add one byte to the buffer
++     * @details Adds the byte to the buffer in a sequential way, if buffer is full
++     * the request is silently ignored.
++     *
++     * @param c a data byte
++     */
++    void addbyte(char c);
++
++    /**
++     * @brief Sets the target slave address
++     * @details The target slave address is stored so it can be later used when
++     * the complete packet needs to be sent over the bus.
++     *
++     * @param addr 7-bit integer address
++     */
++    void address(uint8_t addr);
++
++    /**
++     * @brief Request data from slave device
++     * @details Requests data from a slave device, when the data is received it will
++     * be relayed to the serial line using a parser-friendly formatting.
++     *
++     * @param bytes the number of bytes to request
++     */
++    void reqbytes(uint8_t bytes);
++};
++
++#endif //TWIBUS_H
+

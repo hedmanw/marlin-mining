@@ -1,0 +1,169 @@
+commit 1097a50694fc4d2952878786433868fa010ef428 (from fed6cfc5f533417517a7f31a0314fdcc42babe23)
+Merge: fed6cfc f0aed9d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 24 00:56:36 2016 -0500
+
+    Merge pull request #5070 from gcormier/rcbugfix
+    
+    Fix #4995 - M48/G29 on CoreXY maybe others?
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 402f97c..a215368 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2082,12 +2082,13 @@ static void clean_up_after_endstop_or_probe_move() {
+     // Clear endstop flags
+     endstops.hit_on_purpose();
+ 
+-    // Tell the planner where we actually are
+-    planner.sync_from_steppers();
+-
+     // Get Z where the steppers were interrupted
+     set_current_from_steppers_for_axis(Z_AXIS);
+ 
++    // Tell the planner where we actually are
++    SYNC_PLAN_POSITION_KINEMATIC();
++
++
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) DEBUG_POS("<<< do_probe_move", current_position);
+     #endif
+@@ -3819,7 +3820,7 @@ inline void gcode_G28() {
+       set_current_from_steppers_for_axis(ALL_AXES);
+ 
+       // Sync the planner to where the steppers stopped
+-      planner.sync_from_steppers();
++      SYNC_PLAN_POSITION_KINEMATIC();
+     }
+ 
+     setup_for_endstop_or_probe_move();
+
+commit 1097a50694fc4d2952878786433868fa010ef428 (from f0aed9dac7ee7fc3421891f9b24f92679c769bb4)
+Merge: fed6cfc f0aed9d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 24 00:56:36 2016 -0500
+
+    Merge pull request #5070 from gcormier/rcbugfix
+    
+    Fix #4995 - M48/G29 on CoreXY maybe others?
+
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index 8a060ae..b680f8f 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -192,14 +192,15 @@
+ #if LCD_WIDTH > 19
+   #define MSG_INFO_PRINT_COUNT              "Nbre impressions"
+   #define MSG_INFO_COMPLETED_PRINTS         "Terminees"
++  #define MSG_INFO_PRINT_TIME               "Tps impr. total"
+   #define MSG_INFO_PRINT_LONGEST            "Impr. la + longue"
+   #define MSG_INFO_PRINT_FILAMENT           "Total filament"
+ #else
+-    #define MSG_INFO_PRINT_COUNT              "Impressions"
+-    #define MSG_INFO_COMPLETED_PRINTS         "Terminees"
+-    #define MSG_INFO_PRINT_TIME               "Total"
+-    #define MSG_INFO_PRINT_LONGEST            "+ long"
+-    #define MSG_INFO_PRINT_FILAMENT           "Filament"
++  #define MSG_INFO_PRINT_COUNT              "Impressions"
++  #define MSG_INFO_COMPLETED_PRINTS         "Terminees"
++  #define MSG_INFO_PRINT_TIME               "Total"
++  #define MSG_INFO_PRINT_LONGEST            "+ long"
++  #define MSG_INFO_PRINT_FILAMENT           "Filament"
+ #endif
+ 
+ #define MSG_INFO_MIN_TEMP                   "Temp Min"
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 5487195..6a1fb54 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -115,6 +115,8 @@ float Planner::min_feedrate_mm_s,
+ 
+ long Planner::position[NUM_AXIS] = { 0 };
+ 
++uint32_t Planner::cutoff_long;
++
+ float Planner::previous_speed[NUM_AXIS],
+       Planner::previous_nominal_speed;
+ 
+@@ -1013,26 +1015,42 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+   }
+ 
+   // Compute and limit the acceleration rate for the trapezoid generator.
+-  float steps_per_mm = block->step_event_count / block->millimeters;
++  float steps_per_mm = block->step_event_count * inverse_millimeters;
+   uint32_t accel;
+   if (!block->steps[X_AXIS] && !block->steps[Y_AXIS] && !block->steps[Z_AXIS]) {
+     // convert to: acceleration steps/sec^2
+     accel = ceil(retract_acceleration * steps_per_mm);
+   }
+   else {
+-    #define LIMIT_ACCEL(AXIS) do{ \
+-      if (max_acceleration_steps_per_s2[AXIS] < (accel * block->steps[AXIS]) / block->step_event_count) \
+-        accel = (max_acceleration_steps_per_s2[AXIS] * block->step_event_count) / block->steps[AXIS]; \
++    #define LIMIT_ACCEL_LONG(AXIS) do{ \
++      if (block->steps[AXIS] && max_acceleration_steps_per_s2[AXIS] < accel) { \
++        const uint32_t comp = max_acceleration_steps_per_s2[AXIS] * block->step_event_count; \
++        if (accel * block->steps[AXIS] > comp) accel = comp / block->steps[AXIS]; \
++      } \
++    }while(0)
++	
++    #define LIMIT_ACCEL_FLOAT(AXIS) do{ \
++      if (block->steps[AXIS] && max_acceleration_steps_per_s2[AXIS] < accel) { \
++        const float comp = (float)max_acceleration_steps_per_s2[AXIS] * (float)block->step_event_count; \
++        if ((float)accel * (float)block->steps[AXIS] > comp) accel = comp / (float)block->steps[AXIS]; \
++      } \
+     }while(0)
+ 
+     // Start with print or travel acceleration
+     accel = ceil((block->steps[E_AXIS] ? acceleration : travel_acceleration) * steps_per_mm);
+ 
+     // Limit acceleration per axis
+-    LIMIT_ACCEL(X_AXIS);
+-    LIMIT_ACCEL(Y_AXIS);
+-    LIMIT_ACCEL(Z_AXIS);
+-    LIMIT_ACCEL(E_AXIS);
++    if (block->step_event_count <= cutoff_long){
++      LIMIT_ACCEL_LONG(X_AXIS);
++      LIMIT_ACCEL_LONG(Y_AXIS);
++      LIMIT_ACCEL_LONG(Z_AXIS);
++      LIMIT_ACCEL_LONG(E_AXIS);
++    } else {
++      LIMIT_ACCEL_FLOAT(X_AXIS);
++      LIMIT_ACCEL_FLOAT(Y_AXIS);
++      LIMIT_ACCEL_FLOAT(Z_AXIS);
++      LIMIT_ACCEL_FLOAT(E_AXIS);
++    }
+   }
+   block->acceleration_steps_per_s2 = accel;
+   block->acceleration = accel / steps_per_mm;
+@@ -1303,8 +1321,12 @@ void Planner::set_position_mm(const AxisEnum axis, const float& v) {
+ 
+ // Recalculate the steps/s^2 acceleration rates, based on the mm/s^2
+ void Planner::reset_acceleration_rates() {
+-  LOOP_XYZE(i)
++  uint32_t highest_acceleration_allaxes_steps_per_s2;
++  LOOP_XYZE(i) {
+     max_acceleration_steps_per_s2[i] = max_acceleration_mm_per_s2[i] * axis_steps_per_mm[i];
++    if (max_acceleration_steps_per_s2[i] > highest_acceleration_allaxes_steps_per_s2) highest_acceleration_allaxes_steps_per_s2 = max_acceleration_steps_per_s2[i];
++  }
++  cutoff_long = 4294967295UL / highest_acceleration_allaxes_steps_per_s2;
+ }
+ 
+ // Recalculate position, steps_to_mm if axis_steps_per_mm changes!
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 2e18a70..cd4b3b9 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -166,6 +166,11 @@ class Planner {
+      * Nominal speed of previous path line segment
+      */
+     static float previous_nominal_speed;
++	
++	/**
++ 	 * Limit where 64bit math is necessary for acceleration calculation
++ 	 */
++ 	static uint32_t cutoff_long;
+ 
+     #if ENABLED(DISABLE_INACTIVE_EXTRUDER)
+       /**
+

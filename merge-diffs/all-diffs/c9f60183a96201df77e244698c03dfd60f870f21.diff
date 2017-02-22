@@ -1,0 +1,1301 @@
+commit c9f60183a96201df77e244698c03dfd60f870f21 (from 0d957872a006da8154ab89d3f6b08337349f5377)
+Merge: 0d95787 7667949
+Author: Bo Herrmannsen <bo.herrmannsen@gmail.com>
+Date:   Sun Dec 28 10:13:21 2014 +0100
+
+    Merge pull request #1233 from NarimaanV/Development
+    
+    Fixed BABYSTEPPING feature
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 9b93196..4537e3f 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -396,12 +396,12 @@ void lcd_set_home_offsets()
+       encoderPosition = 0;
+       lcdDrawUpdate = 1;
+     }
+-    if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR(msg), "");
++    if (lcdDrawUpdate) lcd_implementation_drawedit(msg, "");
+     if (LCD_CLICKED) lcd_goto_menu(lcd_tune_menu);
+   }
+-  static void lcd_babystep_x() { _lcd_babystep(X_AXIS, MSG_BABYSTEPPING_X); }
+-  static void lcd_babystep_y() { _lcd_babystep(Y_AXIS, MSG_BABYSTEPPING_Y); }
+-  static void lcd_babystep_z() { _lcd_babystep(Z_AXIS, MSG_BABYSTEPPING_Z); }
++  static void lcd_babystep_x() { _lcd_babystep(X_AXIS, PSTR(MSG_BABYSTEPPING_X)); }
++  static void lcd_babystep_y() { _lcd_babystep(Y_AXIS, PSTR(MSG_BABYSTEPPING_Y)); }
++  static void lcd_babystep_z() { _lcd_babystep(Z_AXIS, PSTR(MSG_BABYSTEPPING_Z)); }
+ 
+ #endif //BABYSTEPPING
+ 
+
+commit c9f60183a96201df77e244698c03dfd60f870f21 (from 7667949aca2c5d5ee282e730782b8e8dd7c41618)
+Merge: 0d95787 7667949
+Author: Bo Herrmannsen <bo.herrmannsen@gmail.com>
+Date:   Sun Dec 28 10:13:21 2014 +0100
+
+    Merge pull request #1233 from NarimaanV/Development
+    
+    Fixed BABYSTEPPING feature
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index b99ec6a..07478e3 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -144,13 +144,13 @@
+ // Comment the following line to disable PID and enable bang-bang.
+ #define PIDTEMP
+ #define BANG_MAX 255 // limits current to nozzle while in bang-bang mode; 255=full current
+-#define PID_MAX 255 // limits current to nozzle while PID is active (see PID_FUNCTIONAL_RANGE below); 255=full current
++#define PID_MAX BANG_MAX // limits current to nozzle while PID is active (see PID_FUNCTIONAL_RANGE below); 255=full current
+ #ifdef PIDTEMP
+   //#define PID_DEBUG // Sends debug data to the serial port.
+   //#define PID_OPENLOOP 1 // Puts PID in open loop. M104/M140 sets the output power from 0 to PID_MAX
+   #define PID_FUNCTIONAL_RANGE 10 // If the temperature difference between the target temperature and the actual temperature
+                                   // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
+-  #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
++  #define PID_INTEGRAL_DRIVE_MAX PID_MAX  //limit for the integral term
+   #define K1 0.95 //smoothing factor within the PID
+   #define PID_dT ((OVERSAMPLENR * 10.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
+ 
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index c099a18..03d4e7d 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -297,6 +297,20 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
++// Show a progress bar on the LCD when printing from SD?
++//#define LCD_PROGRESS_BAR
++
++#ifdef LCD_PROGRESS_BAR
++  // Amount of time (ms) to show the bar
++  #define PROGRESS_BAR_BAR_TIME 2000
++  // Amount of time (ms) to show the status message
++  #define PROGRESS_BAR_MSG_TIME 3000
++  // Amount of time (ms) to retain the status message (0=forever)
++  #define PROGRESS_MSG_EXPIRE   0
++  // Enable this to show messages for MSG_TIME then hide them
++  //#define PROGRESS_MSG_ONCE
++#endif
++
+ // The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+ //#define USE_WATCHDOG
+ 
+@@ -332,7 +346,7 @@
+ 
+ // extruder advance constant (s2/mm3)
+ //
+-// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K * cubic mm per second ^ 2
+ //
+ // Hooke's law says:		force = k * distance
+ // Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index e271ddc..444c43f 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -66,8 +66,9 @@
+ #define SERIAL_PROTOCOLLNPGM(x) (serialprintPGM(PSTR(x)),MYSERIAL.write('\n'))
+ 
+ 
+-const char errormagic[] PROGMEM ="Error:";
+-const char echomagic[] PROGMEM ="echo:";
++extern const char errormagic[] PROGMEM;
++extern const char echomagic[] PROGMEM;
++
+ #define SERIAL_ERROR_START (serialprintPGM(errormagic))
+ #define SERIAL_ERROR(x) SERIAL_PROTOCOL(x)
+ #define SERIAL_ERRORPGM(x) SERIAL_PROTOCOLPGM(x)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 6ea4ae3..809da79 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -329,6 +329,9 @@ bool cancel_heatup = false ;
+   int meas_delay_cm = MEASUREMENT_DELAY_CM;  //distance delay setting
+ #endif
+ 
++const char errormagic[] PROGMEM = "Error:";
++const char echomagic[] PROGMEM = "echo:";
++
+ //===========================================================================
+ //=============================Private Variables=============================
+ //===========================================================================
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index f6cb2d2..0526b88 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -756,6 +756,39 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //#define SERVO_ENDSTOPS {-1, -1, 0} // Servo index for X, Y, Z. Disable with -1
+ //#define SERVO_ENDSTOP_ANGLES {0,0, 0,0, 70,0} // X,Y,Z Axis Extend and Retract angles
+ 
++/**********************************************************************\
++ * Support for a filament diameter sensor
++ * Also allows adjustment of diameter at print time (vs  at slicing)
++ * Single extruder only at this point (extruder 0)
++ * 
++ * Motherboards
++ * 34 - RAMPS1.4 - uses Analog input 5 on the AUX2 connector 
++ * 81 - Printrboard - Uses Analog input 2 on the Exp1 connector (version B,C,D,E)
++ * 301 - Rambo  - uses Analog input 3
++ * Note may require analog pins to be defined for different motherboards
++ **********************************************************************/
++// Uncomment below to enable
++//#define FILAMENT_SENSOR
++
++#define FILAMENT_SENSOR_EXTRUDER_NUM  0  //The number of the extruder that has the filament sensor (0,1,2)
++#define MEASUREMENT_DELAY_CM      14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
++
++#define DEFAULT_NOMINAL_FILAMENT_DIA  3.0  //Enter the diameter (in mm) of the filament generally used (3.0 mm or 1.75 mm) - this is then used in the slicer software.  Used for sensor reading validation
++#define MEASURED_UPPER_LIMIT          3.30  //upper limit factor used for sensor reading validation in mm
++#define MEASURED_LOWER_LIMIT          1.90  //lower limit factor for sensor reading validation in mm
++#define MAX_MEASUREMENT_DELAY     20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
++
++//defines used in the code
++#define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially 
++
++//When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
++//#define FILAMENT_LCD_DISPLAY
++
++
++
++
++
++
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index afdff03..30ed8d1 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -300,6 +300,20 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
++// Show a progress bar on the LCD when printing from SD?
++//#define LCD_PROGRESS_BAR
++
++#ifdef LCD_PROGRESS_BAR
++  // Amount of time (ms) to show the bar
++  #define PROGRESS_BAR_BAR_TIME 2000
++  // Amount of time (ms) to show the status message
++  #define PROGRESS_BAR_MSG_TIME 3000
++  // Amount of time (ms) to retain the status message (0=forever)
++  #define PROGRESS_MSG_EXPIRE   0
++  // Enable this to show messages for MSG_TIME then hide them
++  //#define PROGRESS_MSG_ONCE
++#endif
++
+ // The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+ //#define USE_WATCHDOG
+ 
+@@ -340,7 +354,7 @@
+ 
+ // extruder advance constant (s2/mm3)
+ //
+-// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K * cubic mm per second ^ 2
+ //
+ // Hooke's law says:		force = k * distance
+ // Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
+diff --git a/Marlin/example_configurations/delta/Configuration.h b/Marlin/example_configurations/delta/Configuration.h
+index c618dd3..0b18607 100644
+--- a/Marlin/example_configurations/delta/Configuration.h
++++ b/Marlin/example_configurations/delta/Configuration.h
+@@ -758,22 +758,27 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  * 
+  * Motherboards
+  * 34 - RAMPS1.4 - uses Analog input 5 on the AUX2 connector 
+- * 81 - Printrboard - Uses Analog input 2 on the Aux 2 connector
++ * 81 - Printrboard - Uses Analog input 2 on the Exp1 connector (version B,C,D,E)
+  * 301 - Rambo  - uses Analog input 3
+  * Note may require analog pins to be defined for different motherboards
+  **********************************************************************/
+-#define FILAMENT_SENSOR
+-#define FILAMENT_SENSOR_EXTRUDER_NUM	0  //The number of the extruder that has the filament sensor (0,1,2)
+-#define MEASUREMENT_DELAY_CM			14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
++// Uncomment below to enable
++//#define FILAMENT_SENSOR
++
++#define FILAMENT_SENSOR_EXTRUDER_NUM  0  //The number of the extruder that has the filament sensor (0,1,2)
++#define MEASUREMENT_DELAY_CM      14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
+ 
+ #define DEFAULT_NOMINAL_FILAMENT_DIA  3.0  //Enter the diameter (in mm) of the filament generally used (3.0 mm or 1.75 mm) - this is then used in the slicer software.  Used for sensor reading validation
+ #define MEASURED_UPPER_LIMIT          3.30  //upper limit factor used for sensor reading validation in mm
+ #define MEASURED_LOWER_LIMIT          1.90  //lower limit factor for sensor reading validation in mm
+-#define MAX_MEASUREMENT_DELAY			20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
++#define MAX_MEASUREMENT_DELAY     20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
+ 
+ //defines used in the code
+ #define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially 
+ 
++//When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
++//#define FILAMENT_LCD_DISPLAY
++
+ 
+ 
+ 
+diff --git a/Marlin/example_configurations/delta/Configuration_adv.h b/Marlin/example_configurations/delta/Configuration_adv.h
+index 3df4fd7..a17e899 100644
+--- a/Marlin/example_configurations/delta/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/Configuration_adv.h
+@@ -292,6 +292,20 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
++// Show a progress bar on the LCD when printing from SD
++//#define LCD_PROGRESS_BAR
++
++#ifdef LCD_PROGRESS_BAR
++  // Amount of time (ms) to show the bar
++  #define PROGRESS_BAR_BAR_TIME 2000
++  // Amount of time (ms) to show the status message
++  #define PROGRESS_BAR_MSG_TIME 2000
++  // Amount of time (ms) to retain the status message (0=forever)
++  #define PROGRESS_MSG_EXPIRE   0
++  // Enable this to show messages for MSG_TIME then hide them
++  //#define PROGRESS_MSG_ONCE
++#endif
++
+ // The hardware watchdog should reset the Microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+ //#define USE_WATCHDOG
+ 
+@@ -327,10 +341,10 @@
+ 
+ // extruder advance constant (s2/mm3)
+ //
+-// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K * cubic mm per second ^ 2
+ //
+ // hooke's law says:		force = k * distance
+-// bernoulli's priniciple says:	v ^ 2 / 2 + g . h + pressure / density = constant
++// Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
+ // so: v ^ 2 is proportional to number of steps we advance the extruder
+ //#define ADVANCE
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 07c4c58..5360ef4 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -14,6 +14,13 @@
+ // example_configurations/delta directory.
+ //
+ 
++//===========================================================================
++//============================= SCARA Printer ===============================
++//===========================================================================
++// For a Delta printer replace the configuration files with the files in the
++// example_configurations/SCARA directory.
++//
++
+ // User-specified version info of this build to display in [Pronterface, etc] terminal window during
+ // startup. Implementation of an idea by Prof Braino to inform user that any changes made to this
+ // build by the user have been successfully uploaded into firmware.
+@@ -26,7 +33,6 @@
+ #define SERIAL_PORT 0
+ 
+ // This determines the communication speed of the printer
+-// This determines the communication speed of the printer
+ #define BAUDRATE 250000
+ 
+ // This enables the serial port associated to the Bluetooth interface
+@@ -80,6 +86,7 @@
+ // 10 is 100k RS thermistor 198-961 (4.7k pullup)
+ // 11 is 100k beta 3950 1% thermistor (4.7k pullup)
+ // 12 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup) (calibrated for Makibox hot bed)
++// 13 is 100k Hisens 3950  1% up to 300°C for hotend "Simple ONE " & "Hotend "All In ONE" 
+ // 20 is the PT100 circuit found in the Ultimainboard V2.x
+ // 60 is 100k Maker's Tool Works Kapton Bed Thermistor beta=3950
+ //
+@@ -145,7 +152,7 @@
+                                   // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
+   #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
+   #define K1 0.95 //smoothing factor within the PID
+-  #define PID_dT ((OVERSAMPLENR * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
++  #define PID_dT ((OVERSAMPLENR * 10.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
+ 
+ // If you are using a pre-configured hotend then you can use one of the value sets by uncommenting it
+ // Ultimaker
+@@ -214,6 +221,44 @@
+ #define EXTRUDE_MINTEMP 170
+ #define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
+ 
++/*================== Thermal Runaway Protection ==============================
++This is a feature to protect your printer from burn up in flames if it has
++a thermistor coming off place (this happened to a friend of mine recently and
++motivated me writing this feature).
++
++The issue: If a thermistor come off, it will read a lower temperature than actual.
++The system will turn the heater on forever, burning up the filament and anything
++else around.
++
++After the temperature reaches the target for the first time, this feature will 
++start measuring for how long the current temperature stays below the target 
++minus _HYSTERESIS (set_temperature - THERMAL_RUNAWAY_PROTECTION_HYSTERESIS).
++
++If it stays longer than _PERIOD, it means the thermistor temperature
++cannot catch up with the target, so something *may be* wrong. Then, to be on the
++safe side, the system will he halt.
++
++Bear in mind the count down will just start AFTER the first time the 
++thermistor temperature is over the target, so you will have no problem if
++your extruder heater takes 2 minutes to hit the target on heating.
++
++*/
++// If you want to enable this feature for all your extruder heaters,
++// uncomment the 2 defines below:
++
++// Parameters for all extruder heaters
++//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++
++// If you want to enable this feature for your bed heater,
++// uncomment the 2 defines below:
++
++// Parameters for the bed heater
++//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
++//===========================================================================
++
++
+ //===========================================================================
+ //=============================Mechanical Settings===========================
+ //===========================================================================
+@@ -269,6 +314,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define DISABLE_Y false
+ #define DISABLE_Z false
+ #define DISABLE_E false // For all extruders
++#define DISABLE_INACTIVE_EXTRUDER true //disable only inactive extruders and keep active extruder enabled
+ 
+ #define INVERT_X_DIR false    // for Mendel set to false, for Orca set to true
+ #define INVERT_Y_DIR false    // for Mendel set to true, for Orca set to false
+@@ -300,6 +346,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //============================= Bed Auto Leveling ===========================
+ 
+ //#define ENABLE_AUTO_BED_LEVELING // Delete the comment to enable (remove // at the start of the line)
++#define Z_PROBE_REPEATABILITY_TEST  // If not commented out, Z-Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #ifdef ENABLE_AUTO_BED_LEVELING
+ 
+@@ -360,6 +407,8 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+   #define Z_RAISE_BEFORE_PROBING 15    //How much the extruder will be raised before traveling to the first probing point.
+   #define Z_RAISE_BETWEEN_PROBINGS 5  //How much the extruder will be raised when traveling from between next probing points
+ 
++  //#define Z_PROBE_SLED // turn on if you have a z-probe mounted on a sled like those designed by Charles Bell
++  //#define SLED_DOCKING_OFFSET 5 // the extra distance the X axis must travel to pickup the sled. 0 should be fine but you can push it further if you'd like.
+ 
+   //If defined, the Probe servo will be turned on only during movement and then turned off to avoid jerk
+   //The value is the delay to turn the servo off after powered on - depends on the servo speed; 300ms is good value, but you can try lower it.
+@@ -461,6 +510,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //#define DOGLCD  // Support for SPI LCD 128x64 (Controller ST7565R graphic Display Family)
+ #define SDSUPPORT // Enable SD Card Support in Hardware Console
+ #define SDSLOW // Use slower SD transfer mode (not normally needed - uncomment if you're getting volume init error)
++//#define SD_CHECK_AND_RETRY // Use CRC checks and retries on the SD communication
+ //#define ENCODER_PULSES_PER_STEP 1 // Increase if you have a high resolution encoder
+ //#define ENCODER_STEPS_PER_MENU_ITEM 5 // Set according to ENCODER_PULSES_PER_STEP or your liking
+ //#define ULTIMAKERCONTROLLER //as available from the Ultimaker online store.
+@@ -675,12 +725,42 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M206 command to correct for switch height offset to actual nozzle height. Store that setting with M500.
+ //
+-
+-#define DIGIPOT_I2C
+-
+ //#define SERVO_ENDSTOPS {-1, -1, 0} // Servo index for X, Y, Z. Disable with -1
+ //#define SERVO_ENDSTOP_ANGLES {0,0, 0,0, 70,0} // X,Y,Z Axis Extend and Retract angles
+ 
++/**********************************************************************\
++ * Support for a filament diameter sensor
++ * Also allows adjustment of diameter at print time (vs  at slicing)
++ * Single extruder only at this point (extruder 0)
++ * 
++ * Motherboards
++ * 34 - RAMPS1.4 - uses Analog input 5 on the AUX2 connector 
++ * 81 - Printrboard - Uses Analog input 2 on the Exp1 connector (version B,C,D,E)
++ * 301 - Rambo  - uses Analog input 3
++ * Note may require analog pins to be defined for different motherboards
++ **********************************************************************/
++// Uncomment below to enable
++//#define FILAMENT_SENSOR
++
++#define FILAMENT_SENSOR_EXTRUDER_NUM	0  //The number of the extruder that has the filament sensor (0,1,2)
++#define MEASUREMENT_DELAY_CM			14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
++
++#define DEFAULT_NOMINAL_FILAMENT_DIA  3.0  //Enter the diameter (in mm) of the filament generally used (3.0 mm or 1.75 mm) - this is then used in the slicer software.  Used for sensor reading validation
++#define MEASURED_UPPER_LIMIT          3.30  //upper limit factor used for sensor reading validation in mm
++#define MEASURED_LOWER_LIMIT          1.90  //lower limit factor for sensor reading validation in mm
++#define MAX_MEASUREMENT_DELAY			20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
++
++//defines used in the code
++#define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially 
++
++//When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
++//#define FILAMENT_LCD_DISPLAY
++
++
++
++
++
++
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 19f8707..d455582 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -296,6 +296,20 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
++// Show a progress bar on the LCD when printing from SD
++//#define LCD_PROGRESS_BAR
++
++#ifdef LCD_PROGRESS_BAR
++  // Amount of time (ms) to show the bar
++  #define PROGRESS_BAR_BAR_TIME 2000
++  // Amount of time (ms) to show the status message
++  #define PROGRESS_BAR_MSG_TIME 2000
++  // Amount of time (ms) to retain the status message (0=forever)
++  #define PROGRESS_MSG_EXPIRE   0
++  // Enable this to show messages for MSG_TIME then hide them
++  //#define PROGRESS_MSG_ONCE
++#endif
++
+ // The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+ //#define USE_WATCHDOG
+ 
+@@ -331,7 +345,7 @@
+ 
+ // extruder advance constant (s2/mm3)
+ //
+-// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K * cubic mm per second ^ 2
+ //
+ // Hooke's law says:		force = k * distance
+ // Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 34be1d2..8924f70 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -749,24 +749,26 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+  * 
+  * Motherboards
+  * 34 - RAMPS1.4 - uses Analog input 5 on the AUX2 connector 
+- * 81 - Printrboard - Uses Analog input 2 on the Aux 2 connector
++ * 81 - Printrboard - Uses Analog input 2 on the Exp1 connector (version B,C,D,E)
+  * 301 - Rambo  - uses Analog input 3
+  * Note may require analog pins to be defined for different motherboards
+  **********************************************************************/
+ // Uncomment below to enable
+ //#define FILAMENT_SENSOR
+ 
+-#define FILAMENT_SENSOR_EXTRUDER_NUM	0  //The number of the extruder that has the filament sensor (0,1,2)
+-#define MEASUREMENT_DELAY_CM			14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
++#define FILAMENT_SENSOR_EXTRUDER_NUM  0  //The number of the extruder that has the filament sensor (0,1,2)
++#define MEASUREMENT_DELAY_CM      14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
+ 
+ #define DEFAULT_NOMINAL_FILAMENT_DIA  3.0  //Enter the diameter (in mm) of the filament generally used (3.0 mm or 1.75 mm) - this is then used in the slicer software.  Used for sensor reading validation
+ #define MEASURED_UPPER_LIMIT          3.30  //upper limit factor used for sensor reading validation in mm
+ #define MEASURED_LOWER_LIMIT          1.90  //lower limit factor for sensor reading validation in mm
+-#define MAX_MEASUREMENT_DELAY			20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
++#define MAX_MEASUREMENT_DELAY     20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
+ 
+ //defines used in the code
+ #define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially 
+ 
++//When using an LCD, uncomment the line below to display the Filament sensor data on the last line instead of status.  Status will appear for 5 sec.
++//#define FILAMENT_LCD_DISPLAY
+ 
+ 
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 2eb1f64..2ccde60 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -297,6 +297,20 @@
+ // using:
+ //#define MENU_ADDAUTOSTART
+ 
++// Show a progress bar on the LCD when printing from SD?
++//#define LCD_PROGRESS_BAR
++
++#ifdef LCD_PROGRESS_BAR
++  // Amount of time (ms) to show the bar
++  #define PROGRESS_BAR_BAR_TIME 2000
++  // Amount of time (ms) to show the status message
++  #define PROGRESS_BAR_MSG_TIME 3000
++  // Amount of time (ms) to retain the status message (0=forever)
++  #define PROGRESS_MSG_EXPIRE   0
++  // Enable this to show messages for MSG_TIME then hide them
++  //#define PROGRESS_MSG_ONCE
++#endif
++
+ // The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
+ //#define USE_WATCHDOG
+ 
+@@ -332,7 +346,7 @@
+ 
+ // extruder advance constant (s2/mm3)
+ //
+-// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
++// advance (steps) = STEPS_PER_CUBIC_MM_E * EXTRUDER_ADVANCE_K * cubic mm per second ^ 2
+ //
+ // Hooke's law says:		force = k * distance
+ // Bernoulli's principle says:	v ^ 2 / 2 + g . h + pressure / density = constant
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index a3fedbf..5b116d9 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -188,6 +188,12 @@ void PID_autotune(float temp, int extruder, int ncycles)
+   float Kp, Ki, Kd;
+   float max = 0, min = 10000;
+ 
++#if (defined(EXTRUDER_0_AUTO_FAN_PIN) && EXTRUDER_0_AUTO_FAN_PIN > -1) || \
++    (defined(EXTRUDER_1_AUTO_FAN_PIN) && EXTRUDER_1_AUTO_FAN_PIN > -1) || \
++    (defined(EXTRUDER_2_AUTO_FAN_PIN) && EXTRUDER_2_AUTO_FAN_PIN > -1)
++  unsigned long extruder_autofan_last_check = millis();
++#endif
++
+   if ((extruder >= EXTRUDERS)
+   #if (TEMP_BED_PIN <= -1)
+        ||(extruder < 0)
+@@ -224,6 +230,16 @@ void PID_autotune(float temp, int extruder, int ncycles)
+ 
+       max=max(max,input);
+       min=min(min,input);
++
++      #if (defined(EXTRUDER_0_AUTO_FAN_PIN) && EXTRUDER_0_AUTO_FAN_PIN > -1) || \
++          (defined(EXTRUDER_1_AUTO_FAN_PIN) && EXTRUDER_1_AUTO_FAN_PIN > -1) || \
++          (defined(EXTRUDER_2_AUTO_FAN_PIN) && EXTRUDER_2_AUTO_FAN_PIN > -1)
++      if(millis() - extruder_autofan_last_check > 2500) {
++        checkExtruderAutoFans();
++        extruder_autofan_last_check = millis();
++      }
++      #endif
++
+       if(heating == true && input > temp) {
+         if(millis() - t2 > 5000) { 
+           heating=false;
+@@ -455,7 +471,14 @@ void manage_heater()
+           //K1 defined in Configuration.h in the PID settings
+           #define K2 (1.0-K1)
+           dTerm[e] = (Kd * (pid_input - temp_dState[e]))*K2 + (K1 * dTerm[e]);
+-          pid_output = constrain(pTerm[e] + iTerm[e] - dTerm[e], 0, PID_MAX);
++          pid_output = pTerm[e] + iTerm[e] - dTerm[e];
++          if (pid_output > PID_MAX) {
++            if (pid_error[e] > 0 )  temp_iState[e] -= pid_error[e]; // conditional un-integration
++            pid_output=PID_MAX;
++          } else if (pid_output < 0){
++            if (pid_error[e] < 0 )  temp_iState[e] -= pid_error[e]; // conditional un-integration
++            pid_output=0;
++          }
+         }
+         temp_dState[e] = pid_input;
+     #else 
+@@ -558,7 +581,14 @@ void manage_heater()
+ 		  dTerm_bed= (bedKd * (pid_input - temp_dState_bed))*K2 + (K1 * dTerm_bed);
+ 		  temp_dState_bed = pid_input;
+ 
+-		  pid_output = constrain(pTerm_bed + iTerm_bed - dTerm_bed, 0, MAX_BED_POWER);
++		  pid_output = pTerm_bed + iTerm_bed - dTerm_bed;
++          	  if (pid_output > MAX_BED_PID) {
++            	    if (pid_error_bed > 0 )  temp_iState_bed -= pid_error_bed; // conditional un-integration
++                    pid_output=PID_MAX;
++          	  } else if (pid_output < 0){
++            	    if (pid_error_bed < 0 )  temp_iState_bed -= pid_error_bed; // conditional un-integration
++                    pid_output=0;
++                  }
+ 
+     #else 
+       pid_output = constrain(target_temperature_bed, 0, MAX_BED_POWER);
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 962e048..95c3514 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -186,5 +186,8 @@ FORCE_INLINE void autotempShutdown(){
+ 
+ void PID_autotune(float temp, int extruder, int ncycles);
+ 
++void setExtruderAutoFanState(int pin, bool state);
++void checkExtruderAutoFans();
++
+ #endif
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index afe1bd8..4537e3f 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -19,15 +19,12 @@ int absPreheatHotendTemp;
+ int absPreheatHPBTemp;
+ int absPreheatFanSpeed;
+ 
+-
+ #ifdef FILAMENT_LCD_DISPLAY
+-unsigned long message_millis=0;
++  unsigned long message_millis = 0;
+ #endif
+ 
+-
+-
+ #ifdef ULTIPANEL
+-static float manual_feedrate[] = MANUAL_FEEDRATE;
++  static float manual_feedrate[] = MANUAL_FEEDRATE;
+ #endif // ULTIPANEL
+ 
+ /* !Configuration settings */
+@@ -163,7 +160,7 @@ uint32_t encoderPosition;
+ #if (SDCARDDETECT > 0)
+ bool lcd_oldcardstatus;
+ #endif
+-#endif//ULTIPANEL
++#endif //ULTIPANEL
+ 
+ menuFunc_t currentMenu = lcd_status_screen; /* function pointer to the currently active menu */
+ uint32_t lcd_next_update_millis;
+@@ -189,12 +186,45 @@ static void lcd_goto_menu(menuFunc_t menu, const uint32_t encoder=0, const bool
+     currentMenu = menu;
+     encoderPosition = encoder;
+     if (feedback) lcd_quick_feedback();
++
++    // For LCD_PROGRESS_BAR re-initialize the custom characters
++    #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++      lcd_set_custom_characters(menu == lcd_status_screen);
++    #endif
+   }
+ }
+ 
+ /* Main status screen. It's up to the implementation specific part to show what is needed. As this is very display dependent */
+ static void lcd_status_screen()
+ {
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    uint16_t mil = millis();
++    #ifndef PROGRESS_MSG_ONCE
++      if (mil > progressBarTick + PROGRESS_BAR_MSG_TIME + PROGRESS_BAR_BAR_TIME) {
++        progressBarTick = mil;
++      }
++    #endif
++    #if PROGRESS_MSG_EXPIRE > 0
++      // keep the message alive if paused, count down otherwise
++      if (messageTick > 0) {
++        if (card.isFileOpen()) {
++          if (IS_SD_PRINTING) {
++            if ((mil-messageTick) >= PROGRESS_MSG_EXPIRE) {
++              lcd_status_message[0] = '\0';
++              messageTick = 0;
++            }
++          }
++          else {
++            messageTick += LCD_UPDATE_INTERVAL;
++          }
++        }
++        else {
++          messageTick = 0;
++        }
++      }
++    #endif
++  #endif //LCD_PROGRESS_BAR
++
+     if (lcd_status_update_delay)
+         lcd_status_update_delay--;
+     else
+@@ -227,10 +257,14 @@ static void lcd_status_screen()
+     if (current_click)
+     {
+         lcd_goto_menu(lcd_main_menu);
+-        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
+-#ifdef FILAMENT_LCD_DISPLAY
+-        message_millis=millis();  //get status message to show up for a while
+-#endif
++        lcd_implementation_init( // to maybe revive the LCD if static electricity killed it.
++          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++            currentMenu == lcd_status_screen
++          #endif
++        );
++        #ifdef FILAMENT_LCD_DISPLAY
++          message_millis = millis();  // get status message to show up for a while
++        #endif
+     }
+ 
+ #ifdef ULTIPANEL_FEEDMULTIPLY
+@@ -257,28 +291,22 @@ static void lcd_status_screen()
+         feedmultiply += int(encoderPosition);
+         encoderPosition = 0;
+     }
+-#endif//ULTIPANEL_FEEDMULTIPLY
++#endif //ULTIPANEL_FEEDMULTIPLY
+ 
+     if (feedmultiply < 10)
+         feedmultiply = 10;
+     else if (feedmultiply > 999)
+         feedmultiply = 999;
+-#endif//ULTIPANEL
++#endif //ULTIPANEL
+ }
+ 
+ #ifdef ULTIPANEL
+-static void lcd_return_to_status()
+-{
+-    lcd_goto_menu(lcd_status_screen, 0, false);
+-}
+-static void lcd_sdcard_pause()
+-{
+-    card.pauseSDPrint();
+-}
+-static void lcd_sdcard_resume()
+-{
+-    card.startFileprint();
+-}
++
++static void lcd_return_to_status() { lcd_goto_menu(lcd_status_screen, 0, false); }
++
++static void lcd_sdcard_pause() { card.pauseSDPrint(); }
++
++static void lcd_sdcard_resume() { card.startFileprint(); }
+ 
+ static void lcd_sdcard_stop()
+ {
+@@ -918,10 +946,8 @@ void lcd_sdcard_menu()
+ #define menu_edit_type(_type, _name, _strFunc, scale) \
+     void menu_edit_ ## _name () \
+     { \
+-        if ((int32_t)encoderPosition < 0) \
+-            encoderPosition = 0; \
+-        if ((int32_t)encoderPosition > maxEditValue) \
+-            encoderPosition = maxEditValue; \
++        if ((int32_t)encoderPosition < 0) encoderPosition = 0; \
++        if ((int32_t)encoderPosition > maxEditValue) encoderPosition = maxEditValue; \
+         if (lcdDrawUpdate) \
+             lcd_implementation_drawedit(editLabel, _strFunc(((_type)((int32_t)encoderPosition + minEditValue)) / scale)); \
+         if (LCD_CLICKED) \
+@@ -1112,7 +1138,11 @@ void lcd_update()
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+-        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
++        lcd_implementation_init( // to maybe revive the LCD if static electricity killed it.
++          #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++            currentMenu == lcd_status_screen
++          #endif
++        );
+ 
+         if(lcd_oldcardstatus)
+         {
+@@ -1192,10 +1222,8 @@ void lcd_update()
+             lcdDrawUpdate = 2;
+         }
+ #endif//ULTIPANEL
+-        if (lcdDrawUpdate == 2)
+-            lcd_implementation_clear();
+-        if (lcdDrawUpdate)
+-            lcdDrawUpdate--;
++        if (lcdDrawUpdate == 2) lcd_implementation_clear();
++        if (lcdDrawUpdate) lcdDrawUpdate--;
+         lcd_next_update_millis = millis() + LCD_UPDATE_INTERVAL;
+     }
+ }
+@@ -1206,35 +1234,39 @@ void lcd_ignore_click(bool b)
+     wait_for_unclick = false;
+ }
+ 
++void lcd_finishstatus() {
++  int len = strlen(lcd_status_message);
++  if (len > 0) {
++    while (len < LCD_WIDTH) {
++      lcd_status_message[len++] = ' ';
++    }
++  }
++  lcd_status_message[LCD_WIDTH] = '\0';
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    #if PROGRESS_MSG_EXPIRE > 0
++      messageTick =
++    #endif
++    progressBarTick = millis();
++  #endif
++  lcdDrawUpdate = 2;
++
++  #ifdef FILAMENT_LCD_DISPLAY
++    message_millis = millis();  //get status message to show up for a while
++  #endif
++}
+ void lcd_setstatus(const char* message)
+ {
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
+-
+-    size_t i = strlen(lcd_status_message);
+-    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
+-    lcd_status_message[LCD_WIDTH] = '\0';
+-
+-    lcdDrawUpdate = 2;
+-#ifdef FILAMENT_LCD_DISPLAY
+-        message_millis=millis();  //get status message to show up for a while
+-#endif
++    lcd_finishstatus();
+ }
+ void lcd_setstatuspgm(const char* message)
+ {
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
+-
+-    size_t i = strlen(lcd_status_message);
+-    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
+-    lcd_status_message[LCD_WIDTH] = '\0';
+-
+-    lcdDrawUpdate = 2;
+-#ifdef FILAMENT_LCD_DISPLAY
+-        message_millis=millis();  //get status message to show up for a while
+-#endif
++    lcd_finishstatus();
+ }
+ void lcd_setalertstatuspgm(const char* message)
+ {
+@@ -1382,7 +1414,7 @@ char *itostr2(const uint8_t &x)
+   return conv;
+ }
+ 
+-//  convert float to string with +123.4 format
++// Convert float to string with 123.4 format, dropping sign
+ char *ftostr31(const float &x)
+ {
+   int xx=x*10;
+@@ -1397,7 +1429,7 @@ char *ftostr31(const float &x)
+   return conv;
+ }
+ 
+-//  convert float to string with 123.4 format
++// Convert float to string with 123.4 format
+ char *ftostr31ns(const float &x)
+ {
+   int xx=x*10;
+@@ -1429,7 +1461,7 @@ char *ftostr32(const float &x)
+   return conv;
+ }
+ 
+-//Float to string with 1.23 format
++// Convert float to string with 1.23 format
+ char *ftostr12ns(const float &x)
+ {
+   long xx=x*100;
+@@ -1443,6 +1475,7 @@ char *ftostr12ns(const float &x)
+   return conv;
+ }
+ 
++// Convert int to lj string with +123.0 format
+ char *itostr31(const int &xx)
+ {
+   conv[0]=(xx>=0)?'+':'-';
+@@ -1475,6 +1508,7 @@ char *itostr3(const int &x)
+   return conv;
+ }
+ 
++// Convert int to lj string with 123 format
+ char *itostr3left(const int &xx)
+ {
+   if (xx >= 100)
+@@ -1508,7 +1542,7 @@ char *itostr4(const int &xx) {
+   return conv;
+ }
+ 
+-//  convert float to rj string with 12345 format
++// Convert float to rj string with 12345 format
+ char *ftostr5(const float &x) {
+   long xx = abs(x);
+   conv[0] = xx >= 10000 ? (xx / 10000) % 10 + '0' : ' ';
+@@ -1520,7 +1554,7 @@ char *ftostr5(const float &x) {
+   return conv;
+ }
+ 
+-//  convert float to string with +1234.5 format
++// Convert float to string with +1234.5 format
+ char *ftostr51(const float &x)
+ {
+   long xx=x*10;
+@@ -1536,7 +1570,7 @@ char *ftostr51(const float &x)
+   return conv;
+ }
+ 
+-//  convert float to string with +123.45 format
++// Convert float to string with +123.45 format
+ char *ftostr52(const float &x)
+ {
+   long xx=x*100;
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 923e249..36af684 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -208,6 +208,14 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   LCD_CLASS lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7
+ #endif
+ 
++#if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++  static uint16_t progressBarTick = 0;
++  #if PROGRESS_MSG_EXPIRE > 0
++    static uint16_t messageTick = 0;
++  #endif
++  #define LCD_STR_PROGRESS  "\x03\x04\x05"
++#endif
++
+ /* Custom characters defined in the first 8 characters of the LCD */
+ #define LCD_STR_BEDTEMP     "\x00"
+ #define LCD_STR_DEGREE      "\x01"
+@@ -219,91 +227,157 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+ #define LCD_STR_CLOCK       "\x07"
+ #define LCD_STR_ARROW_RIGHT "\x7E"  /* from the default character set */
+ 
+-static void lcd_implementation_init()
+-{
+-    byte bedTemp[8] =
+-    {
+-        B00000,
+-        B11111,
+-        B10101,
+-        B10001,
+-        B10101,
+-        B11111,
+-        B00000,
+-        B00000
+-    }; //thanks Sonny Mounicou
+-    byte degree[8] =
+-    {
+-        B01100,
+-        B10010,
+-        B10010,
+-        B01100,
+-        B00000,
+-        B00000,
+-        B00000,
+-        B00000
+-    };
+-    byte thermometer[8] =
+-    {
+-        B00100,
+-        B01010,
+-        B01010,
+-        B01010,
+-        B01010,
+-        B10001,
+-        B10001,
+-        B01110
+-    };
+-    byte uplevel[8]={
+-        B00100,
+-        B01110,
+-        B11111,
+-        B00100,
+-        B11100,
+-        B00000,
+-        B00000,
+-        B00000
+-    }; //thanks joris
+-    byte refresh[8]={
+-        B00000,
+-        B00110,
+-        B11001,
+-        B11000,
+-        B00011,
+-        B10011,
+-        B01100,
+-        B00000,
+-    }; //thanks joris
+-    byte folder [8]={
+-        B00000,
+-        B11100,
+-        B11111,
+-        B10001,
+-        B10001,
+-        B11111,
+-        B00000,
+-        B00000
+-    }; //thanks joris
+-    byte feedrate [8]={
+-        B11100,
+-        B10000,
+-        B11000,
+-        B10111,
+-        B00101,
+-        B00110,
+-        B00101,
+-        B00000
+-    }; //thanks Sonny Mounicou
+-    byte clock [8]={
+-        B00000,
+-        B01110,
+-        B10011,
+-        B10101,
+-        B10001,
+-        B01110,
+-        B00000,
+-        B00000
+-    }; //thanks Sonny Mounicou
++static void lcd_set_custom_characters(
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    bool progress_bar_set=true
++  #endif
++) {
++  byte bedTemp[8] = {
++    B00000,
++    B11111,
++    B10101,
++    B10001,
++    B10101,
++    B11111,
++    B00000,
++    B00000
++  }; //thanks Sonny Mounicou
++  byte degree[8] = {
++    B01100,
++    B10010,
++    B10010,
++    B01100,
++    B00000,
++    B00000,
++    B00000,
++    B00000
++  };
++  byte thermometer[8] = {
++    B00100,
++    B01010,
++    B01010,
++    B01010,
++    B01010,
++    B10001,
++    B10001,
++    B01110
++  };
++  byte uplevel[8] = {
++    B00100,
++    B01110,
++    B11111,
++    B00100,
++    B11100,
++    B00000,
++    B00000,
++    B00000
++  }; //thanks joris
++  byte refresh[8] = {
++    B00000,
++    B00110,
++    B11001,
++    B11000,
++    B00011,
++    B10011,
++    B01100,
++    B00000,
++  }; //thanks joris
++  byte folder[8] = {
++    B00000,
++    B11100,
++    B11111,
++    B10001,
++    B10001,
++    B11111,
++    B00000,
++    B00000
++  }; //thanks joris
++  byte feedrate[8] = {
++    B11100,
++    B10000,
++    B11000,
++    B10111,
++    B00101,
++    B00110,
++    B00101,
++    B00000
++  }; //thanks Sonny Mounicou
++  byte clock[8] = {
++    B00000,
++    B01110,
++    B10011,
++    B10101,
++    B10001,
++    B01110,
++    B00000,
++    B00000
++  }; //thanks Sonny Mounicou
++
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    static bool char_mode = false;
++    byte progress[3][8] = { {
++      B00000,
++      B10000,
++      B10000,
++      B10000,
++      B10000,
++      B10000,
++      B10000,
++      B00000
++    }, {
++      B00000,
++      B10100,
++      B10100,
++      B10100,
++      B10100,
++      B10100,
++      B10100,
++      B00000
++    }, {
++      B00000,
++      B10101,
++      B10101,
++      B10101,
++      B10101,
++      B10101,
++      B10101,
++      B00000
++    } };
++    if (progress_bar_set != char_mode) {
++      char_mode = progress_bar_set;
++      lcd.createChar(LCD_STR_BEDTEMP[0], bedTemp);
++      lcd.createChar(LCD_STR_DEGREE[0], degree);
++      lcd.createChar(LCD_STR_THERMOMETER[0], thermometer);
++      lcd.createChar(LCD_STR_FEEDRATE[0], feedrate);
++      lcd.createChar(LCD_STR_CLOCK[0], clock);
++      if (progress_bar_set) {
++        // Progress bar characters for info screen
++        for (int i=3; i--;) lcd.createChar(LCD_STR_PROGRESS[i], progress[i]);
++      }
++      else {
++        // Custom characters for submenus
++        lcd.createChar(LCD_STR_UPLEVEL[0], uplevel);
++        lcd.createChar(LCD_STR_REFRESH[0], refresh);
++        lcd.createChar(LCD_STR_FOLDER[0], folder);
++      }
++    }
++  #else
++    lcd.createChar(LCD_STR_BEDTEMP[0], bedTemp);
++    lcd.createChar(LCD_STR_DEGREE[0], degree);
++    lcd.createChar(LCD_STR_THERMOMETER[0], thermometer);
++    lcd.createChar(LCD_STR_UPLEVEL[0], uplevel);
++    lcd.createChar(LCD_STR_REFRESH[0], refresh);
++    lcd.createChar(LCD_STR_FOLDER[0], folder);
++    lcd.createChar(LCD_STR_FEEDRATE[0], feedrate);
++    lcd.createChar(LCD_STR_CLOCK[0], clock);
++  #endif
++}
++
++static void lcd_implementation_init(
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++    bool progress_bar_set=true
++  #endif
++) {
+ 
+ #if defined(LCD_I2C_TYPE_PCF8575)
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+@@ -329,14 +403,12 @@ static void lcd_implementation_init()
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+ #endif
+ 
+-    lcd.createChar(LCD_STR_BEDTEMP[0], bedTemp);
+-    lcd.createChar(LCD_STR_DEGREE[0], degree);
+-    lcd.createChar(LCD_STR_THERMOMETER[0], thermometer);
+-    lcd.createChar(LCD_STR_UPLEVEL[0], uplevel);
+-    lcd.createChar(LCD_STR_REFRESH[0], refresh);
+-    lcd.createChar(LCD_STR_FOLDER[0], folder);
+-    lcd.createChar(LCD_STR_FEEDRATE[0], feedrate);
+-    lcd.createChar(LCD_STR_CLOCK[0], clock);
++    lcd_set_custom_characters(
++        #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++            progress_bar_set
++        #endif
++    );
++
+     lcd.clear();
+ }
+ static void lcd_implementation_clear()
+@@ -507,23 +579,46 @@ static void lcd_implementation_status_screen()
+     }
+ #endif
+ 
+-    //Display both Status message line and Filament display on the last line
+-    #ifdef FILAMENT_LCD_DISPLAY
+-      if(message_millis+5000>millis()){  //display any status for the first 5 sec after screen is initiated
+-         	 lcd.setCursor(0, LCD_HEIGHT - 1);
+-        	 lcd.print(lcd_status_message);
+-        } else {
+-		     lcd.setCursor(0,LCD_HEIGHT - 1);
+-		     lcd_printPGM(PSTR("Dia "));
+-		     lcd.print(ftostr12ns(filament_width_meas));
+-		     lcd_printPGM(PSTR(" V"));
+-		     lcd.print(itostr3(100.0*volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]));
+-    		 lcd.print('%');
++  // Status message line at the bottom
++  lcd.setCursor(0, LCD_HEIGHT - 1);
++
++  #if defined(LCD_PROGRESS_BAR) && defined(SDSUPPORT)
++
++    if (card.isFileOpen()) {
++      uint16_t mil = millis(), diff = mil - progressBarTick;
++      if (diff >= PROGRESS_BAR_MSG_TIME || !lcd_status_message[0]) {
++        // draw the progress bar
++        int tix = (int)(card.percentDone() * LCD_WIDTH * 3) / 100,
++          cel = tix / 3, rem = tix % 3, i = LCD_WIDTH;
++        char msg[LCD_WIDTH+1], b = ' ';
++        msg[i] = '\0';
++        while (i--) {
++          if (i == cel - 1)
++            b = LCD_STR_PROGRESS[2];
++          else if (i == cel && rem != 0)
++            b = LCD_STR_PROGRESS[rem-1];
++          msg[i] = b;
+         }
+-    #else
+-    lcd.setCursor(0, LCD_HEIGHT - 1);
+-    lcd.print(lcd_status_message);
+-    #endif
++        lcd.print(msg);
++        return;
++      }
++    } //card.isFileOpen
++
++  #endif //LCD_PROGRESS_BAR
++
++  //Display both Status message line and Filament display on the last line
++  #ifdef FILAMENT_LCD_DISPLAY
++    if (message_millis + 5000 <= millis()) {  //display any status for the first 5 sec after screen is initiated
++      lcd_printPGM(PSTR("Dia "));
++      lcd.print(ftostr12ns(filament_width_meas));
++      lcd_printPGM(PSTR(" V"));
++      lcd.print(itostr3(100.0*volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]));
++  	  lcd.print('%');
++  	  return;
++    }
++  #endif //FILAMENT_LCD_DISPLAY
++
++  lcd.print(lcd_status_message);
+ }
+ static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, char pre_char, char post_char)
+ {
+diff --git a/README.md b/README.md
+index 5bd9ced..b83c3fb 100644
+--- a/README.md
++++ b/README.md
+@@ -1,10 +1,19 @@
+-NOTE: As per 21/12/2014 all stale branches have been thrown in the trash can, some where not updated in 3 years and some not in 2 years, currently we/i (boelle) suggest you use the "bug fixing branch" as we need to get sorted out any issues before we start to add more festures. A "stable" marlin is the goal
++Current Status: Bug Fixing
++===================
++As we are fixing bugs use the development branch: https://github.com/ErikZalm/Marlin/tree/Development
++
++What bugs are we working on: https://github.com/ErikZalm/Marlin/issues/1220
++
++Developer Notes
++===================
++
++- There are now 3 branches: The __development__ branch is where new features and code changes will be sorted out. This branch may have untested code in it, so please let us know if you find any bugs. When the __development__ branch has reached a state where it is stable, it will be moved to the __stable__ branch and in the end it will land in the __main__ branch.
+ 
+-NOTE1: We are doing a kind of clean up in the list of issues and pull requests, the aim is to get to a kind of state where we can stamp it stable, and of course a more updated version we stamp unstable that will need testing. For the last part we need a lot of people with different machines that are willing to test the firmware so we can stamp it as stable. If you want to help out testing go to this issue and let us know: https://github.com/ErikZalm/Marlin/issues/1209
++- We are doing a kind of cleanup in the list of Issues and Pull Requests, the aim is to get to a state where we can certify the code as stable. To get the code tested as widely as possible we require several volunteers with a wide variety of hardware configurations willing to test the firmware and help us to certify it as stable. If you want to help out testing go to this issue and let us know: https://github.com/ErikZalm/Marlin/issues/1209
+ 
+-NOTE2: For submitting pull requests we ask that you PLEASE test the code first before submitting. When creating the pull request let us know what hardware you have tested on and how, just in short words. Pull requests that are not tested will likely not be merged as one slight change can risk breaking the code.
++- Before you submit any pull request, we ask that you _PLEASE_ test your code before submission, even if the change seems innocuous. When creating the pull request, please include the hardware you used for testing and a short synopsis of your testing procedure. Untested pull requests are less likely to be merged, as even slight changes create the risk of breaking the main branch.
+ 
+-NOTE3: If you have a fix don't open an issue telling about it, but test the code and submit a pull request.
++- If you have a fix don't open an issue telling about it, but test the code and submit a pull request. Use the __development__ branch when you submit, current its not the default one so please check that you submit to the __development__ branch
+ 
+ ==========================
+ Marlin 3D Printer Firmware
+

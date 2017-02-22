@@ -1,0 +1,143 @@
+commit 5d23e52d75228774370ddfd349d560966e5a9649 (from db47aa983da63aaea093375f02fd787f8a78cbf2)
+Merge: db47aa9 99b0c1f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Nov 15 19:12:01 2016 -0600
+
+    Merge pull request #5228 from thinkyhead/rc_keep_last_mix
+    
+    Fix DIRECT_MIXING_IN_G1 to preserve the previous mix
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d1c23fe..7cabc7a 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2672,16 +2672,26 @@ static void homeaxis(AxisEnum axis) {
+ 
+   #if ENABLED(DIRECT_MIXING_IN_G1)
+     // Get mixing parameters from the GCode
+-    // Factors that are left out are set to 0
+     // The total "must" be 1.0 (but it will be normalized)
++    // If no mix factors are given, the old mix is preserved
+     void gcode_get_mix() {
+       const char* mixing_codes = "ABCDHI";
+-      for (int i = 0; i < MIXING_STEPPERS; i++) {
+-        float v = code_seen(mixing_codes[i]) ? code_value_float() : 0.0;
+-        NOLESS(v, 0.0);
+-        mixing_factor[i] = RECIPROCAL(v);
++      byte mix_bits = 0;
++      for (uint8_t i = 0; i < MIXING_STEPPERS; i++) {
++        if (code_seen(mixing_codes[i])) {
++          SBI(mix_bits, i);
++          float v = code_value_float();
++          NOLESS(v, 0.0);
++          mixing_factor[i] = RECIPROCAL(v);
++        }
++      }
++      // If any mixing factors were included, clear the rest
++      // If none were included, preserve the last mix
++      if (mix_bits) {
++        for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
++          if (!TEST(mix_bits, i)) mixing_factor[i] = 0.0;
++        normalize_mix();
+       }
+-      normalize_mix();
+     }
+   #endif
+ 
+
+commit 5d23e52d75228774370ddfd349d560966e5a9649 (from 99b0c1fe56934e2deeb9a64ae192258a6e34807a)
+Merge: db47aa9 99b0c1f
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Nov 15 19:12:01 2016 -0600
+
+    Merge pull request #5228 from thinkyhead/rc_keep_last_mix
+    
+    Fix DIRECT_MIXING_IN_G1 to preserve the previous mix
+
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index a5d68a2..81eecea 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -380,16 +380,14 @@ endif
+ CINCS = ${addprefix -I ,${VPATH}}
+ CXXINCS = ${addprefix -I ,${VPATH}}
+ 
+-# Compiler flag to set the C Standard level.
+-# c89   - "ANSI" C
+-# gnu89 - c89 plus GCC extensions
+-# c99   - ISO C99 standard (not yet fully implemented)
+-# gnu99 - c99 plus GCC extensions
+-#CSTANDARD = -std=gnu99
++# Compiler flag to set the C/CPP Standard level.
++CSTANDARD = -std=gnu99
++CXXSTANDARD = -std=gnu++11
+ CDEBUG = -g$(DEBUG)
+ CWARN = -Wall -Wstrict-prototypes
+ CTUNING = -funsigned-char -funsigned-bitfields -fpack-struct \
+ 	-fshort-enums -w -ffunction-sections -fdata-sections \
++	-flto \
+ 	-DARDUINO=$(ARDUINO_VERSION)
+ ifneq ($(HARDWARE_MOTHERBOARD),)
+ CTUNING += -DMOTHERBOARD=${HARDWARE_MOTHERBOARD}
+@@ -397,8 +395,8 @@ endif
+ #CEXTRA = -Wa,-adhlns=$(<:.c=.lst)
+ CEXTRA = -fno-use-cxa-atexit
+ 
+-CFLAGS := $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING)
+-CXXFLAGS :=         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING)
++CFLAGS := $(CDEBUG) $(CDEFS) $(CINCS) -O$(OPT) $(CWARN) $(CEXTRA) $(CTUNING) $(CSTANDARD)
++CXXFLAGS :=         $(CDEFS) $(CINCS) -O$(OPT) -Wall    $(CEXTRA) $(CTUNING) $(CXXSTANDARD)
+ #ASFLAGS = -Wa,-adhlns=$(<:.S=.lst),-gstabs
+ LDFLAGS = -lm
+ 
+@@ -513,7 +511,7 @@ extcoff: $(TARGET).elf
+ 	# Link: create ELF output file from library.
+ $(BUILD_DIR)/$(TARGET).elf: $(OBJ) Configuration.h
+ 	$(Pecho) "  CXX   $@"
+-	$P $(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections -o $@ -L. $(OBJ) $(LDFLAGS)
++	$P $(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections,--relax -o $@ -L. $(OBJ) $(LDFLAGS)
+ 
+ $(BUILD_DIR)/%.o: %.c Configuration.h Configuration_adv.h $(MAKEFILE)
+ 	$(Pecho) "  CC    $<"
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 3c225b3..7cabc7a 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -4251,8 +4251,12 @@ inline void gcode_G28() {
+    *     S = Stows the probe if 1 (default=1)
+    */
+   inline void gcode_G30() {
+-    float X_probe_location = code_seen('X') ? code_value_axis_units(X_AXIS) : current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER;
+-    float Y_probe_location = code_seen('Y') ? code_value_axis_units(Y_AXIS) : current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++    float X_probe_location = code_seen('X') ? code_value_axis_units(X_AXIS) : current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER,
++          Y_probe_location = code_seen('Y') ? code_value_axis_units(Y_AXIS) : current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER;
++
++    float pos[XYZ] = { X_probe_location, Y_probe_location, LOGICAL_Z_POSITION(0) };
++    if (!position_is_reachable(pos, true)) return;
++
+     bool stow = code_seen('S') ? code_value_bool() : true;
+ 
+     // Disable leveling so the planner won't mess with us
+@@ -4262,17 +4266,14 @@ inline void gcode_G28() {
+ 
+     setup_for_endstop_or_probe_move();
+ 
+-    float measured_z = probe_pt(X_probe_location,
+-                                Y_probe_location,
+-                                stow, 1);
++    float measured_z = probe_pt(X_probe_location, Y_probe_location, stow, 1);
+ 
+     SERIAL_PROTOCOLPGM("Bed X: ");
+-    SERIAL_PROTOCOL(current_position[X_AXIS] + X_PROBE_OFFSET_FROM_EXTRUDER + 0.0001);
++    SERIAL_PROTOCOL(X_probe_location + 0.0001);
+     SERIAL_PROTOCOLPGM(" Y: ");
+-    SERIAL_PROTOCOL(current_position[Y_AXIS] + Y_PROBE_OFFSET_FROM_EXTRUDER + 0.0001);
++    SERIAL_PROTOCOL(Y_probe_location + 0.0001);
+     SERIAL_PROTOCOLPGM(" Z: ");
+-    SERIAL_PROTOCOL(measured_z + 0.0001);
+-    SERIAL_EOL;
++    SERIAL_PROTOCOLLN(measured_z + 0.0001);
+ 
+     clean_up_after_endstop_or_probe_move();
+ 
+

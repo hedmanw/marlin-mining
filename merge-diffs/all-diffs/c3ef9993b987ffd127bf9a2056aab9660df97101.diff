@@ -1,0 +1,2494 @@
+commit c3ef9993b987ffd127bf9a2056aab9660df97101 (from 96b2b3f4fe68e51730dc69accc40a73557f2c5ef)
+Merge: 96b2b3f e34f465
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 29 15:31:14 2016 -0700
+
+    Merge pull request #3625 from jbrazio/feature/print-counter
+    
+    Print job statistics
+
+diff --git a/.travis.yml b/.travis.yml
+index a2e58f2..fecb82a 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -139,7 +139,7 @@ script:
+   ### I2C PANELS ###
+   #
+   # LCD_I2C_SAINSMART_YWROBOT
+-  # Failing at the moment needs different library 
++  # Failing at the moment needs different library
+   #- restore_configs
+   #- opt_enable LCD_I2C_SAINSMART_YWROBOT
+   #- build_marlin
+@@ -199,6 +199,12 @@ script:
+   - opt_set_adv Z2_MAX_PIN 2
+   - build_marlin
+   #
++  # Test PRINTCOUNTER
++  #
++  - restore_configs
++  - opt_enable PRINTCOUNTER
++  - build_marlin
++  #
+   #
+   ######## Example Configurations ##############
+   #
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 37e5ea2..e0b9a2f 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -757,6 +757,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 110
+ #define ABS_PREHEAT_FAN_SPEED 0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index cc08d72..9cd13c9 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -65,7 +65,11 @@ typedef unsigned long millis_t;
+ 
+ #include "WString.h"
+ 
+-#include "stopwatch.h"
++#if ENABLED(PRINTCOUNTER)
++  #include "printcounter.h"
++#else
++  #include "stopwatch.h"
++#endif
+ 
+ #ifdef USBCON
+   #if ENABLED(BLUETOOTH)
+@@ -364,7 +368,11 @@ extern bool axis_homed[3]; // axis[n].is_homed
+ #endif
+ 
+ // Print job timer
+-extern Stopwatch print_job_timer;
++#if ENABLED(PRINTCOUNTER)
++  extern PrintCounter print_job_timer;
++#else
++  extern Stopwatch print_job_timer;
++#endif
+ 
+ // Handling multiple extruders pins
+ extern uint8_t active_extruder;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index eac4acf..18d69ca 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -137,6 +137,10 @@
+  * M33  - Get the longname version of a path
+  * M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+  * M48  - Measure Z_Probe repeatability. M48 [P # of points] [X position] [Y position] [V_erboseness #] [E_ngage Probe] [L # of legs of travel]
++ * M75  - Start the print job timer
++ * M76  - Pause the print job timer
++ * M77  - Stop the print job timer
++ * M78  - Show statistical information about the print jobs
+  * M80  - Turn on Power Supply
+  * M81  - Turn off Power Supply
+  * M82  - Set E codes absolute (default)
+@@ -327,7 +331,11 @@ static millis_t max_inactive_time = 0;
+ static millis_t stepper_inactive_time = (DEFAULT_STEPPER_DEACTIVE_TIME) * 1000UL;
+ 
+ // Print Job Timer
+-Stopwatch print_job_timer = Stopwatch();
++#if ENABLED(PRINTCOUNTER)
++  PrintCounter print_job_timer = PrintCounter();
++#else
++  Stopwatch print_job_timer = Stopwatch();
++#endif
+ 
+ static uint8_t target_extruder;
+ 
+@@ -4252,6 +4260,15 @@ inline void gcode_M77() {
+   print_job_timer.stop();
+ }
+ 
++#if ENABLED(PRINTCOUNTER)
++  /*+
++   * M78: Show print statistics
++   */
++  inline void gcode_M78() {
++    print_job_timer.showStats();
++  }
++#endif
++
+ /**
+  * M104: Set hot end temperature
+  */
+@@ -6641,6 +6658,12 @@ void process_next_command() {
+         gcode_M77();
+         break;
+ 
++      #if ENABLED(PRINTCOUNTER)
++        case 78: // Show print statistics
++          gcode_M78();
++          break;
++      #endif
++
+       #if ENABLED(M100_FREE_MEMORY_WATCHER)
+         case 100:
+           gcode_M100();
+@@ -7755,6 +7778,9 @@ void idle(
+   );
+   host_keepalive();
+   lcd_update();
++  #if ENABLED(PRINTCOUNTER)
++      print_job_timer.tick();
++  #endif
+ }
+ 
+ /**
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 017888c..1209c66 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -739,6 +739,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index d971dbb..b9201e5 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -748,6 +748,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 2f51a9b..6217383 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -750,6 +750,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP    110
+ #define ABS_PREHEAT_FAN_SPEED   0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 23a3767..ddd3edd 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -773,6 +773,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 60 // K8200: set back to 110 if you have an upgraded heatbed power supply
+ #define ABS_PREHEAT_FAN_SPEED 0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 5ce12bb..8010cd7 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -756,6 +756,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 110
+ #define ABS_PREHEAT_FAN_SPEED 0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 4c0d912..c9dada3 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -1,4 +1,4 @@
+-/**
++f/**
+  * Marlin 3D Printer Firmware
+  * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
+  *
+@@ -751,6 +751,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 110
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index e5e13c1..2acd5f3 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -764,6 +764,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 68f1cd9..0a6e093 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -777,6 +777,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 110
+ #define ABS_PREHEAT_FAN_SPEED 0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 390ede3..81db598 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -748,6 +748,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 4f23b13..c7d69f7 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -756,6 +756,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 110
+ #define ABS_PREHEAT_FAN_SPEED 0   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 50ebe27..0c77a11 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -885,6 +885,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index c84aeb3..6e76916 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -885,6 +885,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 63e2014..c047818 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -889,6 +889,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 0383059..c8093b1 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -882,6 +882,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 579999b..73e49c7 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -890,6 +890,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 77adce2..416765b 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -759,6 +759,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 4259148..65fd6aa 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -750,6 +750,19 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define ABS_PREHEAT_HPB_TEMP 100
+ #define ABS_PREHEAT_FAN_SPEED 255   // Insert Value between 0 and 255
+ 
++
++//
++// Print Counter
++//
++// When enabled Marlin will keep track of some print statistical data such as:
++//  - Total print jobs
++//  - Total successful print jobs
++//  - Total failed print jobs
++//  - Total time printing
++//
++// This information can be viewed by the M78 command.
++//#define PRINTCOUNTER
++
+ //=============================================================================
+ //============================= LCD and SD support ============================
+ //=============================================================================
+diff --git a/Marlin/printcounter.cpp b/Marlin/printcounter.cpp
+new file mode 100644
+index 0000000..59b8bc3
+--- /dev/null
++++ b/Marlin/printcounter.cpp
+@@ -0,0 +1,179 @@
++/*
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "Marlin.h"
++#include "printcounter.h"
++#include <avr/eeprom.h>
++
++PrintCounter::PrintCounter(): super() {
++  this->loadStats();
++}
++
++uint16_t PrintCounter::deltaDuration() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("deltaDuration"));
++  #endif
++
++  uint16_t tmp = this->lastDuration;
++  this->lastDuration = this->duration();
++  return this->lastDuration - tmp;
++}
++
++bool PrintCounter::isLoaded() {
++  return this->loaded;
++}
++
++void PrintCounter::initStats() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("initStats"));
++  #endif
++
++  this->loaded = true;
++  this->data = { 0, 0, 0, 0 };
++
++  this->saveStats();
++  eeprom_write_byte((uint8_t *) this->address, 0x16);
++}
++
++void PrintCounter::loadStats() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("loadStats"));
++  #endif
++
++  // Checks if the EEPROM block is initialized
++  if (eeprom_read_byte((uint8_t *) this->address) != 0x16) this->initStats();
++  else eeprom_read_block(&this->data, (void *)(this->address + sizeof(uint8_t)), sizeof(printStatistics));
++
++  this->loaded = true;
++}
++
++void PrintCounter::saveStats() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("saveStats"));
++  #endif
++
++  // Refuses to save data is object is not loaded
++  if (!this->isLoaded()) return;
++
++  eeprom_update_block(&this->data, (void *)(this->address + sizeof(uint8_t)), sizeof(printStatistics));
++}
++
++void PrintCounter::showStats() {
++  SERIAL_ECHOPGM("Print statistics: Total: ");
++  SERIAL_ECHO(this->data.totalPrints);
++
++  SERIAL_ECHOPGM(", Finished: ");
++  SERIAL_ECHO(this->data.finishedPrints);
++
++  SERIAL_ECHOPGM(", Failed: ");
++  SERIAL_ECHO(this->data.totalPrints - this->data.finishedPrints
++    - (this->isRunning() || this->isPaused()) ? 1 : 0); // Removes 1 from failures with an active counter
++
++  uint32_t t = this->data.printTime /60;
++  SERIAL_ECHOPGM(", Total print time: ");
++  SERIAL_ECHO(t / 60);
++
++  SERIAL_ECHOPGM("h ");
++  SERIAL_ECHO(t % 60);
++
++  SERIAL_ECHOPGM("min");
++
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    SERIAL_ECHOPGM(" (");
++    SERIAL_ECHO(this->data.printTime);
++    SERIAL_ECHOPGM(")");
++  #endif
++
++  // @todo longestPrint missing implementation
++  SERIAL_EOL;
++}
++
++void PrintCounter::tick() {
++  if (!this->isRunning()) return;
++
++  static uint32_t update_before = millis(),
++                  eeprom_before = millis();
++
++  uint32_t now = millis();
++
++  // Trying to get the amount of calculations down to the bare min
++  const static uint16_t i = this->updateInterval * 1000;
++
++  if (now - update_before >= i) {
++    #if ENABLED(DEBUG_PRINTCOUNTER)
++      PrintCounter::debug(PSTR("tick"));
++    #endif
++
++    uint16_t t = this->duration();;
++    this->data.printTime += this->deltaDuration();
++    update_before = now;
++  }
++
++  // Trying to get the amount of calculations down to the bare min
++  const static uint16_t j = this->saveInterval * 1000;
++
++  if (now - eeprom_before >= j) {
++    eeprom_before = now;
++    this->saveStats();
++  }
++}
++
++void PrintCounter::start() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("start"));
++  #endif
++
++  if (!this->isPaused()) this->data.totalPrints++;
++  super::start();
++}
++
++void PrintCounter::stop() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("stop"));
++  #endif
++
++  super::stop();
++  this->data.finishedPrints++;
++  this->data.printTime += this->deltaDuration();
++  this->saveStats();
++}
++
++void PrintCounter::reset() {
++  #if ENABLED(DEBUG_PRINTCOUNTER)
++    PrintCounter::debug(PSTR("stop"));
++  #endif
++
++  this->lastDuration = 0;
++  super::reset();
++}
++
++#if ENABLED(DEBUG_PRINTCOUNTER)
++
++  void PrintCounter::debug(const char func[]) {
++    if (DEBUGGING(INFO)) {
++      SERIAL_ECHOPGM("PrintCounter::");
++      serialprintPGM(func);
++      SERIAL_ECHOLNPGM("()");
++    }
++  }
++
++#endif
+diff --git a/Marlin/printcounter.h b/Marlin/printcounter.h
+new file mode 100644
+index 0000000..b44caee
+--- /dev/null
++++ b/Marlin/printcounter.h
+@@ -0,0 +1,154 @@
++/*
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef PRINTCOUNTER_H
++#define PRINTCOUNTER_H
++
++#include "macros.h"
++#include "stopwatch.h"
++
++// Print debug messages with M111 S2
++//#define DEBUG_PRINTCOUNTER
++
++struct printStatistics {    // 13 bytes
++  //const uint8_t magic;    // Magic header, it will always be 0x16
++  uint16_t totalPrints;     // Number of prints
++  uint16_t finishedPrints;  // Number of complete prints
++  uint32_t printTime;       // Total printing time
++  uint32_t longestPrint;    // Longest print job - not in use
++};
++
++class PrintCounter: public Stopwatch {
++  private:
++    typedef Stopwatch super;
++
++    printStatistics data;
++
++    /**
++     * @brief EEPROM address
++     * @details Defines the start offset address where the data is stored.
++     */
++    const uint16_t address = 0x32;
++
++    /**
++     * @brief Interval in seconds between counter updates
++     * @details This const value defines what will be the time between each
++     * accumulator update. This is different from the EEPROM save interval.
++     */
++    const uint16_t updateInterval = 10;
++
++    /**
++     * @brief Interval in seconds between EEPROM saves
++     * @details This const value defines what will be the time between each
++     * EEPROM save cycle, the development team recommends to set this value
++     * no lower than 3600 secs (1 hour).
++     */
++    const uint16_t saveInterval = 3600;
++
++    /**
++     * @brief Timestamp of the last call to deltaDuration()
++     * @details Stores the timestamp of the last deltaDuration(), this is
++     * required due to the updateInterval cycle.
++     */
++    uint16_t lastDuration;
++
++    /**
++     * @brief Stats were loaded from EERPROM
++     * @details If set to true it indicates if the statistical data was already
++     * loaded from the EEPROM.
++     */
++    bool loaded = false;
++
++  protected:
++    /**
++     * @brief dT since the last call
++     * @details Returns the elapsed time in seconds since the last call, this is
++     * used internally for print statistics accounting is not intended to be a
++     * user callable function.
++     */
++    uint16_t deltaDuration();
++
++  public:
++    /**
++     * @brief Class constructor
++     */
++    PrintCounter();
++
++    /**
++     * @brief Checks if Print Statistics has been loaded
++     * @details Returns true if the statistical data has been loaded.
++     * @return bool
++     */
++    bool isLoaded();
++
++    /**
++     * @brief Resets the Print Statistics
++     * @details Resets the statistics to zero and saves them to EEPROM creating
++     * also the magic header.
++     */
++    void initStats();
++
++    /**
++     * @brief Loads the Print Statistics
++     * @details Loads the statistics from EEPROM
++     */
++    void loadStats();
++
++    /**
++     * @brief Saves the Print Statistics
++     * @details Saves the statistics to EEPROM
++     */
++    void saveStats();
++
++    /**
++     * @brief Serial output the Print Statistics
++     * @details This function may change in the future, for now it directly
++     * prints the statistical data to serial.
++     */
++    void showStats();
++
++    /**
++     * @brief Loop function
++     * @details This function should be called at loop, it will take care of
++     * periodically save the statistical data to EEPROM and do time keeping.
++     */
++    void tick();
++
++    /**
++     * The following functions are being overridden
++     */
++    void start();
++    void stop();
++    void reset();
++
++    #if ENABLED(DEBUG_PRINTCOUNTER)
++
++      /**
++       * @brief Prints a debug message
++       * @details Prints a simple debug message "PrintCounter::function"
++       */
++      static void debug(const char func[]);
++
++    #endif
++};
++
++#endif // PRINTCOUNTER_H
+diff --git a/Marlin/stopwatch.cpp b/Marlin/stopwatch.cpp
+index f871af1..4a1344d 100644
+--- a/Marlin/stopwatch.cpp
++++ b/Marlin/stopwatch.cpp
+@@ -29,7 +29,7 @@ Stopwatch::Stopwatch() {
+ 
+ void Stopwatch::stop() {
+   #if ENABLED(DEBUG_STOPWATCH)
+-    debug(PSTR("stop"));
++    Stopwatch::debug(PSTR("stop"));
+   #endif
+ 
+   if (!this->isRunning()) return;
+@@ -40,7 +40,7 @@ void Stopwatch::stop() {
+ 
+ void Stopwatch::pause() {
+   #if ENABLED(DEBUG_STOPWATCH)
+-    debug(PSTR("pause"));
++    Stopwatch::debug(PSTR("pause"));
+   #endif
+ 
+   if (!this->isRunning()) return;
+@@ -51,7 +51,7 @@ void Stopwatch::pause() {
+ 
+ void Stopwatch::start() {
+   #if ENABLED(DEBUG_STOPWATCH)
+-    debug(PSTR("start"));
++    Stopwatch::debug(PSTR("start"));
+   #endif
+ 
+   if (this->isRunning()) return;
+@@ -65,7 +65,7 @@ void Stopwatch::start() {
+ 
+ void Stopwatch::reset() {
+   #if ENABLED(DEBUG_STOPWATCH)
+-    debug(PSTR("reset"));
++    Stopwatch::debug(PSTR("reset"));
+   #endif
+ 
+   this->state = STPWTCH_STOPPED;
+
+commit c3ef9993b987ffd127bf9a2056aab9660df97101 (from e34f4653ef8f762686bce7c5c0a406dc0fb902c3)
+Merge: 96b2b3f e34f465
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Apr 29 15:31:14 2016 -0700
+
+    Merge pull request #3625 from jbrazio/feature/print-counter
+    
+    Print job statistics
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 49b31d4..e0b9a2f 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -784,27 +784,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -860,7 +864,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b0e5769..18d69ca 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -4481,6 +4481,8 @@ inline void gcode_M109() {
+     #define TEMP_CONDITIONS (wants_to_cool ? isCoolingHotend(target_extruder) : isHeatingHotend(target_extruder))
+   #endif //TEMP_RESIDENCY_TIME > 0
+ 
++  KEEPALIVE_STATE(NOT_BUSY);
++
+   cancel_heatup = false;
+   millis_t now, next_temp_ms = 0;
+   do {
+@@ -4525,6 +4527,7 @@ inline void gcode_M109() {
+   } while (!cancel_heatup && TEMP_CONDITIONS);
+ 
+   LCD_MESSAGEPGM(MSG_HEATING_COMPLETE);
++  KEEPALIVE_STATE(IN_HANDLER);
+ }
+ 
+ #if HAS_TEMP_BED
+@@ -4558,6 +4561,7 @@ inline void gcode_M109() {
+     millis_t now, next_temp_ms = 0;
+ 
+     // Wait for temperature to come close enough
++    KEEPALIVE_STATE(NOT_BUSY);
+     do {
+       now = millis();
+       if (ELAPSED(now, next_temp_ms)) { //Print Temp Reading every 1 second while heating up.
+@@ -4597,6 +4601,7 @@ inline void gcode_M109() {
+ 
+     } while (!cancel_heatup && TEMP_BED_CONDITIONS);
+     LCD_MESSAGEPGM(MSG_BED_DONE);
++    KEEPALIVE_STATE(IN_HANDLER);
+   }
+ 
+ #endif // HAS_TEMP_BED
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 89b7757..70553f6 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -172,8 +172,8 @@
+ /**
+  * Required LCD language
+  */
+-#if DISABLED(DOGLCD) && ENABLED(ULTRA_LCD) && DISABLED(DISPLAY_CHARSET_HD44780_JAPAN) && DISABLED(DISPLAY_CHARSET_HD44780_WESTERN) && DISABLED(DISPLAY_CHARSET_HD44780_CYRILLIC)
+-  #error You must enable either DISPLAY_CHARSET_HD44780_JAPAN or DISPLAY_CHARSET_HD44780_WESTERN  or DISPLAY_CHARSET_HD44780_CYRILLIC for your LCD controller.
++#if DISABLED(DOGLCD) && ENABLED(ULTRA_LCD) && !defined(DISPLAY_CHARSET_HD44780)
++  #error You must set DISPLAY_CHARSET_HD44780 to JAPANESE, WESTERN or CYRILLIC for your LCD controller.
+ #endif
+ 
+ /**
+@@ -506,6 +506,8 @@
+   #error DISABLE_MAX_ENDSTOPS and DISABLE_MIN_ENDSTOPS deprecated. Use individual USE_*_PLUG options instead.
+ #elif ENABLED(Z_DUAL_ENDSTOPS) && !defined(Z2_USE_ENDSTOP)
+   #error Z_DUAL_ENDSTOPS settings are simplified. Just set Z2_USE_ENDSTOP to the endstop you want to repurpose for Z2
++#elif defined(LANGUAGE_INCLUDE)
++  #error LANGUAGE_INCLUDE has been replaced by LCD_LANGUAGE. Please update your configuration.
+ #endif
+ 
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/Version.h b/Marlin/Version.h
+index 893eb24..68f3f76 100644
+--- a/Marlin/Version.h
++++ b/Marlin/Version.h
+@@ -42,7 +42,7 @@
+  * here we define this default string as the date where the latest release
+  * version was tagged.
+  */
+-#define STRING_DISTRIBUTION_DATE "2016-04-24 12:00"
++#define STRING_DISTRIBUTION_DATE "2016-04-27 12:00"
+ 
+ /**
+  * @todo: Missing documentation block
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 0ecbbcb..3af19e1 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -37,7 +37,8 @@
+ #define DOGM_LCD_IMPLEMENTATION_H
+ 
+ /**
+- * Implementation of the LCD display routines for a DOGM128 graphic display. These are common LCD 128x64 pixel graphic displays.
++ * Implementation of the LCD display routines for a DOGM128 graphic display.
++ * These are common LCD 128x64 pixel graphic displays.
+  */
+ 
+ #if ENABLED(ULTIPANEL)
+@@ -91,13 +92,13 @@
+     #define FONT_MENU_NAME ISO10646_1_5x7
+   #endif
+ #else // SIMULATE_ROMFONT
+-  #if ENABLED(DISPLAY_CHARSET_HD44780_JAPAN)
++  #if DISPLAY_CHARSET_HD44780 == JAPANESE
+     #include "dogm_font_data_HD44780_J.h"
+     #define FONT_MENU_NAME HD44780_J_5x7
+-  #elif ENABLED(DISPLAY_CHARSET_HD44780_WESTERN)
++  #elif DISPLAY_CHARSET_HD44780 == WESTERN
+     #include "dogm_font_data_HD44780_W.h"
+     #define FONT_MENU_NAME HD44780_W_5x7
+-  #elif ENABLED(DISPLAY_CHARSET_HD44780_CYRILLIC)
++  #elif DISPLAY_CHARSET_HD44780 == CYRILLIC
+     #include "dogm_font_data_HD44780_C.h"
+     #define FONT_MENU_NAME HD44780_C_5x7
+   #else // fall-back
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 39f89f3..1209c66 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -766,27 +766,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -842,7 +846,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index 3707f72..8d072a3 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -750,27 +750,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -826,7 +830,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index d1ddfa2..b9201e5 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -775,27 +775,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -851,7 +855,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 7a3264b..6217383 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -777,27 +777,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -853,7 +857,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index c800fa0..ddd3edd 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -800,27 +800,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // K8200: for Display VM8201
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE     // K8200: for Display VM8201
+ 
+ //
+ // LCD TYPE
+@@ -876,7 +880,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 6d41b7e..8010cd7 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -783,27 +783,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -859,7 +863,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index d0e47bd..c9dada3 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -778,27 +778,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -854,7 +858,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 79f6839..2acd5f3 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -791,27 +791,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -867,7 +871,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 1351858..0a6e093 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -804,27 +804,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -880,7 +884,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 0e9cfd3..81db598 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -775,27 +775,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -851,7 +855,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 111f579..c7d69f7 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -783,27 +783,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -859,7 +863,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 4a31e15..0c77a11 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -912,27 +912,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -988,7 +992,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index c3d7b14..6e76916 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -912,27 +912,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -988,7 +992,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index fb38d6e..c047818 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -916,27 +916,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -992,7 +996,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 5236cf5..c8093b1 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -909,27 +909,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -985,7 +989,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 1c14c3f..73e49c7 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -917,27 +917,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -993,7 +997,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 17da23c..416765b 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -786,27 +786,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -862,7 +866,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 22b8908..65fd6aa 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -777,27 +777,31 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+ //    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
+ //
+-//#define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
++//#define LCD_LANGUAGE en
+ 
+-//
+-// LCD CHARACTER SET
+-//
+-// Choose ONE of the following charset options. This selection depends on
+-// your physical hardware, so it must match your character-based LCD.
+-//
+-// Note: This option is NOT applicable to graphical displays.
+-//
+-// To find out what type of display you have:
+-//  - Compile and upload with the language (above) set to 'test'
+-//  - Click the controller to view the LCD menu
+-//
+-// The LCD will display two lines from the upper half of the character set.
+-//
+-// See also https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
+-//
+-#define DISPLAY_CHARSET_HD44780_JAPAN        // this is the most common hardware
+-//#define DISPLAY_CHARSET_HD44780_WESTERN
+-//#define DISPLAY_CHARSET_HD44780_CYRILLIC
++/**
++ * LCD Character Set
++ *
++ * Note: This option is NOT applicable to Graphical Displays.
++ *
++ * All character-based LCD's provide ASCII plus one of these
++ * language extensions:
++ *
++ *  - JAPANESE ... the most common
++ *  - WESTERN  ... with more accented characters
++ *  - CYRILLIC ... for the Russian language
++ *
++ * To determine the language extension installed on your controller:
++ *
++ *  - Compile and upload with LCD_LANGUAGE set to 'test'
++ *  - Click the controller to view the LCD menu
++ *  - The LCD will display Japanese, Western, or Cyrillic text
++ *
++ * See https://github.com/MarlinFirmware/Marlin/wiki/LCD-Language
++ *
++ * :['JAPANESE','WESTERN','CYRILLIC']
++ */
++#define DISPLAY_CHARSET_HD44780 JAPANESE
+ 
+ //
+ // LCD TYPE
+@@ -853,7 +857,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //
+ // This option reverses the encoder direction for navigating LCD menus.
+-// By default CLOCKWISE == DOWN. With this enabled CLOCKWISE == UP.
++//
++//  If CLOCKWISE normally moves DOWN this makes it go UP.
++//  If CLOCKWISE normally moves UP this makes it go DOWN.
+ //
+ //#define REVERSE_MENU_DIRECTION
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index e9a30a2..179b1f7 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -25,8 +25,15 @@
+ 
+ #include "Configuration.h"
+ 
+-#define GENERATE_LANGUAGE_INCLUDE(M)  STRINGIFY_(language_##M.h)
++// Fallback if no language is set. DON'T CHANGE
++#ifndef LCD_LANGUAGE
++  #define LCD_LANGUAGE en
++#endif
+ 
++// For character-based LCD controllers (DISPLAY_CHARSET_HD44780)
++#define JAPANESE 1
++#define WESTERN  2
++#define CYRILLIC 3
+ 
+ // NOTE: IF YOU CHANGE LANGUAGE FILES OR MERGE A FILE WITH CHANGES
+ //
+@@ -58,11 +65,6 @@
+ // cn         Chinese
+ // cz         Czech
+ 
+-// fallback if no language is set, don't change
+-#ifndef LANGUAGE_INCLUDE
+-  #define LANGUAGE_INCLUDE GENERATE_LANGUAGE_INCLUDE(en)
+-#endif
+-
+ #if ENABLED(USE_AUTOMATIC_VERSIONING)
+   #include "_Version.h"
+ #else
+@@ -232,11 +234,11 @@
+ 
+ // LCD Menu Messages
+ 
+-#if DISABLED(DISPLAY_CHARSET_HD44780_JAPAN) && DISABLED(DISPLAY_CHARSET_HD44780_WESTERN) && DISABLED(DISPLAY_CHARSET_HD44780_CYRILLIC)
+-  #define DISPLAY_CHARSET_HD44780_JAPAN
+-#endif
++#define LANGUAGE_INCL_(M) STRINGIFY_(language_##M.h)
++#define LANGUAGE_INCL(M) LANGUAGE_INCL_(M)
++#define INCLUDE_LANGUAGE LANGUAGE_INCL(LCD_LANGUAGE)
+ 
+-#include LANGUAGE_INCLUDE
++#include INCLUDE_LANGUAGE
+ #include "language_en.h"
+ 
+ #endif //__LANGUAGE_H
+diff --git a/Marlin/utf_mapper.h b/Marlin/utf_mapper.h
+index 26e9777..22d5d40 100644
+--- a/Marlin/utf_mapper.h
++++ b/Marlin/utf_mapper.h
+@@ -40,7 +40,7 @@
+     #define MAPPER_ONE_TO_ONE
+   #endif
+ #else // SIMULATE_ROMFONT
+-  #if ENABLED(DISPLAY_CHARSET_HD44780_JAPAN)
++  #if DISPLAY_CHARSET_HD44780 == JAPANESE
+     #if ENABLED(MAPPER_C2C3)
+       const PROGMEM uint8_t utf_recode[] =
+            { // 0    1    2    3    4    5    6    7    8    9    a    b    c    d    e    f          This is fair for symbols
+@@ -77,7 +77,7 @@
+       #error( "Cyrillic on a japanese dsplay makes no sense. There are no matching symbols.");
+     #endif
+ 
+-  #elif ENABLED(DISPLAY_CHARSET_HD44780_WESTERN)
++  #elif DISPLAY_CHARSET_HD44780 == WESTERN
+     #if ENABLED(MAPPER_C2C3)
+       const PROGMEM uint8_t utf_recode[] =
+            { // 0    1    2    3    4    5    6    7    8    9    a    b    c    d    e    f   This is relative complete.
+@@ -111,28 +111,28 @@
+       #error( "Katakana on a western display makes no sense. There are no matching symbols." );
+     #endif
+ 
+-  #elif ENABLED(DISPLAY_CHARSET_HD44780_CYRILLIC)
++  #elif DISPLAY_CHARSET_HD44780 == CYRILLIC
+     #if ENABLED(MAPPER_D0D1)
+       #define MAPPER_D0D1_MOD
+       // it is a Russian alphabet translation
+       // except 0401 --> 0xa2 = Ё, 0451 --> 0xb5 = ё
+       const PROGMEM uint8_t utf_recode[] =
+              { 0x41,0xa0,0x42,0xa1,0xe0,0x45,0xa3,0xa4,   // unicode U+0400 to U+047f
+-  //            A   Б->Ё  B    Г    Д    E    Ж    З      // 0  Ѐ Ё Ђ Ѓ Є Ѕ І Ї
++             // A   Б->Ё  B    Г    Д    E    Ж    З      // 0  Ѐ Ё Ђ Ѓ Є Ѕ І Ї
+                0xa5,0xa6,0x4b,0xa7,0x4d,0x48,0x4f,0xa8,   //    Ј Љ Њ Ћ Ќ Ѝ Ў Џ
+-  //            И    Й    K    Л    M    H    O    П      // 1  А Б В Г Д Е Ж З
++             // И    Й    K    Л    M    H    O    П      // 1  А Б В Г Д Е Ж З
+                0x50,0x43,0x54,0xa9,0xaa,0x58,0xe1,0xab,   //    И Й К Л М Н О П
+-  //            P    C    T    У    Ф    X    Ч    ч      // 2  Р С Т У Ф Х Г Ч
++             // P    C    T    У    Ф    X    Ч    ч      // 2  Р С Т У Ф Х Г Ч
+                0xac,0xe2,0xad,0xae,0x62,0xaf,0xb0,0xb1,   //    Ш Щ Ъ Ы Ь Э Ю Я
+-  //            Ш    Щ    Ъ    Ы    b    Э    Ю    Я      // 3  а б в г д е ж з
++             // Ш    Щ    Ъ    Ы    b    Э    Ю    Я      // 3  а б в г д е ж з
+                0x61,0xb2,0xb3,0xb4,0xe3,0x65,0xb6,0xb7,   //    и й к л м н о п
+-  //            a   б->ё  в    г    д    e    ж    з      // 4  р с т у ф х ц ч
++             // a   б->ё  в    г    д    e    ж    з      // 4  р с т у ф х ц ч
+                0xb8,0xb9,0xba,0xbb,0xbc,0xbd,0x6f,0xbe,   //    ш щ ъ ы ь э ю я
+-  //            и    й    к    л    м    н    o    п      // 5  ѐ ё ђ ѓ є ѕ і ї
++             // и    й    к    л    м    н    o    п      // 5  ѐ ё ђ ѓ є ѕ і ї
+                0x70,0x63,0xbf,0x79,0xe4,0x78,0xe5,0xc0,   //    ј љ њ ћ ќ ѝ ў џ
+-  //            p    c    т    y    ф    x    ц    ч      // 6  Ѡ ѡ Ѣ ѣ Ѥ ѥ Ѧ ѧ
++             // p    c    т    y    ф    x    ц    ч      // 6  Ѡ ѡ Ѣ ѣ Ѥ ѥ Ѧ ѧ
+                0xc1,0xe6,0xc2,0xc3,0xc4,0xc5,0xc6,0xc7    //    Ѫ ѩ Ѫ ѫ Ѭ ѭ Ѯ ѯ
+-  //            ш    щ    ъ    ы    ь    э    ю    я      // 7  Ѱ ѱ Ѳ ѳ Ѵ ѵ Ѷ ѷ
++             // ш    щ    ъ    ы    ь    э    ю    я      // 7  Ѱ ѱ Ѳ ѳ Ѵ ѵ Ѷ ѷ
+              };                                           //    ѻ ѹ Ѻ ѻ Ѽ ѽ Ѿ ѿ
+     #elif ENABLED(MAPPER_C2C3)
+       #error( "Western languages on a cyrillic display makes no sense. There are no matching symbols." );
+@@ -140,8 +140,8 @@
+       #error( "Katakana on a cyrillic display makes no sense. There are no matching symbols." );
+     #endif
+   #else
+-    #error("Something went wrong in the selection of DISPLAY_CHARSET_HD44780's");
+-  #endif // DISPLAY_CHARSET_HD44780_CYRILLIC
++    #error("Something went wrong in the setting of DISPLAY_CHARSET_HD44780");
++  #endif // DISPLAY_CHARSET_HD44780
+ #endif // SIMULATE_ROMFONT
+ 
+ #if ENABLED(MAPPER_NON)
+diff --git a/README.md b/README.md
+index 85f8d65..0ced940 100644
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ <img align="top" width=175 src="Documentation/Logo/Marlin%20Logo%20GitHub.png" />
+  Additional documentation can be found in [The Marlin Wiki](https://github.com/MarlinFirmware/Marlin/wiki).
+ 
+-## Release Candidate -- Marlin 1.1.0-RC6 - 24 April 2016
++## Release Candidate -- Marlin 1.1.0-RCBugFix - 27 April 2016
+ 
+ __Not for production use – use with caution!__
+ 
+@@ -14,13 +14,13 @@ Future development (Marlin 1.2 and beyond) takes place in the [MarlinDev reposit
+ 
+ ## Recent Changes
+ - RCBugFix
+-  - Throw error if compiling with older versions (<1.60) of Arduino due to serious problems with outdated Arduino versions
+-  - Please upgrade your IDE at least to Arduino 1.6.0. Thanks.
+ 
+-- RC6 - 23 Apr 2016
++- RC6 - 24 Apr 2016
+   - Completed support for CoreXY / CoreXZ in planner
+   - Changes to positioning behavior
+   - Various issues fixed. More details pending.
++  - Throw error if compiling with older versions (<1.60) of Arduino due to serious problems with outdated Arduino versions
++  - Please upgrade your IDE at least to Arduino 1.6.0. Thanks.
+ 
+ - RC5 - 01 Apr 2016
+   - Warn if compiling with older versions (<1.50) of Arduino
+

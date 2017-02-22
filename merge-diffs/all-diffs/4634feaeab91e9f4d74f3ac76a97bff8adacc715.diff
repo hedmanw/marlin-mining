@@ -1,0 +1,1476 @@
+commit 4634feaeab91e9f4d74f3ac76a97bff8adacc715 (from 9bf87aac6a2cc18906816037124396033d69c32c)
+Merge: 9bf87aa 80277cc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Mar 19 01:43:54 2016 -0700
+
+    Merge pull request #3012 from thinkyhead/fix_command_injection
+    
+    Use a serial line buffer to prevent queue corruption
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 9917608..a7f20f1 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -227,8 +227,8 @@ extern bool Running;
+ inline bool IsRunning() { return  Running; }
+ inline bool IsStopped() { return !Running; }
+ 
+-bool enqueuecommand(const char* cmd); //put a single ASCII command at the end of the current buffer or return false when it is full
+-void enqueuecommands_P(const char* cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
++bool enqueue_and_echo_command(const char* cmd, bool say_ok=false); //put a single ASCII command at the end of the current buffer or return false when it is full
++void enqueue_and_echo_commands_P(const char* cmd); //put one or many ASCII commands at the end of the current buffer, read from flash
+ 
+ void prepare_arc_move(char isclockwise);
+ void clamp_to_software_endstops(float target[3]);
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2f2c557..984e263 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -276,9 +276,7 @@ const char echomagic[] PROGMEM = "echo:";
+ const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+ 
+ static bool relative_mode = false;  //Determines Absolute or Relative Coordinates
+-static char serial_char;
+ static int serial_count = 0;
+-static boolean comment_mode = false;
+ static char* seen_pointer; ///< A pointer to find chars in the command string (X, Y, Z, E, etc.)
+ const char* queued_commands_P = NULL; /* pointer to the current line in the active sequence of commands, or NULL when none */
+ const int sensitive_pins[] = SENSITIVE_PINS; ///< Sensitive pin list for M42
+@@ -409,9 +407,7 @@ static uint8_t target_extruder;
+   static bool filrunoutEnqueued = false;
+ #endif
+ 
+-#if ENABLED(SDSUPPORT)
+-  static bool fromsd[BUFSIZE];
+-#endif
++static bool send_ok[BUFSIZE];
+ 
+ #if HAS_SERVOS
+   Servo servo[NUM_SERVOS];
+@@ -487,29 +483,28 @@ extern "C" {
+ #endif //!SDSUPPORT
+ 
+ /**
+- * Inject the next command from the command queue, when possible
+- * Return false only if no command was pending
++ * Inject the next "immediate" command, when possible.
++ * Return true if any immediate commands remain to inject.
+  */
+ static bool drain_queued_commands_P() {
+-  if (!queued_commands_P) return false;
+-
+-  // Get the next 30 chars from the sequence of gcodes to run
+-  char cmd[30];
+-  strncpy_P(cmd, queued_commands_P, sizeof(cmd) - 1);
+-  cmd[sizeof(cmd) - 1] = '\0';
+-
+-  // Look for the end of line, or the end of sequence
+-  size_t i = 0;
+-  char c;
+-  while ((c = cmd[i]) && c != '\n') i++; // find the end of this gcode command
+-  cmd[i] = '\0';
+-  if (enqueuecommand(cmd)) {      // buffer was not full (else we will retry later)
+-    if (c)
+-      queued_commands_P += i + 1; // move to next command
+-    else
+-      queued_commands_P = NULL;   // will have no more commands in the sequence
++  if (queued_commands_P != NULL) {
++    // Get the next gcode to run
++    size_t i = 0;
++    char c;
++    while ((c = queued_commands_P[i++]) && c != '\n') { };
++    if (i > 1) {
++      char cmd[i];
++      strncpy_P(cmd, queued_commands_P, i - 1);
++      cmd[i - 1] = '\0';
++      if (enqueue_and_echo_command(cmd)) {      // buffer was not full (else we will retry later)
++        if (c)
++          queued_commands_P += i;     // move to next command
++        else
++          queued_commands_P = NULL;   // no more commands in the sequence
++      }
++    }
+   }
+-  return true;
++  return (queued_commands_P != NULL); // any more left to add?
+ }
+ 
+ /**
+@@ -517,32 +512,45 @@ static bool drain_queued_commands_P() {
+  * Aborts the current queue, if any.
+  * Note: drain_queued_commands_P() must be called repeatedly to drain the commands afterwards
+  */
+-void enqueuecommands_P(const char* pgcode) {
++void enqueue_and_echo_commands_P(const char* pgcode) {
+   queued_commands_P = pgcode;
+   drain_queued_commands_P(); // first command executed asap (when possible)
+ }
+ 
+ /**
+- * Copy a command directly into the main command buffer, from RAM.
+- *
+- * This is done in a non-safe way and needs a rework someday.
+- * Returns false if it doesn't add any command
++ * Once a new command is in the ring buffer, call this to commit it
+  */
+-bool enqueuecommand(const char* cmd) {
+-  if (*cmd == ';' || commands_in_queue >= BUFSIZE) return false;
+-
+-  // This is dangerous if a mixing of serial and this happens
+-  char* command = command_queue[cmd_queue_index_w];
+-  strcpy(command, cmd);
+-  SERIAL_ECHO_START;
+-  SERIAL_ECHOPGM(MSG_Enqueueing);
+-  SERIAL_ECHO(command);
+-  SERIAL_ECHOLNPGM("\"");
++inline void _commit_command(bool say_ok) {
++  send_ok[cmd_queue_index_w] = say_ok;
+   cmd_queue_index_w = (cmd_queue_index_w + 1) % BUFSIZE;
+   commands_in_queue++;
++}
++
++/**
++ * Copy a command directly into the main command buffer, from RAM.
++ * Returns true if successfully adds the command
++ */
++inline bool _enqueuecommand(const char* cmd, bool say_ok=false) {
++  if (*cmd == ';' || commands_in_queue >= BUFSIZE) return false;
++  strcpy(command_queue[cmd_queue_index_w], cmd);
++  _commit_command(say_ok);
+   return true;
+ }
+ 
++/**
++ * Enqueue with Serial Echo
++ */
++bool enqueue_and_echo_command(const char* cmd, bool say_ok/*=false*/) {
++  if (_enqueuecommand(cmd, say_ok)) {
++    SERIAL_ECHO_START;
++    SERIAL_ECHOPGM(MSG_Enqueueing);
++    SERIAL_ECHO(cmd);
++    SERIAL_ECHOLNPGM("\"");
++    return true;
++  }
++  return false;
++}
++
+ void setup_killpin() {
+   #if HAS_KILL
+     SET_INPUT(KILL_PIN);
+@@ -699,9 +707,8 @@ void setup() {
+   SERIAL_ECHOPGM(MSG_PLANNER_BUFFER_BYTES);
+   SERIAL_ECHOLN((int)sizeof(block_t)*BLOCK_BUFFER_SIZE);
+ 
+-  #if ENABLED(SDSUPPORT)
+-    for (int8_t i = 0; i < BUFSIZE; i++) fromsd[i] = false;
+-  #endif
++  // Send "ok" after commands by default
++  for (int8_t i = 0; i < BUFSIZE; i++) send_ok[i] = true;
+ 
+   // loads data from EEPROM if available else uses defaults (and resets step acceleration rate)
+   Config_RetrieveSettings();
+@@ -760,7 +767,7 @@ void setup() {
+  *  - Call LCD update
+  */
+ void loop() {
+-  if (commands_in_queue < BUFSIZE - 1) get_command();
++  if (commands_in_queue < BUFSIZE) get_command();
+ 
+   #if ENABLED(SDSUPPORT)
+     card.checkautostart(false);
+@@ -820,9 +827,12 @@ void gcode_line_error(const char* err, bool doFlush = true) {
+  */
+ void get_command() {
+ 
++  static char serial_line_buffer[MAX_CMD_SIZE];
++  static boolean serial_comment_mode = false;
++
+   if (drain_queued_commands_P()) return; // priority is given to non-serial commands
+ 
+-  #if ENABLED(NO_TIMEOUTS)
++  #if defined(NO_TIMEOUTS) && NO_TIMEOUTS > 0
+     static millis_t last_command_time = 0;
+     millis_t ms = millis();
+ 
+@@ -837,29 +847,21 @@ void get_command() {
+   //
+   while (commands_in_queue < BUFSIZE && MYSERIAL.available() > 0) {
+ 
+-    #if ENABLED(NO_TIMEOUTS)
+-      last_command_time = ms;
+-    #endif
+-
+-    serial_char = MYSERIAL.read();
++    char serial_char = MYSERIAL.read();
+ 
+     //
+-    // If the character ends the line, or the line is full...
++    // If the character ends the line
+     //
+-    if (serial_char == '\n' || serial_char == '\r' || serial_count >= MAX_CMD_SIZE - 1) {
++    if (serial_char == '\n' || serial_char == '\r') {
+ 
+-      // end of line == end of comment
+-      comment_mode = false;
++      serial_comment_mode = false; // end of line == end of comment
+ 
+       if (!serial_count) return; // empty lines just exit
+ 
+-      char* command = command_queue[cmd_queue_index_w];
+-      command[serial_count] = 0; // terminate string
++      serial_line_buffer[serial_count] = 0; // terminate string
++      serial_count = 0; //reset buffer
+ 
+-      // this item in the queue is not from sd
+-      #if ENABLED(SDSUPPORT)
+-        fromsd[cmd_queue_index_w] = false;
+-      #endif
++      char* command = serial_line_buffer;
+ 
+       while (*command == ' ') command++; // skip any leading spaces
+       char* npos = (*command == 'N') ? command : NULL; // Require the N parameter to start the line
+@@ -924,44 +926,56 @@ void get_command() {
+       // If command was e-stop process now
+       if (strcmp(command, "M112") == 0) kill(PSTR(MSG_KILLED));
+ 
+-      cmd_queue_index_w = (cmd_queue_index_w + 1) % BUFSIZE;
+-      commands_in_queue += 1;
++      #if defined(NO_TIMEOUTS) && NO_TIMEOUTS > 0
++        last_command_time = ms;
++      #endif
+ 
+-      serial_count = 0; //clear buffer
++      // Add the command to the queue
++      _enqueuecommand(serial_line_buffer, true);
++    }
++    else if (serial_count >= MAX_CMD_SIZE - 1) {
++      // Keep fetching, but ignore normal characters beyond the max length
++      // The command will be injected when EOL is reached
+     }
+     else if (serial_char == '\\') {  // Handle escapes
+-      if (MYSERIAL.available() > 0 && commands_in_queue < BUFSIZE) {
++      if (MYSERIAL.available() > 0) {
+         // if we have one more character, copy it over
+         serial_char = MYSERIAL.read();
+-        command_queue[cmd_queue_index_w][serial_count++] = serial_char;
++        serial_line_buffer[serial_count++] = serial_char;
+       }
+       // otherwise do nothing
+     }
+-    else { // its not a newline, carriage return or escape char
+-      if (serial_char == ';') comment_mode = true;
+-      if (!comment_mode) command_queue[cmd_queue_index_w][serial_count++] = serial_char;
++    else { // it's not a newline, carriage return or escape char
++      if (serial_char == ';') serial_comment_mode = true;
++      if (!serial_comment_mode) serial_line_buffer[serial_count++] = serial_char;
+     }
+-  }
++
++  } // queue has space, serial has data
+ 
+   #if ENABLED(SDSUPPORT)
+ 
+-    if (!card.sdprinting || serial_count) return;
++    static bool stop_buffering = false,
++                sd_comment_mode = false;
++
++    if (!card.sdprinting) return;
+ 
+     // '#' stops reading from SD to the buffer prematurely, so procedural macro calls are possible
+-    // if it occurs, stop_buffering is triggered and the buffer is ran dry.
++    // if it occurs, stop_buffering is triggered and the buffer is run dry.
+     // this character _can_ occur in serial com, due to checksums. however, no checksums are used in SD printing
+ 
+-    static bool stop_buffering = false;
+     if (commands_in_queue == 0) stop_buffering = false;
+ 
+-    while (!card.eof() && commands_in_queue < BUFSIZE && !stop_buffering) {
++    uint16_t sd_count = 0;
++    bool card_eof = card.eof();
++    while (commands_in_queue < BUFSIZE && !card_eof && !stop_buffering) {
+       int16_t n = card.get();
+-      serial_char = (char)n;
+-      if (serial_char == '\n' || serial_char == '\r' ||
+-          ((serial_char == '#' || serial_char == ':') && !comment_mode) ||
+-          serial_count >= (MAX_CMD_SIZE - 1) || n == -1
++      char sd_char = (char)n;
++      card_eof = card.eof();
++      if (card_eof || n == -1
++          || sd_char == '\n' || sd_char == '\r'
++          || ((sd_char == '#' || sd_char == ':') && !sd_comment_mode)
+       ) {
+-        if (card.eof()) {
++        if (card_eof) {
+           SERIAL_PROTOCOLLNPGM(MSG_FILE_PRINTED);
+           print_job_stop_ms = millis();
+           char time[30];
+@@ -974,24 +988,24 @@ void get_command() {
+           card.printingHasFinished();
+           card.checkautostart(true);
+         }
+-        if (serial_char == '#') stop_buffering = true;
++        if (sd_char == '#') stop_buffering = true;
+ 
+-        if (!serial_count) {
+-          comment_mode = false; //for new command
+-          return; //if empty line
+-        }
+-        command_queue[cmd_queue_index_w][serial_count] = 0; //terminate string
+-        // if (!comment_mode) {
+-        fromsd[cmd_queue_index_w] = true;
+-        commands_in_queue += 1;
+-        cmd_queue_index_w = (cmd_queue_index_w + 1) % BUFSIZE;
+-        // }
+-        comment_mode = false; //for new command
+-        serial_count = 0; //clear buffer
++        sd_comment_mode = false; //for new command
++
++        if (!sd_count) continue; //skip empty lines
++
++        command_queue[cmd_queue_index_w][sd_count] = '\0'; //terminate string
++        sd_count = 0; //clear buffer
++
++        _commit_command(false);
++      }
++      else if (sd_count >= MAX_CMD_SIZE - 1) {
++        // Keep fetching, but ignore normal characters beyond the max length
++        // The command will be injected when EOL is reached
+       }
+       else {
+-        if (serial_char == ';') comment_mode = true;
+-        if (!comment_mode) command_queue[cmd_queue_index_w][serial_count++] = serial_char;
++        if (sd_char == ';') sd_comment_mode = true;
++        if (!sd_comment_mode) command_queue[cmd_queue_index_w][sd_count++] = sd_char;
+       }
+     }
+ 
+@@ -2703,7 +2717,7 @@ inline void gcode_G28() {
+       case MeshStart:
+         mbl.reset();
+         probe_point = 0;
+-        enqueuecommands_P(PSTR("G28\nG29 S2"));
++        enqueue_and_echo_commands_P(PSTR("G28\nG29 S2"));
+         break;
+ 
+       case MeshNext:
+@@ -2742,7 +2756,7 @@ inline void gcode_G28() {
+           SERIAL_PROTOCOLLNPGM("Mesh probing done.");
+           probe_point = -1;
+           mbl.active = 1;
+-          enqueuecommands_P(PSTR("G28"));
++          enqueue_and_echo_commands_P(PSTR("G28"));
+         }
+         break;
+ 
+@@ -3264,7 +3278,7 @@ inline void gcode_G28() {
+           SERIAL_ECHOLNPGM(Z_PROBE_END_SCRIPT);
+         }
+       #endif
+-      enqueuecommands_P(PSTR(Z_PROBE_END_SCRIPT));
++      enqueue_and_echo_commands_P(PSTR(Z_PROBE_END_SCRIPT));
+       st_synchronize();
+     #endif
+ 
+@@ -3429,7 +3443,7 @@ inline void gcode_M17() {
+   }
+ 
+   /**
+-   * M23: Select a file
++   * M23: Open a file
+    */
+   inline void gcode_M23() {
+     card.openFile(current_command_args, true);
+@@ -5301,7 +5315,7 @@ inline void gcode_M428() {
+         SERIAL_ERRORLNPGM(MSG_ERR_M428_TOO_FAR);
+         LCD_ALERTMESSAGEPGM("Err: Too far!");
+         #if HAS_BUZZER
+-          enqueuecommands_P(PSTR("M300 S40 P200"));
++          enqueue_and_echo_commands_P(PSTR("M300 S40 P200"));
+         #endif
+         err = true;
+         break;
+@@ -5315,7 +5329,7 @@ inline void gcode_M428() {
+     sync_plan_position();
+     LCD_ALERTMESSAGEPGM("Offset applied.");
+     #if HAS_BUZZER
+-      enqueuecommands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
++      enqueue_and_echo_commands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
+     #endif
+   }
+ }
+@@ -6365,9 +6379,7 @@ void FlushSerialRequestResend() {
+ 
+ void ok_to_send() {
+   refresh_cmd_timeout();
+-  #if ENABLED(SDSUPPORT)
+-    if (fromsd[cmd_queue_index_r]) return;
+-  #endif
++  if (!send_ok[cmd_queue_index_r]) return;
+   SERIAL_PROTOCOLPGM(MSG_OK);
+   #if ENABLED(ADVANCED_OK)
+     char* p = command_queue[cmd_queue_index_r];
+@@ -7067,7 +7079,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+       filrunout();
+   #endif
+ 
+-  if (commands_in_queue < BUFSIZE - 1) get_command();
++  if (commands_in_queue < BUFSIZE) get_command();
+ 
+   millis_t ms = millis();
+ 
+@@ -7124,7 +7136,7 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+     const int HOME_DEBOUNCE_DELAY = 2500;
+     if (!READ(HOME_PIN)) {
+       if (!homeDebounceCount) {
+-        enqueuecommands_P(PSTR("G28"));
++        enqueue_and_echo_commands_P(PSTR("G28"));
+         LCD_MESSAGEPGM(MSG_AUTO_HOME);
+       }
+       if (homeDebounceCount < HOME_DEBOUNCE_DELAY)
+@@ -7250,7 +7262,7 @@ void kill(const char* lcd_msg) {
+   void filrunout() {
+     if (!filrunoutEnqueued) {
+       filrunoutEnqueued = true;
+-      enqueuecommands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
++      enqueue_and_echo_commands_P(PSTR(FILAMENT_RUNOUT_SCRIPT));
+       st_synchronize();
+     }
+   }
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index dbbbd55..e508190 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -243,6 +243,14 @@ void CardReader::release() {
+   cardOK = false;
+ }
+ 
++void CardReader::openAndPrintFile(const char *name) {
++  char cmd[4 + (FILENAME_LENGTH + 1) * MAX_DIR_DEPTH + 2]; // Room for "M23 ", names with slashes, a null, and one extra
++  sprintf_P(cmd, PSTR("M23 %s"), name);
++  for (char *c = &cmd[4]; *c; c++) *c = tolower(*c);
++  enqueue_and_echo_command(cmd);
++  enqueue_and_echo_commands_P(PSTR("M24"));
++}
++
+ void CardReader::startFileprint() {
+   if (cardOK)
+     sdprinting = true;
+@@ -500,10 +508,7 @@ void CardReader::checkautostart(bool force) {
+   while (root.readDir(p, NULL) > 0) {
+     for (int8_t i = 0; i < (int8_t)strlen((char*)p.name); i++) p.name[i] = tolower(p.name[i]);
+     if (p.name[9] != '~' && strncmp((char*)p.name, autoname, 5) == 0) {
+-      char cmd[4 + (FILENAME_LENGTH + 1) * (MAX_DIR_DEPTH) + 2];
+-      sprintf_P(cmd, PSTR("M23 %s"), autoname);
+-      enqueuecommand(cmd);
+-      enqueuecommands_P(PSTR("M24"));
++      openAndPrintFile(autoname);
+       found = true;
+     }
+   }
+@@ -589,7 +594,7 @@ void CardReader::printingHasFinished() {
+     sdprinting = false;
+     if (SD_FINISHED_STEPPERRELEASE) {
+       //finishAndDisableSteppers();
+-      enqueuecommands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++      enqueue_and_echo_commands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     }
+     autotempShutdown();
+   }
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 78f2d28..db68710 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -23,6 +23,7 @@ public:
+   void removeFile(char* name);
+   void closefile(bool store_location=false);
+   void release();
++  void openAndPrintFile(const char *name);
+   void startFileprint();
+   void pauseSDPrint();
+   void getStatus();
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 9806b8c..27f18eb 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -611,7 +611,7 @@ ISR(TIMER1_COMPA_vect) {
+     current_block = NULL;
+     plan_discard_current_block();
+     #ifdef SD_FINISHED_RELEASECOMMAND
+-      if ((cleaning_buffer_counter == 1) && (SD_FINISHED_STEPPERRELEASE)) enqueuecommands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++      if ((cleaning_buffer_counter == 1) && (SD_FINISHED_STEPPERRELEASE)) enqueue_and_echo_commands_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     #endif
+     cleaning_buffer_counter--;
+     OCR1A = 200;
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index e08dc93..d98c023 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -479,7 +479,7 @@ static void lcd_main_menu() {
+  */
+ void lcd_set_home_offsets() {
+   // M428 Command
+-  enqueuecommands_P(PSTR("M428"));
++  enqueue_and_echo_commands_P(PSTR("M428"));
+   lcd_return_to_status();
+ }
+ 
+@@ -1530,7 +1530,7 @@ menu_edit_type(unsigned long, long5, ftostr5, 0.01)
+     lcd_move_y();
+   }
+   static void reprapworld_keypad_move_home() {
+-    enqueuecommands_P((PSTR("G28"))); // move all axis home
++    enqueue_and_echo_commands_P((PSTR("G28"))); // move all axis home
+   }
+ #endif // REPRAPWORLD_KEYPAD
+ 
+@@ -1582,18 +1582,13 @@ void lcd_quick_feedback() {
+  */
+ static void menu_action_back(menuFunc_t func) { lcd_goto_menu(func); }
+ static void menu_action_submenu(menuFunc_t func) { lcd_save_previous_menu(); lcd_goto_menu(func); }
+-static void menu_action_gcode(const char* pgcode) { enqueuecommands_P(pgcode); }
++static void menu_action_gcode(const char* pgcode) { enqueue_and_echo_commands_P(pgcode); }
+ static void menu_action_function(menuFunc_t func) { (*func)(); }
+ 
+ #if ENABLED(SDSUPPORT)
+ 
+   static void menu_action_sdfile(const char* filename, char* longFilename) {
+-    char cmd[30];
+-    char* c;
+-    sprintf_P(cmd, PSTR("M23 %s"), filename);
+-    for (c = &cmd[4]; *c; c++) *c = tolower(*c);
+-    enqueuecommand(cmd);
+-    enqueuecommands_P(PSTR("M24"));
++    card.openAndPrintFile(filename);
+     lcd_return_to_status();
+   }
+ 
+@@ -2339,7 +2334,7 @@ char* ftostr52(const float& x) {
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+           line_to_current(Z_AXIS);
+           mbl.active = 1;
+-          enqueuecommands_P(PSTR("G28"));
++          enqueue_and_echo_commands_P(PSTR("G28"));
+           lcd_return_to_status();
+         }
+         else {
+@@ -2383,7 +2378,7 @@ char* ftostr52(const float& x) {
+   static void lcd_level_bed() {
+     axis_known_position[X_AXIS] = axis_known_position[Y_AXIS] = axis_known_position[Z_AXIS] = false;
+     mbl.reset();
+-    enqueuecommands_P(PSTR("G28"));
++    enqueue_and_echo_commands_P(PSTR("G28"));
+     lcdDrawUpdate = 2;
+     lcd_goto_menu(_lcd_level_bed_homing);
+   }
+
+commit 4634feaeab91e9f4d74f3ac76a97bff8adacc715 (from 80277cc9c8396337377bf01b4198f9b6da5a4d9a)
+Merge: 9bf87aa 80277cc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Mar 19 01:43:54 2016 -0700
+
+    Merge pull request #3012 from thinkyhead/fix_command_injection
+    
+    Use a serial line buffer to prevent queue corruption
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index bb17924..95cab20 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -269,6 +269,17 @@
+   #define Z_MAX_LENGTH (Z_MAX_POS - (Z_MIN_POS))
+ 
+   /**
++   * CoreXY and CoreXZ
++   */
++  #if ENABLED(COREXY)
++    #define CORE_AXIS_2 B_AXIS
++    #define CORE_AXIS_3 Z_AXIS
++  #elif ENABLED(COREXZ)
++    #define CORE_AXIS_2 C_AXIS
++    #define CORE_AXIS_3 Y_AXIS
++  #endif
++
++  /**
+    * SCARA
+    */
+   #if ENABLED(SCARA)
+@@ -315,6 +326,13 @@
+   #endif
+ 
+   /**
++   * Avoid double-negatives for enabling features
++   */
++  #if DISABLED(DISABLE_HOST_KEEPALIVE)
++    #define HOST_KEEPALIVE_FEATURE
++  #endif
++
++  /**
+    * MAX_STEP_FREQUENCY differs for TOSHIBA
+    */
+   #if ENABLED(CONFIG_STEPPERS_TOSHIBA)
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index c7f9ae0..bb8b8ba 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index debd9f0..691fc35 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 97ceb2a..a7f20f1 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -103,7 +103,11 @@ FORCE_INLINE void serialprintPGM(const char* str) {
+ 
+ void get_command();
+ 
+-void idle(); // the standard idle routine calls manage_inactivity(false)
++void idle(
++  #if ENABLED(FILAMENTCHANGEENABLE)
++    bool no_stepper_sleep=false  // pass true to keep steppers from disabling on timeout
++  #endif
++);
+ 
+ void manage_inactivity(bool ignore_stepper_queue = false);
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2097c3f..984e263 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -422,6 +422,26 @@ static bool send_ok[BUFSIZE];
+   int lpq_len = 20;
+ #endif
+ 
++#if ENABLED(HOST_KEEPALIVE_FEATURE)
++
++  // States for managing Marlin and host communication
++  // Marlin sends messages if blocked or busy
++  enum MarlinBusyState {
++    NOT_BUSY,           // Not in a handler
++    IN_HANDLER,         // Processing a GCode
++    IN_PROCESS,         // Known to be blocking command input (as in G29)
++    PAUSED_FOR_USER,    // Blocking pending any input
++    PAUSED_FOR_INPUT    // Blocking pending text input (concept)
++  };
++
++  static MarlinBusyState busy_state = NOT_BUSY;
++  static millis_t next_busy_signal_ms = -1;
++  #define KEEPALIVE_STATE(n) do{ busy_state = n; }while(0)
++#else
++  #define host_keepalive() ;
++  #define KEEPALIVE_STATE(n) ;
++#endif // HOST_KEEPALIVE_FEATURE
++
+ //===========================================================================
+ //================================ Functions ================================
+ //===========================================================================
+@@ -2144,6 +2164,35 @@ void unknown_command_error() {
+   SERIAL_ECHOPGM("\"\n");
+ }
+ 
++#if ENABLED(HOST_KEEPALIVE_FEATURE)
++
++  void host_keepalive() {
++    millis_t ms = millis();
++    if (busy_state != NOT_BUSY) {
++      if (ms < next_busy_signal_ms) return;
++      switch (busy_state) {
++        case NOT_BUSY:
++          break;
++        case IN_HANDLER:
++        case IN_PROCESS:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PROCESSING);
++          break;
++        case PAUSED_FOR_USER:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PAUSED_FOR_USER);
++          break;
++        case PAUSED_FOR_INPUT:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PAUSED_FOR_INPUT);
++          break;
++      }
++    }
++    next_busy_signal_ms = ms + 2000UL;
++  }
++
++#endif //HOST_KEEPALIVE_FEATURE
++
+ /**
+  * G0, G1: Coordinated movement of X Y Z E axes
+  */
+@@ -3233,6 +3282,8 @@ inline void gcode_G28() {
+       st_synchronize();
+     #endif
+ 
++    KEEPALIVE_STATE(IN_HANDLER);
++
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (marlin_debug_flags & DEBUG_LEVELING) {
+         SERIAL_ECHOLNPGM("<<< gcode_G29");
+@@ -3339,12 +3390,16 @@ inline void gcode_G92() {
+     refresh_cmd_timeout();
+     if (codenum > 0) {
+       codenum += previous_cmd_ms;  // wait until this time for a click
++      KEEPALIVE_STATE(PAUSED_FOR_USER);
+       while (millis() < codenum && !lcd_clicked()) idle();
++      KEEPALIVE_STATE(IN_HANDLER);
+       lcd_ignore_click(false);
+     }
+     else {
+       if (!lcd_detected()) return;
++      KEEPALIVE_STATE(PAUSED_FOR_USER);
+       while (!lcd_clicked()) idle();
++      KEEPALIVE_STATE(IN_HANDLER);
+     }
+     if (IS_SD_PRINTING)
+       LCD_MESSAGEPGM(MSG_RESUMING);
+@@ -4977,6 +5032,8 @@ inline void gcode_M303() {
+ 
+   if (e >=0 && e < EXTRUDERS)
+     target_extruder = e;
++
++  KEEPALIVE_STATE(NOT_BUSY);
+   PID_autotune(temp, e, c);
+ }
+ 
+@@ -5426,6 +5483,7 @@ inline void gcode_M503() {
+     delay(100);
+     LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+     millis_t next_tick = 0;
++    KEEPALIVE_STATE(WAIT_FOR_USER);
+     while (!lcd_clicked()) {
+       #if DISABLED(AUTO_FILAMENT_CHANGE)
+         millis_t ms = millis();
+@@ -5433,9 +5491,7 @@ inline void gcode_M503() {
+           lcd_quick_feedback();
+           next_tick = ms + 2500; // feedback every 2.5s while waiting
+         }
+-        manage_heater();
+-        manage_inactivity(true);
+-        lcd_update();
++        idle(true);
+       #else
+         current_position[E_AXIS] += AUTO_FILAMENT_CHANGE_LENGTH;
+         destination[E_AXIS] = current_position[E_AXIS];
+@@ -5443,6 +5499,7 @@ inline void gcode_M503() {
+         st_synchronize();
+       #endif
+     } // while(!lcd_clicked)
++    KEEPALIVE_STATE(IN_HANDLER);
+     lcd_quick_feedback(); // click sound feedback
+ 
+     #if ENABLED(AUTO_FILAMENT_CHANGE)
+@@ -5779,6 +5836,8 @@ void process_next_command() {
+   seen_pointer = current_command;
+   codenum = code_value_short();
+ 
++  KEEPALIVE_STATE(IN_HANDLER);
++
+   // Handle a known G, M, or T
+   switch (command_code) {
+     case 'G': switch (codenum) {
+@@ -6300,6 +6359,8 @@ void process_next_command() {
+     default: code_is_good = false;
+   }
+ 
++  KEEPALIVE_STATE(NOT_BUSY);
++
+ ExitUnknownCommand:
+ 
+   // Still unknown command? Throw an error
+@@ -6984,9 +7045,18 @@ void disable_all_steppers() {
+ /**
+  * Standard idle routine keeps the machine alive
+  */
+-void idle() {
++void idle(
++  #if ENABLED(FILAMENTCHANGEENABLE)
++    bool no_stepper_sleep/*=false*/
++  #endif
++) {
+   manage_heater();
+-  manage_inactivity();
++  manage_inactivity(
++    #if ENABLED(FILAMENTCHANGEENABLE)
++      no_stepper_sleep
++    #endif
++  );
++  host_keepalive();
+   lcd_update();
+ }
+ 
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 464a298..a96ae8b 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -32,8 +32,8 @@
+  * Babystepping
+  */
+ #if ENABLED(BABYSTEPPING)
+-  #if ENABLED(COREXY) && ENABLED(BABYSTEP_XY)
+-    #error BABYSTEPPING only implemented for Z axis on CoreXY.
++  #if DISABLED(ULTRA_LCD)
++    #error BABYSTEPPING requires an LCD controller.
+   #endif
+   #if ENABLED(SCARA)
+     #error BABYSTEPPING is not implemented for SCARA yet.
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 6c39772..c9d7e97 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -630,6 +630,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index 674025b..6f2cffa 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -627,6 +627,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index c4e3b22..97c9b03 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 8f69858..7fdec04 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -639,6 +639,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 5ed1b40..636c126 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 201a286..b8a920b 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -642,6 +642,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 493bb46..baa0358 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 9475225..45c104e 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -662,6 +662,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+@@ -701,6 +709,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define SD_CHECK_AND_RETRY // Use CRC checks and retries on the SD communication
+ //#define ENCODER_PULSES_PER_STEP 1 // Increase if you have a high resolution encoder
+ //#define ENCODER_STEPS_PER_MENU_ITEM 5 // Set according to ENCODER_PULSES_PER_STEP or your liking
++//#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ #define ULTIMAKERCONTROLLER // K8200: for Display VM8201 // as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+ //#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 18ee6d8..1d5d68d 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -375,7 +375,7 @@
+ #define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 9687dea..8c5a608 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 61d1df7..ce55421 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -642,6 +642,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index d1dfbd2..137b2ab 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index ebaf29c..2e56626 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -655,6 +655,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index d097fda..e6f3320 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 7067155..b6671fa 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -667,6 +667,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index e36317b..2a2b421 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -378,7 +378,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index f320e6c..7ca638c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -639,6 +639,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 5ed1b40..636c126 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 2fb0e1e..705b9c3 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 65e4285..4b15caa 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -769,6 +769,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index ba5bbfb..8fcb3cd 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -372,7 +372,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 11e7e63..84dc90a 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -769,6 +769,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 8990a26..996a380 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -372,7 +372,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index c65f5be..e43de5a 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -773,6 +773,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index e6f0d75..5be02da 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -371,7 +371,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index b3dfc27..b0755f5 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -764,6 +764,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index d0eb1fc..d5c1261 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -375,7 +375,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 987e353..ccda7a3 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -683,6 +683,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 18d4589..87c97a0 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 21229b2..43536fe 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -650,6 +650,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 96861bc..7da3979 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 229ff16..a8026d7 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -641,6 +641,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 0f56db9..a35bbe1 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -370,7 +370,7 @@
+ //#define BABYSTEPPING
+ #if ENABLED(BABYSTEPPING)
+   #define BABYSTEP_XY  //not only z, but also XY in the menu. more clutter, more functions
+-                       //not implemented for CoreXY and deltabots!
++                       //not implemented for deltabots!
+   #define BABYSTEP_INVERT_Z false  //true for inverse movements in Z
+   #define BABYSTEP_MULTIPLICATOR 1 //faster movements
+ #endif
+diff --git a/Marlin/language.h b/Marlin/language.h
+index e0fb3d9..3637bab 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -124,6 +124,9 @@
+ #define MSG_COUNT_A                         " Count A: "
+ #define MSG_ERR_KILLED                      "Printer halted. kill() called!"
+ #define MSG_ERR_STOPPED                     "Printer stopped due to errors. Fix the error and use M999 to restart. (Temperature is reset. Set it after restarting)"
++#define MSG_BUSY_PROCESSING                 "busy: processing"
++#define MSG_BUSY_PAUSED_FOR_USER            "busy: paused for user"
++#define MSG_BUSY_PAUSED_FOR_INPUT           "busy: paused for input"
+ #define MSG_RESEND                          "Resend: "
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index f579112..27f18eb 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -289,12 +289,6 @@ void checkHitEndstops() {
+   }
+ }
+ 
+-#if ENABLED(COREXY)
+-  #define CORE_AXIS_2 B_AXIS
+-#elif ENABLED(COREXZ)
+-  #define CORE_AXIS_2 C_AXIS
+-#endif
+-
+ void enable_endstops(bool check) { check_endstops = check; }
+ 
+ // Check endstops - Called from ISR!
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 1e2fbb3..d98c023 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -483,21 +483,47 @@ void lcd_set_home_offsets() {
+   lcd_return_to_status();
+ }
+ 
+-
+ #if ENABLED(BABYSTEPPING)
+ 
+-  static void _lcd_babystep(int axis, const char* msg) {
++  static void _lcd_babystep(const int axis, const char* msg) {
+     ENCODER_DIRECTION_NORMAL(); 
+     if (encoderPosition != 0) {
+-      babystepsTodo[axis] += (BABYSTEP_MULTIPLICATOR) * (int)encoderPosition;
+       encoderPosition = 0;
+       lcdDrawUpdate = 1;
++      int distance =  (int)encoderPosition * BABYSTEP_MULTIPLICATOR;
++      #if ENABLED(COREXY) || ENABLED(COREXZ)
++        #if ENABLED(BABYSTEP_XY)
++          switch(axis) {
++            case X_AXIS: // X on CoreXY and CoreXZ
++              babystepsTodo[A_AXIS] += distance * 2;
++              babystepsTodo[CORE_AXIS_2] += distance * 2;
++              break;
++            case CORE_AXIS_2: // Y on CoreXY, Z on CoreXZ
++              babystepsTodo[A_AXIS] += distance * 2;
++              babystepsTodo[CORE_AXIS_2] -= distance * 2;
++              break;
++            case CORE_AXIS_3: // Z on CoreXY, Y on CoreXZ
++              babystepsTodo[CORE_AXIS_3] += distance;
++              break;
++          }
++        #elif ENABLED(COREXZ)
++          babystepsTodo[A_AXIS] += distance * 2;
++          babystepsTodo[C_AXIS] -= distance * 2;
++        #else
++          babystepsTodo[Z_AXIS] += distance;
++        #endif
++      #else
++        babystepsTodo[axis] += distance;
++      #endif
+     }
+     if (lcdDrawUpdate) lcd_implementation_drawedit(msg, (char*)"");
+     if (LCD_CLICKED) lcd_goto_previous_menu();
+   }
+-  static void lcd_babystep_x() { _lcd_babystep(X_AXIS, PSTR(MSG_BABYSTEPPING_X)); }
+-  static void lcd_babystep_y() { _lcd_babystep(Y_AXIS, PSTR(MSG_BABYSTEPPING_Y)); }
++
++  #if ENABLED(BABYSTEP_XY)
++    static void lcd_babystep_x() { _lcd_babystep(X_AXIS, PSTR(MSG_BABYSTEPPING_X)); }
++    static void lcd_babystep_y() { _lcd_babystep(Y_AXIS, PSTR(MSG_BABYSTEPPING_Y)); }
++  #endif
+   static void lcd_babystep_z() { _lcd_babystep(Z_AXIS, PSTR(MSG_BABYSTEPPING_Z)); }
+ 
+ #endif //BABYSTEPPING
+

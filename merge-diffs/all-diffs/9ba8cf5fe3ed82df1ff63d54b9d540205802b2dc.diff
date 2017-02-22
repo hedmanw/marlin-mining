@@ -1,0 +1,169 @@
+commit 9ba8cf5fe3ed82df1ff63d54b9d540205802b2dc (from fd873c00c6adb0dd3f732f25bacce22e73b45347)
+Merge: fd873c0 873f7d6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 02:05:30 2015 -0700
+
+    Merge pull request #2061 from thinkyhead/wait_before_g28
+    
+    Always do st_synchronize() before G28
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 4703dbf..03531d1 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -21,6 +21,10 @@
+ #include "fastio.h"
+ #include "Configuration.h"
+ 
++#ifndef SANITYCHECK_H
++  #error Your Configuration.h and Configuration_adv.h files are outdated!
++#endif
++
+ #if (ARDUINO >= 100)
+   #include "Arduino.h"
+ #else
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 5517b8e..1e3d436 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1096,6 +1096,14 @@ inline void sync_plan_position() {
+ inline void set_current_to_destination() { memcpy(current_position, destination, sizeof(current_position)); }
+ inline void set_destination_to_current() { memcpy(destination, current_position, sizeof(destination)); }
+ 
++static void setup_for_endstop_move() {
++  saved_feedrate = feedrate;
++  saved_feedrate_multiplier = feedrate_multiplier;
++  feedrate_multiplier = 100;
++  refresh_cmd_timeout();
++  enable_endstops(true);
++}
++
+ #ifdef ENABLE_AUTO_BED_LEVELING
+ 
+   #ifdef DELTA
+@@ -1256,14 +1264,6 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     feedrate = oldFeedRate;
+   }
+ 
+-  static void setup_for_endstop_move() {
+-    saved_feedrate = feedrate;
+-    saved_feedrate_multiplier = feedrate_multiplier;
+-    feedrate_multiplier = 100;
+-    refresh_cmd_timeout();
+-    enable_endstops(true);
+-  }
+-
+   static void clean_up_after_endstop_move() {
+     #ifdef ENDSTOPS_ONLY_FOR_HOMING
+       enable_endstops(false);
+@@ -1845,6 +1845,9 @@ inline void gcode_G4() {
+  */
+ inline void gcode_G28() {
+ 
++  // Wait for planner moves to finish!
++  st_synchronize();
++
+   // For auto bed leveling, clear the level matrix
+   #ifdef ENABLE_AUTO_BED_LEVELING
+     plan_bed_level_matrix.set_to_identity();
+@@ -1859,12 +1862,7 @@ inline void gcode_G28() {
+     mbl.active = 0;
+   #endif
+ 
+-  saved_feedrate = feedrate;
+-  saved_feedrate_multiplier = feedrate_multiplier;
+-  feedrate_multiplier = 100;
+-  refresh_cmd_timeout();
+-
+-  enable_endstops(true);
++  setup_for_endstop_move();
+ 
+   set_destination_to_current();
+ 
+@@ -3150,8 +3148,6 @@ inline void gcode_M42() {
+ 
+     clean_up_after_endstop_move();
+ 
+-    // enable_endstops(true);
+-
+     if (verbose_level > 0) {
+       SERIAL_PROTOCOLPGM("Mean: ");
+       SERIAL_PROTOCOL_F(mean, 6);
+@@ -5739,25 +5735,22 @@ void mesh_plan_buffer_line(float x, float y, float z, const float e, float feed_
+ 
+ #ifdef PREVENT_DANGEROUS_EXTRUDE
+ 
+-  inline float prevent_dangerous_extrude(float &curr_e, float &dest_e) {
++  inline void prevent_dangerous_extrude(float &curr_e, float &dest_e) {
+     float de = dest_e - curr_e;
+     if (de) {
+       if (degHotend(active_extruder) < extrude_min_temp) {
+         curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+         SERIAL_ECHO_START;
+         SERIAL_ECHOLNPGM(MSG_ERR_COLD_EXTRUDE_STOP);
+-        return 0;
+       }
+       #ifdef PREVENT_LENGTHY_EXTRUDE
+         if (labs(de) > EXTRUDE_MAXLENGTH) {
+           curr_e = dest_e; // Behave as if the move really took place, but ignore E part
+           SERIAL_ECHO_START;
+           SERIAL_ECHOLNPGM(MSG_ERR_LONG_EXTRUDE_STOP);
+-          return 0;
+         }
+       #endif
+     }
+-    return de;
+   }
+ 
+ #endif // PREVENT_DANGEROUS_EXTRUDE
+
+commit 9ba8cf5fe3ed82df1ff63d54b9d540205802b2dc (from 873f7d6f2a81ec550072177ef52a024186a9d4a3)
+Merge: fd873c0 873f7d6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue May 12 02:05:30 2015 -0700
+
+    Merge pull request #2061 from thinkyhead/wait_before_g28
+    
+    Always do st_synchronize() before G28
+
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4bc2de8..29d7704 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -558,7 +558,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_min_both = z2_min_endstop && old_z2_min_endstop;
+             if ((z_min_both || z2_min_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+               if (!performing_homing || (performing_homing && z_min_both && z2_min_both)) //if not performing home or if both endstops were trigged during homing...
+                 step_events_completed = current_block->step_event_count;
+             }
+@@ -579,7 +579,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ 
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+@@ -613,7 +613,7 @@ ISR(TIMER1_COMPA_vect) {
+                 z2_max_both = z2_max_endstop && old_z2_max_endstop;
+             if ((z_max_both || z2_max_both) && current_block->steps[Z_AXIS] > 0) {
+               endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-              endstop_z_hit = true;
++              endstop_hit_bits |= BIT(Z_MIN);
+ 
+              // if (z_max_both) SERIAL_ECHOLN("z_max_endstop = true");
+              // if (z2_max_both) SERIAL_ECHOLN("z2_max_endstop = true");
+@@ -638,7 +638,7 @@ ISR(TIMER1_COMPA_vect) {
+           if(z_probe_endstop && old_z_probe_endstop)
+           {
+             endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_probe_hit=true;
++            endstop_hit_bits |= BIT(Z_PROBE);
+ //            if (z_probe_endstop && old_z_probe_endstop) SERIAL_ECHOLN("z_probe_endstop = true");
+           }
+           old_z_probe_endstop = z_probe_endstop;
+

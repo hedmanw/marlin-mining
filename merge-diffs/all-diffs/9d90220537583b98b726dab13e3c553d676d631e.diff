@@ -1,0 +1,4979 @@
+commit 9d90220537583b98b726dab13e3c553d676d631e (from 869cee74e6cdca8caccd281daf2f45cc8e1944b7)
+Merge: 869cee7 ff69e0a
+Author: Bernhard Kubicek <kubicek@gmx.at>
+Date:   Sat Nov 19 14:35:53 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.cpp b/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.cpp
+deleted file mode 100644
+index 4397efb..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.cpp	
++++ /dev/null
+@@ -1,303 +0,0 @@
+-/*
+-  HardwareSerial.cpp - Hardware serial library for Wiring
+-  Copyright (c) 2006 Nicholas Zambetti.  All right reserved.
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-  
+-  Modified 23 November 2006 by David A. Mellis
+-  Modified 28 September 2010 by Mark Sproul
+-*/
+-
+-#include <stdlib.h>
+-#include <stdio.h>
+-#include <string.h>
+-#include <inttypes.h>
+-#include "wiring.h"
+-#include "wiring_private.h"
+-
+-// this next line disables the entire HardwareSerial.cpp, 
+-// this is so I can support Attiny series and any other chip without a uart
+-#if defined(UBRRH) || defined(UBRR0H) || defined(UBRR1H) || defined(UBRR2H) || defined(UBRR3H)
+-
+-#include "HardwareSerial.h"
+-
+-// Define constants and variables for buffering incoming serial data.  We're
+-// using a ring buffer (I think), in which rx_buffer_head is the index of the
+-// location to which to write the next incoming character and rx_buffer_tail
+-// is the index of the location from which to read.
+-#if (RAMEND < 1000)
+-  #define RX_BUFFER_SIZE 32
+-#else
+-  #define RX_BUFFER_SIZE 128
+-#endif
+-
+-struct ring_buffer
+-{
+-  unsigned char buffer[RX_BUFFER_SIZE];
+-  int head;
+-  int tail;
+-};
+-
+-#if defined(UBRRH) || defined(UBRR0H)
+-  ring_buffer rx_buffer  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR1H)
+-  ring_buffer rx_buffer1  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR2H)
+-  ring_buffer rx_buffer2  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR3H)
+-  ring_buffer rx_buffer3  =  { { 0 }, 0, 0 };
+-#endif
+-
+-inline void store_char(unsigned char c, ring_buffer *rx_buffer)
+-{
+-  int i = (unsigned int)(rx_buffer->head + 1) % RX_BUFFER_SIZE;
+-
+-  // if we should be storing the received character into the location
+-  // just before the tail (meaning that the head would advance to the
+-  // current location of the tail), we're about to overflow the buffer
+-  // and so we don't write the character or advance the head.
+-  if (i != rx_buffer->tail) {
+-    rx_buffer->buffer[rx_buffer->head] = c;
+-    rx_buffer->head = i;
+-  }
+-}
+-
+-#if defined(USART_RX_vect)
+-  SIGNAL(USART_RX_vect)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8535
+-  #else
+-    #error UDR not defined
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_USART0_RECV) && defined(UDR0)
+-  SIGNAL(SIG_USART0_RECV)
+-  {
+-    unsigned char c  =  UDR0;
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_UART0_RECV) && defined(UDR0)
+-  SIGNAL(SIG_UART0_RECV)
+-  {
+-    unsigned char c  =  UDR0;
+-    store_char(c, &rx_buffer);
+-  }
+-//#elif defined(SIG_USART_RECV)
+-#elif defined(USART0_RX_vect)
+-  // fixed by Mark Sproul this is on the 644/644p
+-  //SIGNAL(SIG_USART_RECV)
+-  SIGNAL(USART0_RX_vect)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8, atmega32
+-  #else
+-    #error UDR not defined
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_UART_RECV)
+-  // this is for atmega8
+-  SIGNAL(SIG_UART_RECV)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;  //  atmega645
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(USBCON)
+-  #warning No interrupt handler for usart 0
+-  #warning Serial(0) is on USB interface
+-#else
+-  #error No interrupt handler for usart 0
+-#endif
+-
+-//#if defined(SIG_USART1_RECV)
+-#if defined(USART1_RX_vect)
+-  //SIGNAL(SIG_USART1_RECV)
+-  SIGNAL(USART1_RX_vect)
+-  {
+-    unsigned char c = UDR1;
+-    store_char(c, &rx_buffer1);
+-  }
+-#elif defined(SIG_USART1_RECV)
+-  #error SIG_USART1_RECV
+-#endif
+-
+-#if defined(USART2_RX_vect) && defined(UDR2)
+-  SIGNAL(USART2_RX_vect)
+-  {
+-    unsigned char c = UDR2;
+-    store_char(c, &rx_buffer2);
+-  }
+-#elif defined(SIG_USART2_RECV)
+-  #error SIG_USART2_RECV
+-#endif
+-
+-#if defined(USART3_RX_vect) && defined(UDR3)
+-  SIGNAL(USART3_RX_vect)
+-  {
+-    unsigned char c = UDR3;
+-    store_char(c, &rx_buffer3);
+-  }
+-#elif defined(SIG_USART3_RECV)
+-  #error SIG_USART3_RECV
+-#endif
+-
+-
+-
+-// Constructors ////////////////////////////////////////////////////////////////
+-
+-HardwareSerial::HardwareSerial(ring_buffer *rx_buffer,
+-  volatile uint8_t *ubrrh, volatile uint8_t *ubrrl,
+-  volatile uint8_t *ucsra, volatile uint8_t *ucsrb,
+-  volatile uint8_t *udr,
+-  uint8_t rxen, uint8_t txen, uint8_t rxcie, uint8_t udre, uint8_t u2x)
+-{
+-  _rx_buffer = rx_buffer;
+-  _ubrrh = ubrrh;
+-  _ubrrl = ubrrl;
+-  _ucsra = ucsra;
+-  _ucsrb = ucsrb;
+-  _udr = udr;
+-  _rxen = rxen;
+-  _txen = txen;
+-  _rxcie = rxcie;
+-  _udre = udre;
+-  _u2x = u2x;
+-}
+-
+-// Public Methods //////////////////////////////////////////////////////////////
+-
+-void HardwareSerial::begin(long baud)
+-{
+-  uint16_t baud_setting;
+-  bool use_u2x = true;
+-
+-#if F_CPU == 16000000UL
+-  // hardcoded exception for compatibility with the bootloader shipped
+-  // with the Duemilanove and previous boards and the firmware on the 8U2
+-  // on the Uno and Mega 2560.
+-  if (baud == 57600) {
+-    use_u2x = false;
+-  }
+-#endif
+-  
+-  if (use_u2x) {
+-    *_ucsra = 1 << _u2x;
+-    baud_setting = (F_CPU / 4 / baud - 1) / 2;
+-  } else {
+-    *_ucsra = 0;
+-    baud_setting = (F_CPU / 8 / baud - 1) / 2;
+-  }
+-
+-  // assign the baud_setting, a.k.a. ubbr (USART Baud Rate Register)
+-  *_ubrrh = baud_setting >> 8;
+-  *_ubrrl = baud_setting;
+-
+-  sbi(*_ucsrb, _rxen);
+-  sbi(*_ucsrb, _txen);
+-  sbi(*_ucsrb, _rxcie);
+-}
+-
+-void HardwareSerial::end()
+-{
+-  cbi(*_ucsrb, _rxen);
+-  cbi(*_ucsrb, _txen);
+-  cbi(*_ucsrb, _rxcie);  
+-}
+-
+-int HardwareSerial::available(void)
+-{
+-  return (unsigned int)(RX_BUFFER_SIZE + _rx_buffer->head - _rx_buffer->tail) % RX_BUFFER_SIZE;
+-}
+-
+-int HardwareSerial::peek(void)
+-{
+-  if (_rx_buffer->head == _rx_buffer->tail) {
+-    return -1;
+-  } else {
+-    return _rx_buffer->buffer[_rx_buffer->tail];
+-  }
+-}
+-
+-int HardwareSerial::read(void)
+-{
+-  // if the head isn't ahead of the tail, we don't have any characters
+-  if (_rx_buffer->head == _rx_buffer->tail) {
+-    return -1;
+-  } else {
+-    unsigned char c = _rx_buffer->buffer[_rx_buffer->tail];
+-    _rx_buffer->tail = (unsigned int)(_rx_buffer->tail + 1) % RX_BUFFER_SIZE;
+-    return c;
+-  }
+-}
+-
+-void HardwareSerial::flush()
+-{
+-  // don't reverse this or there may be problems if the RX interrupt
+-  // occurs after reading the value of rx_buffer_head but before writing
+-  // the value to rx_buffer_tail; the previous value of rx_buffer_head
+-  // may be written to rx_buffer_tail, making it appear as if the buffer
+-  // don't reverse this or there may be problems if the RX interrupt
+-  // occurs after reading the value of rx_buffer_head but before writing
+-  // the value to rx_buffer_tail; the previous value of rx_buffer_head
+-  // may be written to rx_buffer_tail, making it appear as if the buffer
+-  // were full, not empty.
+-  _rx_buffer->head = _rx_buffer->tail;
+-}
+-
+-void HardwareSerial::write(uint8_t c)
+-{
+-  while (!((*_ucsra) & (1 << _udre)))
+-    ;
+-
+-  *_udr = c;
+-}
+-
+-// Preinstantiate Objects //////////////////////////////////////////////////////
+-
+-#if defined(UBRRH) && defined(UBRRL)
+-  HardwareSerial Serial(&rx_buffer, &UBRRH, &UBRRL, &UCSRA, &UCSRB, &UDR, RXEN, TXEN, RXCIE, UDRE, U2X);
+-#elif defined(UBRR0H) && defined(UBRR0L)
+-  HardwareSerial Serial(&rx_buffer, &UBRR0H, &UBRR0L, &UCSR0A, &UCSR0B, &UDR0, RXEN0, TXEN0, RXCIE0, UDRE0, U2X0);
+-#elif defined(USBCON)
+-  #warning no serial port defined  (port 0)
+-#else
+-  #error no serial port defined  (port 0)
+-#endif
+-
+-#if defined(UBRR1H)
+-  HardwareSerial Serial1(&rx_buffer1, &UBRR1H, &UBRR1L, &UCSR1A, &UCSR1B, &UDR1, RXEN1, TXEN1, RXCIE1, UDRE1, U2X1);
+-#endif
+-#if defined(UBRR2H)
+-  HardwareSerial Serial2(&rx_buffer2, &UBRR2H, &UBRR2L, &UCSR2A, &UCSR2B, &UDR2, RXEN2, TXEN2, RXCIE2, UDRE2, U2X2);
+-#endif
+-#if defined(UBRR3H)
+-  HardwareSerial Serial3(&rx_buffer3, &UBRR3H, &UBRR3L, &UCSR3A, &UCSR3B, &UDR3, RXEN3, TXEN3, RXCIE3, UDRE3, U2X3);
+-#endif
+-
+-#endif // whole file
+-
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.h b/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.h
+deleted file mode 100644
+index 3efa775..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/HardwareSerial.h	
++++ /dev/null
+@@ -1,76 +0,0 @@
+-/*
+-  HardwareSerial.h - Hardware serial library for Wiring
+-  Copyright (c) 2006 Nicholas Zambetti.  All right reserved.
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-
+-  Modified 28 September 2010 by Mark Sproul
+-*/
+-
+-#ifndef HardwareSerial_h
+-#define HardwareSerial_h
+-
+-#include <inttypes.h>
+-
+-#include "Stream.h"
+-
+-struct ring_buffer;
+-
+-class HardwareSerial : public Stream
+-{
+-  private:
+-    ring_buffer *_rx_buffer;
+-    volatile uint8_t *_ubrrh;
+-    volatile uint8_t *_ubrrl;
+-    volatile uint8_t *_ucsra;
+-    volatile uint8_t *_ucsrb;
+-    volatile uint8_t *_udr;
+-    uint8_t _rxen;
+-    uint8_t _txen;
+-    uint8_t _rxcie;
+-    uint8_t _udre;
+-    uint8_t _u2x;
+-  public:
+-    HardwareSerial(ring_buffer *rx_buffer,
+-      volatile uint8_t *ubrrh, volatile uint8_t *ubrrl,
+-      volatile uint8_t *ucsra, volatile uint8_t *ucsrb,
+-      volatile uint8_t *udr,
+-      uint8_t rxen, uint8_t txen, uint8_t rxcie, uint8_t udre, uint8_t u2x);
+-    void begin(long);
+-    void end();
+-    virtual int available(void);
+-    virtual int peek(void);
+-    virtual int read(void);
+-    virtual void flush(void);
+-    virtual void write(uint8_t);
+-    using Print::write; // pull in write(str) and write(buf, size) from Print
+-};
+-
+-#if defined(UBRRH) || defined(UBRR0H)
+-  extern HardwareSerial Serial;
+-#elif defined(USBCON)
+-  #include "usb_api.h"
+-#endif
+-#if defined(UBRR1H)
+-  extern HardwareSerial Serial1;
+-#endif
+-#if defined(UBRR2H)
+-  extern HardwareSerial Serial2;
+-#endif
+-#if defined(UBRR3H)
+-  extern HardwareSerial Serial3;
+-#endif
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/Print.cpp b/Marlin/Sanguino/cores/Copy of arduino/Print.cpp
+deleted file mode 100644
+index 4ee556d..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/Print.cpp	
++++ /dev/null
+@@ -1,220 +0,0 @@
+-/*
+- Print.cpp - Base class that provides print() and println()
+- Copyright (c) 2008 David A. Mellis.  All right reserved.
+- 
+- This library is free software; you can redistribute it and/or
+- modify it under the terms of the GNU Lesser General Public
+- License as published by the Free Software Foundation; either
+- version 2.1 of the License, or (at your option) any later version.
+- 
+- This library is distributed in the hope that it will be useful,
+- but WITHOUT ANY WARRANTY; without even the implied warranty of
+- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- Lesser General Public License for more details.
+- 
+- You should have received a copy of the GNU Lesser General Public
+- License along with this library; if not, write to the Free Software
+- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+- 
+- Modified 23 November 2006 by David A. Mellis
+- */
+-
+-#include <stdlib.h>
+-#include <stdio.h>
+-#include <string.h>
+-#include <math.h>
+-#include "wiring.h"
+-
+-#include "Print.h"
+-
+-// Public Methods //////////////////////////////////////////////////////////////
+-
+-/* default implementation: may be overridden */
+-void Print::write(const char *str)
+-{
+-  while (*str)
+-    write(*str++);
+-}
+-
+-/* default implementation: may be overridden */
+-void Print::write(const uint8_t *buffer, size_t size)
+-{
+-  while (size--)
+-    write(*buffer++);
+-}
+-
+-void Print::print(const String &s)
+-{
+-  for (int i = 0; i < s.length(); i++) {
+-    write(s[i]);
+-  }
+-}
+-
+-void Print::print(const char str[])
+-{
+-  write(str);
+-}
+-
+-void Print::print(char c, int base)
+-{
+-  print((long) c, base);
+-}
+-
+-void Print::print(unsigned char b, int base)
+-{
+-  print((unsigned long) b, base);
+-}
+-
+-void Print::print(int n, int base)
+-{
+-  print((long) n, base);
+-}
+-
+-void Print::print(unsigned int n, int base)
+-{
+-  print((unsigned long) n, base);
+-}
+-
+-void Print::print(long n, int base)
+-{
+-  if (base == 0) {
+-    write(n);
+-  } else if (base == 10) {
+-    if (n < 0) {
+-      print('-');
+-      n = -n;
+-    }
+-    printNumber(n, 10);
+-  } else {
+-    printNumber(n, base);
+-  }
+-}
+-
+-void Print::print(unsigned long n, int base)
+-{
+-  if (base == 0) write(n);
+-  else printNumber(n, base);
+-}
+-
+-void Print::print(double n, int digits)
+-{
+-  printFloat(n, digits);
+-}
+-
+-void Print::println(void)
+-{
+-  print('\r');
+-  print('\n');  
+-}
+-
+-void Print::println(const String &s)
+-{
+-  print(s);
+-  println();
+-}
+-
+-void Print::println(const char c[])
+-{
+-  print(c);
+-  println();
+-}
+-
+-void Print::println(char c, int base)
+-{
+-  print(c, base);
+-  println();
+-}
+-
+-void Print::println(unsigned char b, int base)
+-{
+-  print(b, base);
+-  println();
+-}
+-
+-void Print::println(int n, int base)
+-{
+-  print(n, base);
+-  println();
+-}
+-
+-void Print::println(unsigned int n, int base)
+-{
+-  print(n, base);
+-  println();
+-}
+-
+-void Print::println(long n, int base)
+-{
+-  print(n, base);
+-  println();
+-}
+-
+-void Print::println(unsigned long n, int base)
+-{
+-  print(n, base);
+-  println();
+-}
+-
+-void Print::println(double n, int digits)
+-{
+-  print(n, digits);
+-  println();
+-}
+-
+-// Private Methods /////////////////////////////////////////////////////////////
+-
+-void Print::printNumber(unsigned long n, uint8_t base)
+-{
+-  unsigned char buf[8 * sizeof(long)]; // Assumes 8-bit chars. 
+-  unsigned long i = 0;
+-
+-  if (n == 0) {
+-    print('0');
+-    return;
+-  } 
+-
+-  while (n > 0) {
+-    buf[i++] = n % base;
+-    n /= base;
+-  }
+-
+-  for (; i > 0; i--)
+-    print((char) (buf[i - 1] < 10 ?
+-      '0' + buf[i - 1] :
+-      'A' + buf[i - 1] - 10));
+-}
+-
+-void Print::printFloat(double number, uint8_t digits) 
+-{ 
+-  // Handle negative numbers
+-  if (number < 0.0)
+-  {
+-     print('-');
+-     number = -number;
+-  }
+-
+-  // Round correctly so that print(1.999, 2) prints as "2.00"
+-  double rounding = 0.5;
+-  for (uint8_t i=0; i<digits; ++i)
+-    rounding /= 10.0;
+-  
+-  number += rounding;
+-
+-  // Extract the integer part of the number and print it
+-  unsigned long int_part = (unsigned long)number;
+-  double remainder = number - (double)int_part;
+-  print(int_part);
+-
+-  // Print the decimal point, but only if there are digits beyond
+-  if (digits > 0)
+-    print("."); 
+-
+-  // Extract digits from the remainder one at a time
+-  while (digits-- > 0)
+-  {
+-    remainder *= 10.0;
+-    int toPrint = int(remainder);
+-    print(toPrint);
+-    remainder -= toPrint; 
+-  } 
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/Print.h b/Marlin/Sanguino/cores/Copy of arduino/Print.h
+deleted file mode 100644
+index b092ae5..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/Print.h	
++++ /dev/null
+@@ -1,66 +0,0 @@
+-/*
+-  Print.h - Base class that provides print() and println()
+-  Copyright (c) 2008 David A. Mellis.  All right reserved.
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-*/
+-
+-#ifndef Print_h
+-#define Print_h
+-
+-#include <inttypes.h>
+-#include <stdio.h> // for size_t
+-
+-#include "WString.h"
+-
+-#define DEC 10
+-#define HEX 16
+-#define OCT 8
+-#define BIN 2
+-#define BYTE 0
+-
+-class Print
+-{
+-  private:
+-    void printNumber(unsigned long, uint8_t);
+-    void printFloat(double, uint8_t);
+-  public:
+-    virtual void write(uint8_t) = 0;
+-    virtual void write(const char *str);
+-    virtual void write(const uint8_t *buffer, size_t size);
+-    
+-    void print(const String &);
+-    void print(const char[]);
+-    void print(char, int = BYTE);
+-    void print(unsigned char, int = BYTE);
+-    void print(int, int = DEC);
+-    void print(unsigned int, int = DEC);
+-    void print(long, int = DEC);
+-    void print(unsigned long, int = DEC);
+-    void print(double, int = 2);
+-
+-    void println(const String &s);
+-    void println(const char[]);
+-    void println(char, int = BYTE);
+-    void println(unsigned char, int = BYTE);
+-    void println(int, int = DEC);
+-    void println(unsigned int, int = DEC);
+-    void println(long, int = DEC);
+-    void println(unsigned long, int = DEC);
+-    void println(double, int = 2);
+-    void println(void);
+-};
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/Tone.cpp b/Marlin/Sanguino/cores/Copy of arduino/Tone.cpp
+deleted file mode 100644
+index 827fe49..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/Tone.cpp	
++++ /dev/null
+@@ -1,515 +0,0 @@
+-/* Tone.cpp
+-
+-  A Tone Generator Library
+-
+-  Written by Brett Hagman
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-
+-Version Modified By Date     Comments
+-------- ----------- -------- --------
+-0001    B Hagman    09/08/02 Initial coding
+-0002    B Hagman    09/08/18 Multiple pins
+-0003    B Hagman    09/08/18 Moved initialization from constructor to begin()
+-0004    B Hagman    09/09/26 Fixed problems with ATmega8
+-0005    B Hagman    09/11/23 Scanned prescalars for best fit on 8 bit timers
+-                    09/11/25 Changed pin toggle method to XOR
+-                    09/11/25 Fixed timer0 from being excluded
+-0006    D Mellis    09/12/29 Replaced objects with functions
+-
+-*************************************************/
+-
+-#include <avr/interrupt.h>
+-#include <avr/pgmspace.h>
+-#include <wiring.h>
+-#include <pins_arduino.h>
+-
+-#if defined(__AVR_ATmega8__)
+-#define TCCR2A TCCR2
+-#define TCCR2B TCCR2
+-#define COM2A1 COM21
+-#define COM2A0 COM20
+-#define OCR2A OCR2
+-#define TIMSK2 TIMSK
+-#define OCIE2A OCIE2
+-#define TIMER2_COMPA_vect TIMER2_COMP_vect
+-#define TIMSK1 TIMSK
+-#endif
+-
+-// timerx_toggle_count:
+-//  > 0 - duration specified
+-//  = 0 - stopped
+-//  < 0 - infinitely (until stop() method called, or new play() called)
+-
+-#if !defined(__AVR_ATmega8__)
+-volatile long timer0_toggle_count;
+-volatile uint8_t *timer0_pin_port;
+-volatile uint8_t timer0_pin_mask;
+-#endif
+-
+-volatile long timer1_toggle_count;
+-volatile uint8_t *timer1_pin_port;
+-volatile uint8_t timer1_pin_mask;
+-volatile long timer2_toggle_count;
+-volatile uint8_t *timer2_pin_port;
+-volatile uint8_t timer2_pin_mask;
+-
+-#if defined(__AVR_ATmega1280__)
+-volatile long timer3_toggle_count;
+-volatile uint8_t *timer3_pin_port;
+-volatile uint8_t timer3_pin_mask;
+-volatile long timer4_toggle_count;
+-volatile uint8_t *timer4_pin_port;
+-volatile uint8_t timer4_pin_mask;
+-volatile long timer5_toggle_count;
+-volatile uint8_t *timer5_pin_port;
+-volatile uint8_t timer5_pin_mask;
+-#endif
+-
+-
+-#if defined(__AVR_ATmega1280__)
+-
+-#define AVAILABLE_TONE_PINS 1
+-
+-const uint8_t PROGMEM tone_pin_to_timer_PGM[] = { 2 /*, 3, 4, 5, 1, 0 */ };
+-static uint8_t tone_pins[AVAILABLE_TONE_PINS] = { 255 /*, 255, 255, 255, 255, 255 */ };
+-
+-#elif defined(__AVR_ATmega8__)
+-
+-#define AVAILABLE_TONE_PINS 1
+-
+-const uint8_t PROGMEM tone_pin_to_timer_PGM[] = { 2 /*, 1 */ };
+-static uint8_t tone_pins[AVAILABLE_TONE_PINS] = { 255 /*, 255 */ };
+-
+-#else
+-
+-#define AVAILABLE_TONE_PINS 1
+-
+-// Leave timer 0 to last.
+-const uint8_t PROGMEM tone_pin_to_timer_PGM[] = { 2 /*, 1, 0 */ };
+-static uint8_t tone_pins[AVAILABLE_TONE_PINS] = { 255 /*, 255, 255 */ };
+-
+-#endif
+-
+-
+-
+-static int8_t toneBegin(uint8_t _pin)
+-{
+-  int8_t _timer = -1;
+-
+-  // if we're already using the pin, the timer should be configured.  
+-  for (int i = 0; i < AVAILABLE_TONE_PINS; i++) {
+-    if (tone_pins[i] == _pin) {
+-      return pgm_read_byte(tone_pin_to_timer_PGM + i);
+-    }
+-  }
+-  
+-  // search for an unused timer.
+-  for (int i = 0; i < AVAILABLE_TONE_PINS; i++) {
+-    if (tone_pins[i] == 255) {
+-      tone_pins[i] = _pin;
+-      _timer = pgm_read_byte(tone_pin_to_timer_PGM + i);
+-      break;
+-    }
+-  }
+-  
+-  if (_timer != -1)
+-  {
+-    // Set timer specific stuff
+-    // All timers in CTC mode
+-    // 8 bit timers will require changing prescalar values,
+-    // whereas 16 bit timers are set to either ck/1 or ck/64 prescalar
+-    switch (_timer)
+-    {
+-#if !defined(__AVR_ATmega8__)
+-      case 0:
+-        // 8 bit timer
+-        TCCR0A = 0;
+-        TCCR0B = 0;
+-        bitWrite(TCCR0A, WGM01, 1);
+-        bitWrite(TCCR0B, CS00, 1);
+-        timer0_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer0_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-#endif
+-
+-      case 1:
+-        // 16 bit timer
+-        TCCR1A = 0;
+-        TCCR1B = 0;
+-        bitWrite(TCCR1B, WGM12, 1);
+-        bitWrite(TCCR1B, CS10, 1);
+-        timer1_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer1_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-      case 2:
+-        // 8 bit timer
+-        TCCR2A = 0;
+-        TCCR2B = 0;
+-        bitWrite(TCCR2A, WGM21, 1);
+-        bitWrite(TCCR2B, CS20, 1);
+-        timer2_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer2_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-
+-#if defined(__AVR_ATmega1280__)
+-      case 3:
+-        // 16 bit timer
+-        TCCR3A = 0;
+-        TCCR3B = 0;
+-        bitWrite(TCCR3B, WGM32, 1);
+-        bitWrite(TCCR3B, CS30, 1);
+-        timer3_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer3_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-      case 4:
+-        // 16 bit timer
+-        TCCR4A = 0;
+-        TCCR4B = 0;
+-        bitWrite(TCCR4B, WGM42, 1);
+-        bitWrite(TCCR4B, CS40, 1);
+-        timer4_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer4_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-      case 5:
+-        // 16 bit timer
+-        TCCR5A = 0;
+-        TCCR5B = 0;
+-        bitWrite(TCCR5B, WGM52, 1);
+-        bitWrite(TCCR5B, CS50, 1);
+-        timer5_pin_port = portOutputRegister(digitalPinToPort(_pin));
+-        timer5_pin_mask = digitalPinToBitMask(_pin);
+-        break;
+-#endif
+-    }
+-  }
+-
+-  return _timer;
+-}
+-
+-
+-
+-// frequency (in hertz) and duration (in milliseconds).
+-
+-void tone(uint8_t _pin, unsigned int frequency, unsigned long duration)
+-{
+-  uint8_t prescalarbits = 0b001;
+-  long toggle_count = 0;
+-  uint32_t ocr = 0;
+-  int8_t _timer;
+-
+-  _timer = toneBegin(_pin);
+-
+-  if (_timer >= 0)
+-  {
+-    // Set the pinMode as OUTPUT
+-    pinMode(_pin, OUTPUT);
+-    
+-    // if we are using an 8 bit timer, scan through prescalars to find the best fit
+-    if (_timer == 0 || _timer == 2)
+-    {
+-      ocr = F_CPU / frequency / 2 - 1;
+-      prescalarbits = 0b001;  // ck/1: same for both timers
+-      if (ocr > 255)
+-      {
+-        ocr = F_CPU / frequency / 2 / 8 - 1;
+-        prescalarbits = 0b010;  // ck/8: same for both timers
+-
+-        if (_timer == 2 && ocr > 255)
+-        {
+-          ocr = F_CPU / frequency / 2 / 32 - 1;
+-          prescalarbits = 0b011;
+-        }
+-
+-        if (ocr > 255)
+-        {
+-          ocr = F_CPU / frequency / 2 / 64 - 1;
+-          prescalarbits = _timer == 0 ? 0b011 : 0b100;
+-
+-          if (_timer == 2 && ocr > 255)
+-          {
+-            ocr = F_CPU / frequency / 2 / 128 - 1;
+-            prescalarbits = 0b101;
+-          }
+-
+-          if (ocr > 255)
+-          {
+-            ocr = F_CPU / frequency / 2 / 256 - 1;
+-            prescalarbits = _timer == 0 ? 0b100 : 0b110;
+-            if (ocr > 255)
+-            {
+-              // can't do any better than /1024
+-              ocr = F_CPU / frequency / 2 / 1024 - 1;
+-              prescalarbits = _timer == 0 ? 0b101 : 0b111;
+-            }
+-          }
+-        }
+-      }
+-
+-#if !defined(__AVR_ATmega8__)
+-      if (_timer == 0)
+-        TCCR0B = prescalarbits;
+-      else
+-#endif
+-        TCCR2B = prescalarbits;
+-    }
+-    else
+-    {
+-      // two choices for the 16 bit timers: ck/1 or ck/64
+-      ocr = F_CPU / frequency / 2 - 1;
+-
+-      prescalarbits = 0b001;
+-      if (ocr > 0xffff)
+-      {
+-        ocr = F_CPU / frequency / 2 / 64 - 1;
+-        prescalarbits = 0b011;
+-      }
+-
+-      if (_timer == 1)
+-        TCCR1B = (TCCR1B & 0b11111000) | prescalarbits;
+-#if defined(__AVR_ATmega1280__)
+-      else if (_timer == 3)
+-        TCCR3B = (TCCR3B & 0b11111000) | prescalarbits;
+-      else if (_timer == 4)
+-        TCCR4B = (TCCR4B & 0b11111000) | prescalarbits;
+-      else if (_timer == 5)
+-        TCCR5B = (TCCR5B & 0b11111000) | prescalarbits;
+-#endif
+-
+-    }
+-    
+-
+-    // Calculate the toggle count
+-    if (duration > 0)
+-    {
+-      toggle_count = 2 * frequency * duration / 1000;
+-    }
+-    else
+-    {
+-      toggle_count = -1;
+-    }
+-
+-    // Set the OCR for the given timer,
+-    // set the toggle count,
+-    // then turn on the interrupts
+-    switch (_timer)
+-    {
+-
+-#if !defined(__AVR_ATmega8__)
+-      case 0:
+-        OCR0A = ocr;
+-        timer0_toggle_count = toggle_count;
+-        bitWrite(TIMSK0, OCIE0A, 1);
+-        break;
+-#endif
+-
+-      case 1:
+-        OCR1A = ocr;
+-        timer1_toggle_count = toggle_count;
+-        bitWrite(TIMSK1, OCIE1A, 1);
+-        break;
+-      case 2:
+-        OCR2A = ocr;
+-        timer2_toggle_count = toggle_count;
+-        bitWrite(TIMSK2, OCIE2A, 1);
+-        break;
+-
+-#if defined(__AVR_ATmega1280__)
+-      case 3:
+-        OCR3A = ocr;
+-        timer3_toggle_count = toggle_count;
+-        bitWrite(TIMSK3, OCIE3A, 1);
+-        break;
+-      case 4:
+-        OCR4A = ocr;
+-        timer4_toggle_count = toggle_count;
+-        bitWrite(TIMSK4, OCIE4A, 1);
+-        break;
+-      case 5:
+-        OCR5A = ocr;
+-        timer5_toggle_count = toggle_count;
+-        bitWrite(TIMSK5, OCIE5A, 1);
+-        break;
+-#endif
+-
+-    }
+-  }
+-}
+-
+-
+-void noTone(uint8_t _pin)
+-{
+-  int8_t _timer = -1;
+-  
+-  for (int i = 0; i < AVAILABLE_TONE_PINS; i++) {
+-    if (tone_pins[i] == _pin) {
+-      _timer = pgm_read_byte(tone_pin_to_timer_PGM + i);
+-      tone_pins[i] = 255;
+-    }
+-  }
+-  
+-  switch (_timer)
+-  {
+-#if defined(__AVR_ATmega8__)
+-    case 1:
+-      bitWrite(TIMSK1, OCIE1A, 0);
+-      break;
+-    case 2:
+-      bitWrite(TIMSK2, OCIE2A, 0);
+-      break;
+-
+-#else
+-    case 0:
+-      TIMSK0 = 0;
+-      break;
+-    case 1:
+-      TIMSK1 = 0;
+-      break;
+-    case 2:
+-      TIMSK2 = 0;
+-      break;
+-#endif
+-
+-#if defined(__AVR_ATmega1280__)
+-    case 3:
+-      TIMSK3 = 0;
+-      break;
+-    case 4:
+-      TIMSK4 = 0;
+-      break;
+-    case 5:
+-      TIMSK5 = 0;
+-      break;
+-#endif
+-  }
+-
+-  digitalWrite(_pin, 0);
+-}
+-
+-#if 0
+-#if !defined(__AVR_ATmega8__)
+-ISR(TIMER0_COMPA_vect)
+-{
+-  if (timer0_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer0_pin_port ^= timer0_pin_mask;
+-
+-    if (timer0_toggle_count > 0)
+-      timer0_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK0 = 0;   // disable the interrupt
+-    *timer0_pin_port &= ~(timer0_pin_mask);  // keep pin low after stop
+-  }
+-}
+-#endif
+-
+-
+-ISR(TIMER1_COMPA_vect)
+-{
+-  if (timer1_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer1_pin_port ^= timer1_pin_mask;
+-
+-    if (timer1_toggle_count > 0)
+-      timer1_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK1 = 0;   // disable the interrupt
+-    *timer1_pin_port &= ~(timer1_pin_mask);  // keep pin low after stop
+-  }
+-}
+-#endif
+-
+-
+-ISR(TIMER2_COMPA_vect)
+-{
+-
+-  if (timer2_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer2_pin_port ^= timer2_pin_mask;
+-
+-    if (timer2_toggle_count > 0)
+-      timer2_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK2 = 0;   // disable the interrupt
+-    *timer2_pin_port &= ~(timer2_pin_mask);  // keep pin low after stop
+-  }
+-}
+-
+-
+-
+-//#if defined(__AVR_ATmega1280__)
+-#if 0
+-
+-ISR(TIMER3_COMPA_vect)
+-{
+-  if (timer3_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer3_pin_port ^= timer3_pin_mask;
+-
+-    if (timer3_toggle_count > 0)
+-      timer3_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK3 = 0;   // disable the interrupt
+-    *timer3_pin_port &= ~(timer3_pin_mask);  // keep pin low after stop
+-  }
+-}
+-
+-ISR(TIMER4_COMPA_vect)
+-{
+-  if (timer4_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer4_pin_port ^= timer4_pin_mask;
+-
+-    if (timer4_toggle_count > 0)
+-      timer4_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK4 = 0;   // disable the interrupt
+-    *timer4_pin_port &= ~(timer4_pin_mask);  // keep pin low after stop
+-  }
+-}
+-
+-ISR(TIMER5_COMPA_vect)
+-{
+-  if (timer5_toggle_count != 0)
+-  {
+-    // toggle the pin
+-    *timer5_pin_port ^= timer5_pin_mask;
+-
+-    if (timer5_toggle_count > 0)
+-      timer5_toggle_count--;
+-  }
+-  else
+-  {
+-    TIMSK5 = 0;   // disable the interrupt
+-    *timer5_pin_port &= ~(timer5_pin_mask);  // keep pin low after stop
+-  }
+-}
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WCharacter.h b/Marlin/Sanguino/cores/Copy of arduino/WCharacter.h
+deleted file mode 100644
+index 79733b5..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WCharacter.h	
++++ /dev/null
+@@ -1,168 +0,0 @@
+-/*
+- WCharacter.h - Character utility functions for Wiring & Arduino
+- Copyright (c) 2010 Hernando Barragan.  All right reserved.
+- 
+- This library is free software; you can redistribute it and/or
+- modify it under the terms of the GNU Lesser General Public
+- License as published by the Free Software Foundation; either
+- version 2.1 of the License, or (at your option) any later version.
+- 
+- This library is distributed in the hope that it will be useful,
+- but WITHOUT ANY WARRANTY; without even the implied warranty of
+- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- Lesser General Public License for more details.
+- 
+- You should have received a copy of the GNU Lesser General Public
+- License along with this library; if not, write to the Free Software
+- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+- */
+-
+-#ifndef Character_h
+-#define Character_h
+-
+-#include <ctype.h>
+-
+-// WCharacter.h prototypes
+-inline boolean isAlphaNumeric(int c) __attribute__((always_inline));
+-inline boolean isAlpha(int c) __attribute__((always_inline));
+-inline boolean isAscii(int c) __attribute__((always_inline));
+-inline boolean isWhitespace(int c) __attribute__((always_inline));
+-inline boolean isControl(int c) __attribute__((always_inline));
+-inline boolean isDigit(int c) __attribute__((always_inline));
+-inline boolean isGraph(int c) __attribute__((always_inline));
+-inline boolean isLowerCase(int c) __attribute__((always_inline));
+-inline boolean isPrintable(int c) __attribute__((always_inline));
+-inline boolean isPunct(int c) __attribute__((always_inline));
+-inline boolean isSpace(int c) __attribute__((always_inline));
+-inline boolean isUpperCase(int c) __attribute__((always_inline));
+-inline boolean isHexadecimalDigit(int c) __attribute__((always_inline));
+-inline int toAscii(int c) __attribute__((always_inline));
+-inline int toLowerCase(int c) __attribute__((always_inline));
+-inline int toUpperCase(int c)__attribute__((always_inline));
+-
+-
+-// Checks for an alphanumeric character. 
+-// It is equivalent to (isalpha(c) || isdigit(c)).
+-inline boolean isAlphaNumeric(int c) 
+-{
+-  return ( isalnum(c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for an alphabetic character. 
+-// It is equivalent to (isupper(c) || islower(c)).
+-inline boolean isAlpha(int c)
+-{
+-  return ( isalpha(c) == 0 ? false : true);
+-}
+-
+-
+-// Checks whether c is a 7-bit unsigned char value 
+-// that fits into the ASCII character set.
+-inline boolean isAscii(int c)
+-{
+-  return ( isascii (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for a blank character, that is, a space or a tab.
+-inline boolean isWhitespace(int c)
+-{
+-  return ( isblank (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for a control character.
+-inline boolean isControl(int c)
+-{
+-  return ( iscntrl (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for a digit (0 through 9).
+-inline boolean isDigit(int c)
+-{
+-  return ( isdigit (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for any printable character except space.
+-inline boolean isGraph(int c)
+-{
+-  return ( isgraph (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for a lower-case character.
+-inline boolean isLowerCase(int c)
+-{
+-  return (islower (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for any printable character including space.
+-inline boolean isPrintable(int c)
+-{
+-  return ( isprint (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for any printable character which is not a space 
+-// or an alphanumeric character.
+-inline boolean isPunct(int c)
+-{
+-  return ( ispunct (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for white-space characters. For the avr-libc library, 
+-// these are: space, formfeed ('\f'), newline ('\n'), carriage 
+-// return ('\r'), horizontal tab ('\t'), and vertical tab ('\v').
+-inline boolean isSpace(int c)
+-{
+-  return ( isspace (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for an uppercase letter.
+-inline boolean isUpperCase(int c)
+-{
+-  return ( isupper (c) == 0 ? false : true);
+-}
+-
+-
+-// Checks for a hexadecimal digits, i.e. one of 0 1 2 3 4 5 6 7 
+-// 8 9 a b c d e f A B C D E F.
+-inline boolean isHexadecimalDigit(int c)
+-{
+-  return ( isxdigit (c) == 0 ? false : true);
+-}
+-
+-
+-// Converts c to a 7-bit unsigned char value that fits into the 
+-// ASCII character set, by clearing the high-order bits.
+-inline int toAscii(int c)
+-{
+-  return toascii (c);
+-}
+-
+-
+-// Warning:
+-// Many people will be unhappy if you use this function. 
+-// This function will convert accented letters into random 
+-// characters.
+-
+-// Converts the letter c to lower case, if possible.
+-inline int toLowerCase(int c)
+-{
+-  return tolower (c);
+-}
+-
+-
+-// Converts the letter c to upper case, if possible.
+-inline int toUpperCase(int c)
+-{
+-  return toupper (c);
+-}
+-
+-#endif
+\ No newline at end of file
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WConstants.h b/Marlin/Sanguino/cores/Copy of arduino/WConstants.h
+deleted file mode 100644
+index 3e19ac4..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WConstants.h	
++++ /dev/null
+@@ -1 +0,0 @@
+-#include "wiring.h"
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WInterrupts.c b/Marlin/Sanguino/cores/Copy of arduino/WInterrupts.c
+deleted file mode 100644
+index 6f3f0b1..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WInterrupts.c	
++++ /dev/null
+@@ -1,87 +0,0 @@
+-/* -*- mode: jde; c-basic-offset: 2; indent-tabs-mode: nil -*- */
+-
+-/*
+-  Part of the Wiring project - http://wiring.uniandes.edu.co
+-
+-  Copyright (c) 2004-05 Hernando Barragan
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-  
+-  Modified 24 November 2006 by David A. Mellis
+-*/
+-
+-#include <inttypes.h>
+-#include <avr/io.h>
+-#include <avr/interrupt.h>
+-#include <avr/pgmspace.h>
+-#include <stdio.h>
+-
+-#include "WConstants.h"
+-#include "wiring_private.h"
+-
+-volatile static voidFuncPtr intFunc[EXTERNAL_NUM_INTERRUPTS];
+-// volatile static voidFuncPtr twiIntFunc;
+-
+-void attachInterrupt(uint8_t interruptNum, void (*userFunc)(void), int mode)
+-{
+-	if(interruptNum < EXTERNAL_NUM_INTERRUPTS)
+-	{
+-		intFunc[interruptNum] = userFunc;
+-
+-		//clear the config for the change settings
+-		EICRA &= ~(B00000011 << (interruptNum * 2));
+-
+-		//set our mode.
+-		EICRA |= (mode << (interruptNum * 2));
+-
+-		// Enable the interrupt.
+-		EIMSK |= (1 << interruptNum);
+-	}
+-}
+-
+-void detachInterrupt(uint8_t interruptNum)
+-{
+-	if(interruptNum < EXTERNAL_NUM_INTERRUPTS)
+-	{
+-		// Disable the interrupt.
+-		EIMSK &= ~(1 << interruptNum);
+-
+-		intFunc[interruptNum] = 0;
+-	}
+-}
+-
+-ISR(INT0_vect) {
+-  if(intFunc[EXTERNAL_INT_0])
+-    intFunc[EXTERNAL_INT_0]();
+-}
+-
+-ISR(INT1_vect) {
+-  if(intFunc[EXTERNAL_INT_1])
+-    intFunc[EXTERNAL_INT_1]();
+-}
+-
+-ISR(INT2_vect) {
+-  if(intFunc[EXTERNAL_INT_2])
+-    intFunc[EXTERNAL_INT_2]();
+-}
+-
+-/*
+-SIGNAL(SIG_2WIRE_SERIAL) {
+-  if(twiIntFunc)
+-    twiIntFunc();
+-}
+-*/
+-
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WMath.cpp b/Marlin/Sanguino/cores/Copy of arduino/WMath.cpp
+deleted file mode 100644
+index 2120c4c..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WMath.cpp	
++++ /dev/null
+@@ -1,60 +0,0 @@
+-/* -*- mode: jde; c-basic-offset: 2; indent-tabs-mode: nil -*- */
+-
+-/*
+-  Part of the Wiring project - http://wiring.org.co
+-  Copyright (c) 2004-06 Hernando Barragan
+-  Modified 13 August 2006, David A. Mellis for Arduino - http://www.arduino.cc/
+-  
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-  
+-  $Id$
+-*/
+-
+-extern "C" {
+-  #include "stdlib.h"
+-}
+-
+-void randomSeed(unsigned int seed)
+-{
+-  if (seed != 0) {
+-    srandom(seed);
+-  }
+-}
+-
+-long random(long howbig)
+-{
+-  if (howbig == 0) {
+-    return 0;
+-  }
+-  return random() % howbig;
+-}
+-
+-long random(long howsmall, long howbig)
+-{
+-  if (howsmall >= howbig) {
+-    return howsmall;
+-  }
+-  long diff = howbig - howsmall;
+-  return random(diff) + howsmall;
+-}
+-
+-long map(long x, long in_min, long in_max, long out_min, long out_max)
+-{
+-  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+-}
+-
+-unsigned int makeWord(unsigned int w) { return w; }
+-unsigned int makeWord(unsigned char h, unsigned char l) { return (h << 8) | l; }
+\ No newline at end of file
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WProgram.h b/Marlin/Sanguino/cores/Copy of arduino/WProgram.h
+deleted file mode 100644
+index f73e760..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WProgram.h	
++++ /dev/null
+@@ -1,63 +0,0 @@
+-#ifndef WProgram_h
+-#define WProgram_h
+-
+-#include <stdlib.h>
+-#include <string.h>
+-#include <math.h>
+-
+-#include <avr/interrupt.h>
+-
+-#include "wiring.h"
+-
+-#ifdef __cplusplus
+-#include "WCharacter.h"
+-#include "WString.h"
+-#include "HardwareSerial.h"
+-
+-uint16_t makeWord(uint16_t w);
+-uint16_t makeWord(byte h, byte l);
+-
+-#define word(...) makeWord(__VA_ARGS__)
+-
+-unsigned long pulseIn(uint8_t pin, uint8_t state, unsigned long timeout = 1000000L);
+-
+-void tone(uint8_t _pin, unsigned int frequency, unsigned long duration = 0);
+-void noTone(uint8_t _pin);
+-
+-// WMath prototypes
+-long random(long);
+-long random(long, long);
+-void randomSeed(unsigned int);
+-long map(long, long, long, long, long);
+-
+-#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+-const static uint8_t A0 = 54;
+-const static uint8_t A1 = 55;
+-const static uint8_t A2 = 56;
+-const static uint8_t A3 = 57;
+-const static uint8_t A4 = 58;
+-const static uint8_t A5 = 59;
+-const static uint8_t A6 = 60;
+-const static uint8_t A7 = 61;
+-const static uint8_t A8 = 62;
+-const static uint8_t A9 = 63;
+-const static uint8_t A10 = 64;
+-const static uint8_t A11 = 65;
+-const static uint8_t A12 = 66;
+-const static uint8_t A13 = 67;
+-const static uint8_t A14 = 68;
+-const static uint8_t A15 = 69;
+-#else
+-const static uint8_t A0 = 14;
+-const static uint8_t A1 = 15;
+-const static uint8_t A2 = 16;
+-const static uint8_t A3 = 17;
+-const static uint8_t A4 = 18;
+-const static uint8_t A5 = 19;
+-const static uint8_t A6 = 20;
+-const static uint8_t A7 = 21;
+-#endif
+-
+-#endif
+-
+-#endif
+\ No newline at end of file
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WString.cpp b/Marlin/Sanguino/cores/Copy of arduino/WString.cpp
+deleted file mode 100644
+index db5a441..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WString.cpp	
++++ /dev/null
+@@ -1,443 +0,0 @@
+-/*
+-  WString.cpp - String library for Wiring & Arduino
+-  Copyright (c) 2009-10 Hernando Barragan.  All rights reserved.
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-*/
+-
+-#include <stdlib.h>
+-#include "WProgram.h"
+-#include "WString.h"
+-
+-
+-String::String( const char *value )
+-{
+-  if ( value == NULL )
+-    value = "";
+-  getBuffer( _length = strlen( value ) );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, value );
+-}
+-
+-String::String( const String &value )
+-{
+-  getBuffer( _length = value._length );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, value._buffer );
+-}
+-
+-String::String( const char value )
+-{
+-  _length = 1;
+-  getBuffer(1);
+-  if ( _buffer != NULL ) {
+-    _buffer[0] = value;
+-    _buffer[1] = 0;
+-  }
+-}
+-
+-String::String( const unsigned char value )
+-{
+-  _length = 1;
+-  getBuffer(1);
+-  if ( _buffer != NULL) {
+-    _buffer[0] = value;
+-    _buffer[1] = 0;
+-  }
+-}
+-
+-String::String( const int value, const int base )
+-{
+-  char buf[33];   
+-  itoa((signed long)value, buf, base);
+-  getBuffer( _length = strlen(buf) );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, buf );
+-}
+-
+-String::String( const unsigned int value, const int base )
+-{
+-  char buf[33];   
+-  ultoa((unsigned long)value, buf, base);
+-  getBuffer( _length = strlen(buf) );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, buf );
+-}
+-
+-String::String( const long value, const int base )
+-{
+-  char buf[33];   
+-  ltoa(value, buf, base);
+-  getBuffer( _length = strlen(buf) );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, buf );
+-}
+-
+-String::String( const unsigned long value, const int base )
+-{
+-  char buf[33];   
+-  ultoa(value, buf, 10);
+-  getBuffer( _length = strlen(buf) );
+-  if ( _buffer != NULL )
+-    strcpy( _buffer, buf );
+-}
+-
+-char String::charAt( unsigned int loc ) const
+-{
+-  return operator[]( loc );
+-}
+-
+-void String::setCharAt( unsigned int loc, const char aChar ) 
+-{
+-  if(_buffer == NULL) return;
+-  if(_length > loc) {
+-    _buffer[loc] = aChar;
+-  }
+-}
+-
+-int String::compareTo( const String &s2 ) const
+-{
+-  return strcmp( _buffer, s2._buffer );
+-}
+-
+-const String & String::concat( const String &s2 )
+-{
+-  return (*this) += s2;
+-}
+-
+-const String & String::operator=( const String &rhs )
+-{
+-  if ( this == &rhs )
+-    return *this;
+-
+-  if ( rhs._length > _length )
+-  {
+-    free(_buffer);
+-    getBuffer( rhs._length );
+-  }
+-  
+-  if ( _buffer != NULL ) {
+-    _length = rhs._length;
+-    strcpy( _buffer, rhs._buffer );
+-  }
+-  return *this;
+-}
+-
+-//const String & String::operator+=( const char aChar )
+-//{
+-//  if ( _length == _capacity )
+-//    doubleBuffer();
+-//
+-//  _buffer[ _length++ ] = aChar;
+-//  _buffer[ _length ] = '\0';
+-//  return *this;
+-//}
+-
+-const String & String::operator+=( const String &other )
+-{
+-  _length += other._length;
+-  if ( _length > _capacity )
+-  {
+-    char *temp = (char *)realloc(_buffer, _length + 1);
+-    if ( temp != NULL ) {
+-      _buffer = temp;
+-      _capacity = _length;
+-    } else {
+-      _length -= other._length;
+-      return *this;
+-    }
+-  }
+-  strcat( _buffer, other._buffer );
+-  return *this;
+-}
+-
+-
+-int String::operator==( const String &rhs ) const
+-{
+-  return ( _length == rhs._length && strcmp( _buffer, rhs._buffer ) == 0 );
+-}
+-
+-int String::operator!=( const String &rhs ) const
+-{
+-  return ( _length != rhs.length() || strcmp( _buffer, rhs._buffer ) != 0 );
+-}
+-
+-int String::operator<( const String &rhs ) const
+-{
+-  return strcmp( _buffer, rhs._buffer ) < 0;
+-}
+-
+-int String::operator>( const String &rhs ) const
+-{
+-  return strcmp( _buffer, rhs._buffer ) > 0;
+-}
+-
+-int String::operator<=( const String &rhs ) const
+-{
+-  return strcmp( _buffer, rhs._buffer ) <= 0;
+-}
+-
+-int String::operator>=( const String & rhs ) const
+-{
+-  return strcmp( _buffer, rhs._buffer ) >= 0;
+-}
+-
+-char & String::operator[]( unsigned int index )
+-{
+-  static char dummy_writable_char;
+-  if (index >= _length || !_buffer) {
+-    dummy_writable_char = 0;
+-    return dummy_writable_char;
+-  }
+-  return _buffer[ index ];
+-}
+-
+-char String::operator[]( unsigned int index ) const
+-{
+-  // need to check for valid index, to do later
+-  return _buffer[ index ];
+-}
+-
+-boolean String::endsWith( const String &s2 ) const
+-{
+-  if ( _length < s2._length )
+-    return 0;
+-
+-  return strcmp( &_buffer[ _length - s2._length], s2._buffer ) == 0;
+-}
+-
+-boolean String::equals( const String &s2 ) const
+-{
+-  return ( _length == s2._length && strcmp( _buffer,s2._buffer ) == 0 );
+-}
+-
+-boolean String::equalsIgnoreCase( const String &s2 ) const
+-{
+-  if ( this == &s2 )
+-    return true; //1;
+-  else if ( _length != s2._length )
+-    return false; //0;
+-
+-  return strcmp(toLowerCase()._buffer, s2.toLowerCase()._buffer) == 0;
+-}
+-
+-String String::replace( char findChar, char replaceChar )
+-{
+-  if ( _buffer == NULL ) return *this;
+-  String theReturn = _buffer;
+-  char* temp = theReturn._buffer;
+-  while( (temp = strchr( temp, findChar )) != 0 )
+-    *temp = replaceChar;
+-
+-  return theReturn;
+-}
+-
+-String String::replace( const String& match, const String& replace )
+-{
+-  if ( _buffer == NULL ) return *this;
+-  String temp = _buffer, newString;
+-
+-  int loc;
+-  while ( (loc = temp.indexOf( match )) != -1 )
+-  {
+-    newString += temp.substring( 0, loc );
+-    newString += replace;
+-    temp = temp.substring( loc + match._length );
+-  }
+-  newString += temp;  
+-  return newString;
+-}
+-
+-int String::indexOf( char temp ) const
+-{
+-  return indexOf( temp, 0 );
+-}
+-
+-int String::indexOf( char ch, unsigned int fromIndex ) const
+-{
+-  if ( fromIndex >= _length )
+-    return -1;
+-
+-  const char* temp = strchr( &_buffer[fromIndex], ch );
+-  if ( temp == NULL )
+-    return -1;
+-
+-  return temp - _buffer;
+-}
+-
+-int String::indexOf( const String &s2 ) const
+-{
+-  return indexOf( s2, 0 );
+-}
+-
+-int String::indexOf( const String &s2, unsigned int fromIndex ) const
+-{
+-  if ( fromIndex >= _length )
+-    return -1;
+-
+-  const char *theFind = strstr( &_buffer[ fromIndex ], s2._buffer );
+-
+-  if ( theFind == NULL )
+-    return -1;
+-
+-  return theFind - _buffer; // pointer subtraction
+-}
+-
+-int String::lastIndexOf( char theChar ) const
+-{
+-  return lastIndexOf( theChar, _length - 1 );
+-}
+-
+-int String::lastIndexOf( char ch, unsigned int fromIndex ) const
+-{
+-  if ( fromIndex >= _length )
+-    return -1;
+-
+-  char tempchar = _buffer[fromIndex + 1];
+-  _buffer[fromIndex + 1] = '\0';
+-  char* temp = strrchr( _buffer, ch );
+-  _buffer[fromIndex + 1] = tempchar;
+-
+-  if ( temp == NULL )
+-    return -1;
+-
+-  return temp - _buffer;
+-}
+-
+-int String::lastIndexOf( const String &s2 ) const
+-{
+-  return lastIndexOf( s2, _length - s2._length );
+-}
+-
+-int String::lastIndexOf( const String &s2, unsigned int fromIndex ) const
+-{
+-  // check for empty strings
+-  if ( s2._length == 0 || s2._length - 1 > fromIndex || fromIndex >= _length )
+-    return -1;
+-
+-  // matching first character
+-  char temp = s2[ 0 ];
+-
+-  for ( int i = fromIndex; i >= 0; i-- )
+-  {
+-    if ( _buffer[ i ] == temp && (*this).substring( i, i + s2._length ).equals( s2 ) )
+-    return i;
+-  }
+-  return -1;
+-}
+-
+-boolean String::startsWith( const String &s2 ) const
+-{
+-  if ( _length < s2._length )
+-    return 0;
+-
+-  return startsWith( s2, 0 );
+-}
+-
+-boolean String::startsWith( const String &s2, unsigned int offset ) const
+-{
+-  if ( offset > _length - s2._length )
+-    return 0;
+-
+-  return strncmp( &_buffer[offset], s2._buffer, s2._length ) == 0;
+-}
+-
+-String String::substring( unsigned int left ) const
+-{
+-  return substring( left, _length );
+-}
+-
+-String String::substring( unsigned int left, unsigned int right ) const
+-{
+-  if ( left > right )
+-  {
+-    int temp = right;
+-    right = left;
+-    left = temp;
+-  }
+-
+-  if ( right > _length )
+-  {
+-    right = _length;
+-  } 
+-
+-  char temp = _buffer[ right ];  // save the replaced character
+-  _buffer[ right ] = '\0';	
+-  String outPut = ( _buffer + left );  // pointer arithmetic
+-  _buffer[ right ] = temp;  //restore character
+-  return outPut;
+-}
+-
+-String String::toLowerCase() const
+-{
+-  String temp = _buffer;
+-
+-  for ( unsigned int i = 0; i < _length; i++ )
+-    temp._buffer[ i ] = (char)tolower( temp._buffer[ i ] );
+-  return temp;
+-}
+-
+-String String::toUpperCase() const
+-{
+-  String temp = _buffer;
+-
+-  for ( unsigned int i = 0; i < _length; i++ )
+-    temp._buffer[ i ] = (char)toupper( temp._buffer[ i ] );
+-  return temp;
+-}
+-
+-String String::trim() const
+-{
+-  if ( _buffer == NULL ) return *this;
+-  String temp = _buffer;
+-  unsigned int i,j;
+-
+-  for ( i = 0; i < _length; i++ )
+-  {
+-    if ( !isspace(_buffer[i]) )
+-      break;
+-  }
+-
+-  for ( j = temp._length - 1; j > i; j-- )
+-  {
+-    if ( !isspace(_buffer[j]) )
+-      break;
+-  }
+-
+-  return temp.substring( i, j + 1);
+-}
+-
+-void String::getBytes(unsigned char *buf, unsigned int bufsize)
+-{
+-  if (!bufsize || !buf) return;
+-  unsigned int len = bufsize - 1;
+-  if (len > _length) len = _length;
+-  strncpy((char *)buf, _buffer, len);
+-  buf[len] = 0;
+-}
+-
+-void String::toCharArray(char *buf, unsigned int bufsize)
+-{
+-  if (!bufsize || !buf) return;
+-  unsigned int len = bufsize - 1;
+-  if (len > _length) len = _length;
+-  strncpy(buf, _buffer, len);
+-  buf[len] = 0;
+-}
+-
+-
+-long String::toInt() {
+-  return atol(_buffer);
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/WString.h b/Marlin/Sanguino/cores/Copy of arduino/WString.h
+deleted file mode 100644
+index cadddb9..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/WString.h	
++++ /dev/null
+@@ -1,112 +0,0 @@
+-/*
+-  WString.h - String library for Wiring & Arduino
+-  Copyright (c) 2009-10 Hernando Barragan.  All right reserved.
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General Public
+-  License along with this library; if not, write to the Free Software
+-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+-*/
+-
+-#ifndef String_h
+-#define String_h
+-
+-//#include "WProgram.h"
+-#include <stdlib.h>
+-#include <string.h>
+-#include <ctype.h>
+-
+-class String
+-{
+-  public:
+-    // constructors
+-    String( const char *value = "" );
+-    String( const String &value );
+-    String( const char );
+-    String( const unsigned char );
+-    String( const int, const int base=10);
+-    String( const unsigned int, const int base=10 );
+-    String( const long, const int base=10 );
+-    String( const unsigned long, const int base=10 );
+-    ~String() { free(_buffer); _length = _capacity = 0;}     //added _length = _capacity = 0;
+-
+-    // operators
+-    const String & operator = ( const String &rhs );
+-    const String & operator +=( const String &rhs );
+-    //const String & operator +=( const char );
+-    int operator ==( const String &rhs ) const;
+-    int	operator !=( const String &rhs ) const;
+-    int	operator < ( const String &rhs ) const;
+-    int	operator > ( const String &rhs ) const;
+-    int	operator <=( const String &rhs ) const;
+-    int	operator >=( const String &rhs ) const;
+-    char operator []( unsigned int index ) const;
+-    char& operator []( unsigned int index );
+-    //operator const char *() const { return _buffer; }
+-    
+-    // general methods
+-    char charAt( unsigned int index ) const;
+-    int	compareTo( const String &anotherString ) const;
+-    unsigned char endsWith( const String &suffix ) const;
+-    unsigned char equals( const String &anObject ) const;
+-    unsigned char equalsIgnoreCase( const String &anotherString ) const;
+-    int	indexOf( char ch ) const;
+-    int	indexOf( char ch, unsigned int fromIndex ) const;
+-    int	indexOf( const String &str ) const;
+-    int	indexOf( const String &str, unsigned int fromIndex ) const;
+-    int	lastIndexOf( char ch ) const;
+-    int	lastIndexOf( char ch, unsigned int fromIndex ) const;
+-    int	lastIndexOf( const String &str ) const;
+-    int	lastIndexOf( const String &str, unsigned int fromIndex ) const;
+-    const unsigned int length( ) const { return _length; }
+-    void setCharAt(unsigned int index, const char ch);
+-    unsigned char startsWith( const String &prefix ) const;
+-    unsigned char startsWith( const String &prefix, unsigned int toffset ) const;
+-    String substring( unsigned int beginIndex ) const;
+-    String substring( unsigned int beginIndex, unsigned int endIndex ) const;
+-    String toLowerCase( ) const;
+-    String toUpperCase( ) const;
+-    String trim( ) const;
+-    void getBytes(unsigned char *buf, unsigned int bufsize);
+-    void toCharArray(char *buf, unsigned int bufsize);
+-    long toInt( );
+-    const String& concat( const String &str );
+-    String replace( char oldChar, char newChar );
+-    String replace( const String& match, const String& replace );
+-    friend String operator + ( String lhs, const String &rhs );
+-
+-  protected:
+-    char *_buffer;	     // the actual char array
+-    unsigned int _capacity;  // the array length minus one (for the '\0')
+-    unsigned int _length;    // the String length (not counting the '\0')
+-
+-    void getBuffer(unsigned int maxStrLen);
+-
+-  private:
+-
+-};
+-
+-// allocate buffer space
+-inline void String::getBuffer(unsigned int maxStrLen)
+-{
+-  _capacity = maxStrLen;
+-  _buffer = (char *) malloc(_capacity + 1);
+-  if (_buffer == NULL) _length = _capacity = 0;
+-}
+-
+-inline String operator+( String lhs, const String &rhs )
+-{
+-  return lhs += rhs;
+-}
+-
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/binary.h b/Marlin/Sanguino/cores/Copy of arduino/binary.h
+deleted file mode 100644
+index af14980..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/binary.h	
++++ /dev/null
+@@ -1,515 +0,0 @@
+-#ifndef Binary_h
+-#define Binary_h
+-
+-#define B0 0
+-#define B00 0
+-#define B000 0
+-#define B0000 0
+-#define B00000 0
+-#define B000000 0
+-#define B0000000 0
+-#define B00000000 0
+-#define B1 1
+-#define B01 1
+-#define B001 1
+-#define B0001 1
+-#define B00001 1
+-#define B000001 1
+-#define B0000001 1
+-#define B00000001 1
+-#define B10 2
+-#define B010 2
+-#define B0010 2
+-#define B00010 2
+-#define B000010 2
+-#define B0000010 2
+-#define B00000010 2
+-#define B11 3
+-#define B011 3
+-#define B0011 3
+-#define B00011 3
+-#define B000011 3
+-#define B0000011 3
+-#define B00000011 3
+-#define B100 4
+-#define B0100 4
+-#define B00100 4
+-#define B000100 4
+-#define B0000100 4
+-#define B00000100 4
+-#define B101 5
+-#define B0101 5
+-#define B00101 5
+-#define B000101 5
+-#define B0000101 5
+-#define B00000101 5
+-#define B110 6
+-#define B0110 6
+-#define B00110 6
+-#define B000110 6
+-#define B0000110 6
+-#define B00000110 6
+-#define B111 7
+-#define B0111 7
+-#define B00111 7
+-#define B000111 7
+-#define B0000111 7
+-#define B00000111 7
+-#define B1000 8
+-#define B01000 8
+-#define B001000 8
+-#define B0001000 8
+-#define B00001000 8
+-#define B1001 9
+-#define B01001 9
+-#define B001001 9
+-#define B0001001 9
+-#define B00001001 9
+-#define B1010 10
+-#define B01010 10
+-#define B001010 10
+-#define B0001010 10
+-#define B00001010 10
+-#define B1011 11
+-#define B01011 11
+-#define B001011 11
+-#define B0001011 11
+-#define B00001011 11
+-#define B1100 12
+-#define B01100 12
+-#define B001100 12
+-#define B0001100 12
+-#define B00001100 12
+-#define B1101 13
+-#define B01101 13
+-#define B001101 13
+-#define B0001101 13
+-#define B00001101 13
+-#define B1110 14
+-#define B01110 14
+-#define B001110 14
+-#define B0001110 14
+-#define B00001110 14
+-#define B1111 15
+-#define B01111 15
+-#define B001111 15
+-#define B0001111 15
+-#define B00001111 15
+-#define B10000 16
+-#define B010000 16
+-#define B0010000 16
+-#define B00010000 16
+-#define B10001 17
+-#define B010001 17
+-#define B0010001 17
+-#define B00010001 17
+-#define B10010 18
+-#define B010010 18
+-#define B0010010 18
+-#define B00010010 18
+-#define B10011 19
+-#define B010011 19
+-#define B0010011 19
+-#define B00010011 19
+-#define B10100 20
+-#define B010100 20
+-#define B0010100 20
+-#define B00010100 20
+-#define B10101 21
+-#define B010101 21
+-#define B0010101 21
+-#define B00010101 21
+-#define B10110 22
+-#define B010110 22
+-#define B0010110 22
+-#define B00010110 22
+-#define B10111 23
+-#define B010111 23
+-#define B0010111 23
+-#define B00010111 23
+-#define B11000 24
+-#define B011000 24
+-#define B0011000 24
+-#define B00011000 24
+-#define B11001 25
+-#define B011001 25
+-#define B0011001 25
+-#define B00011001 25
+-#define B11010 26
+-#define B011010 26
+-#define B0011010 26
+-#define B00011010 26
+-#define B11011 27
+-#define B011011 27
+-#define B0011011 27
+-#define B00011011 27
+-#define B11100 28
+-#define B011100 28
+-#define B0011100 28
+-#define B00011100 28
+-#define B11101 29
+-#define B011101 29
+-#define B0011101 29
+-#define B00011101 29
+-#define B11110 30
+-#define B011110 30
+-#define B0011110 30
+-#define B00011110 30
+-#define B11111 31
+-#define B011111 31
+-#define B0011111 31
+-#define B00011111 31
+-#define B100000 32
+-#define B0100000 32
+-#define B00100000 32
+-#define B100001 33
+-#define B0100001 33
+-#define B00100001 33
+-#define B100010 34
+-#define B0100010 34
+-#define B00100010 34
+-#define B100011 35
+-#define B0100011 35
+-#define B00100011 35
+-#define B100100 36
+-#define B0100100 36
+-#define B00100100 36
+-#define B100101 37
+-#define B0100101 37
+-#define B00100101 37
+-#define B100110 38
+-#define B0100110 38
+-#define B00100110 38
+-#define B100111 39
+-#define B0100111 39
+-#define B00100111 39
+-#define B101000 40
+-#define B0101000 40
+-#define B00101000 40
+-#define B101001 41
+-#define B0101001 41
+-#define B00101001 41
+-#define B101010 42
+-#define B0101010 42
+-#define B00101010 42
+-#define B101011 43
+-#define B0101011 43
+-#define B00101011 43
+-#define B101100 44
+-#define B0101100 44
+-#define B00101100 44
+-#define B101101 45
+-#define B0101101 45
+-#define B00101101 45
+-#define B101110 46
+-#define B0101110 46
+-#define B00101110 46
+-#define B101111 47
+-#define B0101111 47
+-#define B00101111 47
+-#define B110000 48
+-#define B0110000 48
+-#define B00110000 48
+-#define B110001 49
+-#define B0110001 49
+-#define B00110001 49
+-#define B110010 50
+-#define B0110010 50
+-#define B00110010 50
+-#define B110011 51
+-#define B0110011 51
+-#define B00110011 51
+-#define B110100 52
+-#define B0110100 52
+-#define B00110100 52
+-#define B110101 53
+-#define B0110101 53
+-#define B00110101 53
+-#define B110110 54
+-#define B0110110 54
+-#define B00110110 54
+-#define B110111 55
+-#define B0110111 55
+-#define B00110111 55
+-#define B111000 56
+-#define B0111000 56
+-#define B00111000 56
+-#define B111001 57
+-#define B0111001 57
+-#define B00111001 57
+-#define B111010 58
+-#define B0111010 58
+-#define B00111010 58
+-#define B111011 59
+-#define B0111011 59
+-#define B00111011 59
+-#define B111100 60
+-#define B0111100 60
+-#define B00111100 60
+-#define B111101 61
+-#define B0111101 61
+-#define B00111101 61
+-#define B111110 62
+-#define B0111110 62
+-#define B00111110 62
+-#define B111111 63
+-#define B0111111 63
+-#define B00111111 63
+-#define B1000000 64
+-#define B01000000 64
+-#define B1000001 65
+-#define B01000001 65
+-#define B1000010 66
+-#define B01000010 66
+-#define B1000011 67
+-#define B01000011 67
+-#define B1000100 68
+-#define B01000100 68
+-#define B1000101 69
+-#define B01000101 69
+-#define B1000110 70
+-#define B01000110 70
+-#define B1000111 71
+-#define B01000111 71
+-#define B1001000 72
+-#define B01001000 72
+-#define B1001001 73
+-#define B01001001 73
+-#define B1001010 74
+-#define B01001010 74
+-#define B1001011 75
+-#define B01001011 75
+-#define B1001100 76
+-#define B01001100 76
+-#define B1001101 77
+-#define B01001101 77
+-#define B1001110 78
+-#define B01001110 78
+-#define B1001111 79
+-#define B01001111 79
+-#define B1010000 80
+-#define B01010000 80
+-#define B1010001 81
+-#define B01010001 81
+-#define B1010010 82
+-#define B01010010 82
+-#define B1010011 83
+-#define B01010011 83
+-#define B1010100 84
+-#define B01010100 84
+-#define B1010101 85
+-#define B01010101 85
+-#define B1010110 86
+-#define B01010110 86
+-#define B1010111 87
+-#define B01010111 87
+-#define B1011000 88
+-#define B01011000 88
+-#define B1011001 89
+-#define B01011001 89
+-#define B1011010 90
+-#define B01011010 90
+-#define B1011011 91
+-#define B01011011 91
+-#define B1011100 92
+-#define B01011100 92
+-#define B1011101 93
+-#define B01011101 93
+-#define B1011110 94
+-#define B01011110 94
+-#define B1011111 95
+-#define B01011111 95
+-#define B1100000 96
+-#define B01100000 96
+-#define B1100001 97
+-#define B01100001 97
+-#define B1100010 98
+-#define B01100010 98
+-#define B1100011 99
+-#define B01100011 99
+-#define B1100100 100
+-#define B01100100 100
+-#define B1100101 101
+-#define B01100101 101
+-#define B1100110 102
+-#define B01100110 102
+-#define B1100111 103
+-#define B01100111 103
+-#define B1101000 104
+-#define B01101000 104
+-#define B1101001 105
+-#define B01101001 105
+-#define B1101010 106
+-#define B01101010 106
+-#define B1101011 107
+-#define B01101011 107
+-#define B1101100 108
+-#define B01101100 108
+-#define B1101101 109
+-#define B01101101 109
+-#define B1101110 110
+-#define B01101110 110
+-#define B1101111 111
+-#define B01101111 111
+-#define B1110000 112
+-#define B01110000 112
+-#define B1110001 113
+-#define B01110001 113
+-#define B1110010 114
+-#define B01110010 114
+-#define B1110011 115
+-#define B01110011 115
+-#define B1110100 116
+-#define B01110100 116
+-#define B1110101 117
+-#define B01110101 117
+-#define B1110110 118
+-#define B01110110 118
+-#define B1110111 119
+-#define B01110111 119
+-#define B1111000 120
+-#define B01111000 120
+-#define B1111001 121
+-#define B01111001 121
+-#define B1111010 122
+-#define B01111010 122
+-#define B1111011 123
+-#define B01111011 123
+-#define B1111100 124
+-#define B01111100 124
+-#define B1111101 125
+-#define B01111101 125
+-#define B1111110 126
+-#define B01111110 126
+-#define B1111111 127
+-#define B01111111 127
+-#define B10000000 128
+-#define B10000001 129
+-#define B10000010 130
+-#define B10000011 131
+-#define B10000100 132
+-#define B10000101 133
+-#define B10000110 134
+-#define B10000111 135
+-#define B10001000 136
+-#define B10001001 137
+-#define B10001010 138
+-#define B10001011 139
+-#define B10001100 140
+-#define B10001101 141
+-#define B10001110 142
+-#define B10001111 143
+-#define B10010000 144
+-#define B10010001 145
+-#define B10010010 146
+-#define B10010011 147
+-#define B10010100 148
+-#define B10010101 149
+-#define B10010110 150
+-#define B10010111 151
+-#define B10011000 152
+-#define B10011001 153
+-#define B10011010 154
+-#define B10011011 155
+-#define B10011100 156
+-#define B10011101 157
+-#define B10011110 158
+-#define B10011111 159
+-#define B10100000 160
+-#define B10100001 161
+-#define B10100010 162
+-#define B10100011 163
+-#define B10100100 164
+-#define B10100101 165
+-#define B10100110 166
+-#define B10100111 167
+-#define B10101000 168
+-#define B10101001 169
+-#define B10101010 170
+-#define B10101011 171
+-#define B10101100 172
+-#define B10101101 173
+-#define B10101110 174
+-#define B10101111 175
+-#define B10110000 176
+-#define B10110001 177
+-#define B10110010 178
+-#define B10110011 179
+-#define B10110100 180
+-#define B10110101 181
+-#define B10110110 182
+-#define B10110111 183
+-#define B10111000 184
+-#define B10111001 185
+-#define B10111010 186
+-#define B10111011 187
+-#define B10111100 188
+-#define B10111101 189
+-#define B10111110 190
+-#define B10111111 191
+-#define B11000000 192
+-#define B11000001 193
+-#define B11000010 194
+-#define B11000011 195
+-#define B11000100 196
+-#define B11000101 197
+-#define B11000110 198
+-#define B11000111 199
+-#define B11001000 200
+-#define B11001001 201
+-#define B11001010 202
+-#define B11001011 203
+-#define B11001100 204
+-#define B11001101 205
+-#define B11001110 206
+-#define B11001111 207
+-#define B11010000 208
+-#define B11010001 209
+-#define B11010010 210
+-#define B11010011 211
+-#define B11010100 212
+-#define B11010101 213
+-#define B11010110 214
+-#define B11010111 215
+-#define B11011000 216
+-#define B11011001 217
+-#define B11011010 218
+-#define B11011011 219
+-#define B11011100 220
+-#define B11011101 221
+-#define B11011110 222
+-#define B11011111 223
+-#define B11100000 224
+-#define B11100001 225
+-#define B11100010 226
+-#define B11100011 227
+-#define B11100100 228
+-#define B11100101 229
+-#define B11100110 230
+-#define B11100111 231
+-#define B11101000 232
+-#define B11101001 233
+-#define B11101010 234
+-#define B11101011 235
+-#define B11101100 236
+-#define B11101101 237
+-#define B11101110 238
+-#define B11101111 239
+-#define B11110000 240
+-#define B11110001 241
+-#define B11110010 242
+-#define B11110011 243
+-#define B11110100 244
+-#define B11110101 245
+-#define B11110110 246
+-#define B11110111 247
+-#define B11111000 248
+-#define B11111001 249
+-#define B11111010 250
+-#define B11111011 251
+-#define B11111100 252
+-#define B11111101 253
+-#define B11111110 254
+-#define B11111111 255
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/main.cpp b/Marlin/Sanguino/cores/Copy of arduino/main.cpp
+deleted file mode 100644
+index cc6e81d..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/main.cpp	
++++ /dev/null
+@@ -1,14 +0,0 @@
+-#include <WProgram.h>
+-
+-int main(void)
+-{
+-	init();
+-
+-	setup();
+-    
+-	for (;;)
+-		loop();
+-        
+-	return 0;
+-}
+-
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.c b/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.c
+deleted file mode 100644
+index ccb88fe..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.c	
++++ /dev/null
+@@ -1,200 +0,0 @@
+-/*
+-  pins_arduino.c - pin definitions for the Arduino board
+-  Part of Arduino / Wiring Lite
+-
+-  Copyright (c) 2005 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: pins_arduino.c 254 2007-04-20 23:17:38Z mellis $
+-*/
+-
+-#include <avr/io.h>
+-#include "wiring_private.h"
+-#include "pins_arduino.h"
+-
+-// On the Sanguino board, digital pins are also used
+-// for the analog output (software PWM).  Analog input
+-// pins are a separate set.
+-
+-// ATMEL ATMEGA644P / SANGUINO
+-//
+-//                   +---\/---+
+-//  INT0 (D 0) PB0  1|        |40  PA0 (AI 0 / D31)
+-//  INT1 (D 1) PB1  2|        |39  PA1 (AI 1 / D30)
+-//  INT2 (D 2) PB2  3|        |38  PA2 (AI 2 / D29)
+-//   PWM (D 3) PB3  4|        |37  PA3 (AI 3 / D28)
+-//   PWM (D 4) PB4  5|        |36  PA4 (AI 4 / D27)
+-//  MOSI (D 5) PB5  6|        |35  PA5 (AI 5 / D26)
+-//  MISO (D 6) PB6  7|        |34  PA6 (AI 6 / D25)
+-//   SCK (D 7) PB7  8|        |33  PA7 (AI 7 / D24)
+-//             RST  9|        |32  AREF
+-//             VCC 10|        |31  GND 
+-//             GND 11|        |30  AVCC
+-//           XTAL2 12|        |29  PC7 (D 23)
+-//           XTAL1 13|        |28  PC6 (D 22)
+-//  RX0 (D 8)  PD0 14|        |27  PC5 (D 21) TDI
+-//  TX0 (D 9)  PD1 15|        |26  PC4 (D 20) TDO
+-//  RX1 (D 10) PD2 16|        |25  PC3 (D 19) TMS
+-//  TX1 (D 11) PD3 17|        |24  PC2 (D 18) TCK
+-//  PWM (D 12) PD4 18|        |23  PC1 (D 17) SDA
+-//  PWM (D 13) PD5 19|        |22  PC0 (D 16) SCL
+-//  PWM (D 14) PD6 20|        |21  PD7 (D 15) PWM
+-//                   +--------+
+-//
+-
+-#define PA 1
+-#define PB 2
+-#define PC 3
+-#define PD 4
+-
+-// these arrays map port names (e.g. port B) to the
+-// appropriate addresses for various functions (e.g. reading
+-// and writing)
+-const uint8_t PROGMEM port_to_mode_PGM[] =
+-{
+-	NOT_A_PORT,
+-    &DDRA,
+-	&DDRB,
+-	&DDRC,
+-	&DDRD,
+-};
+-
+-const uint8_t PROGMEM port_to_output_PGM[] =
+-{
+-	NOT_A_PORT,
+-	&PORTA,
+-	&PORTB,
+-	&PORTC,
+-	&PORTD,
+-};
+-
+-const uint8_t PROGMEM port_to_input_PGM[] =
+-{
+-	NOT_A_PORT,
+-	&PINA,
+-	&PINB,
+-	&PINC,
+-	&PIND,
+-};
+-
+-const uint8_t PROGMEM digital_pin_to_port_PGM[] =
+-{
+-	PB, /* 0 */
+-	PB,
+-	PB,
+-	PB,
+-	PB,
+-	PB,
+-	PB,
+-	PB,
+-	PD, /* 8 */
+-	PD,
+-	PD,
+-	PD,
+-	PD,
+-	PD,
+-	PD,
+-	PD,
+-	PC, /* 16 */
+-	PC,
+-	PC,
+-	PC,
+-	PC,
+-	PC,
+-   	PC,
+-	PC,
+-	PA, /* 24 */
+-	PA,
+-	PA,
+-	PA,
+-	PA,
+-	PA,
+-	PA,
+-	PA  /* 31 */
+-};
+-
+-const uint8_t PROGMEM digital_pin_to_bit_mask_PGM[] =
+-{
+-	_BV(0), /* 0, port B */
+-	_BV(1),
+-	_BV(2),
+-	_BV(3),
+-	_BV(4),
+-	_BV(5),
+-	_BV(6),
+-	_BV(7),
+-	_BV(0), /* 8, port D */
+-	_BV(1),
+-	_BV(2),
+-	_BV(3),
+-	_BV(4),
+-	_BV(5),
+-	_BV(6),
+-	_BV(7),
+-	_BV(0), /* 16, port C */
+-	_BV(1),
+-	_BV(2),
+-	_BV(3),
+-	_BV(4),
+-	_BV(5),
+-	_BV(6),
+-	_BV(7),
+-	_BV(7), /* 24, port A */
+-	_BV(6),
+-	_BV(5),
+-	_BV(4),
+-	_BV(3),
+-	_BV(2),
+-	_BV(1),
+-	_BV(0)
+-};
+-
+-const uint8_t PROGMEM digital_pin_to_timer_PGM[] =
+-{
+-	NOT_ON_TIMER, 	/* 0  - PB0 */
+-	NOT_ON_TIMER, 	/* 1  - PB1 */
+-	NOT_ON_TIMER, 	/* 2  - PB2 */
+-	TIMER0A,     	/* 3  - PB3 */
+-	TIMER0B, 		/* 4  - PB4 */
+-	NOT_ON_TIMER, 	/* 5  - PB5 */
+-	NOT_ON_TIMER, 	/* 6  - PB6 */
+-	NOT_ON_TIMER,	/* 7  - PB7 */
+-	NOT_ON_TIMER, 	/* 8  - PD0 */
+-	NOT_ON_TIMER, 	/* 9  - PD1 */
+-	NOT_ON_TIMER, 	/* 10 - PD2 */
+-	NOT_ON_TIMER, 	/* 11 - PD3 */
+-	TIMER1B,     	/* 12 - PD4 */
+-	TIMER1A,     	/* 13 - PD5 */
+-	TIMER2B,     	/* 14 - PD6 */
+-	TIMER2A,     	/* 15 - PD7 */
+-	NOT_ON_TIMER, 	/* 16 - PC0 */
+-	NOT_ON_TIMER,   /* 17 - PC1 */
+-	NOT_ON_TIMER,   /* 18 - PC2 */
+-	NOT_ON_TIMER,   /* 19 - PC3 */
+-	NOT_ON_TIMER,   /* 20 - PC4 */
+-	NOT_ON_TIMER,   /* 21 - PC5 */
+-	NOT_ON_TIMER,   /* 22 - PC6 */
+-	NOT_ON_TIMER,   /* 23 - PC7 */
+-	NOT_ON_TIMER,   /* 24 - PA0 */
+-	NOT_ON_TIMER,   /* 25 - PA1 */
+-	NOT_ON_TIMER,   /* 26 - PA2 */
+-	NOT_ON_TIMER,   /* 27 - PA3 */
+-	NOT_ON_TIMER,   /* 28 - PA4 */
+-	NOT_ON_TIMER,   /* 29 - PA5 */
+-	NOT_ON_TIMER,   /* 30 - PA6 */
+-	NOT_ON_TIMER   /* 31 - PA7 */
+-};
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.h b/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.h
+deleted file mode 100644
+index e0b7add..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/pins_arduino.h	
++++ /dev/null
+@@ -1,65 +0,0 @@
+-/*
+-  pins_arduino.h - Pin definition functions for Arduino
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2007 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.h 249 2007-02-03 16:52:51Z mellis $
+-*/
+-
+-#ifndef Pins_Arduino_h
+-#define Pins_Arduino_h
+-
+-#include <avr/pgmspace.h>
+-
+-#define NOT_A_PIN 0
+-#define NOT_A_PORT 0
+-
+-#define NOT_ON_TIMER 0
+-#define TIMER0A 1
+-#define TIMER0B 2
+-#define TIMER1A 3
+-#define TIMER1B 4
+-#define TIMER2  5
+-#define TIMER2A 6
+-#define TIMER2B 7
+-
+-extern const uint8_t PROGMEM port_to_mode_PGM[];
+-extern const uint8_t PROGMEM port_to_input_PGM[];
+-extern const uint8_t PROGMEM port_to_output_PGM[];
+-
+-extern const uint8_t PROGMEM digital_pin_to_port_PGM[];
+-extern const uint8_t PROGMEM digital_pin_to_bit_PGM[];
+-extern const uint8_t PROGMEM digital_pin_to_bit_mask_PGM[];
+-
+-extern const uint8_t PROGMEM digital_pin_to_timer_PGM[];
+-
+-// Get the bit location within the hardware port of the given virtual pin.
+-// This comes from the pins_*.c file for the active board configuration.
+-// 
+-// These perform slightly better as macros compared to inline functions
+-//
+-#define digitalPinToPort(P) ( pgm_read_byte( digital_pin_to_port_PGM + (P) ) )
+-#define digitalPinToBitMask(P) ( pgm_read_byte( digital_pin_to_bit_mask_PGM + (P) ) )
+-#define digitalPinToTimer(P) ( pgm_read_byte( digital_pin_to_timer_PGM + (P) ) )
+-#define analogInPinToBit(P) (P)
+-#define portOutputRegister(P) ( (volatile uint8_t *)( pgm_read_byte( port_to_output_PGM + (P))) )
+-#define portInputRegister(P) ( (volatile uint8_t *)( pgm_read_byte( port_to_input_PGM + (P))) )
+-#define portModeRegister(P) ( (volatile uint8_t *)( pgm_read_byte( port_to_mode_PGM + (P))) )
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring.c b/Marlin/Sanguino/cores/Copy of arduino/wiring.c
+deleted file mode 100644
+index b90d07e..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring.c	
++++ /dev/null
+@@ -1,289 +0,0 @@
+-/*
+-  wiring.c - Partial implementation of the Wiring API for the ATmega8.
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id$
+-*/
+-
+-#include "wiring_private.h"
+-
+-// the prescaler is set so that timer0 ticks every 64 clock cycles, and the
+-// the overflow handler is called every 256 ticks.
+-#define MICROSECONDS_PER_TIMER0_OVERFLOW (clockCyclesToMicroseconds(64 * 256))
+-
+-// the whole number of milliseconds per timer0 overflow
+-#define MILLIS_INC (MICROSECONDS_PER_TIMER0_OVERFLOW / 1000)
+-
+-// the fractional number of milliseconds per timer0 overflow. we shift right
+-// by three to fit these numbers into a byte. (for the clock speeds we care
+-// about - 8 and 16 MHz - this doesn't lose precision.)
+-#define FRACT_INC ((MICROSECONDS_PER_TIMER0_OVERFLOW % 1000) >> 3)
+-#define FRACT_MAX (1000 >> 3)
+-
+-volatile unsigned long timer0_overflow_count = 0;
+-volatile unsigned long timer0_millis = 0;
+-static unsigned char timer0_fract = 0;
+-
+-SIGNAL(TIMER0_OVF_vect)
+-{
+-	// copy these to local variables so they can be stored in registers
+-	// (volatile variables must be read from memory on every access)
+-	unsigned long m = timer0_millis;
+-	unsigned char f = timer0_fract;
+-
+-	m += MILLIS_INC;
+-	f += FRACT_INC;
+-	if (f >= FRACT_MAX) {
+-		f -= FRACT_MAX;
+-		m += 1;
+-	}
+-
+-	timer0_fract = f;
+-	timer0_millis = m;
+-	timer0_overflow_count++;
+-}
+-
+-unsigned long millis()
+-{
+-	unsigned long m;
+-	uint8_t oldSREG = SREG;
+-
+-	// disable interrupts while we read timer0_millis or we might get an
+-	// inconsistent value (e.g. in the middle of a write to timer0_millis)
+-	cli();
+-	m = timer0_millis;
+-	SREG = oldSREG;
+-
+-	return m;
+-}
+-
+-unsigned long micros() {
+-	unsigned long m;
+-	uint8_t oldSREG = SREG, t;
+-	
+-	cli();
+-	m = timer0_overflow_count;
+-#if defined(TCNT0)
+-	t = TCNT0;
+-#elif defined(TCNT0L)
+-	t = TCNT0L;
+-#else
+-	#error TIMER 0 not defined
+-#endif
+-
+-  
+-#ifdef TIFR0
+-	if ((TIFR0 & _BV(TOV0)) && (t < 255))
+-		m++;
+-#else
+-	if ((TIFR & _BV(TOV0)) && (t < 255))
+-		m++;
+-#endif
+-
+-	SREG = oldSREG;
+-	
+-	return ((m << 8) + t) * (64 / clockCyclesPerMicrosecond());
+-}
+-
+-void delay(unsigned long ms)
+-{
+-	uint16_t start = (uint16_t)micros();
+-
+-	while (ms > 0) {
+-		if (((uint16_t)micros() - start) >= 1000) {
+-			ms--;
+-			start += 1000;
+-		}
+-	}
+-}
+-
+-/* Delay for the given number of microseconds.  Assumes a 8 or 16 MHz clock. */
+-void delayMicroseconds(unsigned int us)
+-{
+-	// calling avrlib's delay_us() function with low values (e.g. 1 or
+-	// 2 microseconds) gives delays longer than desired.
+-	//delay_us(us);
+-
+-#if F_CPU >= 16000000L
+-	// for the 16 MHz clock on most Arduino boards
+-
+-	// for a one-microsecond delay, simply return.  the overhead
+-	// of the function call yields a delay of approximately 1 1/8 us.
+-	if (--us == 0)
+-		return;
+-
+-	// the following loop takes a quarter of a microsecond (4 cycles)
+-	// per iteration, so execute it four times for each microsecond of
+-	// delay requested.
+-	us <<= 2;
+-
+-	// account for the time taken in the preceeding commands.
+-	us -= 2;
+-#else
+-	// for the 8 MHz internal clock on the ATmega168
+-
+-	// for a one- or two-microsecond delay, simply return.  the overhead of
+-	// the function calls takes more than two microseconds.  can't just
+-	// subtract two, since us is unsigned; we'd overflow.
+-	if (--us == 0)
+-		return;
+-	if (--us == 0)
+-		return;
+-
+-	// the following loop takes half of a microsecond (4 cycles)
+-	// per iteration, so execute it twice for each microsecond of
+-	// delay requested.
+-	us <<= 1;
+-    
+-	// partially compensate for the time taken by the preceeding commands.
+-	// we can't subtract any more than this or we'd overflow w/ small delays.
+-	us--;
+-#endif
+-
+-	// busy wait
+-	__asm__ __volatile__ (
+-		"1: sbiw %0,1" "\n\t" // 2 cycles
+-		"brne 1b" : "=w" (us) : "0" (us) // 2 cycles
+-	);
+-}
+-
+-void init()
+-{
+-	// this needs to be called before setup() or some functions won't
+-	// work there
+-	sei();
+-	
+-	// on the ATmega168, timer 0 is also used for fast hardware pwm
+-	// (using phase-correct PWM would mean that timer 0 overflowed half as often
+-	// resulting in different millis() behavior on the ATmega8 and ATmega168)
+-#if defined(TCCR0A) && defined(WGM01)
+-	sbi(TCCR0A, WGM01);
+-	sbi(TCCR0A, WGM00);
+-#endif  
+-
+-	// set timer 0 prescale factor to 64
+-#if defined(__AVR_ATmega128__)
+-	// CPU specific: different values for the ATmega128
+-	sbi(TCCR0, CS02);
+-#elif defined(TCCR0) && defined(CS01) && defined(CS00)
+-	// this combination is for the standard atmega8
+-	sbi(TCCR0, CS01);
+-	sbi(TCCR0, CS00);
+-#elif defined(TCCR0B) && defined(CS01) && defined(CS00)
+-	// this combination is for the standard 168/328/1280/2560
+-	sbi(TCCR0B, CS01);
+-	sbi(TCCR0B, CS00);
+-#elif defined(TCCR0A) && defined(CS01) && defined(CS00)
+-	// this combination is for the __AVR_ATmega645__ series
+-	sbi(TCCR0A, CS01);
+-	sbi(TCCR0A, CS00);
+-#else
+-	#error Timer 0 prescale factor 64 not set correctly
+-#endif
+-
+-	// enable timer 0 overflow interrupt
+-#if defined(TIMSK) && defined(TOIE0)
+-	sbi(TIMSK, TOIE0);
+-#elif defined(TIMSK0) && defined(TOIE0)
+-	sbi(TIMSK0, TOIE0);
+-#else
+-	#error	Timer 0 overflow interrupt not set correctly
+-#endif
+-
+-	// timers 1 and 2 are used for phase-correct hardware pwm
+-	// this is better for motors as it ensures an even waveform
+-	// note, however, that fast pwm mode can achieve a frequency of up
+-	// 8 MHz (with a 16 MHz clock) at 50% duty cycle
+-
+-	TCCR1B = 0;
+-
+-	// set timer 1 prescale factor to 64
+-#if defined(TCCR1B) && defined(CS11) && defined(CS10)
+-	sbi(TCCR1B, CS11);
+-	sbi(TCCR1B, CS10);
+-#elif defined(TCCR1) && defined(CS11) && defined(CS10)
+-	sbi(TCCR1, CS11);
+-	sbi(TCCR1, CS10);
+-#endif
+-	// put timer 1 in 8-bit phase correct pwm mode
+-#if defined(TCCR1A) && defined(WGM10)
+-	sbi(TCCR1A, WGM10);
+-#elif defined(TCCR1)
+-	#warning this needs to be finished
+-#endif
+-
+-	// set timer 2 prescale factor to 64
+-#if defined(TCCR2) && defined(CS22)
+-	sbi(TCCR2, CS22);
+-#elif defined(TCCR2B) && defined(CS22)
+-	sbi(TCCR2B, CS22);
+-#else
+-	#warning Timer 2 not finished (may not be present on this CPU)
+-#endif
+-
+-	// configure timer 2 for phase correct pwm (8-bit)
+-#if defined(TCCR2) && defined(WGM20)
+-	sbi(TCCR2, WGM20);
+-#elif defined(TCCR2A) && defined(WGM20)
+-	sbi(TCCR2A, WGM20);
+-#else
+-	#warning Timer 2 not finished (may not be present on this CPU)
+-#endif
+-
+-#if defined(TCCR3B) && defined(CS31) && defined(WGM30)
+-	sbi(TCCR3B, CS31);		// set timer 3 prescale factor to 64
+-	sbi(TCCR3B, CS30);
+-	sbi(TCCR3A, WGM30);		// put timer 3 in 8-bit phase correct pwm mode
+-#endif
+-	
+-#if defined(TCCR4B) && defined(CS41) && defined(WGM40)
+-	sbi(TCCR4B, CS41);		// set timer 4 prescale factor to 64
+-	sbi(TCCR4B, CS40);
+-	sbi(TCCR4A, WGM40);		// put timer 4 in 8-bit phase correct pwm mode
+-#endif
+-
+-#if defined(TCCR5B) && defined(CS51) && defined(WGM50)
+-	sbi(TCCR5B, CS51);		// set timer 5 prescale factor to 64
+-	sbi(TCCR5B, CS50);
+-	sbi(TCCR5A, WGM50);		// put timer 5 in 8-bit phase correct pwm mode
+-#endif
+-
+-#if defined(ADCSRA)
+-	// set a2d prescale factor to 128
+-	// 16 MHz / 128 = 125 KHz, inside the desired 50-200 KHz range.
+-	// XXX: this will not work properly for other clock speeds, and
+-	// this code should use F_CPU to determine the prescale factor.
+-	sbi(ADCSRA, ADPS2);
+-	sbi(ADCSRA, ADPS1);
+-	sbi(ADCSRA, ADPS0);
+-
+-	// enable a2d conversions
+-	sbi(ADCSRA, ADEN);
+-#endif
+-
+-	// the bootloader connects pins 0 and 1 to the USART; disconnect them
+-	// here so they can be used as normal digital i/o; they will be
+-	// reconnected in Serial.begin()
+-#if defined(UCSRB)
+-	UCSRB = 0;
+-#elif defined(UCSR0B)
+-	UCSR0B = 0;
+-#endif
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring.h b/Marlin/Sanguino/cores/Copy of arduino/wiring.h
+deleted file mode 100644
+index e29959b..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring.h	
++++ /dev/null
+@@ -1,135 +0,0 @@
+-/*
+-  wiring.h - Partial implementation of the Wiring API for the ATmega8.
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id$
+-*/
+-
+-#ifndef Wiring_h
+-#define Wiring_h
+-
+-#include <avr/io.h>
+-#include <stdlib.h>
+-#include "binary.h"
+-
+-#ifdef __cplusplus
+-extern "C"{
+-#endif
+-
+-#define HIGH 0x1
+-#define LOW  0x0
+-
+-#define INPUT 0x0
+-#define OUTPUT 0x1
+-
+-#define true 0x1
+-#define false 0x0
+-
+-#define PI 3.1415926535897932384626433832795
+-#define HALF_PI 1.5707963267948966192313216916398
+-#define TWO_PI 6.283185307179586476925286766559
+-#define DEG_TO_RAD 0.017453292519943295769236907684886
+-#define RAD_TO_DEG 57.295779513082320876798154814105
+-
+-#define SERIAL  0x0
+-#define DISPLAY 0x1
+-
+-#define LSBFIRST 0
+-#define MSBFIRST 1
+-
+-#define CHANGE 1
+-#define FALLING 2
+-#define RISING 3
+-
+-#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+-#define INTERNAL1V1 2
+-#define INTERNAL2V56 3
+-#else
+-#define INTERNAL 3
+-#endif
+-#define DEFAULT 1
+-#define EXTERNAL 0
+-
+-// undefine stdlib's abs if encountered
+-#ifdef abs
+-#undef abs
+-#endif
+-
+-#define min(a,b) ((a)<(b)?(a):(b))
+-#define max(a,b) ((a)>(b)?(a):(b))
+-#define abs(x) ((x)>0?(x):-(x))
+-#define constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
+-#define round(x)     ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
+-#define radians(deg) ((deg)*DEG_TO_RAD)
+-#define degrees(rad) ((rad)*RAD_TO_DEG)
+-#define sq(x) ((x)*(x))
+-
+-#define interrupts() sei()
+-#define noInterrupts() cli()
+-
+-#define clockCyclesPerMicrosecond() ( F_CPU / 1000000L )
+-#define clockCyclesToMicroseconds(a) ( ((a) * 1000L) / (F_CPU / 1000L) )
+-#define microsecondsToClockCycles(a) ( ((a) * (F_CPU / 1000L)) / 1000L )
+-
+-#define lowByte(w) ((uint8_t) ((w) & 0xff))
+-#define highByte(w) ((uint8_t) ((w) >> 8))
+-
+-#define bitRead(value, bit) (((value) >> (bit)) & 0x01)
+-#define bitSet(value, bit) ((value) |= (1UL << (bit)))
+-#define bitClear(value, bit) ((value) &= ~(1UL << (bit)))
+-#define bitWrite(value, bit, bitvalue) (bitvalue ? bitSet(value, bit) : bitClear(value, bit))
+-
+-
+-typedef unsigned int word;
+-
+-#define bit(b) (1UL << (b))
+-
+-typedef uint8_t boolean;
+-typedef uint8_t byte;
+-
+-void init(void);
+-
+-void pinMode(uint8_t, uint8_t);
+-void digitalWrite(uint8_t, uint8_t);
+-int digitalRead(uint8_t);
+-int analogRead(uint8_t);
+-void analogReference(uint8_t mode);
+-void analogWrite(uint8_t, int);
+-
+-unsigned long millis(void);
+-unsigned long micros(void);
+-void delay(unsigned long);
+-void delayMicroseconds(unsigned int us);
+-unsigned long pulseIn(uint8_t pin, uint8_t state, unsigned long timeout);
+-
+-void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val);
+-uint8_t shiftIn(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder);
+-
+-void attachInterrupt(uint8_t, void (*)(void), int mode);
+-void detachInterrupt(uint8_t);
+-
+-void setup(void);
+-void loop(void);
+-
+-#ifdef __cplusplus
+-} // extern "C"
+-#endif
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring_analog.c b/Marlin/Sanguino/cores/Copy of arduino/wiring_analog.c
+deleted file mode 100644
+index b98bb1a..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring_analog.c	
++++ /dev/null
+@@ -1,116 +0,0 @@
+-/*
+-  wiring_analog.c - analog input and output
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.c 248 2007-02-03 15:36:30Z mellis $
+-*/
+-
+-#include "wiring_private.h"
+-#include "pins_arduino.h"
+-
+-uint8_t analog_reference = DEFAULT;
+-
+-void analogReference(uint8_t mode)
+-{
+-	// can't actually set the register here because the default setting
+-	// will connect AVCC and the AREF pin, which would cause a short if
+-	// there's something connected to AREF.
+-	analog_reference = mode;
+-}
+-
+-int analogRead(uint8_t pin)
+-{
+-	uint8_t low, high, ch = analogInPinToBit(pin);
+-
+-	// set the analog reference (high two bits of ADMUX) and select the
+-	// channel (low 4 bits).  this also sets ADLAR (left-adjust result)
+-	// to 0 (the default).
+-	// the final AND is to clear the pos/neg reference bits
+-	ADMUX = ((analog_reference << 6) | (pin & 0x0f)) & B11000111;
+-
+-	// without a delay, we seem to read from the wrong channel
+-	//delay(1);
+-
+-	// start the conversion
+-	sbi(ADCSRA, ADSC);
+-
+-	// ADSC is cleared when the conversion finishes
+-	while (bit_is_set(ADCSRA, ADSC));
+-
+-	// we have to read ADCL first; doing so locks both ADCL
+-	// and ADCH until ADCH is read.  reading ADCL second would
+-	// cause the results of each conversion to be discarded,
+-	// as ADCL and ADCH would be locked when it completed.
+-	low = ADCL;
+-	high = ADCH;
+-
+-	// combine the two bytes
+-	return (high << 8) | low;
+-}
+-
+-// Right now, PWM output only works on the pins with
+-// hardware support.  These are defined in the appropriate
+-// pins_*.c file.  For the rest of the pins, we default
+-// to digital output.
+-void analogWrite(uint8_t pin, int val)
+-{
+-	// We need to make sure the PWM output is enabled for those pins
+-	// that support it, as we turn it off when digitally reading or
+-	// writing with them.  Also, make sure the pin is in output mode
+-	// for consistenty with Wiring, which doesn't require a pinMode
+-	// call for the analog output pins.
+-	pinMode(pin, OUTPUT);
+-	
+-	if (digitalPinToTimer(pin) == TIMER1A) {
+-		// connect pwm to pin on timer 1, channel A
+-		sbi(TCCR1A, COM1A1);
+-		// set pwm duty
+-		OCR1A = val;
+-	} else if (digitalPinToTimer(pin) == TIMER1B) {
+-		// connect pwm to pin on timer 1, channel B
+-		sbi(TCCR1A, COM1B1);
+-		// set pwm duty
+-		OCR1B = val;
+-	} else if (digitalPinToTimer(pin) == TIMER0A) {
+-		// connect pwm to pin on timer 0, channel A
+-		sbi(TCCR0A, COM0A1);
+-		// set pwm duty
+-		OCR0A = val;	
+-	} else if (digitalPinToTimer(pin) == TIMER0B) {
+-		// connect pwm to pin on timer 0, channel B
+-		sbi(TCCR0A, COM0B1);
+-		// set pwm duty
+-		OCR0B = val;
+-	} else if (digitalPinToTimer(pin) == TIMER2A) {
+-		// connect pwm to pin on timer 2, channel A
+-		sbi(TCCR2A, COM2A1);
+-		// set pwm duty
+-		OCR2A = val;	
+-	} else if (digitalPinToTimer(pin) == TIMER2B) {
+-		// connect pwm to pin on timer 2, channel B
+-		sbi(TCCR2A, COM2B1);
+-		// set pwm duty
+-		OCR2B = val;
+-	} else if (val < 128)
+-	//fail semi-intelligently
+-		digitalWrite(pin, LOW);
+-	else
+-		digitalWrite(pin, HIGH);
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring_digital.c b/Marlin/Sanguino/cores/Copy of arduino/wiring_digital.c
+deleted file mode 100644
+index 3d4b4eb..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring_digital.c	
++++ /dev/null
+@@ -1,95 +0,0 @@
+-/*
+-  wiring_digital.c - digital input and output functions
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.c 248 2007-02-03 15:36:30Z mellis $
+-*/
+-
+-#include "wiring_private.h"
+-#include "pins_arduino.h"
+-
+-void pinMode(uint8_t pin, uint8_t mode)
+-{
+-	uint8_t bit = digitalPinToBitMask(pin);
+-	uint8_t port = digitalPinToPort(pin);
+-	volatile uint8_t *reg;
+-
+-	if (port == NOT_A_PIN) return;
+-
+-	// JWS: can I let the optimizer do this?
+-	reg = portModeRegister(port);
+-
+-	if (mode == INPUT) *reg &= ~bit;
+-	else *reg |= bit;
+-}
+-
+-// Forcing this inline keeps the callers from having to push their own stuff
+-// on the stack. It is a good performance win and only takes 1 more byte per
+-// user than calling. (It will take more bytes on the 168.)
+-//
+-// But shouldn't this be moved into pinMode? Seems silly to check and do on
+-// each digitalread or write.
+-//
+-static inline void turnOffPWM(uint8_t timer) __attribute__ ((always_inline));
+-static inline void turnOffPWM(uint8_t timer)
+-{
+-	if (timer == TIMER0A) cbi(TCCR0A, COM0A1);
+-	if (timer == TIMER0B) cbi(TCCR0A, COM0B1);
+-	if (timer == TIMER1A) cbi(TCCR1A, COM1A1);
+-	if (timer == TIMER1B) cbi(TCCR1A, COM1B1);
+-	if (timer == TIMER2A) cbi(TCCR2A, COM2A1);
+-	if (timer == TIMER2B) cbi(TCCR2A, COM2B1);
+-}
+-
+-void digitalWrite(uint8_t pin, uint8_t val)
+-{
+-	uint8_t timer = digitalPinToTimer(pin);
+-	uint8_t bit = digitalPinToBitMask(pin);
+-	uint8_t port = digitalPinToPort(pin);
+-	volatile uint8_t *out;
+-
+-	if (port == NOT_A_PIN) return;
+-
+-	// If the pin that support PWM output, we need to turn it off
+-	// before doing a digital write.
+-	if (timer != NOT_ON_TIMER) turnOffPWM(timer);
+-
+-	out = portOutputRegister(port);
+-
+-	if (val == LOW) *out &= ~bit;
+-	else *out |= bit;
+-}
+-
+-int digitalRead(uint8_t pin)
+-{
+-	uint8_t timer = digitalPinToTimer(pin);
+-	uint8_t bit = digitalPinToBitMask(pin);
+-	uint8_t port = digitalPinToPort(pin);
+-
+-	if (port == NOT_A_PIN) return LOW;
+-
+-	// If the pin that support PWM output, we need to turn it off
+-	// before getting a digital reading.
+-	if (timer != NOT_ON_TIMER) turnOffPWM(timer);
+-
+-	if (*portInputRegister(port) & bit) return HIGH;
+-	
+-	return LOW;
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring_private.h b/Marlin/Sanguino/cores/Copy of arduino/wiring_private.h
+deleted file mode 100644
+index 14394a0..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring_private.h	
++++ /dev/null
+@@ -1,60 +0,0 @@
+-/*
+-  wiring_private.h - Internal header file.
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.h 239 2007-01-12 17:58:39Z mellis $
+-*/
+-
+-#ifndef WiringPrivate_h
+-#define WiringPrivate_h
+-
+-#include <avr/io.h>
+-#include <avr/interrupt.h>
+-#include <avr/signal.h>
+-#include <avr/delay.h>
+-#include <stdio.h>
+-#include <stdarg.h>
+-
+-#include "wiring.h"
+-
+-#ifdef __cplusplus
+-extern "C"{
+-#endif
+-
+-#ifndef cbi
+-#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+-#endif
+-#ifndef sbi
+-#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+-#endif
+-
+-#define EXTERNAL_INT_0 0
+-#define EXTERNAL_INT_1 1
+-#define EXTERNAL_INT_2 2
+-
+-#define EXTERNAL_NUM_INTERRUPTS 3
+-
+-typedef void (*voidFuncPtr)(void);
+-
+-#ifdef __cplusplus
+-} // extern "C"
+-#endif
+-
+-#endif
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring_pulse.c b/Marlin/Sanguino/cores/Copy of arduino/wiring_pulse.c
+deleted file mode 100644
+index 0d96886..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring_pulse.c	
++++ /dev/null
+@@ -1,69 +0,0 @@
+-/*
+-  wiring_pulse.c - pulseIn() function
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.c 248 2007-02-03 15:36:30Z mellis $
+-*/
+-
+-#include "wiring_private.h"
+-#include "pins_arduino.h"
+-
+-/* Measures the length (in microseconds) of a pulse on the pin; state is HIGH
+- * or LOW, the type of pulse to measure.  Works on pulses from 2-3 microseconds
+- * to 3 minutes in length, but must be called at least a few dozen microseconds
+- * before the start of the pulse. */
+-unsigned long pulseIn(uint8_t pin, uint8_t state, unsigned long timeout)
+-{
+-	// cache the port and bit of the pin in order to speed up the
+-	// pulse width measuring loop and achieve finer resolution.  calling
+-	// digitalRead() instead yields much coarser resolution.
+-	uint8_t bit = digitalPinToBitMask(pin);
+-	uint8_t port = digitalPinToPort(pin);
+-	uint8_t stateMask = (state ? bit : 0);
+-	unsigned long width = 0; // keep initialization out of time critical area
+-	
+-	// convert the timeout from microseconds to a number of times through
+-	// the initial loop; it takes 16 clock cycles per iteration.
+-	unsigned long numloops = 0;
+-	unsigned long maxloops = microsecondsToClockCycles(timeout) / 16;
+-	
+-	// wait for any previous pulse to end
+-	while ((*portInputRegister(port) & bit) == stateMask)
+-		if (numloops++ == maxloops)
+-			return 0;
+-	
+-	// wait for the pulse to start
+-	while ((*portInputRegister(port) & bit) != stateMask)
+-		if (numloops++ == maxloops)
+-			return 0;
+-	
+-	// wait for the pulse to stop
+-	while ((*portInputRegister(port) & bit) == stateMask) {
+-		if (numloops++ == maxloops)
+-			return 0;
+-		width++;
+-	}
+-
+-	// convert the reading to microseconds. The loop has been determined
+-	// to be 20 clock cycles long and have about 16 clocks between the edge
+-	// and the start of the loop. There will be some error introduced by
+-	// the interrupt handlers.
+-	return clockCyclesToMicroseconds(width * 21 + 16); 
+-}
+diff --git a/Marlin/Sanguino/cores/Copy of arduino/wiring_shift.c b/Marlin/Sanguino/cores/Copy of arduino/wiring_shift.c
+deleted file mode 100644
+index cfe7867..0000000
+--- a/Marlin/Sanguino/cores/Copy of arduino/wiring_shift.c	
++++ /dev/null
+@@ -1,55 +0,0 @@
+-/*
+-  wiring_shift.c - shiftOut() function
+-  Part of Arduino - http://www.arduino.cc/
+-
+-  Copyright (c) 2005-2006 David A. Mellis
+-
+-  This library is free software; you can redistribute it and/or
+-  modify it under the terms of the GNU Lesser General Public
+-  License as published by the Free Software Foundation; either
+-  version 2.1 of the License, or (at your option) any later version.
+-
+-  This library is distributed in the hope that it will be useful,
+-  but WITHOUT ANY WARRANTY; without even the implied warranty of
+-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-  Lesser General Public License for more details.
+-
+-  You should have received a copy of the GNU Lesser General
+-  Public License along with this library; if not, write to the
+-  Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+-  Boston, MA  02111-1307  USA
+-
+-  $Id: wiring.c 248 2007-02-03 15:36:30Z mellis $
+-*/
+-
+-#include "wiring_private.h"
+-
+-uint8_t shiftIn(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder) {
+-	uint8_t value = 0;
+-	uint8_t i;
+-
+-	for (i = 0; i < 8; ++i) {
+-		digitalWrite(clockPin, HIGH);
+-		if (bitOrder == LSBFIRST)
+-			value |= digitalRead(dataPin) << i;
+-		else
+-			value |= digitalRead(dataPin) << (7 - i);
+-		digitalWrite(clockPin, LOW);
+-	}
+-	return value;
+-}
+-
+-void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val)
+-{
+-	uint8_t i;
+-
+-	for (i = 0; i < 8; i++)  {
+-		if (bitOrder == LSBFIRST)
+-			digitalWrite(dataPin, !!(val & (1 << i)));
+-		else	
+-			digitalWrite(dataPin, !!(val & (1 << (7 - i))));
+-			
+-		digitalWrite(clockPin, HIGH);
+-		digitalWrite(clockPin, LOW);		
+-	}
+-}
+diff --git a/Marlin/Sanguino/cores/arduino/HardwareSerial.cpp b/Marlin/Sanguino/cores/arduino/HardwareSerial.cpp
+index 4397efb..d4931b4 100644
+--- a/Marlin/Sanguino/cores/arduino/HardwareSerial.cpp
++++ b/Marlin/Sanguino/cores/arduino/HardwareSerial.cpp
+@@ -37,11 +37,7 @@
+ // using a ring buffer (I think), in which rx_buffer_head is the index of the
+ // location to which to write the next incoming character and rx_buffer_tail
+ // is the index of the location from which to read.
+-#if (RAMEND < 1000)
+-  #define RX_BUFFER_SIZE 32
+-#else
+-  #define RX_BUFFER_SIZE 128
+-#endif
++#define RX_BUFFER_SIZE 128
+ 
+ struct ring_buffer
+ {
+@@ -50,22 +46,11 @@ struct ring_buffer
+   int tail;
+ };
+ 
+-#if defined(UBRRH) || defined(UBRR0H)
+-  ring_buffer rx_buffer  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR1H)
+-  ring_buffer rx_buffer1  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR2H)
+-  ring_buffer rx_buffer2  =  { { 0 }, 0, 0 };
+-#endif
+-#if defined(UBRR3H)
+-  ring_buffer rx_buffer3  =  { { 0 }, 0, 0 };
+-#endif
++ring_buffer rx_buffer  =  { { 0 }, 0, 0 };
+ 
+ inline void store_char(unsigned char c, ring_buffer *rx_buffer)
+ {
+-  int i = (unsigned int)(rx_buffer->head + 1) % RX_BUFFER_SIZE;
++  int i = (unsigned int)(rx_buffer->head + 1) & (RX_BUFFER_SIZE -1);
+ 
+   // if we should be storing the received character into the location
+   // just before the tail (meaning that the head would advance to the
+@@ -77,95 +62,13 @@ inline void store_char(unsigned char c, ring_buffer *rx_buffer)
+   }
+ }
+ 
+-#if defined(USART_RX_vect)
+-  SIGNAL(USART_RX_vect)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8535
+-  #else
+-    #error UDR not defined
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_USART0_RECV) && defined(UDR0)
+-  SIGNAL(SIG_USART0_RECV)
+-  {
+-    unsigned char c  =  UDR0;
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_UART0_RECV) && defined(UDR0)
+-  SIGNAL(SIG_UART0_RECV)
+-  {
+-    unsigned char c  =  UDR0;
+-    store_char(c, &rx_buffer);
+-  }
+-//#elif defined(SIG_USART_RECV)
+-#elif defined(USART0_RX_vect)
+-  // fixed by Mark Sproul this is on the 644/644p
+-  //SIGNAL(SIG_USART_RECV)
+-  SIGNAL(USART0_RX_vect)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8, atmega32
+-  #else
+-    #error UDR not defined
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(SIG_UART_RECV)
+-  // this is for atmega8
+-  SIGNAL(SIG_UART_RECV)
+-  {
+-  #if defined(UDR0)
+-    unsigned char c  =  UDR0;  //  atmega645
+-  #elif defined(UDR)
+-    unsigned char c  =  UDR;  //  atmega8
+-  #endif
+-    store_char(c, &rx_buffer);
+-  }
+-#elif defined(USBCON)
+-  #warning No interrupt handler for usart 0
+-  #warning Serial(0) is on USB interface
+-#else
+-  #error No interrupt handler for usart 0
+-#endif
+-
+-//#if defined(SIG_USART1_RECV)
+-#if defined(USART1_RX_vect)
+-  //SIGNAL(SIG_USART1_RECV)
+-  SIGNAL(USART1_RX_vect)
+-  {
+-    unsigned char c = UDR1;
+-    store_char(c, &rx_buffer1);
+-  }
+-#elif defined(SIG_USART1_RECV)
+-  #error SIG_USART1_RECV
+-#endif
+-
+-#if defined(USART2_RX_vect) && defined(UDR2)
+-  SIGNAL(USART2_RX_vect)
+-  {
+-    unsigned char c = UDR2;
+-    store_char(c, &rx_buffer2);
+-  }
+-#elif defined(SIG_USART2_RECV)
+-  #error SIG_USART2_RECV
+-#endif
+-
+-#if defined(USART3_RX_vect) && defined(UDR3)
+-  SIGNAL(USART3_RX_vect)
+-  {
+-    unsigned char c = UDR3;
+-    store_char(c, &rx_buffer3);
+-  }
+-#elif defined(SIG_USART3_RECV)
+-  #error SIG_USART3_RECV
+-#endif
+-
++// fixed by Mark Sproul this is on the 644/644p
++//SIGNAL(SIG_USART_RECV)
++SIGNAL(USART0_RX_vect)
++{
++  unsigned char c  =  UDR0;
++  store_char(c, &rx_buffer);
++}
+ 
+ 
+ // Constructors ////////////////////////////////////////////////////////////////
+@@ -231,7 +134,7 @@ void HardwareSerial::end()
+ 
+ int HardwareSerial::available(void)
+ {
+-  return (unsigned int)(RX_BUFFER_SIZE + _rx_buffer->head - _rx_buffer->tail) % RX_BUFFER_SIZE;
++  return (unsigned int)(RX_BUFFER_SIZE + _rx_buffer->head - _rx_buffer->tail) & (RX_BUFFER_SIZE-1);
+ }
+ 
+ int HardwareSerial::peek(void)
+@@ -250,7 +153,7 @@ int HardwareSerial::read(void)
+     return -1;
+   } else {
+     unsigned char c = _rx_buffer->buffer[_rx_buffer->tail];
+-    _rx_buffer->tail = (unsigned int)(_rx_buffer->tail + 1) % RX_BUFFER_SIZE;
++    _rx_buffer->tail = (unsigned int)(_rx_buffer->tail + 1) & (RX_BUFFER_SIZE-1);
+     return c;
+   }
+ }
+@@ -278,26 +181,7 @@ void HardwareSerial::write(uint8_t c)
+ }
+ 
+ // Preinstantiate Objects //////////////////////////////////////////////////////
+-
+-#if defined(UBRRH) && defined(UBRRL)
+-  HardwareSerial Serial(&rx_buffer, &UBRRH, &UBRRL, &UCSRA, &UCSRB, &UDR, RXEN, TXEN, RXCIE, UDRE, U2X);
+-#elif defined(UBRR0H) && defined(UBRR0L)
+-  HardwareSerial Serial(&rx_buffer, &UBRR0H, &UBRR0L, &UCSR0A, &UCSR0B, &UDR0, RXEN0, TXEN0, RXCIE0, UDRE0, U2X0);
+-#elif defined(USBCON)
+-  #warning no serial port defined  (port 0)
+-#else
+-  #error no serial port defined  (port 0)
+-#endif
+-
+-#if defined(UBRR1H)
+-  HardwareSerial Serial1(&rx_buffer1, &UBRR1H, &UBRR1L, &UCSR1A, &UCSR1B, &UDR1, RXEN1, TXEN1, RXCIE1, UDRE1, U2X1);
+-#endif
+-#if defined(UBRR2H)
+-  HardwareSerial Serial2(&rx_buffer2, &UBRR2H, &UBRR2L, &UCSR2A, &UCSR2B, &UDR2, RXEN2, TXEN2, RXCIE2, UDRE2, U2X2);
+-#endif
+-#if defined(UBRR3H)
+-  HardwareSerial Serial3(&rx_buffer3, &UBRR3H, &UBRR3L, &UCSR3A, &UCSR3B, &UDR3, RXEN3, TXEN3, RXCIE3, UDRE3, U2X3);
+-#endif
++HardwareSerial Serial(&rx_buffer, &UBRR0H, &UBRR0L, &UCSR0A, &UCSR0B, &UDR0, RXEN0, TXEN0, RXCIE0, UDRE0, U2X0);
+ 
+ #endif // whole file
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 4206410..b08a800 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -89,25 +89,50 @@ static unsigned long previous_millis_heater, previous_millis_bed_heater;
+   static unsigned long watchmillis = 0;
+ #endif //WATCHPERIOD
+ 
++// Init min and max temp with extreme values to prevent false errors during startup
+ #ifdef HEATER_0_MINTEMP
+-  static int minttemp_0 = temp2analog(HEATER_0_MINTEMP);
++  #ifdef HEATER_0_USES_AD595
++    static int minttemp_0 = 0;
++  #else
++    static int minttemp_0 = 16383;
++  #endif
+ #endif //MINTEMP
+ #ifdef HEATER_0_MAXTEMP
+-  static int maxttemp_0 = temp2analog(HEATER_0_MAXTEMP);
++  #ifdef HEATER_0_USES_AD595
++    static int maxttemp_0 = 0;
++  #else
++    static int maxttemp_0 = 16383;
++  #endif
+ #endif //MAXTEMP
+ 
+ #ifdef HEATER_1_MINTEMP
+-  static int minttemp_1 = temp2analog(HEATER_1_MINTEMP);
++  #ifdef HEATER_1_USES_AD595
++    static int minttemp_1 = 0;
++  #else
++    static int minttemp_1 = 16383;
++  #endif
+ #endif //MINTEMP
+ #ifdef HEATER_1_MAXTEMP
+-  static int maxttemp_1 = temp2analog(HEATER_1_MAXTEMP);
++  #ifdef HEATER_1_USES_AD595
++    static int maxttemp_1 = 0;
++  #else
++    static int maxttemp_1 = 16383;
++  #endif
+ #endif //MAXTEMP
+ 
+ #ifdef BED_MINTEMP
+-  static int bed_minttemp = temp2analog(BED_MINTEMP);
++  #ifdef BED_USES_AD595
++    static int bed_minttemp = 0;
++  #else
++    static int bed_minttemp = 16383;
++  #endif
+ #endif //BED_MINTEMP
+ #ifdef BED_MAXTEMP
+-  static int bed_maxttemp = temp2analog(BED_MAXTEMP);
++  #ifdef BED_USES_AD595
++    static int bed_maxttemp = 0;
++  #else
++    static int bed_maxttemp = 16383;
++  #endif
+ #endif //BED_MAXTEMP
+ 
+ //===========================================================================
+@@ -350,6 +375,30 @@ void tp_init()
+   // Interleave temperature interrupt with millies interrupt
+   OCR0B = 128;
+   TIMSK0 |= (1<<OCIE0B);  
++  
++  // Wait for temperature measurement to settle
++  delay(500);
++
++#ifdef HEATER_0_MINTEMP
++  minttemp_0 = temp2analog(HEATER_0_MINTEMP);
++#endif //MINTEMP
++#ifdef HEATER_0_MAXTEMP
++  maxttemp_0 = temp2analog(HEATER_0_MAXTEMP);
++#endif //MAXTEMP
++
++#ifdef HEATER_1_MINTEMP
++  minttemp_1 = temp2analog(HEATER_1_MINTEMP);
++#endif //MINTEMP
++#ifdef HEATER_1_MAXTEMP
++  maxttemp_1 = temp2analog(HEATER_1_MAXTEMP);
++#endif //MAXTEMP
++
++#ifdef BED_MINTEMP
++  bed_minttemp = temp2analog(BED_MINTEMP);
++#endif //BED_MINTEMP
++#ifdef BED_MAXTEMP
++  bed_maxttemp = temp2analog(BED_MAXTEMP);
++#endif //BED_MAXTEMP
+ }
+ 
+ 
+
+commit 9d90220537583b98b726dab13e3c553d676d631e (from ff69e0a772c71226be7d6000c5096c0a850e3a62)
+Merge: 869cee7 ff69e0a
+Author: Bernhard Kubicek <kubicek@gmx.at>
+Date:   Sat Nov 19 14:35:53 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 8dc8d08..34d50e3 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -176,6 +176,7 @@ static unsigned long stoptime=0;
+ //=============================ROUTINES=============================
+ //===========================================================================
+ 
++void get_arc_coordinates();
+ 
+ extern "C"{
+   extern unsigned int __bss_end;
+@@ -588,7 +589,7 @@ inline void process_commands()
+       starpos = (strchr(strchr_pointer + 4,'*'));
+       if(starpos!=NULL)
+         *(starpos-1)='\0';
+-      card.selectFile(strchr_pointer + 4);
++      card.openFile(strchr_pointer + 4,true);
+       break;
+     case 24: //M24 - Start SD print
+       card.startFileprint();
+@@ -613,7 +614,7 @@ inline void process_commands()
+         strchr_pointer = strchr(npos,' ') + 1;
+         *(starpos-1) = '\0';
+       }
+-      card.startFilewrite(strchr_pointer+4);
++      card.openFile(strchr_pointer+4,false);
+       
+       break;
+     case 29: //M29 - Stop SD write
+diff --git a/Marlin/SdFat.cpp b/Marlin/SdFat.cpp
+deleted file mode 100644
+index 494fd48..0000000
+--- a/Marlin/SdFat.cpp
++++ /dev/null
+@@ -1,329 +0,0 @@
+-/* Arduino SdFat Library
+- * Copyright (C) 2009 by William Greiman
+- *
+- * This file is part of the Arduino SdFat Library
+- *
+- * This Library is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This Library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with the Arduino SdFat Library.  If not, see
+- * <http://www.gnu.org/licenses/>.
+- */
+-#include "SdFat.h"
+-#include "SdFatUtil.h"
+-//------------------------------------------------------------------------------
+-/** Change a volume's working directory to root
+- *
+- * Changes the volume's working directory to the SD's root directory.
+- * Optionally set the current working directory to the volume's
+- * working directory.
+- *
+- * \param[in] set_cwd Set the current working directory to this volume's
+- *  working directory if true.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::chdir(bool set_cwd) {
+-  if (set_cwd) SdBaseFile::cwd_ = &vwd_;
+-  vwd_.close();
+-  return vwd_.openRoot(&vol_);
+-}
+-//------------------------------------------------------------------------------
+-/** Change a volume's working directory
+- *
+- * Changes the volume working directory to the \a path subdirectory.
+- * Optionally set the current working directory to the volume's
+- * working directory.
+- *
+- * Example: If the volume's working directory is "/DIR", chdir("SUB")
+- * will change the volume's working directory from "/DIR" to "/DIR/SUB".
+- *
+- * If path is "/", the volume's working directory will be changed to the
+- * root directory
+- *
+- * \param[in] path The name of the subdirectory.
+- *
+- * \param[in] set_cwd Set the current working directory to this volume's
+- *  working directory if true.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::chdir(const char *path, bool set_cwd) {
+-  SdBaseFile dir;
+-  if (path[0] == '/' && path[1] == '\0') return chdir(set_cwd);
+-  if (!dir.open(&vwd_, path, O_READ)) goto fail;
+-  if (!dir.isDir()) goto fail;
+-  vwd_ = dir;
+-  if (set_cwd) SdBaseFile::cwd_ = &vwd_;
+-  return true;
+-
+- fail:
+-  return false;
+-}
+-//------------------------------------------------------------------------------
+-/** Set the current working directory to a volume's working directory.
+- *
+- * This is useful with multiple SD cards.
+- *
+- * The current working directory is changed to this volume's working directory.
+- *
+- * This is like the Windows/DOS \<drive letter>: command.
+- */
+-void SdFat::chvol() {
+-  SdBaseFile::cwd_ = &vwd_;
+-}
+-//------------------------------------------------------------------------------
+-/** %Print any SD error code and halt. */
+-void SdFat::errorHalt() {
+-  errorPrint();
+-  while (1);
+-}
+-//------------------------------------------------------------------------------
+-/** %Print msg, any SD error code, and halt.
+- *
+- * \param[in] msg Message to print.
+- */
+-void SdFat::errorHalt(char const* msg) {
+-  errorPrint(msg);
+-  while (1);
+-}
+-//------------------------------------------------------------------------------
+-/** %Print msg, any SD error code, and halt.
+- *
+- * \param[in] msg Message in program space (flash memory) to print.
+- */
+-void SdFat::errorHalt_P(PGM_P msg) {
+-  errorPrint_P(msg);
+-  while (1);
+-}
+-//------------------------------------------------------------------------------
+-/** %Print any SD error code. */
+-void SdFat::errorPrint() {
+-  if (!card_.errorCode()) return;
+-  PgmPrint("SD errorCode: 0X");
+-  Serial.println(card_.errorCode(), HEX);
+-}
+-//------------------------------------------------------------------------------
+-/** %Print msg, any SD error code.
+- *
+- * \param[in] msg Message to print.
+- */
+-void SdFat::errorPrint(char const* msg) {
+-  PgmPrint("error: ");
+-  Serial.println(msg);
+-  errorPrint();
+-}
+-//------------------------------------------------------------------------------
+-/** %Print msg, any SD error code.
+- *
+- * \param[in] msg Message in program space (flash memory) to print.
+- */
+-void SdFat::errorPrint_P(PGM_P msg) {
+-  PgmPrint("error: ");
+-  SerialPrintln_P(msg);
+-  errorPrint();
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Test for the existence of a file.
+- *
+- * \param[in] name Name of the file to be tested for.
+- *
+- * \return true if the file exists else false.
+- */
+-bool SdFat::exists(const char* name) {
+-  return vwd_.exists(name);
+-}
+-//------------------------------------------------------------------------------
+-/**
+- * Initialize an SdFat object.
+- *
+- * Initializes the SD card, SD volume, and root directory.
+- *
+- * \param[in] sckRateID value for SPI SCK rate. See Sd2Card::init().
+- * \param[in] chipSelectPin SD chip select pin. See Sd2Card::init().
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::init(uint8_t sckRateID, uint8_t chipSelectPin) {
+-  return card_.init(sckRateID, chipSelectPin) && vol_.init(&card_) && chdir(1);
+-}
+-//------------------------------------------------------------------------------
+-/** %Print error details and halt after SdFat::init() fails. */
+-void SdFat::initErrorHalt() {
+-  initErrorPrint();
+-  while (1);
+-}
+-//------------------------------------------------------------------------------
+-/**Print message, error details, and halt after SdFat::init() fails.
+- *
+- * \param[in] msg Message to print.
+- */
+-void SdFat::initErrorHalt(char const *msg) {
+-  Serial.println(msg);
+-  initErrorHalt();
+-}
+-//------------------------------------------------------------------------------
+-/**Print message, error details, and halt after SdFat::init() fails.
+- *
+- * \param[in] msg Message in program space (flash memory) to print.
+- */
+-void SdFat::initErrorHalt_P(PGM_P msg) {
+-  SerialPrintln_P(msg);
+-  initErrorHalt();
+-}
+-//------------------------------------------------------------------------------
+-/** Print error details after SdFat::init() fails. */
+-void SdFat::initErrorPrint() {
+-  if (card_.errorCode()) {
+-    PgmPrintln("Can't access SD card. Do not reformat.");
+-    if (card_.errorCode() == SD_CARD_ERROR_CMD0) {
+-      PgmPrintln("No card, wrong chip select pin, or SPI problem?");
+-    }
+-    errorPrint();
+-  } else if (vol_.fatType() == 0) {
+-    PgmPrintln("Invalid format, reformat SD.");
+-  } else if (!vwd_.isOpen()) {
+-    PgmPrintln("Can't open root directory.");
+-  } else {
+-    PgmPrintln("No error found.");
+-  }
+-}
+-//------------------------------------------------------------------------------
+-/**Print message and error details and halt after SdFat::init() fails.
+- *
+- * \param[in] msg Message to print.
+- */
+-void SdFat::initErrorPrint(char const *msg) {
+-  Serial.println(msg);
+-  initErrorPrint();
+-}
+-//------------------------------------------------------------------------------
+-/**Print message and error details after SdFat::init() fails.
+- *
+- * \param[in] msg Message in program space (flash memory) to print.
+- */
+-void SdFat::initErrorPrint_P(PGM_P msg) {
+-  SerialPrintln_P(msg);
+-  initErrorHalt();
+-}
+-//------------------------------------------------------------------------------
+-/** List the directory contents of the volume working directory to Serial.
+- *
+- * \param[in] flags The inclusive OR of
+- *
+- * LS_DATE - %Print file modification date
+- *
+- * LS_SIZE - %Print file size.
+- *
+- * LS_R - Recursive list of subdirectories.
+- */
+-void SdFat::ls(uint8_t flags) {
+-  vwd_.ls(&Serial, flags);
+-}
+-//------------------------------------------------------------------------------
+-/** List the directory contents of the volume working directory to Serial.
+- *
+- * \param[in] pr Print stream for list.
+- *
+- * \param[in] flags The inclusive OR of
+- *
+- * LS_DATE - %Print file modification date
+- *
+- * LS_SIZE - %Print file size.
+- *
+- * LS_R - Recursive list of subdirectories.
+- */
+-void SdFat::ls(Print* pr, uint8_t flags) {
+-  vwd_.ls(pr, flags);
+-}
+-//------------------------------------------------------------------------------
+-/** Make a subdirectory in the volume working directory.
+- *
+- * \param[in] path A path with a valid 8.3 DOS name for the subdirectory.
+- *
+- * \param[in] pFlag Create missing parent directories if true.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::mkdir(const char* path, bool pFlag) {
+-  SdBaseFile sub;
+-  return sub.mkdir(&vwd_, path, pFlag);
+-}
+-//------------------------------------------------------------------------------
+-/** Remove a file from the volume working directory.
+-*
+-* \param[in] path A path with a valid 8.3 DOS name for the file.
+-*
+-* \return The value one, true, is returned for success and
+-* the value zero, false, is returned for failure.
+-*/
+-bool SdFat::remove(const char* path) {
+-  return SdBaseFile::remove(&vwd_, path);
+-}
+-//------------------------------------------------------------------------------
+-/** Rename a file or subdirectory.
+- *
+- * \param[in] oldPath Path name to the file or subdirectory to be renamed.
+- *
+- * \param[in] newPath New path name of the file or subdirectory.
+- *
+- * The \a newPath object must not exist before the rename call.
+- *
+- * The file to be renamed must not be open.  The directory entry may be
+- * moved and file system corruption could occur if the file is accessed by
+- * a file object that was opened before the rename() call.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::rename(const char *oldPath, const char *newPath) {
+-  SdBaseFile file;
+-  if (!file.open(oldPath, O_READ)) return false;
+-  return file.rename(&vwd_, newPath);
+-}
+-//------------------------------------------------------------------------------
+-/** Remove a subdirectory from the volume's working directory.
+- *
+- * \param[in] path A path with a valid 8.3 DOS name for the subdirectory.
+- *
+- * The subdirectory file will be removed only if it is empty.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- */
+-bool SdFat::rmdir(const char* path) {
+-  SdBaseFile sub;
+-  if (!sub.open(path, O_READ)) return false;
+-  return sub.rmdir();
+-}
+-//------------------------------------------------------------------------------
+-/** Truncate a file to a specified length.  The current file position
+- * will be maintained if it is less than or equal to \a length otherwise
+- * it will be set to end of file.
+- *
+- * \param[in] path A path with a valid 8.3 DOS name for the file.
+- * \param[in] length The desired length for the file.
+- *
+- * \return The value one, true, is returned for success and
+- * the value zero, false, is returned for failure.
+- * Reasons for failure include file is read only, file is a directory,
+- * \a length is greater than the current file size or an I/O error occurs.
+- */
+-bool SdFat::truncate(const char* path, uint32_t length) {
+-  SdBaseFile file;
+-  if (!file.open(path, O_WRITE)) return false;
+-  return file.truncate(length);
+-}
+diff --git a/Marlin/SdFat.h b/Marlin/SdFat.h
+deleted file mode 100644
+index 1a184d0..0000000
+--- a/Marlin/SdFat.h
++++ /dev/null
+@@ -1,76 +0,0 @@
+-/* Arduino SdFat Library
+- * Copyright (C) 2009 by William Greiman
+- *
+- * This file is part of the Arduino SdFat Library
+- *
+- * This Library is free software: you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation, either version 3 of the License, or
+- * (at your option) any later version.
+- *
+- * This Library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with the Arduino SdFat Library.  If not, see
+- * <http://www.gnu.org/licenses/>.
+- */
+-#ifndef SdFat_h
+-#define SdFat_h
+-/**
+- * \file
+- * \brief SdFat class
+- */
+-#include "SdFile.h"
+-//#include <SdStream.h>
+-//#include <ArduinoStream.h>
+-//------------------------------------------------------------------------------
+-/** SdFat version YYYYMMDD */
+-#define SD_FAT_VERSION 20110902
+-//------------------------------------------------------------------------------
+-/**
+- * \class SdFat
+- * \brief Integration class for the %SdFat library.
+- */
+-class SdFat {
+- public:
+-  SdFat() {}
+-  /** \return a pointer to the Sd2Card object. */
+-  Sd2Card* card() {return &card_;}
+-  bool chdir(bool set_cwd = false);
+-  bool chdir(const char* path, bool set_cwd = false);
+-  void chvol();
+-  void errorHalt();
+-  void errorHalt_P(PGM_P msg);
+-  void errorHalt(char const *msg);
+-  void errorPrint();
+-  void errorPrint_P(PGM_P msg);
+-  void errorPrint(char const *msg);
+-  bool exists(const char* name);
+-  bool init(uint8_t sckRateID = SPI_FULL_SPEED,
+-    uint8_t chipSelectPin = SD_CHIP_SELECT_PIN);
+-  void initErrorHalt();
+-  void initErrorHalt(char const *msg);
+-  void initErrorHalt_P(PGM_P msg);
+-  void initErrorPrint();
+-  void initErrorPrint(char const *msg);
+-  void initErrorPrint_P(PGM_P msg);
+-  void ls(uint8_t flags = 0);
+-  void ls(Print* pr, uint8_t flags = 0);
+-  bool mkdir(const char* path, bool pFlag = true);
+-  bool remove(const char* path);
+-  bool rename(const char *oldPath, const char *newPath);
+-  bool rmdir(const char* path);
+-  bool truncate(const char* path, uint32_t length);
+-  /** \return a pointer to the SdVolume object. */
+-  SdVolume* vol() {return &vol_;}
+-  /** \return a pointer to the volume working directory. */
+-  SdBaseFile* vwd() {return &vwd_;}
+- private:
+-  Sd2Card card_;
+-  SdVolume vol_;
+-  SdBaseFile vwd_;
+-};
+-#endif  // SdFat_h
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 04076bf..d967158 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -3,9 +3,8 @@
+ 
+ #ifdef SDSUPPORT
+  
+-
+-#include "SdFat.h"
+-
++#include "SdFile.h"
++enum LsAction {LS_SerialPrint,LS_Count,LS_GetFilename};
+ class CardReader
+ {
+ public:
+@@ -17,20 +16,22 @@ public:
+   //this is to delay autostart and hence the initialisaiton of the sd card to some seconds after the normal init, so the device is available quick after a reset
+ 
+   void checkautostart(bool x); 
+-  
++  void openFile(char* name,bool read);
+   void closefile();
+   void release();
+   void startFileprint();
+-  void startFilewrite(char *name);
++  //void startFilewrite(char *name);
+   void pauseSDPrint();
+   void getStatus();
+-  
+-  void selectFile(char* name);
++  void cd(char * absolutPath);
++  //void selectFile(char* name);
+   void getfilename(const uint8_t nr);
+-  uint8_t getnrfilenames();
++  uint16_t getnrfilenames();
+   
+ 
+-  inline void ls() {root.ls();};
++  void ls();
++  void lsDive(char *prepend,SdFile parent);
++
+   inline bool eof() { return sdpos>=filesize ;};
+   inline int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
+   inline void setIndex(long index) {sdpos = index;file.seekSet(index);};
+@@ -42,7 +43,7 @@ public:
+   bool cardOK ;
+   char filename[11];
+ private:
+-  SdFile root;
++  SdFile root,*curDir;
+   Sd2Card card;
+   SdVolume volume;
+   SdFile file;
+@@ -52,6 +53,10 @@ private:
+   uint32_t sdpos ;
+ 
+   bool autostart_stilltocheck; //the sd start is delayed, because otherwise the serial cannot answer fast enought to make contact with the hostsoftware.
++  
++  LsAction lsAction; //stored for recursion.
++  int16_t nrFiles; //counter for the files in the current directory and recycled as position counter for getting the nrFiles'th name in the directory.
++  char* diveDirName;
+ };
+   
+ 
+diff --git a/Marlin/cardreader.pde b/Marlin/cardreader.pde
+index 605af11..4c869e4 100644
+--- a/Marlin/cardreader.pde
++++ b/Marlin/cardreader.pde
+@@ -20,6 +20,109 @@ CardReader::CardReader()
+   autostart_atmillis=millis()+5000;
+ }
+ 
++char *createFilename(char *buffer,const dir_t &p) //buffer>12characters
++{
++  char *pos=buffer;
++  for (uint8_t i = 0; i < 11; i++) 
++  {
++    if (p.name[i] == ' ')continue;
++    if (i == 8) 
++    {
++      *pos++='.';
++    }
++    *pos++=p.name[i];
++  }
++  *pos++=0;
++  return buffer;
++}
++
++// bool SdFat::chdir(bool set_cwd) {
++//   if (set_cwd) SdBaseFile::cwd_ = &vwd_;
++//   vwd_.close();
++//   return vwd_.openRoot(&vol_);
++// }
++void  CardReader::lsDive(char *prepend,SdFile parent)
++{
++  dir_t p;
++ uint8_t cnt=0;
++ 
++  while (parent.readDir(p) > 0)
++  {
++    if( DIR_IS_SUBDIR(&p) && lsAction!=LS_Count && lsAction!=LS_GetFilename)
++    {
++
++      char path[13*2];
++      char lfilename[13];
++      createFilename(lfilename,p);
++      
++      path[0]=0;
++      if(strlen(prepend)==0) //avoid leading / if already in prepend
++      {
++       strcat(path,"/");
++      }
++      strcat(path,prepend);
++      strcat(path,lfilename);
++      strcat(path,"/");
++      
++      //Serial.print(path);
++      
++      SdFile dir;
++      if(!dir.open(parent,lfilename, O_READ))
++      {
++        if(lsAction==LS_SerialPrint)
++        {
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLN("Cannot open subdir");
++          SERIAL_ECHOLN(lfilename);
++        }
++      }
++      lsDive(path,dir);
++      //close done automatically by destructor of SdFile
++
++      
++    }
++    else
++    {
++      if (p.name[0] == DIR_NAME_FREE) break;
++      if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.'|| p.name[0] == '_') continue;
++      if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
++      
++      
++      if(p.name[8]!='G') continue;
++      if(p.name[9]=='~') continue;
++      //if(cnt++!=nr) continue;
++      createFilename(filename,p);
++      if(lsAction==LS_SerialPrint)
++      {
++        SERIAL_PROTOCOL(prepend);
++        SERIAL_PROTOCOLLN(filename);
++      }
++      else if(lsAction==LS_Count)
++      {
++        nrFiles++;
++      } 
++      else if(lsAction==LS_GetFilename)
++      {
++        if(cnt==nrFiles)
++          return;
++        cnt++;
++        
++      }
++    }
++  }
++}
++
++void CardReader::ls() 
++{
++  lsAction=LS_SerialPrint;
++  if(lsAction==LS_Count)
++  nrFiles=0;
++
++  root.rewind();
++  lsDive("",root);
++}
++
++
+ void CardReader::initsd()
+ {
+   cardOK = false;
+@@ -48,6 +151,7 @@ void CardReader::initsd()
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLNPGM("SD card ok");
+     }
++    curDir=&root;
+   #endif //SDSS
+ }
+ void CardReader::release()
+@@ -73,48 +177,90 @@ void CardReader::pauseSDPrint()
+   }
+ }
+ 
+-void CardReader::selectFile(char* name)
++
++
++void CardReader::openFile(char* name,bool read)
+ {
+-  if(cardOK){
+-    sdprinting = false;
+-    file.close();
+-   
+-    if (file.open(&root, name, O_READ)) {
++  if(!cardOK)
++    return;
++  file.close();
++  sdprinting = false;
++  
++  
++  SdFile myDir;
++  curDir=&root;
++  char *fname=name;
++  
++  char *dirname_start,*dirname_end;
++  dirname_start=strchr(name,'/')+1;
++  while(dirname_start!=NULL)
++  {
++    dirname_end=strchr(dirname_start,'/');
++    //SERIAL_ECHO("start:");SERIAL_ECHOLN((int)(dirname_start-name));
++    //SERIAL_ECHO("end  :");SERIAL_ECHOLN((int)(dirname_end-name));
++    if(dirname_end!=NULL && dirname_end>dirname_start)
++    {
++      char subdirname[13];
++      strncpy(subdirname, dirname_start, dirname_end-dirname_start);
++      subdirname[dirname_end-dirname_start]=0;
++      SERIAL_ECHOLN(subdirname);
++      if(!myDir.open(curDir,subdirname,O_READ))
++      {
++        SERIAL_PROTOCOLPGM("open failed, File: ");
++        SERIAL_PROTOCOL(subdirname);
++        SERIAL_PROTOCOLLNPGM(".");
++        return;
++      }
++      else
++        SERIAL_ECHOLN("dive ok");
++        
++      curDir=&myDir; 
++      dirname_start=dirname_end+1;
++    }
++    else // the reminder after all /fsa/fdsa/ is the filename
++    {
++      fname=dirname_start;
++      //SERIAL_ECHOLN("remaider");
++      //SERIAL_ECHOLN(fname);
++      break;
++    }
++    
++  }
++ 
++  if(read)
++  {
++    if (file.open(curDir, fname, O_READ)) 
++    {
+       filesize = file.fileSize();
+       SERIAL_PROTOCOLPGM("File opened:");
+-      SERIAL_PROTOCOL(name);
++      SERIAL_PROTOCOL(fname);
+       SERIAL_PROTOCOLPGM(" Size:");
+       SERIAL_PROTOCOLLN(filesize);
+       sdpos = 0;
+       
+       SERIAL_PROTOCOLLNPGM("File selected");
+     }
+-    else{
++    else
++    {
+       SERIAL_PROTOCOLLNPGM("file.open failed");
+     }
+   }
+-}
+-
+-void CardReader::startFilewrite(char *name)
+-{
+-  if(cardOK)
+-  {
+-    
+-    file.close();
+-    sdprinting = false;
+-    
+-    if (!file.open(&root, name, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
++  else 
++  { //write
++    if (!file.open(curDir, fname, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
+     {
+       SERIAL_PROTOCOLPGM("open failed, File: ");
+-      SERIAL_PROTOCOL(name);
++      SERIAL_PROTOCOL(fname);
+       SERIAL_PROTOCOLLNPGM(".");
+     }
+-    else{
++    else
++    {
+       saving = true;
+       SERIAL_PROTOCOLPGM("Writing to file: ");
+       SERIAL_PROTOCOLLN(name);
+     }
+   }
++  
+ }
+ 
+ void CardReader::getStatus()
+@@ -212,49 +358,25 @@ void CardReader::closefile()
+ 
+ void CardReader::getfilename(const uint8_t nr)
+ {
+-
+-  dir_t p;
+-  root.rewind();
+-  uint8_t cnt=0;
+-  filename[0]='\0';
+-  while (root.readDir(p) > 0)
+-  {
+-    if (p.name[0] == DIR_NAME_FREE) break;
+-    if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.'|| p.name[0] == '_') continue;
+-    if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
+-    if(p.name[8]!='G') continue;
+-    if(p.name[9]=='~') continue;
+-    if(cnt++!=nr) continue;
+-    //Serial.println((char*)p.name);
+-    uint8_t writepos=0;
+-    for (int8_t i = 0; i < 11; i++) 
+-    {
+-      if (p.name[i] == ' ') continue;
+-      if (i == 8) {
+-        filename[writepos++]='.';
+-      }
+-      filename[writepos++]=p.name[i];
+-    }
+-    filename[writepos++]=0;
+-  }
++  lsAction=LS_GetFilename;
++  nrFiles=nr;
++  curDir->rewind();
++  lsDive("",*curDir);
++  
+ }
+ 
+-uint8_t CardReader::getnrfilenames()
++uint16_t CardReader::getnrfilenames()
+ {
+-  dir_t p;
+-  root.rewind();
+-  uint8_t cnt=0;
+-  while (root.readDir(p) > 0)
+-  {
+-    if (p.name[0] == DIR_NAME_FREE) break;
+-    if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.'|| p.name[0] == '_') continue;
+-    if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
+-    if(p.name[8]!='G') continue;
+-    if(p.name[9]=='~') continue;
+-    cnt++;
+-  }
+-  return cnt;
++  lsAction=LS_Count;
++  nrFiles=0;
++  curDir->rewind();
++  lsDive("",*curDir);
++  return nrFiles;
+ }
+ 
++void CardReader::cd(char * absolutPath)
++{
++  
++}
+ 
+ #endif //SDSUPPORT
+\ No newline at end of file
+

@@ -1,0 +1,382 @@
+commit fbd8f06951a57a22cfea2bee714cf36bb3218899 (from 7cceb159254ad679c190a946d92a08c3cd282a38)
+Merge: 7cceb15 330f829
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Aug 2 14:40:43 2016 -0700
+
+    Merge pull request #4506 from thinkyhead/rc_buzzer_needs_beeper
+    
+    Buzzer requires BEEPER_PIN
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index cfa57eb..a0f9968 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -384,9 +384,8 @@ extern uint8_t active_extruder;
+ void calculate_volumetric_multipliers();
+ 
+ // Buzzer
+-#if HAS_BUZZER
++#if HAS_BUZZER && PIN_EXISTS(BEEPER)
+   #include "buzzer.h"
+-  extern Buzzer buzzer;
+ #endif
+ 
+ /**
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 6993862..201f674 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -373,9 +373,14 @@ static millis_t stepper_inactive_time = (DEFAULT_STEPPER_DEACTIVE_TIME) * 1000UL
+   Stopwatch print_job_timer = Stopwatch();
+ #endif
+ 
+-// Buzzer
+-#if HAS_BUZZER
+-    Buzzer buzzer;
++// Buzzer - I2C on the LCD or a BEEPER_PIN
++#if ENABLED(LCD_USE_I2C_BUZZER)
++  #define BUZZ(d,f) lcd_buzz(d, f)
++#elif HAS_BUZZER
++  Buzzer buzzer;
++  #define BUZZ(d,f) buzzer.tone(d, f)
++#else
++  #define BUZZ(d,f) NOOP
+ #endif
+ 
+ static uint8_t target_extruder;
+@@ -5657,7 +5662,7 @@ inline void gcode_M226() {
+     // Limits the tone duration to 0-5 seconds.
+     NOMORE(duration, 5000);
+ 
+-    buzzer.tone(duration, frequency);
++    BUZZ(duration, frequency);
+   }
+ 
+ #endif // HAS_BUZZER
+@@ -6129,9 +6134,7 @@ inline void gcode_M428() {
+         SERIAL_ERROR_START;
+         SERIAL_ERRORLNPGM(MSG_ERR_M428_TOO_FAR);
+         LCD_ALERTMESSAGEPGM("Err: Too far!");
+-        #if HAS_BUZZER
+-          buzzer.tone(200, 40);
+-        #endif
++        BUZZ(200, 40);
+         err = true;
+         break;
+       }
+@@ -6142,10 +6145,8 @@ inline void gcode_M428() {
+     SYNC_PLAN_POSITION_KINEMATIC();
+     report_current_position();
+     LCD_MESSAGEPGM(MSG_HOME_OFFSETS_APPLIED);
+-    #if HAS_BUZZER
+-      buzzer.tone(200, 659);
+-      buzzer.tone(200, 698);
+-    #endif
++    BUZZ(200, 659);
++    BUZZ(200, 698);
+   }
+ }
+ 
+@@ -6327,7 +6328,7 @@ inline void gcode_M503() {
+       #if HAS_BUZZER
+         millis_t ms = millis();
+         if (ms >= next_tick) {
+-          buzzer.tone(300, 2000);
++          BUZZ(300, 2000);
+           next_tick = ms + 2500; // Beep every 2.5s while waiting
+         }
+       #endif
+@@ -8470,7 +8471,7 @@ void idle(
+     print_job_timer.tick();
+   #endif
+ 
+-  #if HAS_BUZZER
++  #if HAS_BUZZER && PIN_EXISTS(BEEPER)
+     buzzer.tick();
+   #endif
+ }
+diff --git a/Marlin/buzzer.h b/Marlin/buzzer.h
+index a398269..4548acf 100644
+--- a/Marlin/buzzer.h
++++ b/Marlin/buzzer.h
+@@ -27,6 +27,8 @@
+ #include "circularqueue.h"
+ #include "temperature.h"
+ 
++#include "MarlinConfig.h"
++
+ #define TONE_QUEUE_LENGTH 4
+ 
+ /**
+@@ -135,4 +137,6 @@ class Buzzer {
+     }
+ };
+ 
++extern Buzzer buzzer;
++
+ #endif
+diff --git a/Marlin/pins_AZTEEG_X3.h b/Marlin/pins_AZTEEG_X3.h
+index 05a5a26..b33818e 100644
+--- a/Marlin/pins_AZTEEG_X3.h
++++ b/Marlin/pins_AZTEEG_X3.h
+@@ -30,7 +30,7 @@
+ 
+ #define BOARD_NAME "Azteeg X3"
+ 
+-#include "pins_RAMPS.h"
++#include "pins_RAMPS_13.h"
+ 
+ #if ENABLED(VIKI2) || ENABLED(miniVIKI)
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index b08eacc..d009374 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1074,8 +1074,8 @@ void kill_screen(const char* lcd_msg) {
+             lcd_return_to_status();
+             //LCD_MESSAGEPGM(MSG_LEVEL_BED_DONE);
+             #if HAS_BUZZER
+-              buzzer.tone(200, 659);
+-              buzzer.tone(200, 698);
++              lcd_buzz(200, 659);
++              lcd_buzz(200, 698);
+             #endif
+           }
+           else {
+@@ -2342,23 +2342,23 @@ void kill_screen(const char* lcd_msg) {
+    * Audio feedback for controller clicks
+    *
+    */
+-
+-  #if ENABLED(LCD_USE_I2C_BUZZER)
+-    void lcd_buzz(long duration, uint16_t freq) { // called from buzz() in Marlin_main.cpp where lcd is unknown
++  void lcd_buzz(long duration, uint16_t freq) {
++    #if ENABLED(LCD_USE_I2C_BUZZER)
+       lcd.buzz(duration, freq);
+-    }
+-  #endif
++    #elif PIN_EXISTS(BEEPER)
++      buzzer.tone(duration, freq);
++    #endif
++  }
+ 
+   void lcd_quick_feedback() {
+     lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW;
+     next_button_update_ms = millis() + 500;
+ 
+     // Buzz and wait. The delay is needed for buttons to settle!
++    lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
+     #if ENABLED(LCD_USE_I2C_BUZZER)
+-      lcd.buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
+       delay(10);
+     #elif PIN_EXISTS(BEEPER)
+-      buzzer.tone(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
+       for (int8_t i = 5; i--;) { buzzer.tick(); delay(2); }
+     #endif
+   }
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index b1d4300..4cc8334 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -43,7 +43,7 @@
+   void lcd_kill_screen();
+   void kill_screen(const char* lcd_msg);
+ 
+-  #if ENABLED(LCD_USE_I2C_BUZZER)
++  #if HAS_BUZZER
+     void lcd_buzz(long duration, uint16_t freq);
+   #endif
+ 
+
+commit fbd8f06951a57a22cfea2bee714cf36bb3218899 (from 330f82971b8b1c6a8f44bcb917ff788db49a44ce)
+Merge: 7cceb15 330f829
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Aug 2 14:40:43 2016 -0700
+
+    Merge pull request #4506 from thinkyhead/rc_buzzer_needs_beeper
+    
+    Buzzer requires BEEPER_PIN
+
+diff --git a/Marlin/Conditionals_LCD.h b/Marlin/Conditionals_LCD.h
+index 60ed5ce..1cad0a0 100644
+--- a/Marlin/Conditionals_LCD.h
++++ b/Marlin/Conditionals_LCD.h
+@@ -267,4 +267,42 @@
+     #define BOOTSCREEN_TIMEOUT 2500
+   #endif
+ 
++  /**
++   * Extruders have some combination of stepper motors and hotends
++   * so we separate these concepts into the defines:
++   *
++   *  EXTRUDERS    - Number of Selectable Tools
++   *  HOTENDS      - Number of hotends, whether connected or separate
++   *  E_STEPPERS   - Number of actual E stepper motors
++   *  TOOL_E_INDEX - Index to use when getting/setting the tool state
++   *  
++   */
++  #if ENABLED(SINGLENOZZLE)             // One hotend, multi-extruder
++    #define HOTENDS      1
++    #define E_STEPPERS   EXTRUDERS
++    #define E_MANUAL     EXTRUDERS
++    #define TOOL_E_INDEX current_block->active_extruder
++    #undef TEMP_SENSOR_1_AS_REDUNDANT
++    #undef HOTEND_OFFSET_X
++    #undef HOTEND_OFFSET_Y
++  #elif ENABLED(SWITCHING_EXTRUDER)     // One E stepper, unified E axis, two hotends
++    #define HOTENDS      EXTRUDERS
++    #define E_STEPPERS   1
++    #define E_MANUAL     1
++    #define TOOL_E_INDEX 0
++    #ifndef HOTEND_OFFSET_Z
++      #define HOTEND_OFFSET_Z { 0 }
++    #endif
++  #elif ENABLED(MIXING_EXTRUDER)        // Multi-stepper, unified E axis, one hotend
++    #define HOTENDS      1
++    #define E_STEPPERS   MIXING_STEPPERS
++    #define E_MANUAL     1
++    #define TOOL_E_INDEX 0
++  #else                                 // One stepper, E axis, and hotend per tool
++    #define HOTENDS      EXTRUDERS
++    #define E_STEPPERS   EXTRUDERS
++    #define E_MANUAL     EXTRUDERS
++    #define TOOL_E_INDEX current_block->active_extruder
++  #endif
++
+ #endif //CONDITIONALS_LCD_H
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 8a51187..59750fc 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -326,44 +326,6 @@
+   #define HAS_PID_FOR_BOTH (ENABLED(PIDTEMP) && ENABLED(PIDTEMPBED))
+ 
+   /**
+-   * Extruders have some combination of stepper motors and hotends
+-   * so we separate these concepts into the defines:
+-   *
+-   *  EXTRUDERS    - Number of Selectable Tools
+-   *  HOTENDS      - Number of hotends, whether connected or separate
+-   *  E_STEPPERS   - Number of actual E stepper motors
+-   *  TOOL_E_INDEX - Index to use when getting/setting the tool state
+-   *  
+-   */
+-  #if ENABLED(SINGLENOZZLE)             // One hotend, multi-extruder
+-    #define HOTENDS      1
+-    #define E_STEPPERS   EXTRUDERS
+-    #define E_MANUAL     EXTRUDERS
+-    #define TOOL_E_INDEX current_block->active_extruder
+-    #undef TEMP_SENSOR_1_AS_REDUNDANT
+-    #undef HOTEND_OFFSET_X
+-    #undef HOTEND_OFFSET_Y
+-  #elif ENABLED(SWITCHING_EXTRUDER)     // One E stepper, unified E axis, two hotends
+-    #define HOTENDS      EXTRUDERS
+-    #define E_STEPPERS   1
+-    #define E_MANUAL     1
+-    #define TOOL_E_INDEX 0
+-    #ifndef HOTEND_OFFSET_Z
+-      #define HOTEND_OFFSET_Z { 0 }
+-    #endif
+-  #elif ENABLED(MIXING_EXTRUDER)        // Multi-stepper, unified E axis, one hotend
+-    #define HOTENDS      1
+-    #define E_STEPPERS   MIXING_STEPPERS
+-    #define E_MANUAL     1
+-    #define TOOL_E_INDEX 0
+-  #else                                 // One stepper, E axis, and hotend per tool
+-    #define HOTENDS      EXTRUDERS
+-    #define E_STEPPERS   EXTRUDERS
+-    #define E_MANUAL     EXTRUDERS
+-    #define TOOL_E_INDEX current_block->active_extruder
+-  #endif
+-
+-  /**
+    * Default hotend offsets, if not defined
+    */
+   #if HOTENDS > 1
+diff --git a/Marlin/pins_FELIX2.h b/Marlin/pins_FELIX2.h
+index 83ce47b..31906b5 100644
+--- a/Marlin/pins_FELIX2.h
++++ b/Marlin/pins_FELIX2.h
+@@ -30,6 +30,7 @@
+ 
+ #define BOARD_NAME "Felix 2.0+"
+ 
++// Power outputs EFBF or EFBE
+ #define MOSFET_D_PIN 7
+ 
+ #include "pins_RAMPS.h"
+diff --git a/Marlin/pins_MKS_13.h b/Marlin/pins_MKS_13.h
+index 36fc0f7..3b5b242 100644
+--- a/Marlin/pins_MKS_13.h
++++ b/Marlin/pins_MKS_13.h
+@@ -35,6 +35,7 @@
+ 
+ #define BOARD_NAME "MKS > v1.3"
+ 
++// Power outputs EFBF or EFBE
+ #define MOSFET_D_PIN 7
+ 
+ #include "pins_RAMPS.h"
+diff --git a/Marlin/pins_MKS_BASE.h b/Marlin/pins_MKS_BASE.h
+index fdaff06..8c72220 100644
+--- a/Marlin/pins_MKS_BASE.h
++++ b/Marlin/pins_MKS_BASE.h
+@@ -30,6 +30,7 @@
+ 
+ #define BOARD_NAME "MKS BASE 1.0"
+ 
++// Power outputs EFBF or EFBE
+ #define MOSFET_D_PIN 7
+ 
+ #include "pins_RAMPS.h"
+\ No newline at end of file
+diff --git a/Marlin/pins_RAMPS.h b/Marlin/pins_RAMPS.h
+index fb378e0..3280dd3 100644
+--- a/Marlin/pins_RAMPS.h
++++ b/Marlin/pins_RAMPS.h
+@@ -114,11 +114,8 @@
+   #define SLED_PIN           -1
+ #endif
+ 
+-/*
+-
+ // Augmentation for auto-assigning RAMPS plugs
+-
+-#if DISABLED(IS_RAMPS_EEB) && DISABLED(IS_RAMPS_EEF) && DISABLED(IS_RAMPS_EFB) && DISABLED(IS_RAMPS_EFF) && DISABLED(IS_RAMPS_SF)
++#if DISABLED(IS_RAMPS_EEB) && DISABLED(IS_RAMPS_EEF) && DISABLED(IS_RAMPS_EFB) && DISABLED(IS_RAMPS_EFF) && DISABLED(IS_RAMPS_SF) && !PIN_EXISTS(MOSFET_D)
+   #if HOTENDS > 1
+     #if TEMP_SENSOR_BED
+       #define IS_RAMPS_EEB
+@@ -132,8 +129,6 @@
+   #endif
+ #endif
+ 
+-*/
+-
+ /**
+  * Hi Voltage PWM Pin Assignments
+  */
+@@ -168,7 +163,7 @@
+   #define CONTROLLERFAN_PIN  -1
+ #elif ENABLED(IS_RAMPS_SF)                     // Spindle, Fan
+   #define FAN_PIN        RAMPS_D8_PIN
+-#else                                          // Non-specific are "EFB" by legacy
++#else                                          // Non-specific are "EFB" (i.e., "EFBF" or "EFBE")
+   #define FAN_PIN        RAMPS_D9_PIN
+   #define HEATER_BED_PIN RAMPS_D8_PIN
+   #if HOTENDS == 1
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 35a2a3e..552ef8b 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -29,6 +29,9 @@
+ #include "temperature.h"
+ #include "thermistortables.h"
+ #include "language.h"
++#if ENABLED(BABYSTEPPING)
++  #include "stepper.h"
++#endif
+ 
+ #if ENABLED(USE_WATCHDOG)
+   #include "watchdog.h"
+

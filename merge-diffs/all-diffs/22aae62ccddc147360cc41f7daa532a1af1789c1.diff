@@ -1,0 +1,429 @@
+commit 22aae62ccddc147360cc41f7daa532a1af1789c1 (from 538189cc19182f28209912efd353081f18aa76e7)
+Merge: 538189c adee811
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Sat Aug 11 01:40:50 2012 -0700
+
+    Merge pull request #209 from ijackson/for-upstream
+    
+    M206 fixes, and ancillary improvements
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..0a12acf
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,5 @@
++*.o
++applet/
++*~
++*.orig
++*.rej
+diff --git a/Marlin/.gitignore b/Marlin/.gitignore
+deleted file mode 100644
+index 37a3c9b..0000000
+--- a/Marlin/.gitignore
++++ /dev/null
+@@ -1,2 +0,0 @@
+-*.o
+-applet/
+diff --git a/Marlin/EEPROMwrite.h b/Marlin/EEPROMwrite.h
+index 96e2ec9..f077160 100644
+--- a/Marlin/EEPROMwrite.h
++++ b/Marlin/EEPROMwrite.h
+@@ -38,7 +38,7 @@ template <class T> int EEPROM_readAnything(int &ee, T& value)
+ // the default values are used whenever there is a change to the data, to prevent
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V05"  
++#define EEPROM_VERSION "V06"
+ 
+ inline void EEPROM_StoreSettings() 
+ {
+@@ -57,6 +57,7 @@ inline void EEPROM_StoreSettings()
+   EEPROM_writeAnything(i,max_xy_jerk);
+   EEPROM_writeAnything(i,max_z_jerk);
+   EEPROM_writeAnything(i,max_e_jerk);
++  EEPROM_writeAnything(i,add_homeing);
+   #ifdef PIDTEMP
+     EEPROM_writeAnything(i,Kp);
+     EEPROM_writeAnything(i,Ki);
+@@ -119,6 +120,13 @@ inline void EEPROM_printSettings()
+       SERIAL_ECHOPAIR(" Z" ,max_z_jerk);
+       SERIAL_ECHOPAIR(" E" ,max_e_jerk);
+       SERIAL_ECHOLN(""); 
++    SERIAL_ECHO_START;
++      SERIAL_ECHOLNPGM("Home offset (mm):");
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("  M206 X",add_homeing[0] );
++      SERIAL_ECHOPAIR(" Y" ,add_homeing[1] );
++      SERIAL_ECHOPAIR(" Z" ,add_homeing[2] );
++      SERIAL_ECHOLN("");
+     #ifdef PIDTEMP
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLNPGM("PID settings:");
+@@ -153,6 +161,7 @@ inline void EEPROM_RetrieveSettings(bool def=false)
+       EEPROM_readAnything(i,max_xy_jerk);
+       EEPROM_readAnything(i,max_z_jerk);
+       EEPROM_readAnything(i,max_e_jerk);
++      EEPROM_readAnything(i,add_homeing);
+       #ifndef PIDTEMP
+         float Kp,Ki,Kd;
+       #endif
+@@ -183,6 +192,7 @@ inline void EEPROM_RetrieveSettings(bool def=false)
+       max_xy_jerk=DEFAULT_XYJERK;
+       max_z_jerk=DEFAULT_ZJERK;
+       max_e_jerk=DEFAULT_EJERK;
++      add_homeing[0] = add_homeing[1] = add_homeing[2] = 0;
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLN("Using Default settings:");
+     }
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index fe77a2a..940bb16 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -170,6 +170,14 @@ ALL_CFLAGS = -mmcu=$(MCU) -I. $(CFLAGS)
+ ALL_CXXFLAGS = -mmcu=$(MCU) $(CXXFLAGS)
+ ALL_ASFLAGS = -mmcu=$(MCU) -x assembler-with-cpp $(ASFLAGS)
+ 
++# set V=1 (eg, "make V=1") to print the full commands etc.
++ifneq ($V,1)
++ Pecho=@echo
++ P=@
++else
++ Pecho=@:
++ P=
++endif
+ 
+ # Default target.
+ all: sizeafter
+@@ -178,7 +186,7 @@ build: applet elf hex
+ 
+ # Creates the object directory
+ applet: 
+-	@mkdir -p applet
++	$P mkdir -p applet
+ 
+ # the .cpp for Marlin depends on the .pde
+ #applet/$(TARGET).cpp: $(TARGET).pde
+@@ -189,10 +197,10 @@ applet/%.cpp: %.pde $(MAKEFILE)
+ # Here is the "preprocessing".
+ # It creates a .cpp file based with the same name as the .pde file.
+ # On top of the new .cpp file comes the WProgram.h header.
+-	@echo "  WR    $@"
+-	@echo '#include "WProgram.h"' > $@
+-	@echo '#include "$<"' >>$@
+-	@echo '#include "$(ARDUINO)/main.cpp"' >> $@
++	$(Pecho) "  WR    $@"
++	$P echo '#include "WProgram.h"' > $@
++	$P echo '#include "$<"' >>$@
++	$P echo '#include "$(ARDUINO)/main.cpp"' >> $@
+ 
+ elf: applet/$(TARGET).elf
+ hex: applet/$(TARGET).hex
+@@ -213,12 +221,13 @@ endif
+ 
+ 	# Display size of file.
+ HEXSIZE = $(SIZE) --target=$(FORMAT) applet/$(TARGET).hex
+-ELFSIZE = $(SIZE)  applet/$(TARGET).elf
++ELFSIZE = $(SIZE) --mcu=$(MCU) -C applet/$(TARGET).elf; \
++          $(SIZE)  applet/$(TARGET).elf
+ sizebefore:
+-	@if [ -f applet/$(TARGET).elf ]; then echo; echo $(MSG_SIZE_BEFORE); $(HEXSIZE); echo; fi
++	$P if [ -f applet/$(TARGET).elf ]; then echo; echo $(MSG_SIZE_BEFORE); $(HEXSIZE); echo; fi
+ 
+ sizeafter: build
+-	@if [ -f applet/$(TARGET).elf ]; then echo; echo $(MSG_SIZE_AFTER); $(ELFSIZE); echo; fi
++	$P if [ -f applet/$(TARGET).elf ]; then echo; echo $(MSG_SIZE_AFTER); $(ELFSIZE); echo; fi
+ 
+ 
+ # Convert ELF to COFF for use in debugging / simulating in AVR Studio or VMLAB.
+@@ -241,8 +250,8 @@ extcoff: $(TARGET).elf
+ .PRECIOUS: .o
+ 
+ .elf.hex:
+-	@echo "  COPY  $@"
+-	@$(OBJCOPY) -O $(FORMAT) -R .eeprom $< $@
++	$(Pecho) "  COPY  $@"
++	$P $(OBJCOPY) -O $(FORMAT) -R .eeprom $< $@
+ 
+ .elf.eep:
+ 	-$(OBJCOPY) -j .eeprom --set-section-flags=.eeprom="alloc,load" \
+@@ -258,29 +267,29 @@ extcoff: $(TARGET).elf
+ 
+ 	# Link: create ELF output file from library.
+ applet/$(TARGET).elf: applet/$(TARGET).cpp applet/core.a Configuration.h
+-	@echo "  CXX   $@"
+-	@$(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections -o $@ applet/$(TARGET).cpp -L. applet/core.a $(LDFLAGS)
++	$(Pecho) "  CXX   $@"
++	$P $(CC) $(ALL_CXXFLAGS) -Wl,--gc-sections -o $@ applet/$(TARGET).cpp -L. applet/core.a $(LDFLAGS)
+ 
+ applet/core.a: $(OBJ)
+-	@for i in $(OBJ); do echo "  AR    $$i"; $(AR) rcs applet/core.a $$i; done
++	$P for i in $(OBJ); do echo "  AR    $$i"; $(AR) rcs applet/core.a $$i; done
+ 
+ applet/%.o: %.c Configuration.h Configuration_adv.h $(MAKEFILE)
+-	@echo "  CC    $@"
+-	@$(CC) -MMD -c $(ALL_CFLAGS) $< -o $@
++	$(Pecho) "  CC    $@"
++	$P $(CC) -MMD -c $(ALL_CFLAGS) $< -o $@
+ 
+ applet/%.o: %.cpp Configuration.h Configuration_adv.h $(MAKEFILE)
+-	@echo "  CXX   $@"
+-	@$(CXX) -MMD -c $(ALL_CXXFLAGS) $< -o $@
++	$(Pecho) "  CXX   $@"
++	$P $(CXX) -MMD -c $(ALL_CXXFLAGS) $< -o $@
+ 
+ 
+ # Target: clean project.
+ clean:
+-	@echo "  RM    applet/*"
+-	@$(REMOVE) applet/$(TARGET).hex applet/$(TARGET).eep applet/$(TARGET).cof applet/$(TARGET).elf \
++	$(Pecho) "  RM    applet/*"
++	$P $(REMOVE) applet/$(TARGET).hex applet/$(TARGET).eep applet/$(TARGET).cof applet/$(TARGET).elf \
+ 		applet/$(TARGET).map applet/$(TARGET).sym applet/$(TARGET).lss applet/$(TARGET).cpp applet/core.a \
+ 		$(OBJ) $(LST) $(SRC:.c=.s) $(SRC:.c=.d) $(CXXSRC:.cpp=.s) $(CXXSRC:.cpp=.d)
+-	@echo "  RMDIR applet/"
+-	@rm -rf applet
++	$(Pecho) "  RMDIR applet/"
++	$P rm -rf applet
+ 
+ 
+ .PHONY:	all build elf hex eep lss sym program coff extcoff clean depend applet_files sizebefore sizeafter
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 4123634..208ac33 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -84,7 +84,11 @@ const char echomagic[] PROGMEM ="echo:";
+ #define SERIAL_ECHOLN(x) SERIAL_PROTOCOLLN(x)
+ #define SERIAL_ECHOLNPGM(x) SERIAL_PROTOCOLLNPGM(x)
+ 
+-#define SERIAL_ECHOPAIR(name,value) {SERIAL_ECHOPGM(name);SERIAL_ECHO(value);}
++#define SERIAL_ECHOPAIR(name,value) (serial_echopair_P(PSTR(name),(value)))
++
++void serial_echopair_P(const char *s_P, float v);
++void serial_echopair_P(const char *s_P, double v);
++void serial_echopair_P(const char *s_P, unsigned long v);
+ 
+ 
+ //things to write to serial from Programmemory. saves 400 to 2k of RAM.
+@@ -169,6 +173,7 @@ bool IsStopped();
+ 
+ void enquecommand(const char *cmd); //put an ascii command at the end of the current buffer.
+ void prepare_arc_move(char isclockwise);
++void clamp_to_software_endstops(float target[3]);
+ 
+ #ifdef FAST_PWM_FAN
+ void setPwmFrequency(uint8_t pin, int val);
+@@ -183,6 +188,8 @@ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern float current_position[NUM_AXIS] ;
+ extern float add_homeing[3];
++extern float min_pos[3];
++extern float max_pos[3];
+ extern unsigned char FanSpeed;
+ 
+ // Handling multiple extruders pins
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 73f1f41..8ed36a5 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -1,3 +1,5 @@
++/* -*- c++ -*- */
++
+ /*
+     Reprap firmware based on Sprinter and grbl.
+  Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
+@@ -141,6 +143,8 @@ volatile bool feedmultiplychanged=false;
+ volatile int extrudemultiply=100; //100->1 200->2
+ float current_position[NUM_AXIS] = { 0.0, 0.0, 0.0, 0.0 };
+ float add_homeing[3]={0,0,0};
++float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
++float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ uint8_t active_extruder = 0;
+ unsigned char FanSpeed=0;
+ 
+@@ -199,6 +203,13 @@ bool Stopped=false;
+ 
+ void get_arc_coordinates();
+ 
++void serial_echopair_P(const char *s_P, float v)
++    { serialprintPGM(s_P); SERIAL_ECHO(v); }
++void serial_echopair_P(const char *s_P, double v)
++    { serialprintPGM(s_P); SERIAL_ECHO(v); }
++void serial_echopair_P(const char *s_P, unsigned long v)
++    { serialprintPGM(s_P); SERIAL_ECHO(v); }
++
+ extern "C"{
+   extern unsigned int __bss_end;
+   extern unsigned int __heap_start;
+@@ -541,32 +552,65 @@ bool code_seen(char code)
+   return (strchr_pointer != NULL);  //Return True if a character was found
+ }
+ 
+-#define HOMEAXIS(LETTER) \
+-  if ((LETTER##_MIN_PIN > -1 && LETTER##_HOME_DIR==-1) || (LETTER##_MAX_PIN > -1 && LETTER##_HOME_DIR==1))\
+-    { \
+-    current_position[LETTER##_AXIS] = 0; \
+-    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]); \
+-    destination[LETTER##_AXIS] = 1.5 * LETTER##_MAX_LENGTH * LETTER##_HOME_DIR; \
+-    feedrate = homing_feedrate[LETTER##_AXIS]; \
+-    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder); \
+-    st_synchronize();\
+-    \
+-    current_position[LETTER##_AXIS] = 0;\
+-    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);\
+-    destination[LETTER##_AXIS] = -LETTER##_HOME_RETRACT_MM * LETTER##_HOME_DIR;\
+-    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder); \
+-    st_synchronize();\
+-    \
+-    destination[LETTER##_AXIS] = 2*LETTER##_HOME_RETRACT_MM * LETTER##_HOME_DIR;\
+-    feedrate = homing_feedrate[LETTER##_AXIS]/2 ;  \
+-    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder); \
+-    st_synchronize();\
+-    \
+-    current_position[LETTER##_AXIS] = LETTER##_HOME_POS;\
+-    destination[LETTER##_AXIS] = current_position[LETTER##_AXIS];\
+-    feedrate = 0.0;\
+-    endstops_hit_on_purpose();\
++#define DEFINE_PGM_READ_ANY(type, reader)		\
++    static inline type pgm_read_any(const type *p)	\
++	{ return pgm_read_##reader##_near(p); }
++
++DEFINE_PGM_READ_ANY(float,       float);
++DEFINE_PGM_READ_ANY(signed char, byte);
++
++#define XYZ_CONSTS_FROM_CONFIG(type, array, CONFIG)	\
++static const PROGMEM type array##_P[3] =		\
++    { X_##CONFIG, Y_##CONFIG, Z_##CONFIG };		\
++static inline type array(int axis)			\
++    { return pgm_read_any(&array##_P[axis]); }
++
++XYZ_CONSTS_FROM_CONFIG(float, base_min_pos,    MIN_POS);
++XYZ_CONSTS_FROM_CONFIG(float, base_max_pos,    MAX_POS);
++XYZ_CONSTS_FROM_CONFIG(float, base_home_pos,   HOME_POS);
++XYZ_CONSTS_FROM_CONFIG(float, max_length,      MAX_LENGTH);
++XYZ_CONSTS_FROM_CONFIG(float, home_retract_mm, HOME_RETRACT_MM);
++XYZ_CONSTS_FROM_CONFIG(signed char, home_dir,  HOME_DIR);
++
++static void axis_is_at_home(int axis) {
++  current_position[axis] = base_home_pos(axis) + add_homeing[axis];
++  min_pos[axis] =          base_min_pos(axis) + add_homeing[axis];
++  max_pos[axis] =          base_max_pos(axis) + add_homeing[axis];
++}
++
++static void homeaxis(int axis) {
++#define HOMEAXIS_DO(LETTER) \
++  ((LETTER##_MIN_PIN > -1 && LETTER##_HOME_DIR==-1) || (LETTER##_MAX_PIN > -1 && LETTER##_HOME_DIR==1))
++
++  if (axis==X_AXIS ? HOMEAXIS_DO(X) :
++      axis==Y_AXIS ? HOMEAXIS_DO(Y) :
++      axis==Z_AXIS ? HOMEAXIS_DO(Z) :
++      0) {
++    current_position[axis] = 0;
++    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++    destination[axis] = 1.5 * max_length(axis) * home_dir(axis);
++    feedrate = homing_feedrate[axis];
++    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
++    st_synchronize();
++   
++    current_position[axis] = 0;
++    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++    destination[axis] = -home_retract_mm(axis) * home_dir(axis);
++    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
++    st_synchronize();
++   
++    destination[axis] = 2*home_retract_mm(axis) * home_dir(axis);
++    feedrate = homing_feedrate[axis]/2 ; 
++    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
++    st_synchronize();
++   
++    axis_is_at_home(axis);					
++    destination[axis] = current_position[axis];
++    feedrate = 0.0;
++    endstops_hit_on_purpose();
+   }
++}
++#define HOMEAXIS(LETTER) homeaxis(LETTER##_AXIS)
+ 
+ void process_commands()
+ {
+@@ -676,8 +720,8 @@ void process_commands()
+         plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+         st_synchronize();
+     
+-        current_position[X_AXIS] = X_HOME_POS;
+-        current_position[Y_AXIS] = Y_HOME_POS;
++        axis_is_at_home(X_AXIS);
++        axis_is_at_home(Y_AXIS);
+         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+         destination[X_AXIS] = current_position[X_AXIS];
+         destination[Y_AXIS] = current_position[Y_AXIS];
+@@ -1539,19 +1583,25 @@ void get_arc_coordinates()
+    }
+ }
+ 
+-void prepare_move()
++void clamp_to_software_endstops(float target[3])
+ {
+   if (min_software_endstops) {
+-    if (destination[X_AXIS] < X_MIN_POS) destination[X_AXIS] = X_MIN_POS;
+-    if (destination[Y_AXIS] < Y_MIN_POS) destination[Y_AXIS] = Y_MIN_POS;
+-    if (destination[Z_AXIS] < Z_MIN_POS) destination[Z_AXIS] = Z_MIN_POS;
++    if (target[X_AXIS] < min_pos[X_AXIS]) target[X_AXIS] = min_pos[X_AXIS];
++    if (target[Y_AXIS] < min_pos[Y_AXIS]) target[Y_AXIS] = min_pos[Y_AXIS];
++    if (target[Z_AXIS] < min_pos[Z_AXIS]) target[Z_AXIS] = min_pos[Z_AXIS];
+   }
+ 
+   if (max_software_endstops) {
+-    if (destination[X_AXIS] > X_MAX_POS) destination[X_AXIS] = X_MAX_POS;
+-    if (destination[Y_AXIS] > Y_MAX_POS) destination[Y_AXIS] = Y_MAX_POS;
+-    if (destination[Z_AXIS] > Z_MAX_POS) destination[Z_AXIS] = Z_MAX_POS;
++    if (target[X_AXIS] > max_pos[X_AXIS]) target[X_AXIS] = max_pos[X_AXIS];
++    if (target[Y_AXIS] > max_pos[Y_AXIS]) target[Y_AXIS] = max_pos[Y_AXIS];
++    if (target[Z_AXIS] > max_pos[Z_AXIS]) target[Z_AXIS] = max_pos[Z_AXIS];
+   }
++}
++
++void prepare_move()
++{
++  clamp_to_software_endstops(destination);
++
+   previous_millis_cmd = millis();  
+   plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate*feedmultiply/60/100.0, active_extruder);
+   for(int8_t i=0; i < NUM_AXIS; i++) {
+diff --git a/Marlin/motion_control.cpp b/Marlin/motion_control.cpp
+index f11d8c8..7660905 100644
+--- a/Marlin/motion_control.cpp
++++ b/Marlin/motion_control.cpp
+@@ -125,17 +125,7 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+     arc_target[axis_linear] += linear_per_segment;
+     arc_target[E_AXIS] += extruder_per_segment;
+ 
+-    if (min_software_endstops) {
+-      if (arc_target[X_AXIS] < X_HOME_POS) arc_target[X_AXIS] = X_HOME_POS;
+-      if (arc_target[Y_AXIS] < Y_HOME_POS) arc_target[Y_AXIS] = Y_HOME_POS;
+-      if (arc_target[Z_AXIS] < Z_HOME_POS) arc_target[Z_AXIS] = Z_HOME_POS;
+-    }
+-
+-    if (max_software_endstops) {
+-      if (arc_target[X_AXIS] > X_MAX_LENGTH) arc_target[X_AXIS] = X_MAX_LENGTH;
+-      if (arc_target[Y_AXIS] > Y_MAX_LENGTH) arc_target[Y_AXIS] = Y_MAX_LENGTH;
+-      if (arc_target[Z_AXIS] > Z_MAX_LENGTH) arc_target[Z_AXIS] = Z_MAX_LENGTH;
+-    }
++    clamp_to_software_endstops(arc_target);
+     plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], arc_target[E_AXIS], feed_rate, extruder);
+     
+   }
+diff --git a/README.md b/README.md
+index 86dd93d..fb2c189 100644
+--- a/README.md
++++ b/README.md
+@@ -152,6 +152,7 @@ Movement variables:
+ *   M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+ *   M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+ *   M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
++*   M206 - set home offsets.  This sets the X,Y,Z coordinates of the endstops (and is added to the {X,Y,Z}_HOME_POS configuration options (and is also added to the coordinates, if any, provided to G82, as with earlier firmware)
+ *   M220 - set build speed mulitplying S:factor in percent ; aka "realtime tuneing in the gcode". So you can slow down if you have islands in one height-range, and speed up otherwise.
+ *   M221 - set the extrude multiplying S:factor in percent
+ *   M400 - Finish all buffered moves.
+

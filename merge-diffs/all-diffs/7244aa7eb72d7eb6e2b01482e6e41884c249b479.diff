@@ -1,0 +1,778 @@
+commit 7244aa7eb72d7eb6e2b01482e6e41884c249b479 (from 279d00da9f363c3868609e89f1eee4d592732355)
+Merge: 279d00d e31bef3
+Author: Daid <daid303@gmail.com>
+Date:   Sat May 19 17:38:46 2012 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 880d48a..03f06a7 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -26,6 +26,7 @@
+ // Gen6 = 5
+ // Gen6 deluxe = 51
+ // Sanguinololu 1.2 and above = 62
++// Melzi = 63
+ // Ultimaker = 7
+ // Teensylu = 8
+ // Gen3+ =9
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 1f29087..c9cff67 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -300,6 +300,8 @@ void setup()
+   st_init();    // Initialize stepper;
+   wd_init();
+   setup_photpin();
++  
++  LCD_INIT;
+ }
+ 
+ 
+@@ -687,7 +689,6 @@ void process_commands()
+         st_synchronize();
+       for(int8_t i=0; i < NUM_AXIS; i++) {
+         if(code_seen(axis_codes[i])) { 
+-           current_position[i] = code_value()+add_homeing[i];  
+            if(i == E_AXIS) {
+              current_position[i] = code_value();  
+              plan_set_e_position(current_position[E_AXIS]);
+@@ -1246,7 +1247,7 @@ void process_commands()
+      }
+     break;
+       
+-    case 302: // finish all moves
++    case 302: // allow cold extrudes
+     {
+       allow_cold_extrudes(true);
+     }
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 0d6b602..95a0369 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -554,7 +554,10 @@
+ * Sanguinololu pin assignment
+ *
+ ****************************************************************************************/
+-#if MOTHERBOARD == 62
++#if MOTHERBOARD == 63
++#define MELZI
++#endif
++#if MOTHERBOARD == 62 || MOTHERBOARD == 63
+ #undef MOTHERBOARD
+ #define MOTHERBOARD 6
+ #define SANGUINOLOLU_V_1_2 
+@@ -589,6 +592,11 @@
+ 
+ #define FAN_PIN            -1 
+ 
++#ifdef MELZI
++#define LED_PIN            28
++#define FAN_PIN            4
++#endif
++
+ #define PS_ON_PIN          -1
+ #define KILL_PIN           -1
+ 
+@@ -621,6 +629,10 @@
+ #define SDPOWER            -1
+ #define SDSS               31
+ 
++#ifdef MELZI
++#define SDSS               24
++#endif
++
+ #endif
+ 
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index b620589..bb1e84b 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -556,8 +556,8 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   delta_mm[Y_AXIS] = (target[Y_AXIS]-position[Y_AXIS])/axis_steps_per_unit[Y_AXIS];
+   delta_mm[Z_AXIS] = (target[Z_AXIS]-position[Z_AXIS])/axis_steps_per_unit[Z_AXIS];
+   delta_mm[E_AXIS] = ((target[E_AXIS]-position[E_AXIS])/axis_steps_per_unit[E_AXIS])*extrudemultiply/100.0;
+-  if ( block->steps_x == 0 && block->steps_y == 0 && block->steps_z == 0 ) {
+-    block->millimeters = abs(delta_mm[E_AXIS]);
++  if ( block->steps_x <=dropsegments && block->steps_y <=dropsegments && block->steps_z <=dropsegments ) {
++    block->millimeters = fabs(delta_mm[E_AXIS]);
+   } else {
+     block->millimeters = sqrt(square(delta_mm[X_AXIS]) + square(delta_mm[Y_AXIS]) + square(delta_mm[Z_AXIS]));
+   }
+@@ -593,8 +593,8 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+   float speed_factor = 1.0; //factor <=1 do decrease speed
+   for(int i=0; i < 4; i++) {
+     current_speed[i] = delta_mm[i] * inverse_second;
+-    if(abs(current_speed[i]) > max_feedrate[i])
+-      speed_factor = min(speed_factor, max_feedrate[i] / abs(current_speed[i]));
++    if(fabs(current_speed[i]) > max_feedrate[i])
++      speed_factor = min(speed_factor, max_feedrate[i] / fabs(current_speed[i]));
+   }
+ 
+ // Max segement time in us.
+@@ -698,25 +698,25 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+ #endif
+   // Start with a safe speed
+   float vmax_junction = max_xy_jerk/2;  
+-  if(abs(current_speed[Z_AXIS]) > max_z_jerk/2) 
++  if(fabs(current_speed[Z_AXIS]) > max_z_jerk/2) 
+     vmax_junction = max_z_jerk/2;
+   vmax_junction = min(vmax_junction, block->nominal_speed);
+-  if(abs(current_speed[E_AXIS]) > max_e_jerk/2) 
++  if(fabs(current_speed[E_AXIS]) > max_e_jerk/2) 
+     vmax_junction = min(vmax_junction, max_e_jerk/2);
+     
+   if ((moves_queued > 1) && (previous_nominal_speed > 0.0001)) {
+     float jerk = sqrt(pow((current_speed[X_AXIS]-previous_speed[X_AXIS]), 2)+pow((current_speed[Y_AXIS]-previous_speed[Y_AXIS]), 2));
+-    if((abs(previous_speed[X_AXIS]) > 0.0001) || (abs(previous_speed[Y_AXIS]) > 0.0001)) {
++    if((fabs(previous_speed[X_AXIS]) > 0.0001) || (fabs(previous_speed[Y_AXIS]) > 0.0001)) {
+       vmax_junction = block->nominal_speed;
+     }
+     if (jerk > max_xy_jerk) {
+       vmax_junction *= (max_xy_jerk/jerk);
+     } 
+-    if(abs(current_speed[Z_AXIS] - previous_speed[Z_AXIS]) > max_z_jerk) {
+-      vmax_junction *= (max_z_jerk/abs(current_speed[Z_AXIS] - previous_speed[Z_AXIS]));
++    if(fabs(current_speed[Z_AXIS] - previous_speed[Z_AXIS]) > max_z_jerk) {
++      vmax_junction *= (max_z_jerk/fabs(current_speed[Z_AXIS] - previous_speed[Z_AXIS]));
+     } 
+-    if(abs(current_speed[E_AXIS] - previous_speed[E_AXIS]) > max_e_jerk) {
+-      vmax_junction *= (max_e_jerk/abs(current_speed[E_AXIS] - previous_speed[E_AXIS]));
++    if(fabs(current_speed[E_AXIS] - previous_speed[E_AXIS]) > max_e_jerk) {
++      vmax_junction *= (max_e_jerk/fabs(current_speed[E_AXIS] - previous_speed[E_AXIS]));
+     } 
+   }
+   block->max_entry_speed = vmax_junction;
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 873441b..fc0d83c 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -45,10 +45,10 @@ typedef struct {
+   #endif
+ 
+   // Fields used by the motion planner to manage acceleration
+-//  float speed_x, speed_y, speed_z, speed_e;        // Nominal mm/minute for each axis
+-  float nominal_speed;                               // The nominal speed for this block in mm/min  
+-  float entry_speed;                                 // Entry speed at previous-current junction in mm/min
+-  float max_entry_speed;                             // Maximum allowable junction entry speed in mm/min
++//  float speed_x, speed_y, speed_z, speed_e;        // Nominal mm/sec for each axis
++  float nominal_speed;                               // The nominal speed for this block in mm/sec 
++  float entry_speed;                                 // Entry speed at previous-current junction in mm/sec
++  float max_entry_speed;                             // Maximum allowable junction entry speed in mm/sec
+   float millimeters;                                 // The total travel of this block in mm
+   float acceleration;                                // acceleration mm/sec^2
+   unsigned char recalculate_flag;                    // Planner flag to recalculate trapezoids on entry junction
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index e21bd25..395061c 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -134,8 +134,8 @@ void PID_autotune(float temp)
+   long t_high;
+   long t_low;
+ 
+-  long bias=127;
+-  long d = 127;
++  long bias=PID_MAX/2;
++  long d = PID_MAX/2;
+   float Ku, Tu;
+   float Kp, Ki, Kd;
+   float max, min;
+@@ -144,7 +144,7 @@ void PID_autotune(float temp)
+   
+   disable_heater(); // switch off all heaters.
+   
+-  soft_pwm[0] = 255>>1;
++  soft_pwm[0] = PID_MAX/2;
+     
+   for(;;) {
+ 
+@@ -172,8 +172,8 @@ void PID_autotune(float temp)
+           t_low=t2 - t1;
+           if(cycles > 0) {
+             bias += (d*(t_high - t_low))/(t_low + t_high);
+-            bias = constrain(bias, 20 ,235);
+-            if(bias > 127) d = 254 - bias;
++            bias = constrain(bias, 20 ,PID_MAX-20);
++            if(bias > PID_MAX/2) d = PID_MAX - 1 - bias;
+             else d = bias;
+ 
+             SERIAL_PROTOCOLPGM(" bias: "); SERIAL_PROTOCOL(bias);
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 253149c..b01368b 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -7,6 +7,7 @@
+   void lcd_init();
+   void lcd_status(const char* message);
+   void beep();
++  void buttons_init();
+   void buttons_check();
+ 
+   #define LCD_UPDATE_INTERVAL 100
+@@ -69,7 +70,7 @@
+     void showAxisMove();
+     void showSD();
+     bool force_lcd_update;
+-    int lastencoderpos;
++    long lastencoderpos;
+     int8_t lineoffset;
+     int8_t lastlineoffset;
+     
+@@ -78,11 +79,11 @@
+     bool tune;
+     
+   private:
+-    FORCE_INLINE void updateActiveLines(const uint8_t &maxlines,volatile int &encoderpos)
++    FORCE_INLINE void updateActiveLines(const uint8_t &maxlines,volatile long &encoderpos)
+     {
+       if(linechanging) return; // an item is changint its value, do not switch lines hence
+       lastlineoffset=lineoffset; 
+-      int curencoderpos=encoderpos;  
++      long curencoderpos=encoderpos;  
+       force_lcd_update=false;
+       if(  (abs(curencoderpos-lastencoderpos)<lcdslow) ) 
+       { 
+@@ -134,11 +135,12 @@
+   char *ftostr3(const float &x);
+ 
+ 
+-
++  #define LCD_INIT lcd_init();
+   #define LCD_MESSAGE(x) lcd_status(x);
+   #define LCD_MESSAGEPGM(x) lcd_statuspgm(MYPGM(x));
+   #define LCD_STATUS lcd_status()
+ #else //no lcd
++  #define LCD_INIT
+   #define LCD_STATUS
+   #define LCD_MESSAGE(x)
+   #define LCD_MESSAGEPGM(x)
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index f9eb19b..d1b93dd 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -3,6 +3,9 @@
+ #include "ultralcd.h"
+ #ifdef ULTRA_LCD
+ #include "Marlin.h"
++#include "language.h"
++#include "temperature.h"
++#include "EEPROMwrite.h"
+ #include <LiquidCrystal.h>
+ //===========================================================================
+ //=============================imported variables============================
+@@ -15,6 +18,7 @@ extern volatile int extrudemultiply;
+ 
+ extern long position[4];   
+ #ifdef SDSUPPORT
++#include "cardreader.h"
+ extern CardReader card;
+ #endif
+ 
+@@ -22,7 +26,7 @@ extern CardReader card;
+ //=============================public variables============================
+ //===========================================================================
+ volatile char buttons=0;  //the last checked buttons in a bit array.
+-int encoderpos=0;
++long encoderpos=0;
+ short lastenc=0;
+ 
+ 
+@@ -97,6 +101,9 @@ FORCE_INLINE void clear()
+ void lcd_init()
+ {
+   //beep();
++  #ifdef ULTIPANEL
++    buttons_init();
++  #endif
+   
+   byte Degree[8] =
+   {
+@@ -304,10 +311,6 @@ MainMenu::MainMenu()
+   displayStartingRow=0;
+   activeline=0;
+   force_lcd_update=true;
+-  #ifdef ULTIPANEL
+-    buttons_init();
+-  #endif
+-  lcd_init();
+   linechanging=false;
+   tune=false;
+ }
+@@ -884,7 +887,7 @@ void MainMenu::showTune()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_FLOW);
+-          lcd.setCursor(13,line);lcd.print(itostr4(axis_steps_per_unit[3]));
++          lcd.setCursor(13,line);lcd.print(ftostr52(axis_steps_per_unit[E_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -895,14 +898,14 @@ void MainMenu::showTune()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)axis_steps_per_unit[3];
++              encoderpos=(long)(axis_steps_per_unit[E_AXIS]*100.0);
+           }
+           else
+           {
+-            float factor=float(encoderpos)/float(axis_steps_per_unit[3]);
++            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[E_AXIS]);
+             position[E_AXIS]=lround(position[E_AXIS]*factor);
+-            //current_position[3]*=factor;
+-            axis_steps_per_unit[E_AXIS]= encoderpos;
++            //current_position[E_AXIS]*=factor;
++            axis_steps_per_unit[E_AXIS]= encoderpos/100.0;
+             encoderpos=activeline*lcdslow;
+               
+           }
+@@ -912,8 +915,8 @@ void MainMenu::showTune()
+         if(linechanging)
+         {
+           if(encoderpos<5) encoderpos=5;
+-          if(encoderpos>9999) encoderpos=9999;
+-          lcd.setCursor(13,line);lcd.print(itostr4(encoderpos));
++          if(encoderpos>999999) encoderpos=999999;
++          lcd.setCursor(13,line);lcd.print(ftostr52(encoderpos/100.0));
+         }
+         
+       }break; 
+@@ -1296,7 +1299,7 @@ void MainMenu::showControlTemp()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)Kp;
++              encoderpos=(long)Kp;
+           }
+           else
+           {
+@@ -1331,7 +1334,7 @@ void MainMenu::showControlTemp()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(Ki*10/PID_dT);
++              encoderpos=(long)(Ki*10/PID_dT);
+           }
+           else
+           {
+@@ -1367,7 +1370,7 @@ void MainMenu::showControlTemp()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(Kd/5./PID_dT);
++              encoderpos=(long)(Kd/5./PID_dT);
+           }
+           else
+           {
+@@ -1403,7 +1406,7 @@ void MainMenu::showControlTemp()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)Kc;
++              encoderpos=(long)Kc;
+           }
+           else
+           {
+@@ -1476,7 +1479,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)acceleration/100;
++              encoderpos=(long)acceleration/100;
+           }
+           else
+           {
+@@ -1510,7 +1513,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)max_xy_jerk;
++              encoderpos=(long)max_xy_jerk;
+           }
+           else
+           {
+@@ -1553,7 +1556,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)max_feedrate[i-ItemCM_vmaxx];
++              encoderpos=(long)max_feedrate[i-ItemCM_vmaxx];
+           }
+           else
+           {
+@@ -1589,7 +1592,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(minimumfeedrate);
++              encoderpos=(long)(minimumfeedrate);
+           }
+           else
+           {
+@@ -1624,7 +1627,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)mintravelfeedrate;
++              encoderpos=(long)mintravelfeedrate;
+           }
+           else
+           {
+@@ -1667,7 +1670,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)max_acceleration_units_per_sq_second[i-ItemCM_amaxx]/100;
++              encoderpos=(long)max_acceleration_units_per_sq_second[i-ItemCM_amaxx]/100;
+           }
+           else
+           {
+@@ -1701,7 +1704,7 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)retract_acceleration/100;
++              encoderpos=(long)retract_acceleration/100;
+           }
+           else
+           {
+@@ -1725,7 +1728,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_XSTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[0]));
++          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[X_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -1736,13 +1739,13 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(axis_steps_per_unit[0]*100.0);
++              encoderpos=(long)(axis_steps_per_unit[X_AXIS]*100.0);
+           }
+           else
+           {
+-            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[0]);
++            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[X_AXIS]);
+             position[X_AXIS]=lround(position[X_AXIS]*factor);
+-            //current_position[3]*=factor;
++            //current_position[X_AXIS]*=factor;
+             axis_steps_per_unit[X_AXIS]= encoderpos/100.0;
+             encoderpos=activeline*lcdslow;
+           }
+@@ -1752,7 +1755,7 @@ void MainMenu::showControlMotion()
+         if(linechanging)
+         {
+           if(encoderpos<5) encoderpos=5;
+-          if(encoderpos>32000) encoderpos=32000;//TODO: This is a problem, encoderpos is 16bit, but steps_per_unit for e can be wel over 800
++          if(encoderpos>999999) encoderpos=999999;
+           lcd.setCursor(11,line);lcd.print(ftostr52(encoderpos/100.0));
+         }
+         
+@@ -1762,7 +1765,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_YSTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[1]));
++          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[Y_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -1773,13 +1776,13 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(axis_steps_per_unit[1]*100.0);
++              encoderpos=(long)(axis_steps_per_unit[Y_AXIS]*100.0);
+           }
+           else
+           {
+-            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[1]);
++            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[Y_AXIS]);
+             position[Y_AXIS]=lround(position[Y_AXIS]*factor);
+-            //current_position[3]*=factor;
++            //current_position[Y_AXIS]*=factor;
+             axis_steps_per_unit[Y_AXIS]= encoderpos/100.0;
+             encoderpos=activeline*lcdslow;
+               
+@@ -1790,7 +1793,7 @@ void MainMenu::showControlMotion()
+         if(linechanging)
+         {
+           if(encoderpos<5) encoderpos=5;
+-          if(encoderpos>9999) encoderpos=9999;
++          if(encoderpos>999999) encoderpos=999999;
+           lcd.setCursor(11,line);lcd.print(ftostr52(encoderpos/100.0));
+         }
+         
+@@ -1800,7 +1803,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_ZSTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[2]));
++          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[Z_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -1811,13 +1814,13 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(axis_steps_per_unit[2]*100.0);
++              encoderpos=(long)(axis_steps_per_unit[Z_AXIS]*100.0);
+           }
+           else
+           {
+-            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[2]);
++            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[Z_AXIS]);
+             position[Z_AXIS]=lround(position[Z_AXIS]*factor);
+-            //current_position[3]*=factor;
++            //current_position[Z_AXIS]*=factor;
+             axis_steps_per_unit[Z_AXIS]= encoderpos/100.0;
+             encoderpos=activeline*lcdslow;
+               
+@@ -1828,7 +1831,7 @@ void MainMenu::showControlMotion()
+         if(linechanging)
+         {
+           if(encoderpos<5) encoderpos=5;
+-          if(encoderpos>9999) encoderpos=9999;
++          if(encoderpos>999999) encoderpos=999999;
+           lcd.setCursor(11,line);lcd.print(ftostr52(encoderpos/100.0));
+         }
+         
+@@ -1839,7 +1842,7 @@ void MainMenu::showControlMotion()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(MSG_ESTEPS);
+-          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[3]));
++          lcd.setCursor(11,line);lcd.print(ftostr52(axis_steps_per_unit[E_AXIS]));
+         }
+         
+         if((activeline!=line) )
+@@ -1850,13 +1853,13 @@ void MainMenu::showControlMotion()
+           linechanging=!linechanging;
+           if(linechanging)
+           {
+-              encoderpos=(int)(axis_steps_per_unit[3]*100.0);
++              encoderpos=(long)(axis_steps_per_unit[E_AXIS]*100.0);
+           }
+           else
+           {
+-            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[3]);
++            float factor=float(encoderpos)/100.0/float(axis_steps_per_unit[E_AXIS]);
+             position[E_AXIS]=lround(position[E_AXIS]*factor);
+-            //current_position[3]*=factor;
++            //current_position[E_AXIS]*=factor;
+             axis_steps_per_unit[E_AXIS]= encoderpos/100.0;
+             encoderpos=activeline*lcdslow;
+               
+@@ -1867,7 +1870,7 @@ void MainMenu::showControlMotion()
+         if(linechanging)
+         {
+           if(encoderpos<5) encoderpos=5;
+-          if(encoderpos>9999) encoderpos=9999;
++          if(encoderpos>999999) encoderpos=999999;
+           lcd.setCursor(11,line);lcd.print(ftostr52(encoderpos/100.0));
+         }
+         
+@@ -2108,9 +2111,10 @@ void MainMenu::showMainMenu()
+     }
+   } 
+   clearIfNecessary();
+-  for(int8_t line=0;line<LCD_HEIGHT;line++)
++  uint8_t line=0;
++  for(int8_t i=lineoffset;i<lineoffset+LCD_HEIGHT;i++)
+   {
+-    switch(line)
++    switch(i)
+     { 
+       case ItemM_watch:
+         MENUITEM(  lcdprintPGM(MSG_WATCH)  ,  BLOCK;status=Main_Status;beepshort(); ) ;
+@@ -2164,6 +2168,7 @@ void MainMenu::showMainMenu()
+         SERIAL_ERRORLNPGM(MSG_SERIAL_ERROR_MENU_STRUCTURE);
+       break;
+     }
++    line++;
+   }
+   updateActiveLines(3,encoderpos);
+ }
+@@ -2381,4 +2386,4 @@ char *ftostr52(const float &x)
+ 
+ #endif //ULTRA_LCD
+ 
+-
++
+diff --git a/README.md b/README.md
+index b61129b..0448bdb 100644
+--- a/README.md
++++ b/README.md
+@@ -161,7 +161,8 @@ Advance:
+ 
+ EEPROM:
+ 
+-*   M500 - stores paramters in EEPROM
++*   M500 - stores paramters in EEPROM. This parameters are stored:  axis_steps_per_unit,  max_feedrate, max_acceleration  ,acceleration,retract_acceleration,
++  minimumfeedrate,mintravelfeedrate,minsegmenttime,  jerk velocities, PID
+ *   M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).  
+ *   M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+ *   M503 - print the current settings (from memory not from eeprom)
+
+commit 7244aa7eb72d7eb6e2b01482e6e41884c249b479 (from e31bef31ad4ce8f97b892ccccec4947c8fc372d4)
+Merge: 279d00d e31bef3
+Author: Daid <daid303@gmail.com>
+Date:   Sat May 19 17:38:46 2012 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 6c5b974..03f06a7 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -109,6 +109,9 @@
+ //this prevents dangerous Extruder moves, i.e. if the temperature is under the limit
+ //can be software-disabled for whatever purposes by
+ #define PREVENT_DANGEROUS_EXTRUDE
++//if PREVENT_DANGEROUS_EXTRUDE is on, you can still disable (uncomment) very long bits of extrusion separately.
++#define PREVENT_LENGTHY_EXTRUDE
++
+ #define EXTRUDE_MINTEMP 170
+ #define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
+ 
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 4747ce6..6fdf149 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -10,11 +10,20 @@
+ 
+ #define LANGUAGE_CHOICE 1  // Pick your language from the list above
+ 
++#define PROTOCOL_VERSION "1.0"
++
++#if MOTHERBOARD == 7 || MOTHERBOARD == 71
++	#define MACHINE_NAME "Ultimaker"
++	#define FIRMWARE_URL "http://firmware.ultimaker.com"
++#else
++	#define MACHINE_NAME "Mendel"
++	#define FIRMWARE_URL "http://www.mendel-parts.com"
++#endif
++
+ #if LANGUAGE_CHOICE == 1
+ 
+ // LCD Menu Messages
+-
+-	#define WELCOME_MSG "Printer Ready."
++	#define WELCOME_MSG MACHINE_NAME " Ready."
+ 	#define MSG_SD_INSERTED "Card inserted"
+ 	#define MSG_SD_REMOVED "Card removed"
+ 	#define MSG_MAIN " Main \003"
+@@ -63,8 +72,8 @@
+ 	#define MSG_MAIN_WIDE " Main        \003"
+ 	#define MSG_TEMPERATURE_WIDE " Temperature \x7E"
+ 	#define MSG_MOTION_WIDE " Motion      \x7E"
+-	#define MSG_STORE_EPROM " Store EPROM"
+-	#define MSG_LOAD_EPROM " Load EPROM"
++	#define MSG_STORE_EPROM " Store memory"
++	#define MSG_LOAD_EPROM " Load memory"
+ 	#define MSG_RESTORE_FAILSAFE " Restore Failsafe"
+ 	#define MSG_REFRESH "\004Refresh"
+ 	#define MSG_WATCH " Watch   \003"
+@@ -76,11 +85,11 @@
+ 	#define MSG_CARD_MENU " Card Menu    \x7E"
+ 	#define MSG_NO_CARD " No Card"
+ 	#define MSG_SERIAL_ERROR_MENU_STRUCTURE "Something is wrong in the MenuStructure."
+-	#define MSG_DWELL "DWELL..."		
++	#define MSG_DWELL "Sleep..."
+ 	#define MSG_NO_MOVE "No move."
+ 	#define MSG_PART_RELEASE "Partial Release"
+ 	#define MSG_KILLED "KILLED. "
+-        #define MSG_STOPPED "STOPPED. "
++	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_PREHEAT_PLA " Preheat PLA"
+ 	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_STEPPER_RELEASED "Released."
+@@ -94,7 +103,7 @@
+ 	#define MSG_BROWNOUT_RESET " Brown out Reset"
+ 	#define MSG_WATCHDOG_RESET " Watchdog Reset"
+ 	#define MSG_SOFTWARE_RESET " Software Reset"
+-	#define MSG_MARLIN "Marlin: "
++	#define MSG_MARLIN "Marlin "
+ 	#define MSG_AUTHOR " | Author: "
+ 	#define MSG_CONFIGURATION_VER " Last Updated: "
+ 	#define MSG_FREE_MEMORY " Free Memory: "
+@@ -116,7 +125,7 @@
+ 	#define MSG_HEATING_COMPLETE "Heating done."
+ 	#define MSG_BED_HEATING "Bed Heating."
+ 	#define MSG_BED_DONE "Bed done."
+-	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:http://www.mendel-parts.com PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1\n"
++	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:1\n"
+ 	#define MSG_COUNT_X " Count X:"
+ 	#define MSG_ERR_KILLED "Printer halted. kill() called !!"
+ 	#define MSG_ERR_STOPPED "Printer stopped deu to errors. Fix the error and use M999 to restart!. (Temperature is reset. Set it before restarting)"
+@@ -157,7 +166,7 @@
+ 
+ // LCD Menu Messages
+ 
+-	#define WELCOME_MSG "UltiMARLIN Ready."
++	#define WELCOME_MSG MACHINE_NAME " Ready."
+ 
+ 	#define MSG_SD_INSERTED "Card inserted"
+ 	#define MSG_SD_REMOVED "Card removed"
+@@ -173,7 +182,7 @@
+ 	#define MSG_PREHEAT_PLA " Preheat PLA"
+ 	#define MSG_PREHEAT_ABS " Preheat ABS"
+ 	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+-        #define MSG_MOVE_AXIS " Achsen verfahren   \x7E"
++	#define MSG_MOVE_AXIS " Achsen verfahren   \x7E"
+ 	#define MSG_SPEED " Geschw:"
+ 	#define MSG_NOZZLE " \002Duese:"
+ 	#define MSG_NOZZLE1 " \002Duese2:"
+@@ -263,7 +272,7 @@
+ 	#define MSG_HEATING_COMPLETE "Heating done."
+ 	#define MSG_BED_HEATING "Bed Heating."
+ 	#define MSG_BED_DONE "Bed done."
+-	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:http://www.mendel-parts.com PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1\n"
++	#define MSG_M115_REPORT "FIRMWARE_NAME:Marlin V1; Sprinter/grbl mashup for gen6 FIRMWARE_URL:" FIRMWARE_URL " PROTOCOL_VERSION:" PROTOCOL_VERSION " MACHINE_TYPE:" MACHINE_NAME " EXTRUDER_COUNT:\n"
+ 	#define MSG_COUNT_X " Count X:"
+ 	#define MSG_ERR_KILLED "Printer halted. kill() called !!"
+ 	#define MSG_ERR_STOPPED "Printer stopped due to errors. Fix the error and use M999 to restart!"
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ac9ff19..bb1e84b 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -495,12 +495,14 @@ void plan_buffer_line(const float &x, const float &y, const float &z, const floa
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLNPGM(MSG_ERR_COLD_EXTRUDE_STOP);
+     }
++    #ifdef PREVENT_LENGTHY_EXTRUDE
+     if(labs(target[E_AXIS]-position[E_AXIS])>axis_steps_per_unit[E_AXIS]*EXTRUDE_MAXLENGTH)
+     {
+       position[E_AXIS]=target[E_AXIS]; //behave as if the move really took place, but ignore E part
+       SERIAL_ECHO_START;
+       SERIAL_ECHOLNPGM(MSG_ERR_LONG_EXTRUDE_STOP);
+     }
++    #endif
+   #endif
+   
+   // Prepare to set up new block
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index 69364ac..d1b93dd 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -1,3 +1,5 @@
++#include "language.h"
++#include "temperature.h"
+ #include "ultralcd.h"
+ #ifdef ULTRA_LCD
+ #include "Marlin.h"
+@@ -711,6 +713,7 @@ void MainMenu::showAxisMove()
+           }
+           break;
+           case ItemAM_E:
++          // ErikDB: TODO: this length should be changed for volumetric.
+           MENUITEM(  lcdprintPGM(MSG_EXTRUDE)  ,  BLOCK;enquecommand("G92 E0");enquecommand("G1 F700 E5");beepshort(); ) ;
+           break;
+           default:
+

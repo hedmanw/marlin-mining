@@ -1,0 +1,95 @@
+commit db4d8e835cf155934917cf0eec4b35e3b4c06ad2 (from 21ab44cfa799c4e9caea74e0bcf0adbae00299e0)
+Merge: 21ab44c 571652c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Mar 31 02:52:17 2015 -0700
+
+    Merge pull request #1752 from thinkyhead/fix_lcd_click
+    
+    Fix LCD click
+
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index d0720c5..884de94 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -83,15 +83,20 @@ unsigned char soft_pwm_bed;
+ #ifdef FILAMENT_SENSOR
+   int current_raw_filwidth = 0;  //Holds measured filament diameter - one extruder only
+ #endif  
+-#if defined (THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
+-void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
+-static int thermal_runaway_state_machine[4]; // = {0,0,0,0};
+-static unsigned long thermal_runaway_timer[4]; // = {0,0,0,0};
+-static bool thermal_runaway = false;
+-#if TEMP_SENSOR_BED != 0
+-  static int thermal_runaway_bed_state_machine;
+-  static unsigned long thermal_runaway_bed_timer;
+-#endif
++
++#define HAS_HEATER_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0)
++#define HAS_BED_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_BED_PERIOD) && THERMAL_RUNAWAY_PROTECTION_BED_PERIOD > 0 && TEMP_SENSOR_BED != 0)
++#if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
++  static bool thermal_runaway = false;
++  void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
++  #if HAS_HEATER_THERMAL_PROTECTION
++    static int thermal_runaway_state_machine[4]; // = {0,0,0,0};
++    static unsigned long thermal_runaway_timer[4]; // = {0,0,0,0};
++  #endif
++  #if HAS_BED_THERMAL_PROTECTION
++    static int thermal_runaway_bed_state_machine;
++    static unsigned long thermal_runaway_bed_timer;
++  #endif
+ #endif
+ 
+ //===========================================================================
+@@ -650,7 +655,7 @@ void manage_heater() {
+ 
+   #if TEMP_SENSOR_BED != 0
+   
+-    #if defined(THERMAL_RUNAWAY_PROTECTION_BED_PERIOD) && THERMAL_RUNAWAY_PROTECTION_BED_PERIOD > 0
++    #if HAS_BED_THERMAL_PROTECTION
+       thermal_runaway_protection(&thermal_runaway_bed_state_machine, &thermal_runaway_bed_timer, current_temperature_bed, target_temperature_bed, 9, THERMAL_RUNAWAY_PROTECTION_BED_PERIOD, THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS);
+     #endif
+ 
+@@ -1008,7 +1013,7 @@ void setWatch() {
+   #endif 
+ }
+ 
+-#if defined(THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++#if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
+ void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc)
+ {
+ /*
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index dc0ba4f..b00cfea 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -136,7 +136,6 @@ static void lcd_status_screen();
+     if (encoderLine < currentMenuViewOffset) currentMenuViewOffset = encoderLine; \
+     uint8_t _lineNr = currentMenuViewOffset, _menuItemNr; \
+     bool wasClicked = LCD_CLICKED, itemSelected; \
+-    if (wasClicked) lcd_quick_feedback(); \
+     for (uint8_t _drawLineNr = 0; _drawLineNr < LCD_HEIGHT; _drawLineNr++, _lineNr++) { \
+       _menuItemNr = 0;
+ 
+@@ -167,6 +166,7 @@ static void lcd_status_screen();
+       if (lcdDrawUpdate) \
+         lcd_implementation_drawmenu_ ## type(itemSelected, _drawLineNr, PSTR(label), ## args); \
+       if (wasClicked && itemSelected) { \
++        lcd_quick_feedback(); \
+         menu_action_ ## type(args); \
+         return; \
+       } \
+@@ -1155,10 +1155,10 @@ static void lcd_quick_feedback() {
+   #elif defined(BEEPER) && BEEPER > -1
+     SET_OUTPUT(BEEPER);
+     #ifndef LCD_FEEDBACK_FREQUENCY_HZ
+-      #define LCD_FEEDBACK_FREQUENCY_HZ 500
++      #define LCD_FEEDBACK_FREQUENCY_HZ 5000
+     #endif
+     #ifndef LCD_FEEDBACK_FREQUENCY_DURATION_MS
+-      #define LCD_FEEDBACK_FREQUENCY_DURATION_MS 50
++      #define LCD_FEEDBACK_FREQUENCY_DURATION_MS 2
+     #endif
+     const unsigned int delay = 1000000 / LCD_FEEDBACK_FREQUENCY_HZ / 2;
+     int i = LCD_FEEDBACK_FREQUENCY_DURATION_MS * LCD_FEEDBACK_FREQUENCY_HZ / 1000;
+

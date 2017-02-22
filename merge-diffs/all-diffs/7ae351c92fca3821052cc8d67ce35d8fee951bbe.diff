@@ -1,0 +1,1690 @@
+commit 7ae351c92fca3821052cc8d67ce35d8fee951bbe (from ba94c89e2197aadeeadec65a5e1e5ef053dd4dd0)
+Merge: ba94c89 e05af60
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Sep 20 12:16:51 2016 -0500
+
+    Merge pull request #4842 from thinkyhead/rc_DISABLE_Z_MIN_PROBE_ENDSTOP_whassup
+    
+    Drop DISABLE_Z_MIN_PROBE_ENDSTOP, clean up probe config
+
+diff --git a/Marlin/Conditionals_LCD.h b/Marlin/Conditionals_LCD.h
+index 5413cbd..21bfdd4 100644
+--- a/Marlin/Conditionals_LCD.h
++++ b/Marlin/Conditionals_LCD.h
+@@ -316,6 +316,41 @@
+     #define TOOL_E_INDEX current_block->active_extruder
+   #endif
+ 
++  /**
++   * The BLTouch Probe emulates a servo probe
++   */
++  #if ENABLED(BLTOUCH)
++    #ifndef Z_ENDSTOP_SERVO_NR
++      #define Z_ENDSTOP_SERVO_NR 0
++    #endif
++    #ifndef NUM_SERVOS
++      #define NUM_SERVOS (Z_ENDSTOP_SERVO_NR + 1)
++    #endif
++    #undef Z_SERVO_ANGLES
++    #define Z_SERVO_ANGLES {10,90} // For BLTouch 10=deploy, 90=retract
++    #undef DEACTIVATE_SERVOS_AFTER_MOVE
++    #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
++      #undef Z_MIN_ENDSTOP_INVERTING
++      #define Z_MIN_ENDSTOP_INVERTING false
++    #endif
++  #endif
++
++  /**
++   * Set a flag for a servo probe
++   */
++  #define HAS_Z_SERVO_ENDSTOP (defined(Z_ENDSTOP_SERVO_NR) && Z_ENDSTOP_SERVO_NR >= 0)
++
++  /**
++   * Set a flag for any enabled probe
++   */
+   #define PROBE_SELECTED (ENABLED(FIX_MOUNTED_PROBE) || ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))
+ 
++  /**
++   * Clear probe pin settings when no probe is selected
++   */
++  #if !PROBE_SELECTED
++    #undef Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN
++    #undef Z_MIN_PROBE_ENDSTOP
++  #endif
++
+ #endif //CONDITIONALS_LCD_H
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 2eb3cf4..2614217 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -115,33 +115,12 @@
+   #endif
+ 
+   /**
+-   * The BLTouch Probe emulates a servo probe
+-   */
+-  #if ENABLED(BLTOUCH)
+-    #ifndef Z_ENDSTOP_SERVO_NR
+-      #define Z_ENDSTOP_SERVO_NR 0
+-    #endif
+-    #ifndef NUM_SERVOS
+-      #define NUM_SERVOS (Z_ENDSTOP_SERVO_NR + 1)
+-    #endif
+-    #undef Z_SERVO_ANGLES
+-    #define Z_SERVO_ANGLES {10,90} // For BLTouch 10=deploy, 90=retract
+-    #undef DEACTIVATE_SERVOS_AFTER_MOVE
+-    #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+-      #undef Z_MIN_ENDSTOP_INVERTING
+-      #define Z_MIN_ENDSTOP_INVERTING false
+-    #endif
+-  #endif
+-
+-  /**
+    * Auto Bed Leveling and Z Probe Repeatability Test
+    */
+   #define HAS_PROBING_PROCEDURE (ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST))
+ 
+   #define HOMING_Z_WITH_PROBE (HAS_BED_PROBE && Z_HOME_DIR < 0 && ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN))
+ 
+-  #define HAS_Z_SERVO_ENDSTOP (defined(Z_ENDSTOP_SERVO_NR) && Z_ENDSTOP_SERVO_NR >= 0)
+-
+   /**
+    * Z Sled Probe requires Z_SAFE_HOMING
+    */
+@@ -430,9 +409,6 @@
+     #if ENABLED(USE_ZMIN_PLUG)
+       #define ENDSTOPPULLUP_ZMIN
+     #endif
+-    #if DISABLED(DISABLE_Z_MIN_PROBE_ENDSTOP)
+-      #define ENDSTOPPULLUP_ZMIN_PROBE
+-    #endif
+   #endif
+ 
+   /**
+@@ -610,6 +586,9 @@
+    * Bed Probe dependencies
+    */
+   #if HAS_BED_PROBE
++    #if ENABLED(ENDSTOPPULLUPS) && HAS_Z_MIN_PROBE_PIN
++      #define ENDSTOPPULLUP_ZMIN_PROBE
++    #endif
+     #ifndef Z_PROBE_OFFSET_RANGE_MIN
+       #define Z_PROBE_OFFSET_RANGE_MIN -20
+     #endif
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 87b4d58..0361d8e 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -573,9 +573,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -594,15 +591,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -611,12 +616,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 6ed5bfe..dccf7b8 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -352,6 +352,42 @@
+ 
+ #if PROBE_SELECTED
+ 
++  /**
++   * Only allow one probe option to be defined
++   */
++  #define COUNT_PROBE_1 0
++  #if ENABLED(FIX_MOUNTED_PROBE)
++    #define COUNT_PROBE_2 INCREMENT(COUNT_PROBE_1)
++  #else
++    #define COUNT_PROBE_2 COUNT_PROBE_1
++  #endif
++  #if HAS_Z_SERVO_ENDSTOP && DISABLED(BLTOUCH)
++    #define COUNT_PROBE_3 INCREMENT(COUNT_PROBE_2)
++  #else
++    #define COUNT_PROBE_3 COUNT_PROBE_2
++  #endif
++  #if ENABLED(BLTOUCH)
++    #define COUNT_PROBE_4 INCREMENT(COUNT_PROBE_3)
++  #else
++    #define COUNT_PROBE_4 COUNT_PROBE_3
++  #endif
++  #if ENABLED(Z_PROBE_ALLEN_KEY)
++    #define COUNT_PROBE_5 INCREMENT(COUNT_PROBE_4)
++  #else
++    #define COUNT_PROBE_5 COUNT_PROBE_4
++  #endif
++  #if ENABLED(Z_PROBE_SLED)
++    #define COUNT_PROBE_6 INCREMENT(COUNT_PROBE_5)
++  #else
++    #define COUNT_PROBE_6 COUNT_PROBE_5
++  #endif
++  #if COUNT_PROBE_6 > 1
++    #error "Please enable only one probe: FIX_MOUNTED_PROBE, Z Servo, BLTOUCH, Z_PROBE_ALLEN_KEY, or Z_PROBE_SLED."
++  #endif
++
++  /**
++   * Z_PROBE_SLED is incompatible with DELTA
++   */
+   #if ENABLED(Z_PROBE_SLED) && ENABLED(DELTA)
+     #error "You cannot use Z_PROBE_SLED with DELTA."
+   #endif
+@@ -368,72 +404,22 @@
+   #endif
+ 
+   /**
+-   * A probe needs a pin
+-   */
+-  #if !PROBE_PIN_CONFIGURED
+-    #error "A probe needs a pin! Use Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN or Z_MIN_PROBE_PIN."
+-  #endif
+-
+-  /**
+-   * Require a Z min pin
++   * Require pin options and pins to be defined
+    */
+-  #if HAS_Z_MIN
+-     // Z_MIN_PIN and Z_MIN_PROBE_PIN can't co-exist when Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN
+-    #if HAS_Z_MIN_PROBE_PIN && ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+-      #error "A probe cannot have more than one pin! Use Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN or Z_MIN_PROBE_PIN."
++  #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
++    #if ENABLED(Z_MIN_PROBE_ENDSTOP)
++      #error "Enable only one option: Z_MIN_PROBE_ENDSTOP or Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN."
++    #elif DISABLED(USE_ZMIN_PLUG)
++      #error "Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN requires USE_ZMIN_PLUG to be enabled."
++    #elif !HAS_Z_MIN
++      #error "Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN requires the Z_MIN_PIN to be defined."
+     #endif
+-  #elif !HAS_Z_MIN_PROBE_PIN || (DISABLED(Z_MIN_PROBE_ENDSTOP) || ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP))
+-    // A pin was set for the Z probe, but not enabled.
+-    #error "A probe requires a Z_MIN or Z_PROBE pin. Z_MIN_PIN or Z_MIN_PROBE_PIN must point to a valid hardware pin."
+-  #endif
+-
+-  /**
+-   * Make sure the plug is enabled if it's used
+-   */
+-  #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN) && DISABLED(USE_ZMIN_PLUG)
+-    #error "You must enable USE_ZMIN_PLUG if any probe or endstop is connected to the ZMIN plug."
+-  #endif
+-
+-  /**
+-   * Only allow one probe option to be defined
+-   */
+-  #if (ENABLED(FIX_MOUNTED_PROBE) && (ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
+-       || (ENABLED(Z_PROBE_ALLEN_KEY) && (HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
+-       || (HAS_Z_SERVO_ENDSTOP && ENABLED(Z_PROBE_SLED))
+-    #error "Please define only one type of probe: Z Servo/BLTOUCH, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+-  #endif
+-
+-  /**
+-   * Don't allow nonsense probe-pin settings
+-   */
+-  #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN) && ENABLED(Z_MIN_PROBE_ENDSTOP)
+-    #error "You can't enable both Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN and Z_MIN_PROBE_ENDSTOP."
+-  #elif ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN) && ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP)
+-    #error "Don't enable DISABLE_Z_MIN_PROBE_ENDSTOP with Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN."
+-  #elif ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP) && DISABLED(Z_MIN_PROBE_ENDSTOP)
+-    #error "DISABLE_Z_MIN_PROBE_ENDSTOP requires Z_MIN_PROBE_ENDSTOP to be set."
+-  #endif
+-
+-  /**
+-   * Require a Z probe pin if Z_MIN_PROBE_ENDSTOP is enabled.
+-   */
+-  #if ENABLED(Z_MIN_PROBE_ENDSTOP)
++  #elif ENABLED(Z_MIN_PROBE_ENDSTOP)
+     #if !HAS_Z_MIN_PROBE_PIN
+-      #error "Z_MIN_PROBE_ENDSTOP requires a Z_MIN_PROBE_PIN in your board's pins_XXXX.h file."
++      #error "Z_MIN_PROBE_ENDSTOP requires the Z_MIN_PROBE_PIN to be defined."
+     #endif
+-    // Forcing Servo definitions can break some hall effect sensor setups. Leaving these here for further comment.
+-    //#ifndef NUM_SERVOS
+-    //  #error "You must have NUM_SERVOS defined and there must be at least 1 configured to use Z_MIN_PROBE_ENDSTOP."
+-    //#endif
+-    //#if defined(NUM_SERVOS) && NUM_SERVOS < 1
+-    //  #error "You must have at least 1 servo defined for NUM_SERVOS to use Z_MIN_PROBE_ENDSTOP."
+-    //#endif
+-    //#if Z_ENDSTOP_SERVO_NR < 0
+-    //  #error "You must have Z_ENDSTOP_SERVO_NR set to at least 0 or above to use Z_MIN_PROBE_ENDSTOP."
+-    //#endif
+-    //#ifndef Z_SERVO_ANGLES
+-    //  #error "You must have Z_SERVO_ANGLES defined for Z Extend and Retract to use Z_MIN_PROBE_ENDSTOP."
+-    //#endif
++  #else
++    #error "You must enable either Z_MIN_PROBE_ENDSTOP or Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use a probe."
+   #endif
+ 
+   /**
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 751296d..5cbc382 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -122,7 +122,7 @@ void Endstops::init() {
+     #endif
+   #endif
+ 
+-  #if HAS_Z_MIN_PROBE_PIN && ENABLED(Z_MIN_PROBE_ENDSTOP) // Check for Z_MIN_PROBE_ENDSTOP so we don't pull a pin high unless it's to be used.
++  #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+     SET_INPUT(Z_MIN_PROBE_PIN);
+     #if ENABLED(ENDSTOPPULLUP_ZMIN_PROBE)
+       WRITE(Z_MIN_PROBE_PIN,HIGH);
+@@ -209,7 +209,7 @@ void Endstops::M119() {
+     SERIAL_PROTOCOLPGM(MSG_Z2_MAX);
+     SERIAL_PROTOCOLLN(((READ(Z2_MAX_PIN)^Z2_MAX_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
+   #endif
+-  #if HAS_Z_MIN_PROBE_PIN
++  #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+     SERIAL_PROTOCOLPGM(MSG_Z_PROBE);
+     SERIAL_PROTOCOLLN(((READ(Z_MIN_PROBE_PIN)^Z_MIN_PROBE_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
+   #endif
+@@ -331,7 +331,7 @@ void Endstops::update() {
+ 
+           #else // !Z_DUAL_ENDSTOPS
+ 
+-            #if HAS_BED_PROBE && ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
++            #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+               if (z_probe_enabled) UPDATE_ENDSTOP(Z, MIN);
+             #else
+               UPDATE_ENDSTOP(Z, MIN);
+@@ -341,7 +341,7 @@ void Endstops::update() {
+ 
+         #endif // HAS_Z_MIN
+ 
+-        #if HAS_BED_PROBE && ENABLED(Z_MIN_PROBE_ENDSTOP) && DISABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
++        #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+           if (z_probe_enabled) {
+             UPDATE_ENDSTOP(Z, MIN_PROBE);
+             if (TEST_ENDSTOP(Z_MIN_PROBE)) SBI(endstop_hit_bits, Z_MIN_PROBE);
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 452ec32..da7161e 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -556,9 +556,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -577,15 +574,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -594,12 +599,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 8ae7eff..16802df 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -539,9 +539,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -560,15 +557,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -577,12 +582,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 44581c6..b8baf3c 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -537,9 +537,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -558,15 +555,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -575,12 +580,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index c642467..5bac996 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -548,9 +548,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -569,15 +566,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ #define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -586,12 +591,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index a7094c0..fc5a6cf 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -550,9 +550,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -571,15 +568,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ #define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -588,12 +593,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index efc72e1..87142b7 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -573,9 +573,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -594,15 +591,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -611,12 +616,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index ad21151..e3c7b84 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -556,9 +556,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -577,15 +574,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -594,12 +599,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index fddbb12..27f5897 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -556,9 +556,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -577,15 +574,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -594,12 +599,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 794ec71..1755e47 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -556,9 +556,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -577,15 +574,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -594,12 +599,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index c2d8ed6..1f4cd57 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -554,9 +554,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -575,15 +572,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -592,12 +597,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 5ca4706..a0bc706 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -566,9 +566,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -587,15 +584,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -604,12 +609,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 54a4ace..495e11b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -577,9 +577,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -598,15 +595,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -615,12 +620,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 8b10193..b46ce31 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -548,9 +548,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -569,15 +566,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -586,12 +591,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 056e603..fd23923 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -556,9 +556,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -577,15 +574,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -594,12 +599,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index f196ba9..cbbe08b 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -646,9 +646,6 @@
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -667,15 +664,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -684,12 +689,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 06ad8e1..f609017 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -640,9 +640,6 @@
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -661,15 +658,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ #define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -678,12 +683,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 83d70a5..7bed412 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -643,9 +643,6 @@
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -664,15 +661,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -681,12 +686,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index ef820d4..264077d 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -644,9 +644,6 @@
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -665,15 +662,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -682,12 +687,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 4b25bf1..eddc9fb 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -646,9 +646,6 @@
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -667,15 +664,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ #define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -684,12 +689,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index d194a1d..9a76b77 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -559,9 +559,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -580,15 +577,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -597,12 +602,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 9168a02..40c317a 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -552,9 +552,6 @@
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
+-// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
+-// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
+-//
+ // *** PLEASE READ ALL INSTRUCTIONS BELOW FOR SAFETY! ***
+ //
+ // To continue using the Z-min-endstop for homing, be sure to disable Z_SAFE_HOMING.
+@@ -573,15 +570,23 @@
+ //
+ // Normally-closed switches are advised and are the default.
+ //
++
++//
+ // The Z_MIN_PROBE_PIN sets the Arduino pin to use. (See your board's pins file.)
+ // Since the RAMPS Aux4->D32 pin maps directly to the Arduino D32 pin, D32 is the
+-// default pin for all RAMPS-based boards. Some other boards map differently.
+-// To set or change the pin for your board, edit the appropriate pins_XXXXX.h file.
++// default pin for all RAMPS-based boards. Most boards use the X_MAX_PIN by default.
++// To use a different pin you can override it here.
+ //
+ // WARNING:
+ // Setting the wrong pin may have unexpected and potentially disastrous consequences.
+ // Use with caution and do your homework.
+ //
++//#define Z_MIN_PROBE_PIN X_MAX_PIN
++
++//
++// Enable Z_MIN_PROBE_ENDSTOP to use _both_ a Z Probe and a Z-min-endstop on the same machine.
++// With this option the Z_MIN_PROBE_PIN will only be used for probing, never for homing.
++//
+ //#define Z_MIN_PROBE_ENDSTOP
+ 
+ // Enable Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN to use the Z_MIN_PIN for your Z_MIN_PROBE.
+@@ -590,12 +595,6 @@
+ 
+ // To use a probe you must enable one of the two options above!
+ 
+-// This option disables the use of the Z_MIN_PROBE_PIN
+-// To enable the Z probe pin but disable its use, uncomment the line below. This only affects a
+-// Z probe switch if you have a separate Z min endstop also and have activated Z_MIN_PROBE_ENDSTOP above.
+-// If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+-//#define DISABLE_Z_MIN_PROBE_ENDSTOP
+-
+ // Enable Z Probe Repeatability test to see how accurate your probe is
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index bc1ede3..48f3cf7 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -361,7 +361,7 @@
+ //
+ // Disable unused endstop / probe pins
+ //
+-#if ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP) || DISABLED(Z_MIN_PROBE_ENDSTOP) // Allow code to compile regardless of Z_MIN_PROBE_ENDSTOP setting.
++#if DISABLED(Z_MIN_PROBE_ENDSTOP)
+   #undef Z_MIN_PROBE_PIN
+   #define Z_MIN_PROBE_PIN    -1
+ #endif
+
+commit 7ae351c92fca3821052cc8d67ce35d8fee951bbe (from e05af606a8f2fb945cbb7b4fbe23f5ce635da31a)
+Merge: ba94c89 e05af60
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Sep 20 12:16:51 2016 -0500
+
+    Merge pull request #4842 from thinkyhead/rc_DISABLE_Z_MIN_PROBE_ENDSTOP_whassup
+    
+    Drop DISABLE_Z_MIN_PROBE_ENDSTOP, clean up probe config
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 9bd0de8..2614217 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -655,6 +655,7 @@
+       #define AUTO_BED_LEVELING_NONLINEAR
+     #else
+       #define AUTO_BED_LEVELING_LINEAR
++      #define AUTO_BED_LEVELING_LINEAR_GRID
+     #endif
+   #endif
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1f86f88..63dfcf7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -38,7 +38,7 @@
+   #include "vector_3.h"
+ #endif
+ 
+-#if ENABLED(AUTO_BED_LEVELING_LINEAR)
++#if ENABLED(AUTO_BED_LEVELING_LINEAR_GRID)
+   #include "qr_solve.h"
+ #elif ENABLED(MESH_BED_LEVELING)
+   #include "mesh_bed_leveling.h"
+@@ -3453,7 +3453,7 @@ inline void gcode_G28() {
+         float zoffset = zprobe_zoffset;
+         if (code_seen('Z')) zoffset += code_value_axis_units(Z_AXIS);
+ 
+-      #elif ENABLED(AUTO_BED_LEVELING_LINEAR)
++      #elif ENABLED(AUTO_BED_LEVELING_LINEAR_GRID)
+ 
+         /**
+          * solve the plane equation ax + by + d = z
+@@ -3471,7 +3471,7 @@ inline void gcode_G28() {
+                mean = 0.0;
+         int indexIntoAB[abl_grid_points_x][abl_grid_points_y];
+ 
+-      #endif // AUTO_BED_LEVELING_LINEAR
++      #endif // AUTO_BED_LEVELING_LINEAR_GRID
+ 
+       int probePointCounter = 0;
+       bool zig = abl_grid_points_y & 1; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
+@@ -3506,7 +3506,7 @@ inline void gcode_G28() {
+ 
+           measured_z = probe_pt(xProbe, yProbe, stow_probe_after_each, verbose_level);
+ 
+-          #if ENABLED(AUTO_BED_LEVELING_LINEAR)
++          #if ENABLED(AUTO_BED_LEVELING_LINEAR_GRID)
+ 
+             mean += measured_z;
+             eqnBVector[probePointCounter] = measured_z;
+@@ -3576,7 +3576,7 @@ inline void gcode_G28() {
+       if (!dryrun) extrapolate_unprobed_bed_level();
+       print_bed_level();
+ 
+-    #elif ENABLED(AUTO_BED_LEVELING_LINEAR)
++    #elif ENABLED(AUTO_BED_LEVELING_LINEAR_GRID)
+ 
+       // For LINEAR leveling calculate matrix, print reports, correct the position
+ 
+@@ -3673,6 +3673,10 @@ inline void gcode_G28() {
+         }
+       } //do_topography_map
+ 
++    #endif // AUTO_BED_LEVELING_LINEAR_GRID
++
++    #if ENABLED(AUTO_BED_LEVELING_LINEAR)
++
+       // For LINEAR and 3POINT leveling correct the current position
+ 
+       if (verbose_level > 0)
+@@ -6759,7 +6763,7 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+             float xydiff[2] = { offset_vec.x, offset_vec.y };
+             current_position[Z_AXIS] += offset_vec.z;
+ 
+-          #else // !AUTO_BED_LEVELING_FEATURE
++          #else // !AUTO_BED_LEVELING_LINEAR
+ 
+             float xydiff[2] = {
+               hotend_offset[X_AXIS][tmp_extruder] - hotend_offset[X_AXIS][active_extruder],
+diff --git a/Marlin/qr_solve.cpp b/Marlin/qr_solve.cpp
+index e60b1d3..0fadd67 100644
+--- a/Marlin/qr_solve.cpp
++++ b/Marlin/qr_solve.cpp
+@@ -22,7 +22,7 @@
+ 
+ #include "qr_solve.h"
+ 
+-#if ENABLED(AUTO_BED_LEVELING_LINEAR)
++#if ENABLED(AUTO_BED_LEVELING_LINEAR_GRID)
+ 
+ #include <stdlib.h>
+ #include <math.h>
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 158e31d..a7eccd8 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -82,10 +82,10 @@ unsigned int Stepper::cleaning_buffer_counter = 0;
+   bool Stepper::locked_z2_motor = false;
+ #endif
+ 
+-long  Stepper::counter_X = 0,
+-      Stepper::counter_Y = 0,
+-      Stepper::counter_Z = 0,
+-      Stepper::counter_E = 0;
++long Stepper::counter_X = 0,
++     Stepper::counter_Y = 0,
++     Stepper::counter_Z = 0,
++     Stepper::counter_E = 0;
+ 
+ volatile uint32_t Stepper::step_events_completed = 0; // The number of step events executed in the current block
+ 
+@@ -95,17 +95,17 @@ volatile uint32_t Stepper::step_events_completed = 0; // The number of step even
+   volatile unsigned char Stepper::eISR_Rate = 200; // Keep the ISR at a low rate until needed
+ 
+   #if ENABLED(LIN_ADVANCE)
+-    volatile int Stepper::e_steps[E_STEPPERS];
++    volatile long Stepper::e_steps[E_STEPPERS];
+     int Stepper::extruder_advance_k = LIN_ADVANCE_K,
+         Stepper::final_estep_rate,
+         Stepper::current_estep_rate[E_STEPPERS],
+         Stepper::current_adv_steps[E_STEPPERS];
+   #else
+-    long  Stepper::e_steps[E_STEPPERS],
+-          Stepper::final_advance = 0,
+-          Stepper::old_advance = 0,
+-          Stepper::advance_rate,
+-          Stepper::advance;
++    long Stepper::e_steps[E_STEPPERS],
++         Stepper::final_advance = 0,
++         Stepper::old_advance = 0,
++         Stepper::advance_rate,
++         Stepper::advance;
+   #endif
+ #endif
+ 
+@@ -299,16 +299,14 @@ void Stepper::set_directions() {
+     SET_STEP_DIR(Z); // C
+   #endif
+ 
+-  #if DISABLED(ADVANCE)
+-    if (motor_direction(E_AXIS)) {
+-      REV_E_DIR();
+-      count_direction[E_AXIS] = -1;
+-    }
+-    else {
+-      NORM_E_DIR();
+-      count_direction[E_AXIS] = 1;
+-    }
+-  #endif //!ADVANCE
++  if (motor_direction(E_AXIS)) {
++    REV_E_DIR();
++    count_direction[E_AXIS] = -1;
++  }
++  else {
++    NORM_E_DIR();
++    count_direction[E_AXIS] = 1;
++  }
+ }
+ 
+ // "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.
+@@ -683,29 +681,15 @@ void Stepper::isr() {
+     old_OCR0A += eISR_Rate;
+     OCR0A = old_OCR0A;
+ 
+-    #define SET_E_STEP_DIR(INDEX) \
+-      E## INDEX ##_DIR_WRITE(e_steps[INDEX] <= 0 ? INVERT_E## INDEX ##_DIR : !INVERT_E## INDEX ##_DIR)
+-
+     #define START_E_PULSE(INDEX) \
+-      if (e_steps[INDEX]) E## INDEX ##_STEP_WRITE(INVERT_E_STEP_PIN)
++      if (e_steps[INDEX]) E## INDEX ##_STEP_WRITE(!INVERT_E_STEP_PIN)
+ 
+     #define STOP_E_PULSE(INDEX) \
+       if (e_steps[INDEX]) { \
+         e_steps[INDEX] <= 0 ? ++e_steps[INDEX] : --e_steps[INDEX]; \
+-        E## INDEX ##_STEP_WRITE(!INVERT_E_STEP_PIN); \
++        E## INDEX ##_STEP_WRITE(INVERT_E_STEP_PIN); \
+       }
+ 
+-    SET_E_STEP_DIR(0);
+-    #if E_STEPPERS > 1
+-      SET_E_STEP_DIR(1);
+-      #if E_STEPPERS > 2
+-        SET_E_STEP_DIR(2);
+-        #if E_STEPPERS > 3
+-          SET_E_STEP_DIR(3);
+-        #endif
+-      #endif
+-    #endif
+-
+     // Step all E steppers that have steps
+     for (uint8_t i = 0; i < step_loops; i++) {
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index d7507af..b0f0779 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -113,13 +113,13 @@ class Stepper {
+       static unsigned char old_OCR0A;
+       static volatile unsigned char eISR_Rate;
+       #if ENABLED(LIN_ADVANCE)
+-        static volatile int e_steps[E_STEPPERS];
++        static volatile long e_steps[E_STEPPERS];
+         static int extruder_advance_k;
+         static int final_estep_rate;
+         static int current_estep_rate[E_STEPPERS]; // Actual extruder speed [steps/s]
+         static int current_adv_steps[E_STEPPERS];  // The amount of current added esteps due to advance.
+-                                                  // i.e., the current amount of pressure applied
+-                                                  // to the spring (=filament).
++                                                   // i.e., the current amount of pressure applied
++                                                   // to the spring (=filament).
+       #else
+         static long e_steps[E_STEPPERS];
+         static long advance_rate, advance, final_advance;
+

@@ -1,0 +1,137 @@
+commit c2e11daf66f20e8b90b418ac4dfbafbdfb1cb56e (from a0a5ff61c4af0b8eb37f52ebbf33f33dab263431)
+Merge: a0a5ff6 64268f3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 23 19:12:51 2015 -0700
+
+    Merge pull request #1958 from thinkyhead/redo_1937
+    
+    Fix homing of YZ with DUAL_X_CARRIAGE
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a51d483..cc76792 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -990,10 +990,10 @@ static void axis_is_at_home(int axis) {
+   #endif
+ 
+   #ifdef SCARA
+-    float homeposition[3];
+    
+-    if (axis < 2) {
++    if (axis == X_AXIS || axis == Y_AXIS) {
+ 
++      float homeposition[3];
+       for (int i = 0; i < 3; i++) homeposition[i] = base_home_pos(i);
+ 
+       // SERIAL_ECHOPGM("homeposition[x]= "); SERIAL_ECHO(homeposition[0]);
+@@ -1023,17 +1023,14 @@ static void axis_is_at_home(int axis) {
+       // inverse kinematic transform.
+       min_pos[axis] = base_min_pos(axis); // + (delta[axis] - base_home_pos(axis));
+       max_pos[axis] = base_max_pos(axis); // + (delta[axis] - base_home_pos(axis));
+-    } 
+-    else {
+-      current_position[axis] = base_home_pos(axis) + home_offset[axis];
+-      min_pos[axis] = base_min_pos(axis) + home_offset[axis];
+-      max_pos[axis] = base_max_pos(axis) + home_offset[axis];
+     }
+-  #else
++    else
++  #endif
++  {
+     current_position[axis] = base_home_pos(axis) + home_offset[axis];
+     min_pos[axis] = base_min_pos(axis) + home_offset[axis];
+     max_pos[axis] = base_max_pos(axis) + home_offset[axis];
+-  #endif
++  }
+ }
+ 
+ /**
+@@ -1501,13 +1498,11 @@ static void homeaxis(AxisEnum axis) {
+ 
+   if (axis == X_AXIS ? HOMEAXIS_DO(X) : axis == Y_AXIS ? HOMEAXIS_DO(Y) : axis == Z_AXIS ? HOMEAXIS_DO(Z) : 0) {
+ 
+-    int axis_home_dir;
+-
+-    #ifdef DUAL_X_CARRIAGE
+-      if (axis == X_AXIS) axis_home_dir = x_home_dir(active_extruder);
+-    #else
+-      axis_home_dir = home_dir(axis);
+-    #endif
++    int axis_home_dir =
++      #ifdef DUAL_X_CARRIAGE
++        (axis == X_AXIS) ? x_home_dir(active_extruder) :
++      #endif
++      home_dir(axis);
+ 
+     // Set the axis position as setup for the move
+     current_position[axis] = 0;
+
+commit c2e11daf66f20e8b90b418ac4dfbafbdfb1cb56e (from 64268f331263b0ff064274c3ee293f44b1bd144d)
+Merge: a0a5ff6 64268f3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 23 19:12:51 2015 -0700
+
+    Merge pull request #1958 from thinkyhead/redo_1937
+    
+    Fix homing of YZ with DUAL_X_CARRIAGE
+
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 857976b..3bba458 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -87,8 +87,8 @@
+   /**
+    * Required LCD language
+    */
+-  #if !defined(DOGLCD) && defined(ULTRA_LCD) && !defined(DISPLAY_CHARSET_HD44780_JAPAN) && !defined(DISPLAY_CHARSET_HD44780_WESTERN)
+-    #error You must enable either DISPLAY_CHARSET_HD44780_JAPAN or DISPLAY_CHARSET_HD44780_WESTERN for your LCD controller.
++  #if !defined(DOGLCD) && defined(ULTRA_LCD) && !defined(DISPLAY_CHARSET_HD44780_JAPAN) && !defined(DISPLAY_CHARSET_HD44780_WESTERN)&& !defined(DISPLAY_CHARSET_HD44780_CYRILLIC)
++    #error You must enable either DISPLAY_CHARSET_HD44780_JAPAN or DISPLAY_CHARSET_HD44780_WESTERN  or DISPLAY_CHARSET_HD44780_CYRILLIC for your LCD controller.
+   #endif
+ 
+   /**
+diff --git a/Marlin/fonts/README.fonts b/Marlin/fonts/README.fonts
+index f227c07..a33e6af 100644
+--- a/Marlin/fonts/README.fonts
++++ b/Marlin/fonts/README.fonts
+@@ -3,4 +3,23 @@ In Fony export the fonts to bdf-format. Maybe another one can edit them with Fon
+ Then run make_fonts.bat what calls bdf2u8g.exe with the needed parameters to produce the .h files.
+ The .h files must be edited to replace '#include "u8g.h"' with '#include <utility/u8g.h>', replace 'U8G_FONT_SECTION' with 'U8G_SECTION', insert '.progmem.' right behind the first '"' and moved to the main directory.
+ 
+-Especially the Kana and Cyrillic fonts should be revised by someone who knows what he/she does. I am only a west-European with very little knowledge about this scripts.
++How to integrate a new font:
++Currently we are limited to 256 symbols per font. We use a menu system with 5 lines, on a display with 64 pixel height. That means we have 12 pixel for a line. To have some space in between the lines we can't use more then 10 pixel height for the symbols.
++We use fixed width fonts. To fit 22 Symbols on the 128 pixel wide screen, the symbols can't be wider than 5 pixel. Maybe you can work with half symbols - two places in the charset will than build one wide symbol.
++
++ * Get 'Fony.exe'
++ * Copy one of the existing *.fon files and work with this.
++ * Change the pixels. Don't change width or height.
++ * Export as *.bdf
++ * Use 'bdf2u8g.exe' to produce the *.h file. Examples for the existing fonts are in 'make_fonts.bat'
++ * Edit the produced .h file to match our needs. See hints in 'README.fonts' or the other 'dogm_font_data_.h' files.
++ * Make a new entry in the font list in 'dogm_lcd_implementation.h' before the '#else // fall back'
++    #elif defined( DISPLAY_CHARSET_NEWNAME )
++      #include "dogm_font_data_yourfont.h"
++      #define FONT_MENU_NAME YOURFONTNAME
++    #else // fall-back
++ * Add your font to the list of permitted fonts in 'language_en.h'
++    ... || defined(DISPLAY_CHARSET_YOUR_NEW_FONT) ... )
++
++
++Especially the Kana font should be revised by someone who knows what he/she does. I am only a west-European with very little knowledge about this script.
+diff --git a/Marlin/pins_AZTEEG_X3.h b/Marlin/pins_AZTEEG_X3.h
+index ea98f95..7c5dca3 100644
+--- a/Marlin/pins_AZTEEG_X3.h
++++ b/Marlin/pins_AZTEEG_X3.h
+@@ -28,9 +28,7 @@
+    #define STAT_LED_RED 64
+    #define STAT_LED_BLUE 63
+   #endif
+-#endif
+-
+-#elif define TEMP_STAT_LEDS
++#elif defined(TEMP_STAT_LEDS)
+   #define STAT_LED_RED       6
+   #define STAT_LED_BLUE     11
+ #endif
+

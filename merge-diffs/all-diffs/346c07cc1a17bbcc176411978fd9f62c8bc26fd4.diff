@@ -1,0 +1,100 @@
+commit 346c07cc1a17bbcc176411978fd9f62c8bc26fd4 (from e63076504d3c79b34d83a443c2ad83ded2fdcf91)
+Merge: e630765 9ac7dc6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Mar 30 15:45:10 2015 -0700
+
+    Merge pull request #1743 from AnHardt/extrudemultiply
+    
+    Replace extrudemultiply by extruder_multiply[active_extruder]
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 46720d9..45a94e8 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -229,7 +229,6 @@ void refresh_cmd_timeout(void);
+ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern int feedmultiply;
+-extern int extrudemultiply; // Sets extrude multiply factor (in percent) for all extruders
+ extern bool volumetric_enabled;
+ extern int extruder_multiply[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
+ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in millimeters), typically around 1.75 or 2.85, 0 disables the volumetric calculations for the extruder.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 6802a82..0a8a613 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -210,7 +210,6 @@ int homing_bump_divisor[] = HOMING_BUMP_DIVISOR;
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+ int feedmultiply = 100; //100->1 200->2
+ int saved_feedmultiply;
+-int extrudemultiply = 100; //100->1 200->2
+ int extruder_multiply[EXTRUDERS] = ARRAY_BY_EXTRUDERS(100, 100, 100, 100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS(DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA, DEFAULT_NOMINAL_FILAMENT_DIA);
+@@ -3776,7 +3775,7 @@ inline void gcode_M221() {
+       extruder_multiply[tmp_extruder] = sval;
+     }
+     else {
+-      extrudemultiply = sval;
++      extruder_multiply[active_extruder] = sval;
+     }
+   }
+ }
+@@ -4213,7 +4212,7 @@ inline void gcode_M400() { st_synchronize(); }
+     //SERIAL_PROTOCOLPGM("Filament dia (measured mm):");
+     //SERIAL_PROTOCOL(filament_width_meas);
+     //SERIAL_PROTOCOLPGM("Extrusion ratio(%):");
+-    //SERIAL_PROTOCOL(extrudemultiply);
++    //SERIAL_PROTOCOL(extruder_multiply[active_extruder]);
+   }
+ 
+   /**
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 89cd5e8..63e99bd 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -369,7 +369,7 @@ static void lcd_implementation_status_screen() {
+       lcd_printPGM(PSTR("dia:"));
+       lcd_print(ftostr12ns(filament_width_meas));
+       lcd_printPGM(PSTR(" factor:"));
+-      lcd_print(itostr3(extrudemultiply));
++      lcd_print(itostr3(volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]));
+       lcd_print('%');
+     }
+   #endif
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 786527d..d98ef63 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -545,7 +545,7 @@ float junction_deviation = 0.1;
+   block->steps[Z_AXIS] = labs(dz);
+   block->steps[E_AXIS] = labs(de);
+   block->steps[E_AXIS] *= volumetric_multiplier[active_extruder];
+-  block->steps[E_AXIS] *= extrudemultiply;
++  block->steps[E_AXIS] *= extruder_multiply[active_extruder];
+   block->steps[E_AXIS] /= 100;
+   block->step_event_count = max(block->steps[X_AXIS], max(block->steps[Y_AXIS], max(block->steps[Z_AXIS], block->steps[E_AXIS])));
+ 
+@@ -679,7 +679,7 @@ float junction_deviation = 0.1;
+     delta_mm[Y_AXIS] = dy / axis_steps_per_unit[Y_AXIS];
+   #endif
+   delta_mm[Z_AXIS] = dz / axis_steps_per_unit[Z_AXIS];
+-  delta_mm[E_AXIS] = (de / axis_steps_per_unit[E_AXIS]) * volumetric_multiplier[active_extruder] * extrudemultiply / 100.0;
++  delta_mm[E_AXIS] = (de / axis_steps_per_unit[E_AXIS]) * volumetric_multiplier[active_extruder] * extruder_multiply[active_extruder] / 100.0;
+ 
+   if (block->steps[X_AXIS] <= dropsegments && block->steps[Y_AXIS] <= dropsegments && block->steps[Z_AXIS] <= dropsegments) {
+     block->millimeters = fabs(delta_mm[E_AXIS]);
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index c85f8e1..58a6697 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -485,7 +485,7 @@ static void lcd_tune_menu() {
+     MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_BED, &target_temperature_bed, 0, BED_MAXTEMP - 15);
+   #endif
+   MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
+-  MENU_ITEM_EDIT(int3, MSG_FLOW, &extrudemultiply, 10, 999);
++  MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiply[active_extruder], 10, 999);
+   MENU_ITEM_EDIT(int3, MSG_FLOW MSG_F0, &extruder_multiply[0], 10, 999);
+   #if TEMP_SENSOR_1 != 0
+     MENU_ITEM_EDIT(int3, MSG_FLOW MSG_F1, &extruder_multiply[1], 10, 999);
+

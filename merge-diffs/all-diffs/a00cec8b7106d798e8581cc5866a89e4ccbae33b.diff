@@ -1,0 +1,151 @@
+commit a00cec8b7106d798e8581cc5866a89e4ccbae33b (from 1f895844ac7dfded4b484af6e7c233e4fa08717a)
+Merge: 1f89584 6cd85e6
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Sat Mar 15 15:41:45 2014 +0100
+
+    Merge pull request #833 from mattsch/optional_feedrate_multiplier
+    
+    Add support for disabling encoder control for feedrate multiplier
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 316d7da..f8be1eb 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -239,6 +239,11 @@
+ #define MANUAL_FEEDRATE {50*60, 50*60, 4*60, 60}  // set the speeds for manual moves (mm/min)
+ #endif
+ 
++//Comment to disable setting feedrate multiplier via encoder
++#ifdef ULTIPANEL
++    #define ULTIPANEL_FEEDMULTIPLY
++#endif
++
+ // minimum time in microseconds that a movement needs to take if the buffer is emptied.
+ #define DEFAULT_MINSEGMENTTIME        20000
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 3262f2d..f9f65a2 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -196,6 +196,7 @@ static void lcd_status_screen()
+         lcd_quick_feedback();
+     }
+ 
++#ifdef ULTIPANEL_FEEDMULTIPLY
+     // Dead zone at 100% feedrate
+     if ((feedmultiply < 100 && (feedmultiply + int(encoderPosition)) > 100) ||
+             (feedmultiply > 100 && (feedmultiply + int(encoderPosition)) < 100))
+@@ -219,6 +220,7 @@ static void lcd_status_screen()
+         feedmultiply += int(encoderPosition);
+         encoderPosition = 0;
+     }
++#endif//ULTIPANEL_FEEDMULTIPLY
+ 
+     if (feedmultiply < 10)
+         feedmultiply = 10;
+
+commit a00cec8b7106d798e8581cc5866a89e4ccbae33b (from 6cd85e6008a5b697a161026b722e7e83c0c78c64)
+Merge: 1f89584 6cd85e6
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Sat Mar 15 15:41:45 2014 +0100
+
+    Merge pull request #833 from mattsch/optional_feedrate_multiplier
+    
+    Add support for disabling encoder control for feedrate multiplier
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index b0cb833..f8be1eb 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -284,6 +284,9 @@
+ //=============================Additional Features===========================
+ //===========================================================================
+ 
++//#define CHDK 4        //Pin for triggering CHDK to take a picture see how to use it here http://captain-slow.dk/2014/03/09/3d-printing-timelapses/
++#define CHDK_DELAY 50 //How long in ms the pin should stay HIGH before going LOW again
++
+ #define SD_FINISHED_STEPPERRELEASE true  //if sd support and the file is finished: disable steppers?
+ #define SD_FINISHED_RELEASECOMMAND "M84 X Y Z E" // You might want to keep the z enabled so your bed stays in place.
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d624470..bb8b303 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -314,6 +314,12 @@ bool Stopped=false;
+ bool CooldownNoWait = true;
+ bool target_direction;
+ 
++//Insert variables if CHDK is defined
++#ifdef CHDK
++unsigned long chdkHigh = 0;
++boolean chdkActive = false;
++#endif
++
+ //===========================================================================
+ //=============================Routines======================================
+ //===========================================================================
+@@ -2588,23 +2594,33 @@ void process_commands()
+     #endif //PIDTEMP
+     case 240: // M240  Triggers a camera by emulating a Canon RC-1 : http://www.doc-diy.net/photo/rc-1_hacked/
+      {
+-      #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+-        const uint8_t NUM_PULSES=16;
+-        const float PULSE_LENGTH=0.01524;
+-        for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++     	#ifdef CHDK
++       
++         SET_OUTPUT(CHDK);
++         WRITE(CHDK, HIGH);
++         chdkHigh = millis();
++         chdkActive = true;
++       
++       #else
++     	
++      	#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
++	const uint8_t NUM_PULSES=16;
++	const float PULSE_LENGTH=0.01524;
++	for(int i=0; i < NUM_PULSES; i++) {
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+         delay(7.33);
+         for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+-      #endif
++      	#endif
++      #endif //chdk end if
+      }
+     break;
+ #ifdef DOGLCD
+@@ -3353,6 +3369,16 @@ void manage_inactivity()
+       }
+     }
+   }
++  
++  #ifdef CHDK //Check if pin should be set to LOW after M240 set it to HIGH
++    if (chdkActive)
++    {
++      chdkActive = false;
++      if (millis()-chdkHigh < CHDK_DELAY) return;
++      WRITE(CHDK, LOW);
++    }
++  #endif
++  
+   #if defined(KILL_PIN) && KILL_PIN > -1
+     if( 0 == READ(KILL_PIN) )
+       kill();
+

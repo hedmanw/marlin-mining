@@ -1,0 +1,588 @@
+commit 3cd7dbcc45ad83d3fd2325135943546c239d4cc1 (from 3f2c771d905313e91c81828938b3434e1dfda50e)
+Merge: 3f2c771 c13a831
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Wed Jul 30 13:01:52 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 245f65c..6398f41 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -410,9 +410,11 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #ifdef FWRETRACT
+   #define MIN_RETRACT 0.1                //minimum extruded mm to accept a automatic gcode retraction attempt
+   #define RETRACT_LENGTH 3               //default retract length (positive mm)
++  #define RETRACT_LENGTH_SWAP 13         //default swap retract length (positive mm), for extruder change
+   #define RETRACT_FEEDRATE 45            //default feedrate for retracting (mm/s)
+   #define RETRACT_ZLIFT 0                //default retract Z-lift
+   #define RETRACT_RECOVER_LENGTH 0       //default additional recover length (mm, added to retract length when recovering)
++  #define RETRACT_RECOVER_LENGTH_SWAP 0  //default additional swap recover length (mm, added to retract length when recovering from extruder change)
+   #define RETRACT_RECOVER_FEEDRATE 8     //default feedrate for recovering from retraction (mm/s)
+ #endif
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index e728209..062b6d4 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -231,9 +231,9 @@ extern unsigned char fanSpeedSoftPwm;
+ 
+ #ifdef FWRETRACT
+ extern bool autoretract_enabled;
+-extern bool retracted;
+-extern float retract_length, retract_feedrate, retract_zlift;
+-extern float retract_recover_length, retract_recover_feedrate;
++extern bool retracted[EXTRUDERS];
++extern float retract_length, retract_length_swap, retract_feedrate, retract_zlift;
++extern float retract_recover_length, retract_recover_length_swap, retract_recover_feedrate;
+ #endif
+ 
+ extern unsigned long starttime;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c90f429..2f8cf78 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -243,11 +243,29 @@ int EtoPPressure=0;
+ 
+ #ifdef FWRETRACT
+   bool autoretract_enabled=false;
+-  bool retracted=false;
++  bool retracted[EXTRUDERS]={false
++    #if EXTRUDERS > 1
++    , false
++     #if EXTRUDERS > 2
++      , false
++     #endif
++  #endif
++  };
++  bool retracted_swap[EXTRUDERS]={false
++    #if EXTRUDERS > 1
++    , false
++     #if EXTRUDERS > 2
++      , false
++     #endif
++  #endif
++  };
++
+   float retract_length = RETRACT_LENGTH;
++  float retract_length_swap = RETRACT_LENGTH_SWAP;
+   float retract_feedrate = RETRACT_FEEDRATE;
+   float retract_zlift = RETRACT_ZLIFT;
+   float retract_recover_length = RETRACT_RECOVER_LENGTH;
++  float retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
+   float retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
+ #endif
+ 
+@@ -1119,23 +1137,27 @@ void refresh_cmd_timeout(void)
+ }
+ 
+ #ifdef FWRETRACT
+-  void retract(bool retracting) {
+-    if(retracting && !retracted) {
++  void retract(bool retracting, bool swapretract = false) {
++    if(retracting && !retracted[active_extruder]) {
+       destination[X_AXIS]=current_position[X_AXIS];
+       destination[Y_AXIS]=current_position[Y_AXIS];
+       destination[Z_AXIS]=current_position[Z_AXIS];
+       destination[E_AXIS]=current_position[E_AXIS];
+-      current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
++      if (swapretract) {
++        current_position[E_AXIS]+=retract_length_swap/volumetric_multiplier[active_extruder];
++      } else {
++        current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
++      }
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+       feedrate=retract_feedrate*60;
+-      retracted=true;
++      retracted[active_extruder]=true;
+       prepare_move();
+       current_position[Z_AXIS]-=retract_zlift;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       prepare_move();
+       feedrate = oldFeedrate;
+-    } else if(!retracting && retracted) {
++    } else if(!retracting && retracted[active_extruder]) {
+       destination[X_AXIS]=current_position[X_AXIS];
+       destination[Y_AXIS]=current_position[Y_AXIS];
+       destination[Z_AXIS]=current_position[Z_AXIS];
+@@ -1143,11 +1165,15 @@ void refresh_cmd_timeout(void)
+       current_position[Z_AXIS]+=retract_zlift;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       //prepare_move();
+-      current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
++      if (swapretract) {
++        current_position[E_AXIS]-=(retract_length_swap+retract_recover_length_swap)/volumetric_multiplier[active_extruder]; 
++      } else {
++        current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
++      }
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+       feedrate=retract_recover_feedrate*60;
+-      retracted=false;
++      retracted[active_extruder]=false;
+       prepare_move();
+       feedrate = oldFeedrate;
+     }
+@@ -1217,10 +1243,19 @@ void process_commands()
+       break;
+       #ifdef FWRETRACT
+       case 10: // G10 retract
++       #if EXTRUDERS > 1
++        retracted_swap[active_extruder]=(code_seen('S') && code_value_long() == 1); // checks for swap retract argument
++        retract(true,retracted_swap[active_extruder]);
++       #else
+         retract(true);
++       #endif
+       break;
+       case 11: // G11 retract_recover
++       #if EXTRUDERS > 1
++        retract(false,retracted_swap[active_extruder]);
++       #else
+         retract(false);
++       #endif 
+       break;
+       #endif //FWRETRACT
+     case 28: //G28 Home all Axis one at a time
+@@ -1697,7 +1732,7 @@ void process_commands()
+     case 23: //M23 - Select file
+       starpos = (strchr(strchr_pointer + 4,'*'));
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+       card.openFile(strchr_pointer + 4,true);
+       break;
+     case 24: //M24 - Start SD print
+@@ -1720,7 +1755,7 @@ void process_commands()
+       if(starpos != NULL){
+         char* npos = strchr(cmdbuffer[bufindr], 'N');
+         strchr_pointer = strchr(npos,' ') + 1;
+-        *(starpos-1) = '\0';
++        *(starpos) = '\0';
+       }
+       card.openFile(strchr_pointer+4,false);
+       break;
+@@ -1735,7 +1770,7 @@ void process_commands()
+         if(starpos != NULL){
+           char* npos = strchr(cmdbuffer[bufindr], 'N');
+           strchr_pointer = strchr(npos,' ') + 1;
+-          *(starpos-1) = '\0';
++          *(starpos) = '\0';
+         }
+         card.removeFile(strchr_pointer + 4);
+       }
+@@ -1757,7 +1792,7 @@ void process_commands()
+         namestartpos++; //to skip the '!'
+ 
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+ 
+       bool call_procedure=(code_seen('P'));
+ 
+@@ -1780,7 +1815,7 @@ void process_commands()
+       if(starpos != NULL){
+         char* npos = strchr(cmdbuffer[bufindr], 'N');
+         strchr_pointer = strchr(npos,' ') + 1;
+-        *(starpos-1) = '\0';
++        *(starpos) = '\0';
+       }
+       card.openLogFile(strchr_pointer+5);
+       break;
+@@ -2200,7 +2235,7 @@ void process_commands()
+     case 117: // M117 display message
+       starpos = (strchr(strchr_pointer + 5,'*'));
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+       lcd_setstatus(strchr_pointer + 5);
+       break;
+     case 114: // M114
+@@ -2398,8 +2433,28 @@ void process_commands()
+         int t= code_value() ;
+         switch(t)
+         {
+-          case 0: autoretract_enabled=false;retracted=false;break;
+-          case 1: autoretract_enabled=true;retracted=false;break;
++          case 0: 
++          {
++            autoretract_enabled=false;
++            retracted[0]=false;
++            #if EXTRUDERS > 1
++              retracted[1]=false;
++            #endif
++            #if EXTRUDERS > 2
++              retracted[2]=false;
++            #endif
++          }break;
++          case 1: 
++          {
++            autoretract_enabled=true;
++            retracted[0]=false;
++            #if EXTRUDERS > 1
++              retracted[1]=false;
++            #endif
++            #if EXTRUDERS > 2
++              retracted[2]=false;
++            #endif
++          }break;
+           default:
+             SERIAL_ECHO_START;
+             SERIAL_ECHOPGM(MSG_UNKNOWN_COMMAND);
+diff --git a/Marlin/language.h b/Marlin/language.h
+index c032aca..8522018 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -171,9 +171,11 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Re.mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "S UnRet+mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -371,9 +373,11 @@
+ 	#define MSG_STOPPED "Zatrzymany. "
+ 	#define MSG_STEPPER_RELEASED "Zwolniony."
+ 	#define MSG_CONTROL_RETRACT  "Wycofaj mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Z Wycof. mm"
+ 	#define MSG_CONTROL_RETRACTF "Wycofaj  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Skok Z mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Cof. wycof. +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Z Cof. wyc. +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  V"
+ 	#define MSG_AUTORETRACT "Auto. wycofanie"
+ 	#define MSG_FILAMENTCHANGE "Zmien filament"
+@@ -572,9 +576,11 @@
+ 	#define MSG_STOPPED "STOPPE."
+ 	#define MSG_STEPPER_RELEASED "RELACHE."
+ 	#define MSG_CONTROL_RETRACT "Retraction mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Ech. Retr. mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraction V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Ech. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet V"
+ 	#define MSG_AUTORETRACT "Retract. Auto."
+ 	#define MSG_FILAMENTCHANGE "Changer filament"
+@@ -774,9 +780,11 @@
+ 	#define MSG_STOPPED          "GESTOPPT"
+ 	#define MSG_STEPPER_RELEASED "Stepper frei"
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Wechs. Retract mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Wechs. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT      "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Filament wechseln"
+@@ -972,9 +980,11 @@
+ 	#define MSG_KILLED "PARADA DE EMERG."
+ 	#define MSG_STOPPED "PARADA"
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Interc. Retraer mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraer  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Interc. DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Cambiar filamento"
+@@ -1179,9 +1189,11 @@
+ 	#define MSG_KILLED							"УБИТО."
+ 	#define MSG_STOPPED							"ОСТАНОВЛЕНО."
+ 	#define MSG_CONTROL_RETRACT					"Откат mm:"
++	#define MSG_CONTROL_RETRACT_SWAP				"своп Откат mm:"
+ 	#define MSG_CONTROL_RETRACTF				"Откат  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT			"Прыжок mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER			"Возврат +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP		"своп Возврат +mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  V:"
+ 	#define MSG_AUTORETRACT						"АвтоОткат:"
+ 	#define MSG_FILAMENTCHANGE 					"Change filament"
+@@ -1376,9 +1388,11 @@
+ 	#define MSG_KILLED               "UCCISO. "
+ 	#define MSG_STOPPED              "ARRESTATO. "
+ 	#define MSG_CONTROL_RETRACT      "Ritrai mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Scamb. Ritrai mm"
+ 	#define MSG_CONTROL_RETRACTF     "Ritrai  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Salta mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Scamb. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT          "AutoArretramento"
+ 	#define MSG_FILAMENTCHANGE       "Cambia filamento"
+@@ -1581,9 +1595,11 @@
+ 	#define MSG_STOPPED "PARADA. "
+ 	#define MSG_STEPPER_RELEASED "Lancado."
+ 	#define MSG_CONTROL_RETRACT  " Retrair mm:"
++	#define MSG_CONTROL_RETRACT_SWAP  "Troca Retrair mm:"
+ 	#define MSG_CONTROL_RETRACTF " Retrair  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Troca DesRet +mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  V:"
+ 	#define MSG_AUTORETRACT " AutoRetr.:"
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -1781,9 +1797,11 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Veda mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Va. Veda mm"
+ 	#define MSG_CONTROL_RETRACTF "Veda V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Z mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Va. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoVeto."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -1979,9 +1997,11 @@
+ 	#define MSG_KILLED "ATURADA D'EMERCH."
+ 	#define MSG_STOPPED "ATURADA."
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Retraer mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraer  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Devantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Cambear"
+@@ -2185,9 +2205,11 @@
+ 	#define MSG_KILLED "AFGEBROKEN. "
+ 	#define MSG_STOPPED "GESTOPT. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Ruil Retract mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Ruil UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Verv. Filament"
+@@ -2384,9 +2406,11 @@
+ 	#define MSG_KILLED "PARADA DE EMERG. "
+ 	#define MSG_STOPPED "ATURAT. "
+ 	#define MSG_CONTROL_RETRACT  "Retreure mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Retreure mm"
+ 	#define MSG_CONTROL_RETRACTF "Retreure  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Aixecar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet  F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Canviar filament"
+@@ -2582,9 +2606,11 @@
+ 	#define MSG_KILLED "LARRIALDI GELDIA"
+ 	#define MSG_STOPPED "GELDITUTA. "
+ 	#define MSG_CONTROL_RETRACT  "Atzera egin mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Atzera egin mm"
+ 	#define MSG_CONTROL_RETRACTF "Atzera egin V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Igo mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Atzera egin +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap Atzera egin +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "Atzera egin V"
+ 	#define MSG_AUTORETRACT "Atzera egin"
+ 	#define MSG_FILAMENTCHANGE "Aldatu filament."
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 470d6ec..0abc355 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -904,9 +904,15 @@ static void lcd_control_retract_menu()
+     MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
+     MENU_ITEM_EDIT(bool, MSG_AUTORETRACT, &autoretract_enabled);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT, &retract_length, 0, 100);
++    #if EXTRUDERS > 1
++      MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_SWAP, &retract_length_swap, 0, 100);
++    #endif
+     MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACTF, &retract_feedrate, 1, 999);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_ZLIFT, &retract_zlift, 0, 999);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_RECOVER, &retract_recover_length, 0, 100);
++    #if EXTRUDERS > 1
++      MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_RECOVER_SWAP, &retract_recover_length_swap, 0, 100);
++    #endif
+     MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACT_RECOVERF, &retract_recover_feedrate, 1, 999);
+     END_MENU();
+ }
+
+commit 3cd7dbcc45ad83d3fd2325135943546c239d4cc1 (from c13a831ea15a8f1738a9808874d18f2df6213c68)
+Merge: 3f2c771 c13a831
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Wed Jul 30 13:01:52 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b373e22..2f8cf78 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1692,6 +1692,8 @@ void process_commands()
+           lcd_update();
+         }
+       }else{
++          if (!lcd_detected())
++            break;
+         while(!lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index d2fb418..6168d36 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -150,9 +150,17 @@ void CardReader::initsd()
+   if(root.isOpen())
+     root.close();
+ #ifdef SDSLOW
+-  if (!card.init(SPI_HALF_SPEED,SDSS))
++  if (!card.init(SPI_HALF_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_HALF_SPEED,LCD_SDSS)
++  #endif
++    )
+ #else
+-  if (!card.init(SPI_FULL_SPEED,SDSS))
++  if (!card.init(SPI_FULL_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_FULL_SPEED,LCD_SDSS)
++  #endif
++    )
+ #endif
+   {
+     //if (!card.init(SPI_HALF_SPEED,SDSS))
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index c3644a0..2a8fa7b 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -700,14 +700,14 @@
+         #define BTN_EN1 47  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 43
+         #define BTN_ENC 32
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT -1
+         #define KILL_PIN 41
+       #elif defined(LCD_I2C_VIKI)
+         #define BTN_EN1 22  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 7
+         #define BTN_ENC -1
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT 49
+       #else
+         //arduino pin which triggers an piezzo beeper
+@@ -1225,7 +1225,7 @@
+      #ifdef LCD_I2C_PANELOLU2
+        #ifdef MELZI
+          #define BTN_ENC 29 //the click switch
+-         #define SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
++         #define LCD_SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
+        #else
+          #define BTN_ENC 30 //the click switch
+        #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 9797b0b..0abc355 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1192,7 +1192,7 @@ void lcd_update()
+     lcd_buttons_update();
+ 
+     #if (SDCARDDETECT > 0)
+-    if((IS_SD_INSERTED != lcd_oldcardstatus))
++    if((IS_SD_INSERTED != lcd_oldcardstatus && lcd_detected()))
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+@@ -1289,6 +1289,11 @@ void lcd_setstatus(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setstatuspgm(const char* message)
+@@ -1296,6 +1301,11 @@ void lcd_setstatuspgm(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setalertstatuspgm(const char* message)
+@@ -1404,6 +1414,15 @@ void lcd_buttons_update()
+     lastEncoderBits = enc;
+ }
+ 
++bool lcd_detected(void)
++{
++#if (defined(LCD_I2C_TYPE_MCP23017) || defined(LCD_I2C_TYPE_MCP23008)) && defined(DETECT_DEVICE)
++  return lcd.LcdDetected() == 1;
++#else
++  return true;
++#endif
++}
++
+ void lcd_buzz(long duration, uint16_t freq)
+ {
+ #ifdef LCD_USE_I2C_BUZZER
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 9bf6858..aacfda6 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,6 +11,7 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
++  bool lcd_detected(void);
+ 
+ #ifdef DOGLCD
+   extern int lcd_contrast;
+@@ -94,6 +95,7 @@
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+   FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) 
+   #define LCD_ALERTMESSAGEPGM(x) 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 11e0a95..c321125 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -166,13 +166,21 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+   
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+

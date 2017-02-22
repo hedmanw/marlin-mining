@@ -1,0 +1,850 @@
+commit 1f039cde61c83e6422b8ce6b445156e80552f887 (from 65487b75e2e366ad5841d6bfc032fa5f3772d0bf)
+Merge: 65487b7 ce3caf4
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun May 3 20:40:26 2015 -0700
+
+    Merge pull request #1992 from thinkyhead/too_many_probes
+    
+    Stow Z probe on M402 without extra raise
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 4063ac1..9541fc8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1268,13 +1268,14 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+ 
+       // Engage Z Servo endstop if enabled
+       if (servo_endstops[Z_AXIS] >= 0) {
++        Servo *srv = &servo[servo_endstops[Z_AXIS]];
+         #if SERVO_LEVELING
+-          servo[servo_endstops[Z_AXIS]].attach(0);
++          srv->attach(0);
+         #endif
+-        servo[servo_endstops[Z_AXIS]].write(servo_endstop_angles[Z_AXIS * 2]);
++        srv->write(servo_endstop_angles[Z_AXIS * 2]);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_endstops[Z_AXIS]].detach();
++          srv->detach();
+         #endif
+       }
+ 
+@@ -1320,7 +1321,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+ 
+   }
+ 
+-  static void stow_z_probe() {
++  static void stow_z_probe(bool doRaise=true) {
+ 
+     #ifdef SERVO_ENDSTOPS
+ 
+@@ -1328,19 +1329,21 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+       if (servo_endstops[Z_AXIS] >= 0) {
+ 
+         #if Z_RAISE_AFTER_PROBING > 0
+-          do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // this also updates current_position
+-          st_synchronize();
++          if (doRaise) {
++            do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING); // this also updates current_position
++            st_synchronize();
++          }
+         #endif
+ 
++        // Change the Z servo angle
++        Servo *srv = &servo[servo_endstops[Z_AXIS]];
+         #if SERVO_LEVELING
+-          servo[servo_endstops[Z_AXIS]].attach(0);
++          srv->attach(0);
+         #endif
+-
+-        servo[servo_endstops[Z_AXIS]].write(servo_endstop_angles[Z_AXIS * 2 + 1]);
+-
++        srv->write(servo_endstop_angles[Z_AXIS * 2 + 1]);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_endstops[Z_AXIS]].detach();
++          srv->detach();
+         #endif
+       }
+ 
+@@ -1524,19 +1527,25 @@ static void homeaxis(AxisEnum axis) {
+     current_position[axis] = 0;
+     sync_plan_position();
+ 
+-    // Engage Servo endstop if enabled
+-    #if defined(SERVO_ENDSTOPS) && !defined(Z_PROBE_SLED)
++    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+ 
+-      #if SERVO_LEVELING
+-        if (axis == Z_AXIS) deploy_z_probe(); else
+-      #endif
+-        {
+-          if (servo_endstops[axis] > -1)
+-            servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
+-        }
++      // Deploy a probe if there is one, and homing towards the bed
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) deploy_z_probe();
++      }
++      else
+ 
+-    #endif // SERVO_ENDSTOPS && !Z_PROBE_SLED
++    #endif
+ 
++    #ifdef SERVO_ENDSTOPS
++      {
++        // Engage Servo endstop if enabled
++        if (servo_endstops[axis] > -1)
++          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
++      }
++    #endif
++
++    // Set a flag for Z motor locking
+     #ifdef Z_DUAL_ENDSTOPS
+       if (axis == Z_AXIS) In_Homing_Process(true);
+     #endif
+@@ -1614,14 +1623,22 @@ static void homeaxis(AxisEnum axis) {
+     endstops_hit_on_purpose(); // clear endstop hit flags
+     axis_known_position[axis] = true;
+ 
+-    // Retract Servo endstop if enabled
+-    #ifdef SERVO_ENDSTOPS
+-      if (servo_endstops[axis] > -1)
+-        servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
++
++      // Deploy a probe if there is one, and homing towards the bed
++      if (axis == Z_AXIS) {
++        if (axis_home_dir < 0) stow_z_probe();
++      }
++      else
++
+     #endif
+ 
+-    #if SERVO_LEVELING && !defined(Z_PROBE_SLED)
+-      if (axis == Z_AXIS) stow_z_probe();
++    #ifdef SERVO_ENDSTOPS
++      {
++        // Retract Servo endstop if enabled
++        if (servo_endstops[axis] > -1)
++          servo[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++      }
+     #endif
+ 
+   }
+@@ -2998,7 +3015,7 @@ inline void gcode_M42() {
+     current_position[E_AXIS] = E_current = st_get_position_mm(E_AXIS);
+ 
+     // 
+-    // OK, do the inital probe to get us close to the bed.
++    // OK, do the initial probe to get us close to the bed.
+     // Then retrace the right amount and use that in subsequent probes
+     //
+ 
+@@ -3107,12 +3124,14 @@ inline void gcode_M42() {
+       plan_buffer_line(X_probe_location, Y_probe_location, Z_start_location, current_position[E_AXIS], homing_feedrate[Z_AXIS]/60, active_extruder);
+       st_synchronize();
+ 
++      // Stow between
+       if (deploy_probe_for_each_reading) {
+         stow_z_probe();
+         delay(1000);
+       }
+     }
+ 
++    // Stow after
+     if (!deploy_probe_for_each_reading) {
+       stow_z_probe();
+       delay(1000);
+@@ -4064,13 +4083,14 @@ inline void gcode_M226() {
+     if (code_seen('S')) {
+       servo_position = code_value();
+       if ((servo_index >= 0) && (servo_index < NUM_SERVOS)) {
++        Servo *srv = &servo[servo_index];
+         #if SERVO_LEVELING
+-          servo[servo_index].attach(0);
++          srv->attach(0);
+         #endif
+-        servo[servo_index].write(servo_position);
++        srv->write(servo_position);
+         #if SERVO_LEVELING
+           delay(PROBE_SERVO_DEACTIVATION_DELAY);
+-          servo[servo_index].detach();
++          srv->detach();
+         #endif
+       }
+       else {
+@@ -4374,12 +4394,12 @@ inline void gcode_M303() {
+  */
+ inline void gcode_M400() { st_synchronize(); }
+ 
+-#if defined(ENABLE_AUTO_BED_LEVELING) && (defined(SERVO_ENDSTOPS) || defined(Z_PROBE_ALLEN_KEY)) && not defined(Z_PROBE_SLED)
++#if defined(ENABLE_AUTO_BED_LEVELING) && !defined(Z_PROBE_SLED) && (defined(SERVO_ENDSTOPS) || defined(Z_PROBE_ALLEN_KEY))
+ 
+   #ifdef SERVO_ENDSTOPS
+     void raise_z_for_servo() {
+       float zpos = current_position[Z_AXIS], z_dest = Z_RAISE_BEFORE_HOMING;
+-      if (!axis_known_position[Z_AXIS]) z_dest += zpos;
++      z_dest += axis_known_position[Z_AXIS] ? -zprobe_zoffset : zpos;
+       if (zpos < z_dest)
+         do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z_dest); // also updates current_position
+     }
+@@ -4402,7 +4422,7 @@ inline void gcode_M400() { st_synchronize(); }
+     #ifdef SERVO_ENDSTOPS
+       raise_z_for_servo();
+     #endif
+-    stow_z_probe();
++    stow_z_probe(false);
+   }
+ 
+ #endif
+
+commit 1f039cde61c83e6422b8ce6b445156e80552f887 (from ce3caf447bd64035ac612d6c7d6358d0e7844691)
+Merge: 65487b7 ce3caf4
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun May 3 20:40:26 2015 -0700
+
+    Merge pull request #1992 from thinkyhead/too_many_probes
+    
+    Stow Z probe on M402 without extra raise
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 455e46a..abcfea5 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -298,15 +298,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ 
+ //===========================================================================
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 8637b16..9541fc8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -36,6 +36,7 @@
+   #endif
+ #endif // ENABLE_AUTO_BED_LEVELING
+ 
++#define HAS_LCD_BUZZ (defined(ULTRALCD) || (defined(BEEPER) && BEEPER >= 0) || defined(LCD_USE_I2C_BUZZER))
+ #define SERVO_LEVELING (defined(ENABLE_AUTO_BED_LEVELING) && PROBE_SERVO_DEACTIVATION_DELAY > 0)
+ 
+ #ifdef MESH_BED_LEVELING
+@@ -189,6 +190,7 @@
+  * M410 - Quickstop. Abort all the planned moves
+  * M420 - Enable/Disable Mesh Leveling (with current values) S1=enable S0=disable
+  * M421 - Set a single Z coordinate in the Mesh Leveling grid. X<mm> Y<mm> Z<mm>
++ * M428 - Set the home_offset logically based on the current_position
+  * M500 - Store parameters in EEPROM
+  * M501 - Read parameters from EEPROM (if you need reset them after you changed them temporarily).
+  * M502 - Revert to the default "factory settings". You still need to store them in EEPROM afterwards if you want to.
+@@ -500,7 +502,7 @@ void setup_filrunoutpin() {
+   #if HAS_FILRUNOUT
+     pinMode(FILRUNOUT_PIN, INPUT);
+     #ifdef ENDSTOPPULLUP_FIL_RUNOUT
+-      WRITE(FILLRUNOUT_PIN, HIGH);
++      WRITE(FILRUNOUT_PIN, HIGH);
+     #endif
+   #endif
+ }
+@@ -4110,7 +4112,7 @@ inline void gcode_M226() {
+ 
+ #endif // NUM_SERVOS > 0
+ 
+-#if BEEPER > 0 || defined(ULTRALCD) || defined(LCD_USE_I2C_BUZZER)
++#if HAS_LCD_BUZZ
+ 
+   /**
+    * M300: Play beep sound S<frequency Hz> P<duration ms>
+@@ -4122,7 +4124,7 @@ inline void gcode_M226() {
+     lcd_buzz(beepP, beepS);
+   }
+ 
+-#endif // BEEPER>0 || ULTRALCD || LCD_USE_I2C_BUZZER
++#endif // HAS_LCD_BUZZ
+ 
+ #ifdef PIDTEMP
+ 
+@@ -4525,6 +4527,54 @@ inline void gcode_M410() { quickStop(); }
+ #endif
+ 
+ /**
++ * M428: Set home_offset based on the distance between the
++ *       current_position and the nearest "reference point."
++ *       If an axis is past center its endstop position
++ *       is the reference-point. Otherwise it uses 0. This allows
++ *       the Z offset to be set near the bed when using a max endstop.
++ *
++ *       M428 can't be used more than 2cm away from 0 or an endstop.
++ *
++ *       Use M206 to set these values directly.
++ */
++inline void gcode_M428() {
++  bool err = false;
++  float new_offs[3], new_pos[3];
++  memcpy(new_pos, current_position, sizeof(new_pos));
++  memcpy(new_offs, home_offset, sizeof(new_offs));
++  for (int8_t i = X_AXIS; i <= Z_AXIS; i++) {
++    if (axis_known_position[i]) {
++      float base = (new_pos[i] > (min_pos[i] + max_pos[i]) / 2) ? base_home_pos(i) : 0,
++            diff = new_pos[i] - base;
++      if (diff > -20 && diff < 20) {
++        new_offs[i] -= diff;
++        new_pos[i] = base;
++      }
++      else {
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM(MSG_ERR_M428_TOO_FAR);
++        LCD_ALERTMESSAGEPGM("Err: Too far!");
++        #if HAS_LCD_BUZZ
++          enqueuecommands_P(PSTR("M300 S40 P200"));
++        #endif
++        err = true;
++        break;
++      }
++    }
++  }
++
++  if (!err) {
++    memcpy(current_position, new_pos, sizeof(new_pos));
++    memcpy(home_offset, new_offs, sizeof(new_offs));
++    sync_plan_position();
++    LCD_ALERTMESSAGEPGM("Offset applied.");
++    #if HAS_LCD_BUZZ
++      enqueuecommands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
++    #endif
++  }
++}
++
++/**
+  * M500: Store settings in EEPROM
+  */
+ inline void gcode_M500() {
+@@ -5271,11 +5321,11 @@ void process_commands() {
+           break;
+       #endif // NUM_SERVOS > 0
+ 
+-      #if BEEPER > 0 || defined(ULTRALCD) || defined(LCD_USE_I2C_BUZZER)
++      #if HAS_LCD_BUZZ
+         case 300: // M300 - Play beep tone
+           gcode_M300();
+           break;
+-      #endif // BEEPER > 0 || ULTRALCD || LCD_USE_I2C_BUZZER
++      #endif // HAS_LCD_BUZZ
+ 
+       #ifdef PIDTEMP
+         case 301: // M301
+@@ -5373,6 +5423,10 @@ void process_commands() {
+           break;
+       #endif
+ 
++      case 428: // M428 Apply current_position to home_offset
++        gcode_M428();
++        break;
++
+       case 500: // M500 Store settings in EEPROM
+         gcode_M500();
+         break;
+@@ -5995,7 +6049,7 @@ void disable_all_steppers() {
+ void manage_inactivity(bool ignore_stepper_queue/*=false*/) {
+   
+   #if HAS_FILRUNOUT
+-    if (card.sdprinting && !(READ(FILRUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
++    if (IS_SD_PRINTING && !(READ(FILRUNOUT_PIN) ^ FIL_RUNOUT_INVERTING))
+       filrunout();
+   #endif
+ 
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 782b5d3..b950b88 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -676,9 +676,9 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Mesh bed leveling:");
+       CONFIG_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("  M420 S", (int32_t)mbl.active);
+-    SERIAL_ECHOPAIR(" X", MESH_NUM_X_POINTS);
+-    SERIAL_ECHOPAIR(" Y", MESH_NUM_Y_POINTS);
++    SERIAL_ECHOPAIR("  M420 S", (unsigned long)mbl.active);
++    SERIAL_ECHOPAIR(" X", (unsigned long)MESH_NUM_X_POINTS);
++    SERIAL_ECHOPAIR(" Y", (unsigned long)MESH_NUM_Y_POINTS);
+     SERIAL_EOL;
+     for (int y=0; y<MESH_NUM_Y_POINTS; y++) {
+       for (int x=0; x<MESH_NUM_X_POINTS; x++) {
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index 1d85de9..927a890 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -298,16 +298,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/configurator/config/language.h b/Marlin/configurator/config/language.h
+index d8ceafb..02235aa 100644
+--- a/Marlin/configurator/config/language.h
++++ b/Marlin/configurator/config/language.h
+@@ -30,6 +30,7 @@
+ // eu       Basque-Euskera
+ // kana     Japanese
+ // kana_utf Japanese
++// cn       Chinese
+ 
+ #ifndef LANGUAGE_INCLUDE
+   // pick your language from the list above
+@@ -130,13 +131,15 @@
+ #define MSG_FILE_PRINTED                    "Done printing file"
+ #define MSG_BEGIN_FILE_LIST                 "Begin file list"
+ #define MSG_END_FILE_LIST                   "End file list"
+-#define MSG_M104_INVALID_EXTRUDER           "M104 Invalid extruder "
+-#define MSG_M105_INVALID_EXTRUDER           "M105 Invalid extruder "
+-#define MSG_M200_INVALID_EXTRUDER           "M200 Invalid extruder "
+-#define MSG_M218_INVALID_EXTRUDER           "M218 Invalid extruder "
+-#define MSG_M221_INVALID_EXTRUDER           "M221 Invalid extruder "
++#define MSG_INVALID_EXTRUDER                "Invalid extruder"
++#define MSG_INVALID_SOLENOID                "Invalid solenoid"
++#define MSG_M104_INVALID_EXTRUDER           "M104 " MSG_INVALID_EXTRUDER " "
++#define MSG_M105_INVALID_EXTRUDER           "M105 " MSG_INVALID_EXTRUDER " "
++#define MSG_M109_INVALID_EXTRUDER           "M109 " MSG_INVALID_EXTRUDER " "
++#define MSG_M200_INVALID_EXTRUDER           "M200 " MSG_INVALID_EXTRUDER " "
++#define MSG_M218_INVALID_EXTRUDER           "M218 " MSG_INVALID_EXTRUDER " "
++#define MSG_M221_INVALID_EXTRUDER           "M221 " MSG_INVALID_EXTRUDER " "
+ #define MSG_ERR_NO_THERMISTORS              "No thermistors - no temperature"
+-#define MSG_M109_INVALID_EXTRUDER           "M109 Invalid extruder "
+ #define MSG_HEATING                         "Heating..."
+ #define MSG_HEATING_COMPLETE                "Heating done."
+ #define MSG_BED_HEATING                     "Bed Heating."
+@@ -148,8 +151,6 @@
+ #define MSG_RESEND                          "Resend: "
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+-#define MSG_INVALID_EXTRUDER                "Invalid extruder"
+-#define MSG_INVALID_SOLENOID                "Invalid solenoid"
+ #define MSG_X_MIN                           "x_min: "
+ #define MSG_X_MAX                           "x_max: "
+ #define MSG_Y_MIN                           "y_min: "
+@@ -161,6 +162,7 @@
+ #define MSG_ERR_MATERIAL_INDEX              "M145 S<index> out of range (0-1)"
+ #define MSG_ERR_M421_REQUIRES_XYZ           "M421 requires XYZ parameters"
+ #define MSG_ERR_MESH_INDEX_OOB              "Mesh XY index is out of bounds"
++#define MSG_ERR_M428_TOO_FAR                "Too far from reference point"
+ #define MSG_M119_REPORT                     "Reporting endstop status"
+ #define MSG_ENDSTOP_HIT                     "TRIGGERED"
+ #define MSG_ENDSTOP_OPEN                    "open"
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 63b3660..0bdc42f 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -264,16 +264,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index 085d95b..4786858 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -264,16 +264,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index c9c079e..cf23374 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -285,16 +285,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index d0abbcb..75ccf4f 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -314,16 +314,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index cdc036c..44b8af9 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -316,16 +316,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 343c309..dc356f8 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -284,16 +284,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 9a1fe48..d4028c0 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -314,16 +314,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 3339186..cd0a34e 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -314,16 +314,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 918d5fa..237ea7d 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -284,16 +284,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 2fff0f2..5e07e47 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -286,16 +286,15 @@ your extruder heater takes 2 minutes to hit the target on heating.
+ // uncomment the 2 defines below:
+ 
+ // Parameters for all extruder heaters
+-//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
+ 
+ // If you want to enable this feature for your bed heater,
+ // uncomment the 2 defines below:
+ 
+ // Parameters for the bed heater
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
+-//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+-
++#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
+ 
+ //===========================================================================
+ //============================= Mechanical Settings =========================
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 252ee59..02235aa 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -131,13 +131,15 @@
+ #define MSG_FILE_PRINTED                    "Done printing file"
+ #define MSG_BEGIN_FILE_LIST                 "Begin file list"
+ #define MSG_END_FILE_LIST                   "End file list"
+-#define MSG_M104_INVALID_EXTRUDER           "M104 Invalid extruder "
+-#define MSG_M105_INVALID_EXTRUDER           "M105 Invalid extruder "
+-#define MSG_M200_INVALID_EXTRUDER           "M200 Invalid extruder "
+-#define MSG_M218_INVALID_EXTRUDER           "M218 Invalid extruder "
+-#define MSG_M221_INVALID_EXTRUDER           "M221 Invalid extruder "
++#define MSG_INVALID_EXTRUDER                "Invalid extruder"
++#define MSG_INVALID_SOLENOID                "Invalid solenoid"
++#define MSG_M104_INVALID_EXTRUDER           "M104 " MSG_INVALID_EXTRUDER " "
++#define MSG_M105_INVALID_EXTRUDER           "M105 " MSG_INVALID_EXTRUDER " "
++#define MSG_M109_INVALID_EXTRUDER           "M109 " MSG_INVALID_EXTRUDER " "
++#define MSG_M200_INVALID_EXTRUDER           "M200 " MSG_INVALID_EXTRUDER " "
++#define MSG_M218_INVALID_EXTRUDER           "M218 " MSG_INVALID_EXTRUDER " "
++#define MSG_M221_INVALID_EXTRUDER           "M221 " MSG_INVALID_EXTRUDER " "
+ #define MSG_ERR_NO_THERMISTORS              "No thermistors - no temperature"
+-#define MSG_M109_INVALID_EXTRUDER           "M109 Invalid extruder "
+ #define MSG_HEATING                         "Heating..."
+ #define MSG_HEATING_COMPLETE                "Heating done."
+ #define MSG_BED_HEATING                     "Bed Heating."
+@@ -149,8 +151,6 @@
+ #define MSG_RESEND                          "Resend: "
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+-#define MSG_INVALID_EXTRUDER                "Invalid extruder"
+-#define MSG_INVALID_SOLENOID                "Invalid solenoid"
+ #define MSG_X_MIN                           "x_min: "
+ #define MSG_X_MAX                           "x_max: "
+ #define MSG_Y_MIN                           "y_min: "
+@@ -162,6 +162,7 @@
+ #define MSG_ERR_MATERIAL_INDEX              "M145 S<index> out of range (0-1)"
+ #define MSG_ERR_M421_REQUIRES_XYZ           "M421 requires XYZ parameters"
+ #define MSG_ERR_MESH_INDEX_OOB              "Mesh XY index is out of bounds"
++#define MSG_ERR_M428_TOO_FAR                "Too far from reference point"
+ #define MSG_M119_REPORT                     "Reporting endstop status"
+ #define MSG_ENDSTOP_HIT                     "TRIGGERED"
+ #define MSG_ENDSTOP_OPEN                    "open"
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index a8558d6..0b9efb8 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -959,7 +959,7 @@ float junction_deviation = 0.1;
+     vector_3 position = vector_3(st_get_position_mm(X_AXIS), st_get_position_mm(Y_AXIS), st_get_position_mm(Z_AXIS));
+ 
+     //position.debug("in plan_get position");
+-    //plan_bed_level_matrix.debug("in plan_get bed_level");
++    //plan_bed_level_matrix.debug("in plan_get_position");
+     matrix_3x3 inverse = matrix_3x3::transpose(plan_bed_level_matrix);
+     //inverse.debug("in plan_get inverse");
+     position.apply_rotation(inverse);
+@@ -981,10 +981,10 @@ float junction_deviation = 0.1;
+       apply_rotation_xyz(plan_bed_level_matrix, x, y, z);
+     #endif
+ 
+-    float nx = position[X_AXIS] = lround(x * axis_steps_per_unit[X_AXIS]);
+-    float ny = position[Y_AXIS] = lround(y * axis_steps_per_unit[Y_AXIS]);
+-    float nz = position[Z_AXIS] = lround(z * axis_steps_per_unit[Z_AXIS]);
+-    float ne = position[E_AXIS] = lround(e * axis_steps_per_unit[E_AXIS]);
++    float nx = position[X_AXIS] = lround(x * axis_steps_per_unit[X_AXIS]),
++          ny = position[Y_AXIS] = lround(y * axis_steps_per_unit[Y_AXIS]),
++          nz = position[Z_AXIS] = lround(z * axis_steps_per_unit[Z_AXIS]),
++          ne = position[E_AXIS] = lround(e * axis_steps_per_unit[E_AXIS]);
+     st_set_position(nx, ny, nz, ne);
+     previous_nominal_speed = 0.0; // Resets planner junction speeds. Assumes start from rest.
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4dd32eb..5ca0943 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -438,17 +438,12 @@ static void lcd_main_menu() {
+   }
+ #endif
+ 
++/**
++ * Set the home offset based on the current_position
++ */
+ void lcd_set_home_offsets() {
+-  for (int8_t i=0; i < NUM_AXIS; i++) {
+-    if (i != E_AXIS) {
+-      home_offset[i] -= current_position[i];
+-      current_position[i] = 0.0;
+-    }
+-  }
+-  plan_set_position(0.0, 0.0, 0.0, current_position[E_AXIS]);
+-
+-  // Audio feedback
+-  enqueuecommands_P(PSTR("M300 S659 P200\nM300 S698 P200"));
++  // M428 Command
++  enqueuecommands_P(PSTR("M428"));
+   lcd_return_to_status();
+ }
+ 
+@@ -1290,7 +1285,7 @@ void lcd_quick_feedback() {
+       #define LCD_FEEDBACK_FREQUENCY_DURATION_MS (1000/6)
+     #endif    
+     lcd_buzz(LCD_FEEDBACK_FREQUENCY_DURATION_MS, LCD_FEEDBACK_FREQUENCY_HZ);
+-  #elif defined(BEEPER) && BEEPER > -1
++  #elif defined(BEEPER) && BEEPER >= 0
+     #ifndef LCD_FEEDBACK_FREQUENCY_HZ
+       #define LCD_FEEDBACK_FREQUENCY_HZ 5000
+     #endif
+@@ -1723,12 +1718,12 @@ void lcd_reset_alert_level() { lcd_status_message_level = 0; }
+ 
+   void lcd_buzz(long duration, uint16_t freq) {
+     if (freq > 0) {
+-      #if BEEPER > 0
++      #ifdef LCD_USE_I2C_BUZZER
++        lcd.buzz(duration, freq);
++      #elif defined(BEEPER) && BEEPER >= 0
+         SET_OUTPUT(BEEPER);
+         tone(BEEPER, freq, duration);
+         delay(duration);
+-      #elif defined(LCD_USE_I2C_BUZZER)
+-        lcd.buzz(duration, freq);
+       #else
+         delay(duration);
+       #endif
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 8f96f00..956b728 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -106,7 +106,7 @@
+   FORCE_INLINE void lcd_setstatuspgm(const char* message, const uint8_t level=0) {}
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+-  FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE void lcd_buzz(long duration, uint16_t freq) {}
+   FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) do{}while(0)
+

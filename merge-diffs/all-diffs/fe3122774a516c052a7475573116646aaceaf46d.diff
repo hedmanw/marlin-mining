@@ -1,0 +1,1377 @@
+commit fe3122774a516c052a7475573116646aaceaf46d (from 30f6b8456102deefed1c1d1eeb5b96852322ae16)
+Merge: 30f6b84 0e55c06
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 26 18:50:43 2016 -0700
+
+    Merge pull request #3806 from thinkyhead/rc_coreyz_support
+    
+    Support for COREYZ. Fixes for COREXY, COREXZ
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 386f836..6bef252 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -315,11 +315,17 @@
+    * CoreXY and CoreXZ
+    */
+   #if ENABLED(COREXY)
++    #define CORE_AXIS_1 A_AXIS // XY from A + B
+     #define CORE_AXIS_2 B_AXIS
+-    #define CORE_AXIS_3 Z_AXIS
++    #define NORMAL_AXIS Z_AXIS
+   #elif ENABLED(COREXZ)
++    #define CORE_AXIS_1 A_AXIS // XZ from A + C
+     #define CORE_AXIS_2 C_AXIS
+-    #define CORE_AXIS_3 Y_AXIS
++    #define NORMAL_AXIS Y_AXIS
++  #elif ENABLED(COREYZ)
++    #define CORE_AXIS_1 B_AXIS // YZ from B + C
++    #define CORE_AXIS_2 C_AXIS
++    #define NORMAL_AXIS X_AXIS
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index a79b38e..fe14777 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 3a6e6a8..3fa6788 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -390,6 +390,16 @@
+ #endif
+ 
+ /**
++ * Don't set more than one kinematic type
++ */
++#if (ENABLED(DELTA) && (ENABLED(SCARA) || ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ))) \
++ || (ENABLED(SCARA) && (ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ))) \
++ || (ENABLED(COREXY) && (ENABLED(COREXZ) || ENABLED(COREYZ))) \
++ || (ENABLED(COREXZ) && ENABLED(COREYZ))
++  #error "Please enable only one of DELTA, SCARA, COREXY, COREXZ, or COREYZ."
++#endif
++
++/**
+  * Allen Key Z probe requires Auto Bed Leveling grid and Delta
+  */
+ #if ENABLED(Z_PROBE_ALLEN_KEY) && !(ENABLED(AUTO_BED_LEVELING_GRID) && ENABLED(DELTA))
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 018b956..49da001 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -239,8 +239,8 @@ void Endstops::update() {
+ 
+   #if ENABLED(COREXY) || ENABLED(COREXZ)
+     // Head direction in -X axis for CoreXY and CoreXZ bots.
+-    // If Delta1 == -Delta2, the movement is only in Y or Z axis
+-    if ((stepper.current_block->steps[A_AXIS] != stepper.current_block->steps[CORE_AXIS_2]) || (stepper.motor_direction(A_AXIS) == stepper.motor_direction(CORE_AXIS_2))) {
++    // If DeltaA == -DeltaB, the movement is only in Y or Z axis
++    if ((stepper.current_block->steps[CORE_AXIS_1] != stepper.current_block->steps[CORE_AXIS_2]) || (stepper.motor_direction(CORE_AXIS_1) == stepper.motor_direction(CORE_AXIS_2))) {
+       if (stepper.motor_direction(X_HEAD))
+   #else
+     if (stepper.motor_direction(X_AXIS))   // stepping along -X axis (regular Cartesian bot)
+@@ -271,10 +271,10 @@ void Endstops::update() {
+     }
+   #endif
+ 
+-  #if ENABLED(COREXY)
+-    // Head direction in -Y axis for CoreXY bots.
+-    // If DeltaX == DeltaY, the movement is only in X axis
+-    if ((stepper.current_block->steps[A_AXIS] != stepper.current_block->steps[B_AXIS]) || (stepper.motor_direction(A_AXIS) != stepper.motor_direction(B_AXIS))) {
++  #if ENABLED(COREXY) || ENABLED(COREYZ)
++    // Head direction in -Y axis for CoreXY / CoreYZ bots.
++    // If DeltaA == DeltaB, the movement is only in X or Y axis
++    if ((stepper.current_block->steps[CORE_AXIS_1] != stepper.current_block->steps[CORE_AXIS_2]) || (stepper.motor_direction(CORE_AXIS_1) != stepper.motor_direction(CORE_AXIS_2))) {
+       if (stepper.motor_direction(Y_HEAD))
+   #else
+       if (stepper.motor_direction(Y_AXIS))   // -direction
+@@ -289,14 +289,14 @@ void Endstops::update() {
+           UPDATE_ENDSTOP(Y, MAX);
+         #endif
+       }
+-  #if ENABLED(COREXY)
++  #if ENABLED(COREXY) || ENABLED(COREYZ)
+     }
+   #endif
+ 
+-  #if ENABLED(COREXZ)
+-    // Head direction in -Z axis for CoreXZ bots.
+-    // If DeltaX == DeltaZ, the movement is only in X axis
+-    if ((stepper.current_block->steps[A_AXIS] != stepper.current_block->steps[C_AXIS]) || (stepper.motor_direction(A_AXIS) != stepper.motor_direction(C_AXIS))) {
++  #if ENABLED(COREXZ) || ENABLED(COREYZ)
++    // Head direction in -Z axis for CoreXZ or CoreYZ bots.
++    // If DeltaA == DeltaB, the movement is only in X or Y axis
++    if ((stepper.current_block->steps[CORE_AXIS_1] != stepper.current_block->steps[CORE_AXIS_2]) || (stepper.motor_direction(CORE_AXIS_1) != stepper.motor_direction(CORE_AXIS_2))) {
+       if (stepper.motor_direction(Z_HEAD))
+   #else
+       if (stepper.motor_direction(Z_AXIS))
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 3a9a93a..3b9c621 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -327,11 +327,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 4d05e47..c4e03aa 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -325,11 +325,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 279c7ed..a2a43ed 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -337,11 +337,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 48d4104..3be2505 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -339,11 +339,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 8cbf115..c9dc2c3 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -362,11 +362,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 0a9ca73..4c03ddf 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 85a1332..e3d38fd 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -339,11 +339,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index e401ae8..15e8322 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -353,11 +353,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 6cb82b6..f65443b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -366,11 +366,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index ae2cb6a..380759f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -337,11 +337,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 5d50a80..12142af 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index aa47652..9ccfaca 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ //===========================================================================
+ //============================== Delta Settings =============================
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 4300ccc..1465d2d 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ //===========================================================================
+ //============================== Delta Settings =============================
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 79a3ea8..c432ec4 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -345,11 +345,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ //===========================================================================
+ //============================== Delta Settings =============================
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 197aa57..8c7042f 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -334,11 +334,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ //===========================================================================
+ //============================== Delta Settings =============================
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 1fb903a..b0ce02f 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -343,11 +343,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ //===========================================================================
+ //============================== Delta Settings =============================
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 67faff3..f331853 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -348,11 +348,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ //#define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 5498e55..3b6abfe 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -335,11 +335,10 @@
+ 
+ // @section machine
+ 
+-// Uncomment this option to enable CoreXY kinematics
++// Uncomment one of these options to enable CoreXY, CoreXZ, or CoreYZ kinematics
+ //#define COREXY
+-
+-// Uncomment this option to enable CoreXZ kinematics
+ //#define COREXZ
++//#define COREYZ
+ 
+ // Enable this option for Toshiba steppers
+ #define CONFIG_STEPPERS_TOSHIBA
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 36c3a26..05a3c71 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -543,6 +543,11 @@ void Planner::check_axes_activity() {
+     block->steps[A_AXIS] = labs(dx + dz);
+     block->steps[Y_AXIS] = labs(dy);
+     block->steps[C_AXIS] = labs(dx - dz);
++  #elif ENABLED(COREYZ)
++    // coreyz planning
++    block->steps[X_AXIS] = labs(dx);
++    block->steps[B_AXIS] = labs(dy + dz);
++    block->steps[C_AXIS] = labs(dy - dz);
+   #else
+     // default non-h-bot planning
+     block->steps[X_AXIS] = labs(dx);
+@@ -581,7 +586,13 @@ void Planner::check_axes_activity() {
+     if (dy < 0) SBI(db, Y_AXIS);
+     if (dz < 0) SBI(db, Z_HEAD); // ...and Z
+     if (dx + dz < 0) SBI(db, A_AXIS); // Motor A direction
+-    if (dx - dz < 0) SBI(db, C_AXIS); // Motor B direction
++    if (dx - dz < 0) SBI(db, C_AXIS); // Motor C direction
++  #elif ENABLED(COREYZ)
++    if (dx < 0) SBI(db, X_AXIS);
++    if (dy < 0) SBI(db, Y_HEAD); // Save the real Extruder (head) direction in Y Axis
++    if (dz < 0) SBI(db, Z_HEAD); // ...and Z
++    if (dy + dz < 0) SBI(db, B_AXIS); // Motor B direction
++    if (dy - dz < 0) SBI(db, C_AXIS); // Motor C direction
+   #else
+     if (dx < 0) SBI(db, X_AXIS);
+     if (dy < 0) SBI(db, Y_AXIS);
+@@ -698,20 +709,27 @@ void Planner::check_axes_activity() {
+    * So we need to create other 2 "AXIS", named X_HEAD and Y_HEAD, meaning the real displacement of the Head.
+    * Having the real displacement of the head, we can calculate the total movement length and apply the desired speed.
+    */
+-  #if ENABLED(COREXY)
++  #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
+     float delta_mm[6];
+-    delta_mm[X_HEAD] = dx / axis_steps_per_unit[A_AXIS];
+-    delta_mm[Y_HEAD] = dy / axis_steps_per_unit[B_AXIS];
+-    delta_mm[Z_AXIS] = dz / axis_steps_per_unit[Z_AXIS];
+-    delta_mm[A_AXIS] = (dx + dy) / axis_steps_per_unit[A_AXIS];
+-    delta_mm[B_AXIS] = (dx - dy) / axis_steps_per_unit[B_AXIS];
+-  #elif ENABLED(COREXZ)
+-    float delta_mm[6];
+-    delta_mm[X_HEAD] = dx / axis_steps_per_unit[A_AXIS];
+-    delta_mm[Y_AXIS] = dy / axis_steps_per_unit[Y_AXIS];
+-    delta_mm[Z_HEAD] = dz / axis_steps_per_unit[C_AXIS];
+-    delta_mm[A_AXIS] = (dx + dz) / axis_steps_per_unit[A_AXIS];
+-    delta_mm[C_AXIS] = (dx - dz) / axis_steps_per_unit[C_AXIS];
++    #if ENABLED(COREXY)
++      delta_mm[X_HEAD] = dx / axis_steps_per_unit[A_AXIS];
++      delta_mm[Y_HEAD] = dy / axis_steps_per_unit[B_AXIS];
++      delta_mm[Z_AXIS] = dz / axis_steps_per_unit[Z_AXIS];
++      delta_mm[A_AXIS] = (dx + dy) / axis_steps_per_unit[A_AXIS];
++      delta_mm[B_AXIS] = (dx - dy) / axis_steps_per_unit[B_AXIS];
++    #elif ENABLED(COREXZ)
++      delta_mm[X_HEAD] = dx / axis_steps_per_unit[A_AXIS];
++      delta_mm[Y_AXIS] = dy / axis_steps_per_unit[Y_AXIS];
++      delta_mm[Z_HEAD] = dz / axis_steps_per_unit[C_AXIS];
++      delta_mm[A_AXIS] = (dx + dz) / axis_steps_per_unit[A_AXIS];
++      delta_mm[C_AXIS] = (dx - dz) / axis_steps_per_unit[C_AXIS];
++    #elif ENABLED(COREYZ)
++      delta_mm[X_AXIS] = dx / axis_steps_per_unit[A_AXIS];
++      delta_mm[Y_HEAD] = dy / axis_steps_per_unit[Y_AXIS];
++      delta_mm[Z_HEAD] = dz / axis_steps_per_unit[C_AXIS];
++      delta_mm[B_AXIS] = (dy + dz) / axis_steps_per_unit[B_AXIS];
++      delta_mm[C_AXIS] = (dy - dz) / axis_steps_per_unit[C_AXIS];
++    #endif
+   #else
+     float delta_mm[4];
+     delta_mm[X_AXIS] = dx / axis_steps_per_unit[X_AXIS];
+@@ -729,6 +747,8 @@ void Planner::check_axes_activity() {
+         square(delta_mm[X_HEAD]) + square(delta_mm[Y_HEAD]) + square(delta_mm[Z_AXIS])
+       #elif ENABLED(COREXZ)
+         square(delta_mm[X_HEAD]) + square(delta_mm[Y_AXIS]) + square(delta_mm[Z_HEAD])
++      #elif ENABLED(COREYZ)
++        square(delta_mm[X_AXIS]) + square(delta_mm[Y_HEAD]) + square(delta_mm[Z_HEAD])
+       #else
+         square(delta_mm[X_AXIS]) + square(delta_mm[Y_AXIS]) + square(delta_mm[Z_AXIS])
+       #endif
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index bd178d2..f623983 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -204,7 +204,7 @@ class Planner {
+        * Used by G92, G28, G29, and other procedures.
+        *
+        * Multiplies by axis_steps_per_unit[] and does necessary conversion
+-       * for COREXY / COREXZ to set the corresponding stepper positions.
++       * for COREXY / COREXZ / COREYZ to set the corresponding stepper positions.
+        *
+        * Clears previous speed values.
+        */
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 909d86b..e1a06be 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -204,8 +204,9 @@ void Stepper::wake_up() {
+ /**
+  * Set the stepper direction of each axis
+  *
+- *   X_AXIS=A_AXIS and Y_AXIS=B_AXIS for COREXY
+- *   X_AXIS=A_AXIS and Z_AXIS=C_AXIS for COREXZ
++ *   COREXY: X_AXIS=A_AXIS and Y_AXIS=B_AXIS
++ *   COREXZ: X_AXIS=A_AXIS and Z_AXIS=C_AXIS
++ *   COREYZ: Y_AXIS=B_AXIS and Z_AXIS=C_AXIS
+  */
+ void Stepper::set_directions() {
+ 
+@@ -649,6 +650,11 @@ void Stepper::set_position(const long& x, const long& y, const long& z, const lo
+     count_position[A_AXIS] = x + z;
+     count_position[Y_AXIS] = y;
+     count_position[C_AXIS] = x - z;
++  #elif ENABLED(COREYZ)
++    // coreyz planning
++    count_position[X_AXIS] = x;
++    count_position[B_AXIS] = y + z;
++    count_position[C_AXIS] = y - z;
+   #else
+     // default non-h-bot planning
+     count_position[X_AXIS] = x;
+@@ -682,15 +688,16 @@ long Stepper::position(AxisEnum axis) {
+  */
+ float Stepper::get_axis_position_mm(AxisEnum axis) {
+   float axis_steps;
+-  #if ENABLED(COREXY) | ENABLED(COREXZ)
+-    if (axis == X_AXIS || axis == CORE_AXIS_2) {
++  #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
++    // Requesting one of the "core" axes?
++    if (axis == CORE_AXIS_1 || axis == CORE_AXIS_2) {
+       CRITICAL_SECTION_START;
+-      long pos1 = count_position[A_AXIS],
++      long pos1 = count_position[CORE_AXIS_1],
+            pos2 = count_position[CORE_AXIS_2];
+       CRITICAL_SECTION_END;
+       // ((a1+a2)+(a1-a2))/2 -> (a1+a2+a1-a2)/2 -> (a1+a1)/2 -> a1
+       // ((a1+a2)-(a1-a2))/2 -> (a1+a2-a1+a2)/2 -> (a2+a2)/2 -> a2
+-      axis_steps = (pos1 + ((axis == X_AXIS) ? pos2 : -pos2)) / 2.0f;
++      axis_steps = (pos1 + ((axis == CORE_AXIS_1) ? pos2 : -pos2)) / 2.0f;
+     }
+     else
+       axis_steps = position(axis);
+@@ -715,20 +722,20 @@ void Stepper::quick_stop() {
+ 
+ void Stepper::endstop_triggered(AxisEnum axis) {
+ 
+-  #if ENABLED(COREXY) || ENABLED(COREXZ)
++  #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
+ 
+     float axis_pos = count_position[axis];
+-    if (axis == A_AXIS)
++    if (axis == CORE_AXIS_1)
+       axis_pos = (axis_pos + count_position[CORE_AXIS_2]) / 2;
+     else if (axis == CORE_AXIS_2)
+-      axis_pos = (count_position[A_AXIS] - axis_pos) / 2;
++      axis_pos = (count_position[CORE_AXIS_1] - axis_pos) / 2;
+     endstops_trigsteps[axis] = axis_pos;
+ 
+-  #else // !COREXY && !COREXZ
++  #else // !COREXY && !COREXZ && !COREYZ
+ 
+     endstops_trigsteps[axis] = count_position[axis];
+ 
+-  #endif // !COREXY && !COREXZ
++  #endif // !COREXY && !COREXZ && !COREYZ
+ 
+   kill_current_block();
+ }
+@@ -747,14 +754,14 @@ void Stepper::report_positions() {
+   #endif
+   SERIAL_PROTOCOL(xpos);
+ 
+-  #if ENABLED(COREXY) || ENABLED(COREXZ)
++  #if ENABLED(COREXY) || ENABLED(COREYZ)
+     SERIAL_PROTOCOLPGM(" B:");
+   #else
+     SERIAL_PROTOCOLPGM(" Y:");
+   #endif
+   SERIAL_PROTOCOL(ypos);
+ 
+-  #if ENABLED(COREXZ) || ENABLED(COREXZ)
++  #if ENABLED(COREXZ) || ENABLED(COREYZ)
+     SERIAL_PROTOCOLPGM(" C:");
+   #else
+     SERIAL_PROTOCOLPGM(" Z:");
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index a178f1f..1e9276a 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -306,24 +306,25 @@ class Temperature {
+     #if ENABLED(BABYSTEPPING)
+ 
+       FORCE_INLINE void babystep_axis(AxisEnum axis, int distance) {
+-        #if ENABLED(COREXY) || ENABLED(COREXZ)
++        #if ENABLED(COREXY) || ENABLED(COREXZ) || ENABLED(COREYZ)
+           #if ENABLED(BABYSTEP_XY)
+             switch (axis) {
+-              case X_AXIS: // X on CoreXY and CoreXZ
+-                babystepsTodo[A_AXIS] += distance * 2;
++              case CORE_AXIS_1: // X on CoreXY and CoreXZ, Y on CoreYZ
++                babystepsTodo[CORE_AXIS_1] += distance * 2;
+                 babystepsTodo[CORE_AXIS_2] += distance * 2;
+                 break;
+-              case CORE_AXIS_2: // Y on CoreXY, Z on CoreXZ
+-                babystepsTodo[A_AXIS] += distance * 2;
++              case CORE_AXIS_2: // Y on CoreXY, Z on CoreXZ and CoreYZ
++                babystepsTodo[CORE_AXIS_1] += distance * 2;
+                 babystepsTodo[CORE_AXIS_2] -= distance * 2;
+                 break;
+-              case CORE_AXIS_3: // Z on CoreXY, Y on CoreXZ
+-                babystepsTodo[CORE_AXIS_3] += distance;
++              case NORMAL_AXIS: // Z on CoreXY, Y on CoreXZ, X on CoreYZ
++                babystepsTodo[NORMAL_AXIS] += distance;
+                 break;
+             }
+-          #elif ENABLED(COREXZ)
+-            babystepsTodo[A_AXIS] += distance * 2;
+-            babystepsTodo[C_AXIS] -= distance * 2;
++          #elif ENABLED(COREXZ) || ENABLED(COREYZ)
++            // Only Z stepping needs to be handled here
++            babystepsTodo[CORE_AXIS_1] += distance * 2;
++            babystepsTodo[CORE_AXIS_2] -= distance * 2;
+           #else
+             babystepsTodo[Z_AXIS] += distance;
+           #endif
+
+commit fe3122774a516c052a7475573116646aaceaf46d (from 0e55c06f7d6fc9398c7f569b6e9e2b5516ae833a)
+Merge: 30f6b84 0e55c06
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 26 18:50:43 2016 -0700
+
+    Merge pull request #3806 from thinkyhead/rc_coreyz_support
+    
+    Support for COREYZ. Fixes for COREXY, COREXZ
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index f569a53..6bef252 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -546,6 +546,16 @@
+   #define ARRAY_BY_EXTRUDERS1(v1) ARRAY_BY_EXTRUDERS(v1, v1, v1, v1)
+ 
+   /**
++   * With SINGLENOZZLE all "extruders" are in the same place
++   */
++  #if ENABLED(SINGLENOZZLE)
++    #undef EXTRUDER_OFFSET_X
++    #undef EXTRUDER_OFFSET_Y
++    #define EXTRUDER_OFFSET_X { 0 }
++    #define EXTRUDER_OFFSET_Y { 0 }
++  #endif
++
++  /**
+    * Z_DUAL_ENDSTOPS endstop reassignment
+    */
+   #if ENABLED(Z_DUAL_ENDSTOPS)
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index a595524..fe14777 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c0884cd..b3c302d 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3008,7 +3008,7 @@ inline void gcode_G28() {
+       return;
+     }
+ 
+-    int8_t ix, iy;
++    int8_t px, py;
+     float z;
+ 
+     switch (state) {
+@@ -3023,10 +3023,10 @@ inline void gcode_G28() {
+           SERIAL_PROTOCOLPGM("\nZ offset: ");
+           SERIAL_PROTOCOL_F(mbl.z_offset, 5);
+           SERIAL_PROTOCOLLNPGM("\nMeasured points:");
+-          for (int y = 0; y < MESH_NUM_Y_POINTS; y++) {
+-            for (int x = 0; x < MESH_NUM_X_POINTS; x++) {
++          for (py = 0; py < MESH_NUM_Y_POINTS; py++) {
++            for (px = 0; px < MESH_NUM_X_POINTS; px++) {
+               SERIAL_PROTOCOLPGM("  ");
+-              SERIAL_PROTOCOL_F(mbl.z_values[y][x], 5);
++              SERIAL_PROTOCOL_F(mbl.z_values[py][px], 5);
+             }
+             SERIAL_EOL;
+           }
+@@ -3058,8 +3058,8 @@ inline void gcode_G28() {
+         }
+         // If there's another point to sample, move there with optional lift.
+         if (probe_point < (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS)) {
+-          mbl.zigzag(probe_point, ix, iy);
+-          _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
++          mbl.zigzag(probe_point, px, py);
++          _mbl_goto_xy(mbl.get_probe_x(px), mbl.get_probe_y(py));
+           probe_point++;
+         }
+         else {
+@@ -3082,8 +3082,8 @@ inline void gcode_G28() {
+ 
+       case MeshSet:
+         if (code_seen('X')) {
+-          ix = code_value_long() - 1;
+-          if (ix < 0 || ix >= MESH_NUM_X_POINTS) {
++          px = code_value_long() - 1;
++          if (px < 0 || px >= MESH_NUM_X_POINTS) {
+             SERIAL_PROTOCOLPGM("X out of range (1-" STRINGIFY(MESH_NUM_X_POINTS) ").\n");
+             return;
+           }
+@@ -3093,8 +3093,8 @@ inline void gcode_G28() {
+           return;
+         }
+         if (code_seen('Y')) {
+-          iy = code_value_long() - 1;
+-          if (iy < 0 || iy >= MESH_NUM_Y_POINTS) {
++          py = code_value_long() - 1;
++          if (py < 0 || py >= MESH_NUM_Y_POINTS) {
+             SERIAL_PROTOCOLPGM("Y out of range (1-" STRINGIFY(MESH_NUM_Y_POINTS) ").\n");
+             return;
+           }
+@@ -3110,7 +3110,7 @@ inline void gcode_G28() {
+           SERIAL_PROTOCOLPGM("Z not entered.\n");
+           return;
+         }
+-        mbl.z_values[iy][ix] = z;
++        mbl.z_values[py][px] = z;
+         break;
+ 
+       case MeshSetZOffset:
+@@ -5904,39 +5904,35 @@ inline void gcode_M410() { stepper.quick_stop(); }
+    * Use either 'M421 X<mm> Y<mm> Z<mm>' or 'M421 I<xindex> J<yindex> Z<mm>'
+    */
+   inline void gcode_M421() {
+-    float x = 0, y = 0, z = 0;
+-    int8_t i = 0, j = 0;
+-    bool err = false, hasX, hasY, hasZ, hasI, hasJ;
+-    if ((hasX = code_seen('X'))) x = code_value();
+-    if ((hasY = code_seen('Y'))) y = code_value();
+-    if ((hasI = code_seen('I'))) i = code_value();
+-    if ((hasJ = code_seen('J'))) j = code_value();
++    int8_t px, py;
++    float z = 0;
++    bool hasX, hasY, hasZ, hasI, hasJ;
++    if ((hasX = code_seen('X'))) px = mbl.probe_index_x(code_value());
++    if ((hasY = code_seen('Y'))) py = mbl.probe_index_y(code_value());
++    if ((hasI = code_seen('I'))) px = code_value();
++    if ((hasJ = code_seen('J'))) py = code_value();
+     if ((hasZ = code_seen('Z'))) z = code_value();
+ 
+     if (hasX && hasY && hasZ) {
+ 
+-      int8_t ix = mbl.select_x_index(x),
+-             iy = mbl.select_y_index(y);
+-
+-      if (ix >= 0 && iy >= 0)
+-        mbl.set_z(ix, iy, z);
++      if (px >= 0 && py >= 0)
++        mbl.set_z(px, py, z);
+       else {
+         SERIAL_ERROR_START;
+         SERIAL_ERRORLNPGM(MSG_ERR_MESH_XY);
+       }
+     }
+     else if (hasI && hasJ && hasZ) {
+-      if (i >= 0 && i < MESH_NUM_X_POINTS && j >= 0 && j < MESH_NUM_Y_POINTS)
+-        mbl.set_z(i, j, z);
++      if (px >= 0 && px < MESH_NUM_X_POINTS && py >= 0 && py < MESH_NUM_Y_POINTS)
++        mbl.set_z(px, py, z);
+       else {
+         SERIAL_ERROR_START;
+         SERIAL_ERRORLNPGM(MSG_ERR_MESH_XY);
+       }
+     }
+-    else 
+-    {
++    else {
+       SERIAL_ERROR_START;
+-      SERIAL_ERRORLNPGM(MSG_ERR_M421_REQUIRES_XYZ);
++      SERIAL_ERRORLNPGM(MSG_ERR_M421_PARAMETERS);
+     }
+   }
+ 
+@@ -7303,52 +7299,52 @@ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate,
+     set_current_to_destination();
+     return;
+   }
+-  int pix = mbl.select_x_index(current_position[X_AXIS] - home_offset[X_AXIS]);
+-  int piy = mbl.select_y_index(current_position[Y_AXIS] - home_offset[Y_AXIS]);
+-  int ix = mbl.select_x_index(x - home_offset[X_AXIS]);
+-  int iy = mbl.select_y_index(y - home_offset[Y_AXIS]);
+-  pix = min(pix, MESH_NUM_X_POINTS - 2);
+-  piy = min(piy, MESH_NUM_Y_POINTS - 2);
+-  ix = min(ix, MESH_NUM_X_POINTS - 2);
+-  iy = min(iy, MESH_NUM_Y_POINTS - 2);
+-  if (pix == ix && piy == iy) {
++  int pcx = mbl.cel_index_x(current_position[X_AXIS] - home_offset[X_AXIS]);
++  int pcy = mbl.cel_index_y(current_position[Y_AXIS] - home_offset[Y_AXIS]);
++  int cx = mbl.cel_index_x(x - home_offset[X_AXIS]);
++  int cy = mbl.cel_index_y(y - home_offset[Y_AXIS]);
++  NOMORE(pcx, MESH_NUM_X_POINTS - 2);
++  NOMORE(pcy, MESH_NUM_Y_POINTS - 2);
++  NOMORE(cx,  MESH_NUM_X_POINTS - 2);
++  NOMORE(cy,  MESH_NUM_Y_POINTS - 2);
++  if (pcx == cx && pcy == cy) {
+     // Start and end on same mesh square
+     planner.buffer_line(x, y, z, e, feed_rate, extruder);
+     set_current_to_destination();
+     return;
+   }
+   float nx, ny, nz, ne, normalized_dist;
+-  if (ix > pix && TEST(x_splits, ix)) {
+-    nx = mbl.get_x(ix) + home_offset[X_AXIS];
++  if (cx > pcx && TEST(x_splits, cx)) {
++    nx = mbl.get_probe_x(cx) + home_offset[X_AXIS];
+     normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+     nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(x_splits, ix);
++    CBI(x_splits, cx);
+   }
+-  else if (ix < pix && TEST(x_splits, pix)) {
+-    nx = mbl.get_x(pix) + home_offset[X_AXIS];
++  else if (cx < pcx && TEST(x_splits, pcx)) {
++    nx = mbl.get_probe_x(pcx) + home_offset[X_AXIS];
+     normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+     ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+     nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(x_splits, pix);
++    CBI(x_splits, pcx);
+   }
+-  else if (iy > piy && TEST(y_splits, iy)) {
+-    ny = mbl.get_y(iy) + home_offset[Y_AXIS];
++  else if (cy > pcy && TEST(y_splits, cy)) {
++    ny = mbl.get_probe_y(cy) + home_offset[Y_AXIS];
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+     nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(y_splits, iy);
++    CBI(y_splits, cy);
+   }
+-  else if (iy < piy && TEST(y_splits, piy)) {
+-    ny = mbl.get_y(piy) + home_offset[Y_AXIS];
++  else if (cy < pcy && TEST(y_splits, pcy)) {
++    ny = mbl.get_probe_y(pcy) + home_offset[Y_AXIS];
+     normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+     nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+     nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+     ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(y_splits, piy);
++    CBI(y_splits, pcy);
+   }
+   else {
+     // Already split on a border
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 718022f..3fa6788 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -149,7 +149,9 @@
+     #error "EXTRUDERS must be 1 with Z_DUAL_STEPPER_DRIVERS."
+   #endif
+ 
+-#endif // EXTRUDERS > 1
++#elif ENABLED(SINGLENOZZLE)
++  #error "SINGLENOZZLE requires 2 or more EXTRUDERS."
++#endif
+ 
+ /**
+  * Limited number of servos
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 8fed0a9..05a24ac 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -62,7 +62,7 @@
+  *  201            z_offset (float) (added in V23)
+  *  205            mesh_num_x (uint8 as set in firmware)
+  *  206            mesh_num_y (uint8 as set in firmware)
+- *  207  M421 XYZ  z_values[][] (float x9, by default)
++ *  207 G29 S3 XYZ z_values[][] (float x9, by default)
+  *
+  * AUTO BED LEVELING
+  *  243  M851      zprobe_zoffset (float)
+@@ -733,13 +733,13 @@ void Config_PrintSettings(bool forReplay) {
+     SERIAL_ECHOPAIR(" X", MESH_NUM_X_POINTS);
+     SERIAL_ECHOPAIR(" Y", MESH_NUM_Y_POINTS);
+     SERIAL_EOL;
+-    for (uint8_t y = 0; y < MESH_NUM_Y_POINTS; y++) {
+-      for (uint8_t x = 0; x < MESH_NUM_X_POINTS; x++) {
++    for (uint8_t py = 1; py <= MESH_NUM_Y_POINTS; py++) {
++      for (uint8_t px = 1; px <= MESH_NUM_X_POINTS; px++) {
+         CONFIG_ECHO_START;
+-        SERIAL_ECHOPAIR("  M421 X", mbl.get_x(x));
+-        SERIAL_ECHOPAIR(" Y", mbl.get_y(y));
++        SERIAL_ECHOPAIR("  G29 S3 X", px);
++        SERIAL_ECHOPAIR(" Y", py);
+         SERIAL_ECHOPGM(" Z");
+-        SERIAL_PROTOCOL_F(mbl.z_values[y][x], 5);
++        SERIAL_PROTOCOL_F(mbl.z_values[py-1][px-1], 5);
+         SERIAL_EOL;
+       }
+     }
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index faece45..3b9c621 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index b6acb9c..c4e03aa 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 2
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index f1f8743..a2a43ed 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -123,6 +123,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 948c4b4..3be2505 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 5a5d7f8..c9dc2c3 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -127,6 +127,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 31a4a76..4c03ddf 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 395192b..e3d38fd 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1  // Single extruder. Set to 2 for dual extruders
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 467629c..15e8322 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -145,6 +145,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 60e263c..f65443b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 4d7ed69..380759f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -123,6 +123,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index f407cff..12142af 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 1c27aeb..9ccfaca 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 2
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index d0f791f..1465d2d 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 9a4d7d8..c432ec4 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index a32794e..8c7042f 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -126,6 +126,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 9b9311b..b0ce02f 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -113,6 +113,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6d75a36..f331853 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 656da8d..3b6abfe 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -120,6 +120,9 @@
+ // :[1,2,3,4]
+ #define EXTRUDERS 1
+ 
++// For Cyclops or any "multi-extruder" that shares a single nozzle.
++//#define SINGLENOZZLE
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 6ef2154..edef06b 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -147,7 +147,7 @@
+ #define MSG_Z2_MAX                          "z2_max: "
+ #define MSG_Z_PROBE                         "z_probe: "
+ #define MSG_ERR_MATERIAL_INDEX              "M145 S<index> out of range (0-1)"
+-#define MSG_ERR_M421_REQUIRES_XYZ           "M421 requires XYZ or IJZ parameters"
++#define MSG_ERR_M421_PARAMETERS             "M421 requires XYZ or IJZ parameters"
+ #define MSG_ERR_MESH_XY                     "Mesh XY or IJ cannot be resolved"
+ #define MSG_ERR_M428_TOO_FAR                "Too far from reference point"
+ #define MSG_ERR_M303_DISABLED               "PIDTEMP disabled"
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index f51501a..7b2201f 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -37,34 +37,40 @@
+ 
+     void reset();
+ 
+-    static FORCE_INLINE float get_x(int8_t i) { return MESH_MIN_X + (MESH_X_DIST) * i; }
+-    static FORCE_INLINE float get_y(int8_t i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
+-    void set_z(int8_t ix, int8_t iy, float z) { z_values[iy][ix] = z; }
+-
+-    inline void zigzag(int8_t index, int8_t &ix, int8_t &iy) {
+-      ix = index % (MESH_NUM_X_POINTS);
+-      iy = index / (MESH_NUM_X_POINTS);
+-      if (iy & 1) ix = (MESH_NUM_X_POINTS - 1) - ix; // Zig zag
++    static FORCE_INLINE float get_probe_x(int8_t i) { return MESH_MIN_X + (MESH_X_DIST) * i; }
++    static FORCE_INLINE float get_probe_y(int8_t i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
++    void set_z(const int8_t px, const int8_t py, const float z) { z_values[py][px] = z; }
++
++    inline void zigzag(int8_t index, int8_t &px, int8_t &py) {
++      px = index % (MESH_NUM_X_POINTS);
++      py = index / (MESH_NUM_X_POINTS);
++      if (py & 1) px = (MESH_NUM_X_POINTS - 1) - px; // Zig zag
+     }
+ 
+     void set_zigzag_z(int8_t index, float z) {
+-      int8_t ix, iy;
+-      zigzag(index, ix, iy);
+-      set_z(ix, iy, z);
++      int8_t px, py;
++      zigzag(index, px, py);
++      set_z(px, py, z);
++    }
++
++    int8_t cel_index_x(float x) {
++      int8_t cx = int(x - (MESH_MIN_X)) / (MESH_X_DIST);
++      return constrain(cx, 0, (MESH_NUM_X_POINTS) - 2);
++    }
++
++    int8_t cel_index_y(float y) {
++      int8_t cy = int(y - (MESH_MIN_Y)) / (MESH_Y_DIST);
++      return constrain(cy, 0, (MESH_NUM_Y_POINTS) - 2);
+     }
+ 
+-    int8_t select_x_index(float x) {
+-      for (uint8_t i = MESH_NUM_X_POINTS; i--;)
+-        if (fabs(x - get_x(i)) <= (MESH_X_DIST) / 2)
+-          return i;
+-      return -1;
++    int8_t probe_index_x(float x) {
++      int8_t px = int(x - (MESH_MIN_X) + (MESH_X_DIST) / 2) / (MESH_X_DIST);
++      return (px >= 0 && px < (MESH_NUM_X_POINTS)) ? px : -1;
+     }
+ 
+-    int8_t select_y_index(float y) {
+-      for (uint8_t i = MESH_NUM_Y_POINTS; i--;)
+-        if (fabs(y - get_y(i)) <= (MESH_Y_DIST) / 2)
+-          return i;
+-      return -1;
++    int8_t probe_index_y(float y) {
++      int8_t py = int(y - (MESH_MIN_Y) + (MESH_Y_DIST) / 2) / (MESH_Y_DIST);
++      return (py >= 0 && py < (MESH_NUM_Y_POINTS)) ? py : -1;
+     }
+ 
+     float calc_z0(float a0, float a1, float z1, float a2, float z2) {
+@@ -74,18 +80,18 @@
+     }
+ 
+     float get_z(float x0, float y0) {
+-      int8_t x_index = select_x_index(x0);
+-      int8_t y_index = select_y_index(y0);
+-      if (x_index < 0 || y_index < 0) return z_offset;
++      int8_t cx = cel_index_x(x0),
++             cy = cel_index_y(y0);
++      if (cx < 0 || cy < 0) return z_offset;
+       float z1 = calc_z0(x0,
+-                         get_x(x_index), z_values[y_index][x_index],
+-                         get_x(x_index + 1), z_values[y_index][x_index + 1]);
++                         get_probe_x(cx), z_values[cy][cx],
++                         get_probe_x(cx + 1), z_values[cy][cx + 1]);
+       float z2 = calc_z0(x0,
+-                         get_x(x_index), z_values[y_index + 1][x_index],
+-                         get_x(x_index + 1), z_values[y_index + 1][x_index + 1]);
++                         get_probe_x(cx), z_values[cy + 1][cx],
++                         get_probe_x(cx + 1), z_values[cy + 1][cx + 1]);
+       float z0 = calc_z0(y0,
+-                         get_y(y_index), z1,
+-                         get_y(y_index + 1), z2);
++                         get_probe_y(cy), z1,
++                         get_probe_y(cy + 1), z2);
+       return z0 + z_offset;
+     }
+   };
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index ebebc3b..10a5034 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -417,19 +417,29 @@ float Temperature::get_pid_output(int e) {
+ 
+         pid_output = pTerm[e] + iTerm[e] - dTerm[e];
+ 
++        #if ENABLED(SINGLENOZZLE)
++          #define _NOZZLE_TEST     true
++          #define _NOZZLE_EXTRUDER active_extruder
++          #define _CTERM_INDEX     0
++        #else
++          #define _NOZZLE_TEST     e == active_extruder
++          #define _NOZZLE_EXTRUDER e
++          #define _CTERM_INDEX     e
++        #endif
++
+         #if ENABLED(PID_ADD_EXTRUSION_RATE)
+-          cTerm[e] = 0;
+-          if (e == active_extruder) {
++          cTerm[_CTERM_INDEX] = 0;
++          if (_NOZZLE_TEST) {
+             long e_position = stepper.position(E_AXIS);
+-            if (e_position > last_position[e]) {
+-              lpq[lpq_ptr++] = e_position - last_position[e];
+-              last_position[e] = e_position;
++            if (e_position > last_position[_NOZZLE_EXTRUDER]) {
++              lpq[lpq_ptr++] = e_position - last_position[_NOZZLE_EXTRUDER];
++              last_position[_NOZZLE_EXTRUDER] = e_position;
+             }
+             else {
+               lpq[lpq_ptr++] = 0;
+             }
+             if (lpq_ptr >= lpq_len) lpq_ptr = 0;
+-            cTerm[e] = (lpq[lpq_ptr] / planner.axis_steps_per_unit[E_AXIS]) * PID_PARAM(Kc, e);
++            cTerm[_CTERM_INDEX] = (lpq[lpq_ptr] / planner.axis_steps_per_unit[E_AXIS]) * PID_PARAM(Kc, e);
+             pid_output += cTerm[e];
+           }
+         #endif //PID_ADD_EXTRUSION_RATE
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index dd99b29..46ccb19 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1013,9 +1013,9 @@ void lcd_cooldown() {
+     lcd_goto_menu(_lcd_level_bed_moving);
+ 
+     // _mbl_goto_xy runs the menu loop until the move is done
+-    int8_t ix, iy;
+-    mbl.zigzag(_lcd_level_bed_position, ix, iy);
+-    _mbl_goto_xy(mbl.get_x(ix), mbl.get_y(iy));
++    int8_t px, py;
++    mbl.zigzag(_lcd_level_bed_position, px, py);
++    _mbl_goto_xy(mbl.get_probe_x(px), mbl.get_probe_y(py));
+ 
+     // After the blocking function returns, change menus
+     lcd_goto_menu(_lcd_level_bed_get_z);
+

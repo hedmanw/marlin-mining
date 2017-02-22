@@ -1,0 +1,531 @@
+commit 2f9ed1777d191f8150fd774fb53de01e9f9bdd2b (from 1977b4490fc0767e9f8316e4d5c126e8db27dc4a)
+Merge: 1977b44 edfcf3b
+Author: galexander1 <gitgreg@galexander.org>
+Date:   Wed Dec 3 09:32:23 2014 -0500
+
+    Merge pull request #1168 from boelle/Marlin_v1
+    
+    Adding Support for Toshiba Stepper Drivers
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 6398f41..bce4585 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -219,9 +219,11 @@
+ //#define QUICK_HOME  //if this is defined, if both x and y are to be homed, a diagonal move will be performed initially.
+ 
+ #define AXIS_RELATIVE_MODES {false, false, false, false}
+-
++#ifdef CONFIG_STEPPERS_TOSHIBA
++#define MAX_STEP_FREQUENCY 10000 // Max step frequency for Toshiba Stepper Controllers
++#else
+ #define MAX_STEP_FREQUENCY 40000 // Max step frequency for Ultimaker (5000 pps / half step)
+-
++#endif
+ //By default pololu step drivers require an active high signal. However, some high power drivers require an active low signal as step.
+ #define INVERT_X_STEP_PIN false
+ #define INVERT_Y_STEP_PIN false
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 9e22eb1..b2e7d12 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -559,6 +559,58 @@ ISR(TIMER1_COMPA_vect)
+       #endif //ADVANCE
+ 
+         counter_x += current_block->steps_x;
++        #ifdef CONFIG_STEPPERS_TOSHIBA
++	/* The toshiba stepper controller require much longer pulses
++	 * tjerfore we 'stage' decompose the pulses between high, and
++	 * low instead of doing each in turn. The extra tests add enough
++	 * lag to allow it work with without needing NOPs */ 
++      if (counter_x > 0) {
++        WRITE(X_STEP_PIN, HIGH);
++      }
++
++      counter_y += current_block->steps_y;
++      if (counter_y > 0) {
++        WRITE(Y_STEP_PIN, HIGH);
++      }
++
++      counter_z += current_block->steps_z;
++      if (counter_z > 0) {
++        WRITE(Z_STEP_PIN, HIGH);
++      }
++
++      #ifndef ADVANCE
++        counter_e += current_block->steps_e;
++        if (counter_e > 0) {
++          WRITE_E_STEP(HIGH);
++        }
++      #endif //!ADVANCE
++
++      if (counter_x > 0) {
++        counter_x -= current_block->step_event_count;
++        count_position[X_AXIS]+=count_direction[X_AXIS];   
++        WRITE(X_STEP_PIN, LOW);
++      }
++
++      if (counter_y > 0) {
++        counter_y -= current_block->step_event_count;
++        count_position[Y_AXIS]+=count_direction[Y_AXIS];
++        WRITE(Y_STEP_PIN, LOW);
++      }
++
++      if (counter_z > 0) {
++        counter_z -= current_block->step_event_count;
++        count_position[Z_AXIS]+=count_direction[Z_AXIS];
++        WRITE(Z_STEP_PIN, LOW);
++      }
++
++      #ifndef ADVANCE
++        if (counter_e > 0) {
++          counter_e -= current_block->step_event_count;
++          count_position[E_AXIS]+=count_direction[E_AXIS];
++          WRITE_E_STEP(LOW);
++        }
++      #endif //!ADVANCE
++#else
+         if (counter_x > 0) {
+         #ifdef DUAL_X_CARRIAGE
+           if (extruder_duplication_enabled){
+@@ -635,6 +687,7 @@ ISR(TIMER1_COMPA_vect)
+           WRITE_E_STEP(INVERT_E_STEP_PIN);
+         }
+       #endif //!ADVANCE
++      #endif
+       step_events_completed += 1;
+       if(step_events_completed >= current_block->step_event_count) break;
+     }
+
+commit f05928d8860355b7652c0050a4e4d68405f7582b (from 2427d0b6833bcb868ef0ca301700c8c568912a77)
+Merge: b4e287f 2427d0b
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Sun Nov 30 21:38:26 2014 -0800
+
+    Merge branch 'sd_sorting' of https://github.com/thinkyhead/Marlin into sd_sorting
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 94b3d26..616b7a1 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1385,7 +1385,7 @@ void process_commands()
+       st_synchronize();
+       codenum += millis();  // keep track of when we started waiting
+       previous_millis_cmd = millis();
+-      while(millis()  < codenum ){
++      while(millis() < codenum) {
+         manage_heater();
+         manage_inactivity();
+         lcd_update();
+@@ -1413,7 +1413,6 @@ void process_commands()
+       plan_bed_level_matrix.set_to_identity();  //Reset the plane ("erase" all leveling data)
+ #endif //ENABLE_AUTO_BED_LEVELING
+ 
+-
+       saved_feedrate = feedrate;
+       saved_feedmultiply = feedmultiply;
+       feedmultiply = 100;
+@@ -1863,20 +1862,39 @@ void process_commands()
+     case 0: // M0 - Unconditional stop - Wait for user button press on LCD
+     case 1: // M1 - Conditional stop - Wait for user button press on LCD
+     {
+-      LCD_MESSAGEPGM(MSG_USERWAIT);
++      char *src = strchr_pointer + 2;
++
+       codenum = 0;
+-      if(code_seen('P')) codenum = code_value(); // milliseconds to wait
+-      if(code_seen('S')) codenum = code_value() * 1000; // seconds to wait
+ 
++      bool hasP = false, hasS = false;
++      if (code_seen('P')) {
++        codenum = code_value(); // milliseconds to wait
++        hasP = codenum > 0;
++      }
++      if (code_seen('S')) {
++        codenum = code_value() * 1000; // seconds to wait
++        hasS = codenum > 0;
++      }
++      starpos = strchr(src, '*');
++      if (starpos != NULL) *(starpos) = '\0';
++      while (*src == ' ') ++src;
++      if (!hasP && !hasS && *src != '\0') {
++        lcd_setstatus(src);
++      } else {
++        LCD_MESSAGEPGM(MSG_USERWAIT);
++      }
++
++      lcd_ignore_click();
+       st_synchronize();
+       previous_millis_cmd = millis();
+       if (codenum > 0){
+         codenum += millis();  // keep track of when we started waiting
+-        while(millis()  < codenum && !lcd_clicked()){
++        while(millis() < codenum && !lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+           lcd_update();
+         }
++        lcd_ignore_click(false);
+       }else{
+         while(!lcd_clicked()){
+           manage_heater();
+@@ -1884,7 +1902,10 @@ void process_commands()
+           lcd_update();
+         }
+       }
+-      LCD_MESSAGEPGM(MSG_RESUMING);
++      if (IS_SD_PRINTING)
++        LCD_MESSAGEPGM(MSG_RESUMING);
++      else
++        LCD_MESSAGEPGM(WELCOME_MSG);
+     }
+     break;
+ #endif
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index cf0b517..c02b354 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -54,7 +54,7 @@ void  CardReader::lsDive(const char *prepend,SdFile parent)
+   dir_t p;
+   uint8_t cnt=0;
+  
+-  while (parent.readDir(p, longFilename) > 0)
++  while (parent.readDir(p, diveFilename) > 0)
+   {
+     if( DIR_IS_SUBDIR(&p) && lsAction!=LS_Count && lsAction!=LS_GetFilename) // hence LS_SerialPrint
+     {
+@@ -91,8 +91,8 @@ void  CardReader::lsDive(const char *prepend,SdFile parent)
+     {
+       if (p.name[0] == DIR_NAME_FREE) break;
+       if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.'|| p.name[0] == '_') continue;
+-      if (longFilename[0] != '\0' &&
+-          (longFilename[0] == '.' || longFilename[0] == '_')) continue;
++      if (diveFilename[0] != '\0' &&
++          (diveFilename[0] == '.' || diveFilename[0] == '_')) continue;
+       if ( p.name[0] == '.')
+       {
+         if ( p.name[1] != '.')
+diff --git a/Marlin/language.h b/Marlin/language.h
+index ee5d77d..8fd165b 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -665,7 +665,7 @@
+ 	#define MSG_AUTOSTART " Autostart"
+ 	#define MSG_DISABLE_STEPPERS "Apagar motores"
+ 	#define MSG_AUTO_HOME "Llevar al origen"
+-	#define MSG_SET_HOME_OFFSETS "Set home offsets"
++	#define MSG_SET_HOME_OFFSETS "Ajustar offsets"
+ 	#define MSG_SET_ORIGIN "Establecer cero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
+ 	#define MSG_PREHEAT_PLA0 "Precalentar PLA 1"
+@@ -682,8 +682,8 @@
+ 	#define MSG_PREHEAT_ABS_BEDONLY "Precal. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+-	#define MSG_SWITCH_PS_ON "Switch Power On"
+-	#define MSG_SWITCH_PS_OFF "Switch Power Off"
++	#define MSG_SWITCH_PS_ON "Encender"
++	#define MSG_SWITCH_PS_OFF "Apagar"
+ 	#define MSG_EXTRUDE "Extruir"
+ 	#define MSG_RETRACT "Retraer"
+ 	#define MSG_MOVE_AXIS "Mover ejes"
+@@ -727,7 +727,7 @@
+ 	#define MSG_Z "z"
+ 	#define MSG_E "e"
+ 	#define MSG_VMIN "Vmin"
+-	#define MSG_VTRAV_MIN "VTrav min"
++	#define MSG_VTRAV_MIN "Vvacio min"
+ 	#define MSG_AMAX "Amax"
+ 	#define MSG_A_RETRACT "A-retrac."
+ 	#define MSG_XSTEPS "X pasos/mm"
+@@ -775,14 +775,14 @@
+ 	#define MSG_CONTROL_ARROW "Control"
+ 	#define MSG_RETRACT_ARROW "Retraer"
+ 	#define MSG_STEPPER_RELEASED "Desacoplada."
+-	#define MSG_ZPROBE_OUT "Z probe out. bed"
+-	#define MSG_POSITION_UNKNOWN "Home X/Y before Z"
+-	#define MSG_ZPROBE_ZOFFSET "Z Offset"
++	#define MSG_ZPROBE_OUT "sonda Z fuera"
++	#define MSG_POSITION_UNKNOWN "Reiniciar X/Y y Z"
++	#define MSG_ZPROBE_ZOFFSET "Offset Z"
+ 	#define MSG_BABYSTEP_X "Babystep X"
+ 	#define MSG_BABYSTEP_Y "Babystep Y"
+ 	#define MSG_BABYSTEP_Z "Babystep Z"
+ 	#define MSG_ENDSTOP_ABORT "Endstop abort"
+-	#define MSG_CONTRAST "Contrast"
++	#define MSG_CONTRAST "Contraste"
+ 
+ #endif
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 85b72f4..513f493 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -162,6 +162,8 @@ bool lcd_oldcardstatus;
+ menuFunc_t currentMenu = lcd_status_screen; /* function pointer to the currently active menu */
+ uint32_t lcd_next_update_millis;
+ uint8_t lcd_status_update_delay;
++bool ignore_click = false;
++bool wait_for_unclick;
+ uint8_t lcdDrawUpdate = 2;                  /* Set to none-zero when the LCD needs to draw, decreased after every draw. Set to 2 in LCD routines so the LCD gets at least 1 full redraw (first redraw is partial) */
+ 
+ //prevMenu and prevEncoderPosition are used to store the previous menu location when editing settings.
+@@ -189,7 +191,26 @@ static void lcd_status_screen()
+         lcd_status_update_delay = 10;   /* redraw the main screen every second. This is easier then trying keep track of all things that change on the screen */
+     }
+ #ifdef ULTIPANEL
+-    if (LCD_CLICKED)
++
++    bool current_click = LCD_CLICKED;
++
++    if (ignore_click) {
++        if (wait_for_unclick) {
++          if (!current_click) {
++              ignore_click = wait_for_unclick = false;
++          }
++          else {
++              current_click = false;
++          }
++        }
++        else if (current_click) {
++            lcd_quick_feedback();
++            wait_for_unclick = true;
++            current_click = false;
++        }
++    }
++
++    if (current_click)
+     {
+         currentMenu = lcd_main_menu;
+         encoderPosition = 0;
+@@ -1322,6 +1343,12 @@ void lcd_update()
+     }
+ }
+ 
++void lcd_ignore_click(bool b)
++{
++    ignore_click = b;
++    wait_for_unclick = false;
++}
++
+ void lcd_setstatus(const char* message)
+ {
+     if (lcd_status_message_level > 0)
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 9bf6858..761cd5f 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -48,6 +48,8 @@
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+ 
++  void lcd_ignore_click(bool b=true);
++
+   #ifdef NEWPANEL
+     #define EN_C (1<<BLEN_C)
+     #define EN_B (1<<BLEN_B)
+
+commit 061c1fcd93cb2b643078ebfc5cd27d63fb2eaba1 (from ff38d7c293cc10c65361b73eb275e28cd6894aee)
+Merge: 181e487 ff38d7c
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Sun Nov 30 19:58:10 2014 -0800
+
+    Merge branch 'lcd_abort_message' of https://github.com/thinkyhead/Marlin into lcd_abort_message
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 94b3d26..616b7a1 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1385,7 +1385,7 @@ void process_commands()
+       st_synchronize();
+       codenum += millis();  // keep track of when we started waiting
+       previous_millis_cmd = millis();
+-      while(millis()  < codenum ){
++      while(millis() < codenum) {
+         manage_heater();
+         manage_inactivity();
+         lcd_update();
+@@ -1413,7 +1413,6 @@ void process_commands()
+       plan_bed_level_matrix.set_to_identity();  //Reset the plane ("erase" all leveling data)
+ #endif //ENABLE_AUTO_BED_LEVELING
+ 
+-
+       saved_feedrate = feedrate;
+       saved_feedmultiply = feedmultiply;
+       feedmultiply = 100;
+@@ -1863,20 +1862,39 @@ void process_commands()
+     case 0: // M0 - Unconditional stop - Wait for user button press on LCD
+     case 1: // M1 - Conditional stop - Wait for user button press on LCD
+     {
+-      LCD_MESSAGEPGM(MSG_USERWAIT);
++      char *src = strchr_pointer + 2;
++
+       codenum = 0;
+-      if(code_seen('P')) codenum = code_value(); // milliseconds to wait
+-      if(code_seen('S')) codenum = code_value() * 1000; // seconds to wait
+ 
++      bool hasP = false, hasS = false;
++      if (code_seen('P')) {
++        codenum = code_value(); // milliseconds to wait
++        hasP = codenum > 0;
++      }
++      if (code_seen('S')) {
++        codenum = code_value() * 1000; // seconds to wait
++        hasS = codenum > 0;
++      }
++      starpos = strchr(src, '*');
++      if (starpos != NULL) *(starpos) = '\0';
++      while (*src == ' ') ++src;
++      if (!hasP && !hasS && *src != '\0') {
++        lcd_setstatus(src);
++      } else {
++        LCD_MESSAGEPGM(MSG_USERWAIT);
++      }
++
++      lcd_ignore_click();
+       st_synchronize();
+       previous_millis_cmd = millis();
+       if (codenum > 0){
+         codenum += millis();  // keep track of when we started waiting
+-        while(millis()  < codenum && !lcd_clicked()){
++        while(millis() < codenum && !lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+           lcd_update();
+         }
++        lcd_ignore_click(false);
+       }else{
+         while(!lcd_clicked()){
+           manage_heater();
+@@ -1884,7 +1902,10 @@ void process_commands()
+           lcd_update();
+         }
+       }
+-      LCD_MESSAGEPGM(MSG_RESUMING);
++      if (IS_SD_PRINTING)
++        LCD_MESSAGEPGM(MSG_RESUMING);
++      else
++        LCD_MESSAGEPGM(WELCOME_MSG);
+     }
+     break;
+ #endif
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 5f412b4..3e6e170 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -669,7 +669,7 @@
+ 	#define MSG_AUTOSTART " Autostart"
+ 	#define MSG_DISABLE_STEPPERS "Apagar motores"
+ 	#define MSG_AUTO_HOME "Llevar al origen"
+-	#define MSG_SET_HOME_OFFSETS "Set home offsets"
++	#define MSG_SET_HOME_OFFSETS "Ajustar offsets"
+ 	#define MSG_SET_ORIGIN "Establecer cero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
+ 	#define MSG_PREHEAT_PLA0 "Precalentar PLA 1"
+@@ -686,8 +686,8 @@
+ 	#define MSG_PREHEAT_ABS_BEDONLY "Precal. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+-	#define MSG_SWITCH_PS_ON "Switch Power On"
+-	#define MSG_SWITCH_PS_OFF "Switch Power Off"
++	#define MSG_SWITCH_PS_ON "Encender"
++	#define MSG_SWITCH_PS_OFF "Apagar"
+ 	#define MSG_EXTRUDE "Extruir"
+ 	#define MSG_RETRACT "Retraer"
+ 	#define MSG_MOVE_AXIS "Mover ejes"
+@@ -731,7 +731,7 @@
+ 	#define MSG_Z "z"
+ 	#define MSG_E "e"
+ 	#define MSG_VMIN "Vmin"
+-	#define MSG_VTRAV_MIN "VTrav min"
++	#define MSG_VTRAV_MIN "Vvacio min"
+ 	#define MSG_AMAX "Amax"
+ 	#define MSG_A_RETRACT "A-retrac."
+ 	#define MSG_XSTEPS "X pasos/mm"
+@@ -780,14 +780,14 @@
+ 	#define MSG_CONTROL_ARROW "Control"
+ 	#define MSG_RETRACT_ARROW "Retraer"
+ 	#define MSG_STEPPER_RELEASED "Desacoplada."
+-	#define MSG_ZPROBE_OUT "Z probe out. bed"
+-	#define MSG_POSITION_UNKNOWN "Home X/Y before Z"
+-	#define MSG_ZPROBE_ZOFFSET "Z Offset"
++	#define MSG_ZPROBE_OUT "sonda Z fuera"
++	#define MSG_POSITION_UNKNOWN "Reiniciar X/Y y Z"
++	#define MSG_ZPROBE_ZOFFSET "Offset Z"
+ 	#define MSG_BABYSTEP_X "Babystep X"
+ 	#define MSG_BABYSTEP_Y "Babystep Y"
+ 	#define MSG_BABYSTEP_Z "Babystep Z"
+ 	#define MSG_ENDSTOP_ABORT "Endstop abort"
+-	#define MSG_CONTRAST "Contrast"
++	#define MSG_CONTRAST "Contraste"
+ 
+ #endif
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index e22880e..bbfbd67 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -162,6 +162,8 @@ bool lcd_oldcardstatus;
+ menuFunc_t currentMenu = lcd_status_screen; /* function pointer to the currently active menu */
+ uint32_t lcd_next_update_millis;
+ uint8_t lcd_status_update_delay;
++bool ignore_click = false;
++bool wait_for_unclick;
+ uint8_t lcdDrawUpdate = 2;                  /* Set to none-zero when the LCD needs to draw, decreased after every draw. Set to 2 in LCD routines so the LCD gets at least 1 full redraw (first redraw is partial) */
+ 
+ //prevMenu and prevEncoderPosition are used to store the previous menu location when editing settings.
+@@ -189,7 +191,26 @@ static void lcd_status_screen()
+         lcd_status_update_delay = 10;   /* redraw the main screen every second. This is easier then trying keep track of all things that change on the screen */
+     }
+ #ifdef ULTIPANEL
+-    if (LCD_CLICKED)
++
++    bool current_click = LCD_CLICKED;
++
++    if (ignore_click) {
++        if (wait_for_unclick) {
++          if (!current_click) {
++              ignore_click = wait_for_unclick = false;
++          }
++          else {
++              current_click = false;
++          }
++        }
++        else if (current_click) {
++            lcd_quick_feedback();
++            wait_for_unclick = true;
++            current_click = false;
++        }
++    }
++
++    if (current_click)
+     {
+         currentMenu = lcd_main_menu;
+         encoderPosition = 0;
+@@ -1317,6 +1338,12 @@ void lcd_update()
+     }
+ }
+ 
++void lcd_ignore_click(bool b)
++{
++    ignore_click = b;
++    wait_for_unclick = false;
++}
++
+ void lcd_setstatus(const char* message)
+ {
+     if (lcd_status_message_level > 0)
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 9bf6858..761cd5f 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -48,6 +48,8 @@
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+ 
++  void lcd_ignore_click(bool b=true);
++
+   #ifdef NEWPANEL
+     #define EN_C (1<<BLEN_C)
+     #define EN_B (1<<BLEN_B)
+

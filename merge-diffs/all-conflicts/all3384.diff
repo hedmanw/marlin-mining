@@ -1,0 +1,1612 @@
+commit 34da3a0a3ff8998d149be645f8081af7ea0e0981 (from 2daa85918ef297105bea73d006446339587eee8e)
+Merge: 2daa859 a105e10
+Author: Guillaume Seguin <guillaume@segu.in>
+Date:   Tue Jul 23 21:46:41 2013 +0200
+
+    Merge github.com:ErikZalm/Marlin into Marlin_v1
+    
+    Conflicts:
+    	Marlin/language.h
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 78df462..db02b1d 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -37,6 +37,7 @@
+ // 63 = Melzi
+ // 64 = STB V1.1
+ // 65 = Azteeg X1
++// 66 = Melzi with ATmega1284 (MaKr3d version)
+ // 7  = Ultimaker
+ // 71 = Ultimaker (Older electronics. Pre 1.5.4. This is rare)
+ // 77 = 3Drag Controller
+@@ -126,6 +127,7 @@
+ // 8 is 100k 0603 SMD Vishay NTCS0603E3104FXT (4.7k pullup)
+ // 9 is 100k GE Sensing AL03006-58.2K-97-G1 (4.7k pullup)
+ // 10 is 100k RS thermistor 198-961 (4.7k pullup)
++// 60 is 100k Maker's Tool Works Kapton Bed Thermister
+ //
+ //    1k ohm pullup tables - This is not normal, you would have to have changed out your 4.7k for 1k
+ //                          (but gives greater accuracy and more stable PID)
+@@ -258,12 +260,12 @@
+ 
+ #ifndef ENDSTOPPULLUPS
+   // fine Enstop settings: Individual Pullups. will be ignored if ENDSTOPPULLUPS is defined
+-  #define ENDSTOPPULLUP_XMAX
+-  #define ENDSTOPPULLUP_YMAX
+-  #define ENDSTOPPULLUP_ZMAX
+-  #define ENDSTOPPULLUP_XMIN
+-  #define ENDSTOPPULLUP_YMIN
+-  //#define ENDSTOPPULLUP_ZMIN
++  // #define ENDSTOPPULLUP_XMAX
++  // #define ENDSTOPPULLUP_YMAX
++  // #define ENDSTOPPULLUP_ZMAX
++  // #define ENDSTOPPULLUP_XMIN
++  // #define ENDSTOPPULLUP_YMIN
++  // #define ENDSTOPPULLUP_ZMIN
+ #endif
+ 
+ #ifdef ENDSTOPPULLUPS
+@@ -394,6 +396,10 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define ULTIMAKERCONTROLLER //as available from the ultimaker online store.
+ //#define ULTIPANEL  //the ultipanel as on thingiverse
+ 
++// The MaKr3d Makr-Panel with graphic controller and SD support
++// http://reprap.org/wiki/MaKr3d_MaKrPanel
++//#define MAKRPANEL
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -419,6 +425,14 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define RA_CONTROL_PANEL
+ 
+ //automatic expansion
++#if defined (MAKRPANEL)
++ #define DOGLCD
++ #define SDSUPPORT
++ #define ULTIPANEL
++ #define NEWPANEL
++ #define DEFAULT_LCD_CONTRAST 17
++#endif
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+@@ -505,6 +519,13 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+   #endif
+ #endif
+ 
++// default LCD contrast for dogm-like LCD displays
++#ifdef DOGLCD
++# ifndef DEFAULT_LCD_CONTRAST
++#  define DEFAULT_LCD_CONTRAST 32
++# endif
++#endif
++
+ // Increase the FAN pwm frequency. Removes the PWM noise but increases heating in the FET/Arduino
+ //#define FAST_PWM_FAN
+ 
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index 4e11c44..65d0302 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -37,7 +37,7 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size)
+ // the default values are used whenever there is a change to the data, to prevent
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V07"
++#define EEPROM_VERSION "V08"
+ 
+ #ifdef EEPROM_SETTINGS
+ void Config_StoreSettings() 
+@@ -78,6 +78,10 @@ void Config_StoreSettings()
+     EEPROM_WRITE_VAR(i,dummy);
+     EEPROM_WRITE_VAR(i,dummy);
+   #endif
++  #ifndef DOGLCD
++    int lcd_contrast = 32;
++  #endif
++  EEPROM_WRITE_VAR(i,lcd_contrast);
+   char ver2[4]=EEPROM_VERSION;
+   i=EEPROM_OFFSET;
+   EEPROM_WRITE_VAR(i,ver2); // validate data
+@@ -198,6 +202,10 @@ void Config_RetrieveSettings()
+         EEPROM_READ_VAR(i,Kp);
+         EEPROM_READ_VAR(i,Ki);
+         EEPROM_READ_VAR(i,Kd);
++        #ifndef DOGLCD
++        int lcd_contrast;
++        #endif
++        EEPROM_READ_VAR(i,lcd_contrast);
+ 
+ 		// Call updatePID (similar to when we have processed M301)
+ 		updatePID();
+@@ -244,6 +252,9 @@ void Config_ResetDefault()
+     absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+ #endif
++#ifdef DOGLCD
++    lcd_contrast = DEFAULT_LCD_CONTRAST;
++#endif
+ #ifdef PIDTEMP
+     Kp = DEFAULT_Kp;
+     Ki = scalePID_i(DEFAULT_Ki);
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 5f1c77a..f555d60 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -18,12 +18,6 @@
+ //#define WATCH_TEMP_PERIOD 40000 //40 seconds
+ //#define WATCH_TEMP_INCREASE 10  //Heat up at least 10 degree in 20 seconds
+ 
+-// Wait for Cooldown
+-// This defines if the M109 call should not block if it is cooling down.
+-// example: From a current temp of 220, you set M109 S200. 
+-// if CooldownNoWait is defined M109 will not wait for the cooldown to finish
+-#define CooldownNoWait true
+-
+ #ifdef PIDTEMP
+   // this adds an experimental additional term to the heatingpower, proportional to the extrusion speed.
+   // if Kc is choosen well, the additional required power due to increased melting should be compensated.
+@@ -152,6 +146,31 @@
+   #define EXTRUDERS 1
+ #endif
+ 
++// Enable this for dual x-carriage printers. 
++// A dual x-carriage design has the advantage that the inactive extruder can be parked which
++// prevents hot-end ooze contaminating the print. It also reduces the weight of each x-carriage
++// allowing faster printing speeds.
++//#define DUAL_X_CARRIAGE
++#ifdef DUAL_X_CARRIAGE
++// Configuration for second X-carriage
++// Note: the first x-carriage is defined as the x-carriage which homes to the minimum endstop;
++// the second x-carriage always homes to the maximum endstop.
++#define X2_MIN_POS 88     // set minimum to ensure second x-carriage doesn't hit the parked first X-carriage
++#define X2_MAX_POS 350.45 // set maximum to the distance between toolheads when both heads are homed 
++#define X2_HOME_DIR 1     // the second X-carriage always homes to the maximum endstop position
++#define X2_HOME_POS X2_MAX_POS // default home position is the maximum carriage position 
++    // However: In this mode the EXTRUDER_OFFSET_X value for the second extruder provides a software 
++    // override for X2_HOME_POS. This also allow recalibration of the distance between the two endstops
++    // without modifying the firmware (through the "M218 T1 X???" command).
++    // Remember: you should set the second extruder x-offset to 0 in your slicer.
++
++// Pins for second x-carriage stepper driver (defined here to avoid further complicating pins.h)
++#define X2_ENABLE_PIN 29
++#define X2_STEP_PIN 25
++#define X2_DIR_PIN 23
++
++#endif // DUAL_X_CARRIAGE
++    
+ //homing hits the endstop, then retracts by this distance, before it tries to slowly bump again:
+ #define X_HOME_RETRACT_MM 5 
+ #define Y_HOME_RETRACT_MM 5 
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index 3d04d36..a4ae1d7 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -114,6 +114,12 @@ MCU              ?= atmega644p
+ else ifeq  ($(HARDWARE_MOTHERBOARD),63)
+ HARDWARE_VARIANT ?= Sanguino
+ MCU              ?= atmega644p
++else ifeq  ($(HARDWARE_MOTHERBOARD),65)
++HARDWARE_VARIANT ?= Sanguino
++MCU              ?= atmega1284p
++else ifeq  ($(HARDWARE_MOTHERBOARD),66)
++HARDWARE_VARIANT ?= Sanguino
++MCU              ?= atmega1284p
+ 
+ #Ultimaker
+ else ifeq  ($(HARDWARE_MOTHERBOARD),7)
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index c9759eb..1ae9494 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -96,7 +96,11 @@ void process_commands();
+ 
+ void manage_inactivity();
+ 
+-#if defined(X_ENABLE_PIN) && X_ENABLE_PIN > -1
++#if defined(DUAL_X_CARRIAGE) && defined(X_ENABLE_PIN) && X_ENABLE_PIN > -1 \
++    && defined(X2_ENABLE_PIN) && X2_ENABLE_PIN > -1
++  #define  enable_x() do { WRITE(X_ENABLE_PIN, X_ENABLE_ON); WRITE(X2_ENABLE_PIN, X_ENABLE_ON); } while (0)
++  #define disable_x() do { WRITE(X_ENABLE_PIN,!X_ENABLE_ON); WRITE(X2_ENABLE_PIN,!X_ENABLE_ON); } while (0)
++#elif defined(X_ENABLE_PIN) && X_ENABLE_PIN > -1
+   #define  enable_x() WRITE(X_ENABLE_PIN, X_ENABLE_ON)
+   #define disable_x() WRITE(X_ENABLE_PIN,!X_ENABLE_ON)
+ #else
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d1b20ac..d7bf608 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -67,17 +67,9 @@
+ // G91 - Use Relative Coordinates
+ // G92 - Set current position to cordinates given
+ 
+-//RepRap M Codes
++// M Codes
+ // M0   - Unconditional stop - Wait for user to press a button on the LCD (Only if ULTRA_LCD is enabled)
+ // M1   - Same as M0
+-// M104 - Set extruder target temp
+-// M105 - Read current temp
+-// M106 - Fan on
+-// M107 - Fan off
+-// M109 - Wait for extruder current temp to reach target temp.
+-// M114 - Display current position
+-
+-//Custom M Codes
+ // M17  - Enable/Power all stepper motors
+ // M18  - Disable all stepper motors; same as M84
+ // M20  - List SD card
+@@ -92,6 +84,7 @@
+ // M29  - Stop SD write
+ // M30  - Delete file from SD (M30 filename.g)
+ // M31  - Output time since last M109 or SD card start to serial
++// M32  - Select file and start SD print (Can be used when printing from SD card)
+ // M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+ // M80  - Turn on Power Supply
+ // M81  - Turn off Power Supply
+@@ -101,6 +94,12 @@
+ //        or use S<seconds> to specify an inactivity timeout, after which the steppers will be disabled.  S0 to disable the timeout.
+ // M85  - Set inactivity shutdown timer with parameter S<seconds>. To disable set zero (default)
+ // M92  - Set axis_steps_per_unit - same syntax as G92
++// M104 - Set extruder target temp
++// M105 - Read current temp
++// M106 - Fan on
++// M107 - Fan off
++// M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
++//        Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
+ // M114 - Output current position to serial port
+ // M115 - Capabilities string
+ // M117 - display message
+@@ -110,7 +109,8 @@
+ // M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M140 - Set bed target temp
+-// M190 - Wait for bed current temp to reach target temp.
++// M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
++//        Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+ // M200 - Set filament diameter
+ // M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ // M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+@@ -125,6 +125,7 @@
+ // M220 S<factor in percent>- set speed factor override percentage
+ // M221 S<factor in percent>- set extrude factor override percentage
+ // M240 - Trigger a camera to take a photograph
++// M250 - Set LCD contrast C<contrast value> (value 0..63)
+ // M280 - set servo position absolute. P: servo index, S: angle or microseconds
+ // M300 - Play beepsound S<frequency Hz> P<duration ms>
+ // M301 - Set PID parameters P I and D
+@@ -245,6 +246,9 @@ bool Stopped=false;
+   Servo servos[NUM_SERVOS];
+ #endif
+ 
++bool CooldownNoWait = true;
++bool target_direction;
++
+ //===========================================================================
+ //=============================ROUTINES=============================
+ //===========================================================================
+@@ -425,6 +429,7 @@ void setup()
+   servo_init();
+ 
+   lcd_init();
++  _delay_ms(1000);	// wait 1sec to display the splash screen
+   
+   #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
+     SET_OUTPUT(CONTROLLERFAN_PIN); //Set pin used for driver cooling fan
+@@ -676,7 +681,44 @@ XYZ_CONSTS_FROM_CONFIG(float, max_length,      MAX_LENGTH);
+ XYZ_CONSTS_FROM_CONFIG(float, home_retract_mm, HOME_RETRACT_MM);
+ XYZ_CONSTS_FROM_CONFIG(signed char, home_dir,  HOME_DIR);
+ 
++#ifdef DUAL_X_CARRIAGE
++  #if EXTRUDERS == 1 || defined(COREXY) \
++      || !defined(X2_ENABLE_PIN) || !defined(X2_STEP_PIN) || !defined(X2_DIR_PIN) \
++      || !defined(X2_HOME_POS) || !defined(X2_MIN_POS) || !defined(X2_MAX_POS) \
++      || !defined(X_MAX_PIN) || X_MAX_PIN < 0
++    #error "Missing or invalid definitions for DUAL_X_CARRIAGE mode."
++  #endif
++  #if X_HOME_DIR != -1 || X2_HOME_DIR != 1
++    #error "Please use canonical x-carriage assignment" // the x-carriages are defined by their homing directions
++  #endif  
++    
++static float x_home_pos(int extruder) {
++  if (extruder == 0)
++    return base_home_pos(X_AXIS) + add_homeing[X_AXIS];
++  else
++    // In dual carriage mode the extruder offset provides an override of the
++    // second X-carriage offset when homed - otherwise X2_HOME_POS is used.
++    // This allow soft recalibration of the second extruder offset position without firmware reflash 
++    // (through the M218 command).
++    return (extruder_offset[X_AXIS][1] > 0) ? extruder_offset[X_AXIS][1] : X2_HOME_POS;
++}
++
++static int x_home_dir(int extruder) {
++  return (extruder == 0) ? X_HOME_DIR : X2_HOME_DIR;
++}
++
++static float inactive_x_carriage_pos = X2_MAX_POS;
++#endif     
++
+ static void axis_is_at_home(int axis) {
++#ifdef DUAL_X_CARRIAGE
++  if (axis == X_AXIS && active_extruder != 0) {
++    current_position[X_AXIS] = x_home_pos(active_extruder);
++    min_pos[X_AXIS] =          X2_MIN_POS;
++    max_pos[X_AXIS] =          max(extruder_offset[X_AXIS][1], X2_MAX_POS);
++    return;
++  }
++#endif  
+   current_position[axis] = base_home_pos(axis) + add_homeing[axis];
+   min_pos[axis] =          base_min_pos(axis) + add_homeing[axis];
+   max_pos[axis] =          base_max_pos(axis) + add_homeing[axis];
+@@ -685,30 +727,38 @@ static void axis_is_at_home(int axis) {
+ static void homeaxis(int axis) {
+ #define HOMEAXIS_DO(LETTER) \
+   ((LETTER##_MIN_PIN > -1 && LETTER##_HOME_DIR==-1) || (LETTER##_MAX_PIN > -1 && LETTER##_HOME_DIR==1))
++
+   if (axis==X_AXIS ? HOMEAXIS_DO(X) :
+       axis==Y_AXIS ? HOMEAXIS_DO(Y) :
+       axis==Z_AXIS ? HOMEAXIS_DO(Z) :
+       0) {
++    int axis_home_dir = home_dir(axis);
++#ifdef DUAL_X_CARRIAGE
++    if (axis == X_AXIS)
++      axis_home_dir = x_home_dir(active_extruder);
++#endif
+ 
+     // Engage Servo endstop if enabled
+-    #ifdef SERVO_ENDSTOPS[axis] > -1
+-      servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
++    #ifdef SERVO_ENDSTOPS
++      if (SERVO_ENDSTOPS[axis] > -1) {
++        servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
++      }
+     #endif
+-
++      
+     current_position[axis] = 0;
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-    destination[axis] = 1.5 * max_length(axis) * home_dir(axis);
++    destination[axis] = 1.5 * max_length(axis) * axis_home_dir;
+     feedrate = homing_feedrate[axis];
+     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+     st_synchronize();
+ 
+     current_position[axis] = 0;
+     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-    destination[axis] = -home_retract_mm(axis) * home_dir(axis);
++    destination[axis] = -home_retract_mm(axis) * axis_home_dir;
+     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+     st_synchronize();
+ 
+-    destination[axis] = 2*home_retract_mm(axis) * home_dir(axis);
++    destination[axis] = 2*home_retract_mm(axis) * axis_home_dir;
+     feedrate = homing_feedrate[axis]/2 ;
+     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+     st_synchronize();
+@@ -719,8 +769,10 @@ static void homeaxis(int axis) {
+     endstops_hit_on_purpose();
+ 
+     // Retract Servo endstop if enabled
+-    #ifdef SERVO_ENDSTOPS[axis] > -1
+-      servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++    #ifdef SERVO_ENDSTOPS
++      if (SERVO_ENDSTOPS[axis] > -1) {
++        servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
++      }
+     #endif
+   }
+ }
+@@ -846,7 +898,7 @@ void process_commands()
+ 
+ #else // NOT DELTA
+ 
+-          home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
++      home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+ 
+       #if Z_HOME_DIR > 0                      // If homing away from BED do Z first
+       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
+@@ -859,8 +911,14 @@ void process_commands()
+       {
+         current_position[X_AXIS] = 0;current_position[Y_AXIS] = 0;
+ 
++       #ifndef DUAL_X_CARRIAGE
++        int x_axis_home_dir = home_dir(X_AXIS);
++       #else
++        int x_axis_home_dir = x_home_dir(active_extruder);
++       #endif
++        
+         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-        destination[X_AXIS] = 1.5 * X_MAX_LENGTH * X_HOME_DIR;destination[Y_AXIS] = 1.5 * Y_MAX_LENGTH * Y_HOME_DIR;
++        destination[X_AXIS] = 1.5 * max_length(X_AXIS) * x_axis_home_dir;destination[Y_AXIS] = 1.5 * max_length(Y_AXIS) * home_dir(Y_AXIS);
+         feedrate = homing_feedrate[X_AXIS];
+         if(homing_feedrate[Y_AXIS]<feedrate)
+           feedrate =homing_feedrate[Y_AXIS];
+@@ -885,6 +943,13 @@ void process_commands()
+ 
+       if((home_all_axis) || (code_seen(axis_codes[X_AXIS])))
+       {
++      #ifdef DUAL_X_CARRIAGE
++        int tmp_extruder = active_extruder;
++        active_extruder = !active_extruder;
++        HOMEAXIS(X);
++        inactive_x_carriage_pos = current_position[X_AXIS];
++        active_extruder = tmp_extruder;
++      #endif         
+         HOMEAXIS(X);
+       }
+ 
+@@ -917,7 +982,7 @@ void process_commands()
+         }
+       }
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+-#endif // DELTA
++#endif // else DELTA
+           
+       #ifdef ENDSTOPS_ONLY_FOR_HOMING
+         enable_endstops(false);
+@@ -1057,6 +1122,19 @@ void process_commands()
+         card.removeFile(strchr_pointer + 4);
+       }
+       break;
++    case 32: //M32 - Select file and start SD print
++      if(card.sdprinting) {
++        st_synchronize();
++        card.closefile();
++        card.sdprinting = false;
++      }
++      starpos = (strchr(strchr_pointer + 4,'*'));
++      if(starpos!=NULL)
++        *(starpos-1)='\0';
++      card.openFile(strchr_pointer + 4,true);
++      card.startFileprint();
++      starttime=millis();
++      break;
+     case 928: //M928 - Start SD write
+       starpos = (strchr(strchr_pointer + 5,'*'));
+       if(starpos != NULL){
+@@ -1159,7 +1237,13 @@ void process_commands()
+       #ifdef AUTOTEMP
+         autotemp_enabled=false;
+       #endif
+-      if (code_seen('S')) setTargetHotend(code_value(), tmp_extruder);
++      if (code_seen('S')) { 
++        setTargetHotend(code_value(), tmp_extruder);
++        CooldownNoWait = true;
++      } else if (code_seen('R')) {
++        setTargetHotend(code_value(), tmp_extruder);
++        CooldownNoWait = false;
++      }
+       #ifdef AUTOTEMP
+         if (code_seen('S')) autotemp_min=code_value();
+         if (code_seen('B')) autotemp_max=code_value();
+@@ -1174,7 +1258,7 @@ void process_commands()
+       codenum = millis();
+ 
+       /* See if we are heating up or cooling down */
+-      bool target_direction = isHeatingHotend(tmp_extruder); // true if heating, false if cooling
++      target_direction = isHeatingHotend(tmp_extruder); // true if heating, false if cooling
+ 
+       #ifdef TEMP_RESIDENCY_TIME
+         long residencyStart;
+@@ -1230,9 +1314,18 @@ void process_commands()
+     case 190: // M190 - Wait for bed heater to reach target.
+     #if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
+         LCD_MESSAGEPGM(MSG_BED_HEATING);
+-        if (code_seen('S')) setTargetBed(code_value());
++        if (code_seen('S')) { 
++          setTargetBed(code_value());
++          CooldownNoWait = true;
++        } else if (code_seen('R')) {
++          setTargetBed(code_value());
++          CooldownNoWait = false;
++        }
+         codenum = millis();
+-        while(isHeatingBed())
++        
++        target_direction = isHeatingBed(); // true if heating, false if cooling
++        
++        while ( target_direction ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
+         {
+           if(( millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
+           {
+@@ -1716,6 +1809,18 @@ void process_commands()
+       #endif
+      }
+     break;
++#ifdef DOGLCD
++    case 250: // M250  Set LCD contrast value: C<value> (value 0..63)
++     {
++	  if (code_seen('C')) {
++	   lcd_setcontrast( ((int)code_value())&63 );
++          }
++          SERIAL_PROTOCOLPGM("lcd contrast value: ");
++          SERIAL_PROTOCOL(lcd_contrast);
++          SERIAL_PROTOCOLLN("");
++     }
++    break;
++#endif
+     #ifdef PREVENT_DANGEROUS_EXTRUDE
+     case 302: // allow cold extrudes, or set the minimum extrude temperature
+     {
+@@ -1973,6 +2078,20 @@ void process_commands()
+       if(tmp_extruder != active_extruder) {
+         // Save current position to return to after applying extruder offset
+         memcpy(destination, current_position, sizeof(destination));
++      #ifdef DUAL_X_CARRIAGE
++        // only apply Y extruder offset in dual x carriage mode (x offset is already used in determining home pos)
++        current_position[Y_AXIS] = current_position[Y_AXIS] -
++                     extruder_offset[Y_AXIS][active_extruder] +
++                     extruder_offset[Y_AXIS][tmp_extruder];
++
++        float tmp_x_pos = current_position[X_AXIS];
++
++        // Set the new active extruder and position
++        active_extruder = tmp_extruder;
++        axis_is_at_home(X_AXIS); //this function updates X min/max values.
++        current_position[X_AXIS] = inactive_x_carriage_pos;
++        inactive_x_carriage_pos = tmp_x_pos;      
++      #else    
+         // Offset extruder (only by XY)
+         int i;
+         for(i = 0; i < 2; i++) {
+@@ -1982,6 +2101,7 @@ void process_commands()
+         }
+         // Set the new active extruder and position
+         active_extruder = tmp_extruder;
++      #endif //else DUAL_X_CARRIAGE
+         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+         // Move to the old position if 'F' was in the parameters
+         if(make_move && Stopped == false) {
+@@ -2226,6 +2346,9 @@ void controllerFan()
+        || !READ(E2_ENABLE_PIN)
+     #endif
+     #if EXTRUDER > 1
++      #if defined(X2_ENABLE_PIN) && X2_ENABLE_PIN > -1
++       || !READ(X2_ENABLE_PIN)
++      #endif
+        || !READ(E1_ENABLE_PIN)
+     #endif
+        || !READ(E0_ENABLE_PIN)) //If any of the drivers are enabled...
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 791c4bb..1eeec91 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -206,7 +206,6 @@ void CardReader::startFileprint()
+   if(cardOK)
+   {
+     sdprinting = true;
+-    
+   }
+ }
+ 
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 17a56ad..8d450cb 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -74,16 +74,28 @@
+ 
+ #define FONT_STATUSMENU	u8g_font_6x9
+ 
++int lcd_contrast;
++
+ // LCD selection
+ #ifdef U8GLIB_ST7920
+ //U8GLIB_ST7920_128X64_RRD u8g(0,0,0);
+ U8GLIB_ST7920_128X64_RRD u8g(0);
++#elif defined(MAKRPANEL)
++// The MaKrPanel display, ST7565 controller as well
++U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #else
++// for regular DOGM128 display with HW-SPI
+ U8GLIB_DOGM128 u8g(DOGLCD_CS, DOGLCD_A0);	// HW-SPI Com: CS, A0
+ #endif
+ 
+ static void lcd_implementation_init()
+ {
++#ifdef LCD_PIN_BL
++	pinMode(LCD_PIN_BL, OUTPUT);	// Enable LCD backlight
++	digitalWrite(LCD_PIN_BL, HIGH);
++#endif
++
++        u8g.setContrast(lcd_contrast);	
+ 	//  Uncomment this if you have the first generation (V1.10) of STBs board
+ 	//  pinMode(17, OUTPUT);	// Enable LCD backlight
+ 	//  digitalWrite(17, HIGH);
+@@ -117,14 +129,14 @@ static void lcd_implementation_init()
+ 			u8g.setFont(u8g_font_6x10_marlin);
+ 			u8g.drawStr(62,10,"MARLIN"); 
+ 			u8g.setFont(u8g_font_5x8);
+-			u8g.drawStr(62,19,"V1.0.0 RC2");
++			u8g.drawStr(62,19,"V1.0.0 RC2-mm");
+ 			u8g.setFont(u8g_font_6x10_marlin);
+ 			u8g.drawStr(62,28,"by ErikZalm");
+ 			u8g.drawStr(62,41,"DOGM128 LCD");
+ 			u8g.setFont(u8g_font_5x8);
+ 			u8g.drawStr(62,48,"enhancements");
+ 			u8g.setFont(u8g_font_5x8);
+-			u8g.drawStr(62,55,"by STB");
++			u8g.drawStr(62,55,"by STB, MM");
+ 			u8g.drawStr(62,61,"uses u");
+ 			u8g.drawStr90(92,57,"8");
+ 			u8g.drawStr(100,61,"glib");
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 3a33254..c331a0b 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -84,9 +84,9 @@
+ 	#define MSG_PID_D "PID-D"
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Accel"
+-	#define MSG_VXY_JERK "Vxy-jerk"
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VXY_JERK "Vxy-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX "Vmax "
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+@@ -103,6 +103,7 @@
+ 	#define MSG_RECTRACT "Rectract"
+ 	#define MSG_TEMPERATURE "Temperature"
+ 	#define MSG_MOTION "Motion"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Store memory"
+ 	#define MSG_LOAD_EPROM "Load memory"
+ 	#define MSG_RESTORE_FAILSAFE "Restore Failsafe"
+@@ -246,8 +247,8 @@
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Acc"
+ 	#define MSG_VXY_JERK "Zryw Vxy"
+-	#define MSG_VZ_JERK "Zryw Vz"
+-	#define MSG_VE_JERK "Zryw Ve"
++	#define MSG_VZ_JERK "Zryw Vz"
++	#define MSG_VE_JERK "Zryw Ve"
+ 	#define MSG_VMAX "Vmax"
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+@@ -264,6 +265,7 @@
+ 	#define MSG_RECTRACT "Wycofanie"
+ 	#define MSG_TEMPERATURE "Temperatura"
+ 	#define MSG_MOTION "Ruch"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Zapisz w pamieci"
+ 	#define MSG_LOAD_EPROM "Wczytaj z pamieci"
+ 	#define MSG_RESTORE_FAILSAFE " Ustawienia fabryczne"
+@@ -409,8 +411,8 @@
+ #define MSG_PID_C " PID-C: "
+ #define MSG_ACC " Acc:"
+ #define MSG_VXY_JERK "Vxy-jerk"
+-#define MSG_VZ_JERK "Vz-jerk"
+-#define MSG_VE_JERK "Ve-jerk"
++#define MSG_VZ_JERK "Vz-jerk"
++#define MSG_VE_JERK "Ve-jerk"
+ #define MSG_VMAX " Vmax "
+ #define MSG_X "x:"
+ #define MSG_Y "y:"
+@@ -429,6 +431,7 @@
+ #define MSG_TEMPERATURE_WIDE " Temperature \x7E"
+ #define MSG_TEMPERATURE_RTN " Temperature \003"
+ #define MSG_MOTION_WIDE " Mouvement \x7E"
++	#define MSG_CONTRAST "LCD contrast"
+ #define MSG_STORE_EPROM " Sauvegarder memoire"
+ #define MSG_LOAD_EPROM " Lire memoire"
+ #define MSG_RESTORE_FAILSAFE " Restaurer memoire"
+@@ -541,7 +544,7 @@
+ 
+ 	#define MSG_SD_INSERTED      "SDKarte erkannt"
+ 	#define MSG_SD_REMOVED       "SDKarte entfernt"
+-	#define MSG_MAIN             "Hauptmneü"
++	#define MSG_MAIN             "Hauptmenü"
+ 	#define MSG_AUTOSTART        "Autostart"
+ 	#define MSG_DISABLE_STEPPERS "Stepper abschalten"
+ 	#define MSG_AUTO_HOME        "Auto Nullpunkt"
+@@ -562,7 +565,7 @@
+ 	#define MSG_NOZZLE2          "Düse3"
+ 	#define MSG_BED              "Bett"
+ 	#define MSG_FAN_SPEED        "Lüftergeschw."
+-	#define MSG_FLOW             "Fluß"
++	#define MSG_FLOW             "Fluss"
+ 	#define MSG_CONTROL          "Einstellungen"
+ 	#define MSG_MIN              "\002 Min"
+ 	#define MSG_MAX              "\002 Max"
+@@ -576,8 +579,8 @@
+ 	#define MSG_PID_C            "PID-C"
+ 	#define MSG_ACC              "Acc"
+ 	#define MSG_VXY_JERK         "Vxy-jerk"
+-	#define MSG_VZ_JERK          "Vz-jerk"
+-	#define MSG_VE_JERK          "Ve-jerk"
++	#define MSG_VZ_JERK          "Vz-jerk"
++	#define MSG_VE_JERK          "Ve-jerk"
+ 	#define MSG_VMAX             "Vmax "
+ 	#define MSG_X                "x"
+ 	#define MSG_Y                "y"
+@@ -595,6 +598,7 @@
+ 	#define MSG_WATCH            "Beobachten"
+ 	#define MSG_TEMPERATURE      "Temperatur"
+ 	#define MSG_MOTION           "Bewegung"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM      "EPROM speichern"
+ 	#define MSG_LOAD_EPROM       "EPROM laden"
+ 	#define MSG_RESTORE_FAILSAFE "Standardkonfig."
+@@ -700,93 +704,100 @@
+ #if LANGUAGE_CHOICE == 5
+ 
+ // LCD Menu Messages
+-#define WELCOME_MSG MACHINE_NAME " Lista."
++#define WELCOME_MSG MACHINE_NAME "Lista."
+ #define MSG_SD_INSERTED "Tarjeta SD Colocada"
+ #define MSG_SD_REMOVED "Tarjeta SD Retirada"
+-#define MSG_MAIN " Menu Principal \003"
++#define MSG_MAIN "Menu Principal"
+ #define MSG_AUTOSTART " Autostart"
+-#define MSG_DISABLE_STEPPERS " Apagar Motores"
+-#define MSG_AUTO_HOME " Llevar Ejes al Cero"
+-#define MSG_SET_ORIGIN " Establecer Cero"
+-#define MSG_COOLDOWN " Enfriar"
++#define MSG_DISABLE_STEPPERS "Apagar Motores"
++#define MSG_AUTO_HOME "Llevar al Origen" // "Llevar Ejes al Cero"
++#define MSG_SET_ORIGIN "Establecer Cero"
++#define MSG_PREHEAT_PLA "Precalentar PLA"
++#define MSG_PREHEAT_PLA_SETTINGS "Ajustar temp. PLA"
++#define MSG_PREHEAT_ABS "Precalentar ABS"
++#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
++#define MSG_COOLDOWN "Enfriar"
+ #define MSG_SWITCH_PS_ON "Switch Power On"
+ #define MSG_SWITCH_PS_OFF "Switch Power Off"
+-#define MSG_EXTRUDE " Extruir"
+-#define MSG_RETRACT " Retraer"
+-#define MSG_PREHEAT_PLA " Precalentar PLA"
+-#define MSG_PREHEAT_PLA_SETTINGS " Ajustar temp. PLA"
+-#define MSG_PREHEAT_ABS " Precalentar ABS"
+-#define MSG_PREHEAT_ABS_SETTINGS " Ajustar temp. ABS"
+-#define MSG_MOVE_AXIS " Mover Ejes      \x7E"
+-#define MSG_SPEED " Velocidad:"
+-#define MSG_NOZZLE " \002Fusor:"
+-#define MSG_NOZZLE1 " \002Fusor2:"
+-#define MSG_NOZZLE2 " \002Fusor3:"
+-#define MSG_BED " \002Base:"
+-#define MSG_FAN_SPEED " Ventilador:"
+-#define MSG_FLOW " Flujo:"
+-#define MSG_CONTROL " Control \003"
+-#define MSG_MIN " \002 Min:"
+-#define MSG_MAX " \002 Max:"
+-#define MSG_FACTOR " \002 Fact:"
+-#define MSG_AUTOTEMP " Autotemp:"
+-#define MSG_ON "On "
++#define MSG_EXTRUDE "Extruir"
++#define MSG_RETRACT "Retraer"
++#define MSG_MOVE_AXIS "Mover Ejes"
++#define MSG_SPEED "Velocidad"
++#define MSG_NOZZLE "Nozzle"
++#define MSG_NOZZLE1 "Nozzle2"
++#define MSG_NOZZLE2 "Nozzle3"
++#define MSG_BED "Base"
++#define MSG_FAN_SPEED "Ventilador"
++#define MSG_FLOW "Flujo"
++#define MSG_CONTROL "Control"
++#define MSG_MIN "\002 Min"
++#define MSG_MAX "\002 Max"
++#define MSG_FACTOR "\002 Fact"
++#define MSG_AUTOTEMP "Autotemp"
++#define MSG_ON "On"
+ #define MSG_OFF "Off"
+-#define MSG_PID_P " PID-P: "
+-#define MSG_PID_I " PID-I: "
+-#define MSG_PID_D " PID-D: "
+-#define MSG_PID_C " PID-C: "
+-#define MSG_ACC  " Acc:"
+-#define MSG_VXY_JERK " Vxy-agit: "
+-#define MSG_VZ_JERK "Vz-agit"
+-#define MSG_VE_JERK "Ve-agit"
+-#define MSG_VMAX " Vmax "
+-#define MSG_X "x:"
+-#define MSG_Y "y:"
+-#define MSG_Z "z:"
+-#define MSG_E "e:"
+-#define MSG_VMIN " Vmin:"
+-#define MSG_VTRAV_MIN " VTrav min:"
+-#define MSG_AMAX " Amax "
+-#define MSG_A_RETRACT " A-retrac.:"
+-#define MSG_XSTEPS " Xpasos/mm:"
+-#define MSG_YSTEPS " Ypasos/mm:"
+-#define MSG_ZSTEPS " Zpasos/mm:"
+-#define MSG_ESTEPS " Epasos/mm:"
+-#define MSG_MAIN_WIDE " Menu Principal  \003"
+-#define MSG_RECTRACT_WIDE " Retraer         \x7E"
+-#define MSG_TEMPERATURE_WIDE " Temperatura     \x7E"
+-#define MSG_TEMPERATURE_RTN  " Temperatura     \003"
+-#define MSG_MOTION_WIDE " Movimiento      \x7E"
+-#define MSG_STORE_EPROM " Guardar Memoria"
+-#define MSG_LOAD_EPROM " Cargar Memoria"
+-#define MSG_RESTORE_FAILSAFE " Rest. de emergencia"
+-#define MSG_REFRESH "\004Volver a cargar"
+-#define MSG_WATCH " Monitorizar \003"
+-#define MSG_PREPARE " Preparar \x7E"
+-#define MSG_PREPARE_ALT " Preparar \003"
+-#define MSG_CONTROL_ARROW " Control  \x7E"
+-#define MSG_RETRACT_ARROW " Retraer  \x7E"
+-#define MSG_TUNE " Ajustar \x7E"
+-#define MSG_PAUSE_PRINT " Pausar Impresion \x7E"
+-#define MSG_RESUME_PRINT " Reanudar Impresion \x7E"
+-#define MSG_STOP_PRINT " Detener Impresion \x7E"
+-#define MSG_CARD_MENU " Menu de SD    \x7E"
+-#define MSG_NO_CARD " No hay Tarjeta SD"
++#define MSG_PID_P "PID-P"
++#define MSG_PID_I "PID-I"
++#define MSG_PID_D "PID-D"
++#define MSG_PID_C "PID-C"
++#define MSG_ACC  "Acel"
++#define MSG_VXY_JERK "Vxy-jerk"
++#define MSG_VZ_JERK "Vz-jerk"
++#define MSG_VE_JERK "Ve-jerk"
++#define MSG_VMAX "Vmax"
++#define MSG_X "x"
++#define MSG_Y "y"
++#define MSG_Z "z"
++#define MSG_E "e"
++#define MSG_VMIN "Vmin"
++#define MSG_VTRAV_MIN "VTrav min"
++#define MSG_AMAX "Amax"
++#define MSG_A_RETRACT "A-retrac."
++#define MSG_XSTEPS "X pasos/mm"
++#define MSG_YSTEPS "Y pasos/mm"
++#define MSG_ZSTEPS "Z pasos/mm"
++#define MSG_ESTEPS "E pasos/mm"
++#define MSG_RECTRACT "Retraer"
++#define MSG_TEMPERATURE "Temperatura"
++#define MSG_MOTION "Movimiento"
++#define MSG_STORE_EPROM "Guardar Memoria"
++#define MSG_LOAD_EPROM "Cargar Memoria"
++#define MSG_RESTORE_FAILSAFE "Rest. de emergencia"
++#define MSG_REFRESH "Volver a cargar"
++#define MSG_WATCH "Monitorizar"
++#define MSG_PREPARE "Preparar"
++#define MSG_TUNE "Ajustar"
++#define MSG_PAUSE_PRINT "Pausar Impresion"
++#define MSG_RESUME_PRINT "Reanudar Impresion"
++#define MSG_STOP_PRINT "Detener Impresion"
++#define MSG_CARD_MENU "Menu de SD"
++#define MSG_NO_CARD "No hay Tarjeta SD"
+ #define MSG_DWELL "Reposo..."
+ #define MSG_USERWAIT "Esperando Ordenes..."
++#define MSG_RESUMING "Resumiendo Impresion"
+ #define MSG_NO_MOVE "Sin movimiento"
+-#define MSG_PART_RELEASE "Desacople Parcial"
+ #define MSG_KILLED "PARADA DE EMERGENCIA. "
+-#define MSG_STOPPED "PARADA. "
+-#define MSG_STEPPER_RELEASED "Desacoplada."
+-#define MSG_CONTROL_RETRACT  " Retraer mm:"
+-#define MSG_CONTROL_RETRACTF " Retraer  F:"
+-#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+-#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+-#define MSG_CONTROL_RETRACT_RECOVERF " DesRet F:"
+-#define MSG_AUTORETRACT " AutoRetr.:"
++#define MSG_STOPPED "PARADA."
++#define MSG_CONTROL_RETRACT  "Retraer mm"
++#define MSG_CONTROL_RETRACTF "Retraer  F"
++#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
++#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
++#define MSG_AUTORETRACT "AutoRetr."
+ #define MSG_FILAMENTCHANGE "Change filament"
++#define MSG_INIT_SDCARD "Iniciando. Tarjeta-SD"
++#define MSG_CNG_SDCARD "Cambiar Tarjeta-SD"
++#define MSG_RECTRACT_WIDE "Retraer"
++#define MSG_TEMPERATURE_WIDE "Temperatura"
++#define MSG_TEMPERATURE_RTN  "Temperatura"
++#define MSG_MAIN_WIDE "Menu Principal"
++#define MSG_MOTION_WIDE "Movimiento"
++#define MSG_PREPARE_ALT "Preparar"
++#define MSG_CONTROL_ARROW "Control"
++#define MSG_RETRACT_ARROW "Retraer"
++#define MSG_PART_RELEASE "Desacople Parcial"
++#define MSG_STEPPER_RELEASED "Desacoplada."
++
+ // Serial Console Messages
+ 
+ #define MSG_Enqueing "En cola \""
+@@ -831,11 +842,11 @@
+ #define MSG_Y_MIN "y_min: "
+ #define MSG_Y_MAX "y_max: "
+ #define MSG_Z_MIN "z_min: "
++#define MSG_Z_MAX "z_max: "
+ #define MSG_M119_REPORT "Comprobando fines de carrera."
+ #define MSG_ENDSTOP_HIT "PULSADO"
+ #define MSG_ENDSTOP_OPEN "abierto"
+-#define MSG_HOTEND_OFFSET "Despl. Hotend:"
+-        
++#define MSG_HOTEND_OFFSET "Hotend offsets:"
+ #define MSG_SD_CANT_OPEN_SUBDIR "No se pudo abrir la subcarpeta."
+ #define MSG_SD_INIT_FAIL "Fallo al iniciar la SD"
+ #define MSG_SD_VOL_INIT_FAIL "Fallo al montar el volumen"
+@@ -900,8 +911,8 @@
+ #define MSG_PID_C							" PID-C: "
+ #define MSG_ACC								" Acc:"
+ #define MSG_VXY_JERK						" Vxy-jerk: "
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
++#define MSG_VZ_JERK                         "Vz-jerk"
++#define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX							" Vmax "
+ #define MSG_X								"x:"
+ #define MSG_Y								"y:"
+@@ -918,6 +929,7 @@
+ #define MSG_RECTRACT    					" Откат подачи      \x7E"
+ #define MSG_TEMPERATURE  				" Температура       \x7E"
+ #define MSG_MOTION						" Скорости          \x7E"
++	#define MSG_CONTRAST "LCD contrast"
+ #define MSG_STORE_EPROM						" Сохранить настройки"
+ #define MSG_LOAD_EPROM						" Загрузить настройки"
+ #define MSG_RESTORE_FAILSAFE				" Сброс настроек     "
+@@ -1057,8 +1069,8 @@
+ 	#define MSG_PID_C                "PID-C"
+ 	#define MSG_ACC                  "Accel"
+ 	#define MSG_VXY_JERK             "Vxy-jerk"
+-	#define MSG_VZ_JERK              "Vz-jerk"
+-	#define MSG_VE_JERK              "Ve-jerk"
++	#define MSG_VZ_JERK              "Vz-jerk"
++	#define MSG_VE_JERK              "Ve-jerk"
+ 	#define MSG_VMAX                 "Vmax"
+ 	#define MSG_X                    "x"
+ 	#define MSG_Y                    "y"
+@@ -1075,6 +1087,7 @@
+ 	#define MSG_RECTRACT             "Ritrai"
+ 	#define MSG_TEMPERATURE          "Temperatura"
+ 	#define MSG_MOTION               "Movimento"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM          "Salva in EEPROM"
+ 	#define MSG_LOAD_EPROM           "Carica da EEPROM"
+ 	#define MSG_RESTORE_FAILSAFE     "Impostaz. default"
+@@ -1221,8 +1234,8 @@
+ 	#define MSG_PID_C " PID-C: "
+ 	#define MSG_ACC  " Acc:"
+ 	#define MSG_VXY_JERK " Vxy-jerk: "
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX " Vmax "
+ 	#define MSG_X "x:"
+ 	#define MSG_Y "y:"
+@@ -1391,8 +1404,8 @@
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Kiihtyv"
+ 	#define MSG_VXY_JERK "Vxy-jerk"
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX "Vmax "
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+@@ -1409,6 +1422,7 @@
+ 	#define MSG_RECTRACT "Veda takaisin"
+ 	#define MSG_TEMPERATURE "Lampotila"
+ 	#define MSG_MOTION "Liike"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Tallenna muistiin"
+ 	#define MSG_LOAD_EPROM "Lataa muistista"
+ 	#define MSG_RESTORE_FAILSAFE "Palauta oletus"
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 6dd160a..6023580 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -856,13 +856,13 @@
+ #if MOTHERBOARD == 64
+ #define STB
+ #endif
+-#if MOTHERBOARD == 63
++#if MOTHERBOARD == 63 || MOTHERBOARD == 66
+ #define MELZI
+ #endif
+ #if MOTHERBOARD == 65
+ #define AZTEEG_X1
+ #endif
+-#if MOTHERBOARD == 62 || MOTHERBOARD == 63 || MOTHERBOARD == 64 || MOTHERBOARD == 65
++#if MOTHERBOARD == 62 || MOTHERBOARD == 63 || MOTHERBOARD == 64 || MOTHERBOARD == 65 || MOTHERBOARD == 66
+ #undef MOTHERBOARD
+ #define MOTHERBOARD 6
+ #define SANGUINOLOLU_V_1_2
+@@ -904,6 +904,8 @@
+ 
+ #ifdef STB
+ #define FAN_PIN            4
++	//  Uncomment this if you have the first generation (V1.10) of STBs board
++#define LCD_PIN_BL         17 // LCD backlight LED
+ #endif
+ 
+ #ifdef AZTEEG_X1
+@@ -988,6 +990,27 @@
+    #endif //Newpanel
+  #endif //Ultipanel
+ 
++ #ifdef MAKRPANEL
++     #define BEEPER 29
++     // Pins for DOGM SPI LCD Support
++     #define DOGLCD_A0  30
++     #define DOGLCD_CS  17
++     #define LCD_PIN_BL	28	// backlight LED on PA3
++     // GLCD features
++     #define LCD_CONTRAST 1
++     // Uncomment screen orientation
++     #define LCD_SCREEN_ROT_0
++       // #define LCD_SCREEN_ROT_90
++       // #define LCD_SCREEN_ROT_180
++       // #define LCD_SCREEN_ROT_270
++     //The encoder and click button
++     #define BTN_EN1 11
++     #define BTN_EN2 10
++     #define BTN_ENC 16  //the click switch
++     //not connected to a pin
++     #define SDCARDDETECT -1    
++ #endif //Makrpanel
++
+ #endif
+ 
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index a799150..2f1d912 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -348,11 +348,21 @@ ISR(TIMER1_COMPA_vect)
+ 
+     // Set the direction bits (X_AXIS=A_AXIS and Y_AXIS=B_AXIS for COREXY)
+     if((out_bits & (1<<X_AXIS))!=0){
+-      WRITE(X_DIR_PIN, INVERT_X_DIR);
++      #ifdef DUAL_X_CARRIAGE
++      if (active_extruder != 0)
++        WRITE(X2_DIR_PIN,INVERT_X_DIR);
++      else
++      #endif        
++        WRITE(X_DIR_PIN, INVERT_X_DIR);
+       count_direction[X_AXIS]=-1;
+     }
+     else{
+-      WRITE(X_DIR_PIN, !INVERT_X_DIR);
++      #ifdef DUAL_X_CARRIAGE
++      if (active_extruder != 0)
++        WRITE(X2_DIR_PIN,!INVERT_X_DIR);
++      else
++      #endif        
++        WRITE(X_DIR_PIN, !INVERT_X_DIR);
+       count_direction[X_AXIS]=1;
+     }
+     if((out_bits & (1<<Y_AXIS))!=0){
+@@ -372,29 +382,41 @@ ISR(TIMER1_COMPA_vect)
+     #endif
+       CHECK_ENDSTOPS
+       {
+-        #if defined(X_MIN_PIN) && X_MIN_PIN > -1
+-          bool x_min_endstop=(READ(X_MIN_PIN) != X_ENDSTOPS_INVERTING);
+-          if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0)) {
+-            endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-            endstop_x_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_x_min_endstop = x_min_endstop;
+-        #endif
++        #ifdef DUAL_X_CARRIAGE
++        // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
++        if ((active_extruder == 0 && X_HOME_DIR == -1) || (active_extruder != 0 && X2_HOME_DIR == -1))
++        #endif          
++        {
++          #if defined(X_MIN_PIN) && X_MIN_PIN > -1
++            bool x_min_endstop=(READ(X_MIN_PIN) != X_ENDSTOPS_INVERTING);
++            if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0)) {
++              endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++              endstop_x_hit=true;
++              step_events_completed = current_block->step_event_count;
++            }
++            old_x_min_endstop = x_min_endstop;
++          #endif
++        }
+       }
+     }
+     else { // +direction
+       CHECK_ENDSTOPS 
+       {
+-        #if defined(X_MAX_PIN) && X_MAX_PIN > -1
+-          bool x_max_endstop=(READ(X_MAX_PIN) != X_ENDSTOPS_INVERTING);
+-          if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0)){
+-            endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-            endstop_x_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_x_max_endstop = x_max_endstop;
+-        #endif
++        #ifdef DUAL_X_CARRIAGE
++        // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
++        if ((active_extruder == 0 && X_HOME_DIR == 1) || (active_extruder != 0 && X2_HOME_DIR == 1))
++        #endif          
++        {
++          #if defined(X_MAX_PIN) && X_MAX_PIN > -1
++            bool x_max_endstop=(READ(X_MAX_PIN) != X_ENDSTOPS_INVERTING);
++            if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0)){
++              endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
++              endstop_x_hit=true;
++              step_events_completed = current_block->step_event_count;
++            }
++            old_x_max_endstop = x_max_endstop;
++          #endif
++        }  
+       }
+     }
+ 
+@@ -507,10 +529,20 @@ ISR(TIMER1_COMPA_vect)
+ 
+         counter_x += current_block->steps_x;
+         if (counter_x > 0) {
+-          WRITE(X_STEP_PIN, !INVERT_X_STEP_PIN);
++          #ifdef DUAL_X_CARRIAGE
++          if (active_extruder != 0)
++            WRITE(X2_STEP_PIN,!INVERT_X_STEP_PIN);
++          else
++          #endif        
++            WRITE(X_STEP_PIN, !INVERT_X_STEP_PIN);
+           counter_x -= current_block->step_event_count;
+           count_position[X_AXIS]+=count_direction[X_AXIS];   
+-          WRITE(X_STEP_PIN, INVERT_X_STEP_PIN);
++          #ifdef DUAL_X_CARRIAGE
++          if (active_extruder != 0)
++            WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
++          else
++          #endif        
++            WRITE(X_STEP_PIN, INVERT_X_STEP_PIN);
+         }
+   
+         counter_y += current_block->steps_y;
+@@ -685,6 +717,9 @@ void st_init()
+   #if defined(X_DIR_PIN) && X_DIR_PIN > -1
+     SET_OUTPUT(X_DIR_PIN);
+   #endif
++  #if defined(X2_DIR_PIN) && X2_DIR_PIN > -1
++    SET_OUTPUT(X2_DIR_PIN);
++  #endif
+   #if defined(Y_DIR_PIN) && Y_DIR_PIN > -1 
+     SET_OUTPUT(Y_DIR_PIN);
+   #endif
+@@ -711,6 +746,10 @@ void st_init()
+     SET_OUTPUT(X_ENABLE_PIN);
+     if(!X_ENABLE_ON) WRITE(X_ENABLE_PIN,HIGH);
+   #endif
++  #if defined(X2_ENABLE_PIN) && X2_ENABLE_PIN > -1
++    SET_OUTPUT(X2_ENABLE_PIN);
++    if(!X_ENABLE_ON) WRITE(X2_ENABLE_PIN,HIGH);
++  #endif
+   #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
+     SET_OUTPUT(Y_ENABLE_PIN);
+     if(!Y_ENABLE_ON) WRITE(Y_ENABLE_PIN,HIGH);
+@@ -788,6 +827,11 @@ void st_init()
+     WRITE(X_STEP_PIN,INVERT_X_STEP_PIN);
+     disable_x();
+   #endif  
++  #if defined(X2_STEP_PIN) && (X2_STEP_PIN > -1) 
++    SET_OUTPUT(X2_STEP_PIN);
++    WRITE(X2_STEP_PIN,INVERT_X_STEP_PIN);
++    disable_x();
++  #endif  
+   #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1) 
+     SET_OUTPUT(Y_STEP_PIN);
+     WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 25de28b..69e5201 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -8,6 +8,8 @@
+ #include "stepper.h"
+ #include "ConfigurationStore.h"
+ 
++int8_t encoderDiff; /* encoderDiff is updated from interrupt context and added to encoderPosition every LCD update */
++
+ /* Configuration settings */
+ int plaPreheatHotendTemp;
+ int plaPreheatHPBTemp;
+@@ -48,6 +50,9 @@ static void lcd_control_temperature_menu();
+ static void lcd_control_temperature_preheat_pla_settings_menu();
+ static void lcd_control_temperature_preheat_abs_settings_menu();
+ static void lcd_control_motion_menu();
++#ifdef DOGLCD
++static void lcd_set_contrast();
++#endif
+ static void lcd_control_retract_menu();
+ static void lcd_sdcard_menu();
+ 
+@@ -123,13 +128,11 @@ static void menu_action_setting_edit_callback_long5(const char* pstr, unsigned l
+ #ifndef REPRAPWORLD_KEYPAD
+ volatile uint8_t buttons;//Contains the bits of the currently pressed buttons.
+ #else
+-volatile uint16_t buttons;//Contains the bits of the currently pressed buttons (extended).
++volatile uint8_t buttons_reprapworld_keypad; // to store the reprapworld_keypad shiftregister values
+ #endif
+-
+ uint8_t currentMenuViewOffset;              /* scroll offset in the current menu */
+ uint32_t blocking_enc;
+ uint8_t lastEncoderBits;
+-int8_t encoderDiff; /* encoderDiff is updated from interrupt context and added to encoderPosition every LCD update */
+ uint32_t encoderPosition;
+ #if (SDCARDDETECT > 0)
+ bool lcd_oldcardstatus;
+@@ -174,8 +177,8 @@ static void lcd_status_screen()
+     }
+ 
+     // Dead zone at 100% feedrate
+-    if (feedmultiply < 100 && (feedmultiply + int(encoderPosition)) > 100 ||
+-            feedmultiply > 100 && (feedmultiply + int(encoderPosition)) < 100)
++    if ((feedmultiply < 100 && (feedmultiply + int(encoderPosition)) > 100) ||
++            (feedmultiply > 100 && (feedmultiply + int(encoderPosition)) < 100))
+     {
+         encoderPosition = 0;
+         feedmultiply = 100;
+@@ -364,9 +367,9 @@ static void lcd_move_x()
+     if (encoderPosition != 0)
+     {
+         current_position[X_AXIS] += float((int)encoderPosition) * move_menu_scale;
+-        if (current_position[X_AXIS] < X_MIN_POS)
++        if (min_software_endstops && current_position[X_AXIS] < X_MIN_POS)
+             current_position[X_AXIS] = X_MIN_POS;
+-        if (current_position[X_AXIS] > X_MAX_POS)
++        if (max_software_endstops && current_position[X_AXIS] > X_MAX_POS)
+             current_position[X_AXIS] = X_MAX_POS;
+         encoderPosition = 0;
+         plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], 600, active_extruder);
+@@ -388,9 +391,9 @@ static void lcd_move_y()
+     if (encoderPosition != 0)
+     {
+         current_position[Y_AXIS] += float((int)encoderPosition) * move_menu_scale;
+-        if (current_position[Y_AXIS] < Y_MIN_POS)
++        if (min_software_endstops && current_position[Y_AXIS] < Y_MIN_POS)
+             current_position[Y_AXIS] = Y_MIN_POS;
+-        if (current_position[Y_AXIS] > Y_MAX_POS)
++        if (max_software_endstops && current_position[Y_AXIS] > Y_MAX_POS)
+             current_position[Y_AXIS] = Y_MAX_POS;
+         encoderPosition = 0;
+         plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], 600, active_extruder);
+@@ -412,12 +415,12 @@ static void lcd_move_z()
+     if (encoderPosition != 0)
+     {
+         current_position[Z_AXIS] += float((int)encoderPosition) * move_menu_scale;
+-        if (current_position[Z_AXIS] < Z_MIN_POS)
++        if (min_software_endstops && current_position[Z_AXIS] < Z_MIN_POS)
+             current_position[Z_AXIS] = Z_MIN_POS;
+-        if (current_position[Z_AXIS] > Z_MAX_POS)
++        if (max_software_endstops && current_position[Z_AXIS] > Z_MAX_POS)
+             current_position[Z_AXIS] = Z_MAX_POS;
+         encoderPosition = 0;
+-        plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], 60, active_extruder);
++        plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[Z_AXIS]/60, active_extruder);
+         lcdDrawUpdate = 1;
+     }
+     if (lcdDrawUpdate)
+@@ -499,6 +502,10 @@ static void lcd_control_menu()
+     MENU_ITEM(back, MSG_MAIN, lcd_main_menu);
+     MENU_ITEM(submenu, MSG_TEMPERATURE, lcd_control_temperature_menu);
+     MENU_ITEM(submenu, MSG_MOTION, lcd_control_motion_menu);
++#ifdef DOGLCD
++//    MENU_ITEM_EDIT(int3, MSG_CONTRAST, &lcd_contrast, 0, 63);
++    MENU_ITEM(submenu, MSG_CONTRAST, lcd_set_contrast);
++#endif
+ #ifdef FWRETRACT
+     MENU_ITEM(submenu, MSG_RETRACT, lcd_control_retract_menu);
+ #endif
+@@ -610,6 +617,31 @@ static void lcd_control_motion_menu()
+     END_MENU();
+ }
+ 
++#ifdef DOGLCD
++static void lcd_set_contrast()
++{
++    if (encoderPosition != 0)
++    {
++        lcd_contrast -= encoderPosition;
++        if (lcd_contrast < 0) lcd_contrast = 0;
++        else if (lcd_contrast > 63) lcd_contrast = 63;
++        encoderPosition = 0;
++        lcdDrawUpdate = 1;
++        u8g.setContrast(lcd_contrast);
++    }
++    if (lcdDrawUpdate)
++    {
++        lcd_implementation_drawedit(PSTR("Contrast"), itostr2(lcd_contrast));
++    }
++    if (LCD_CLICKED)
++    {
++        lcd_quick_feedback();
++        currentMenu = lcd_control_menu;
++        encoderPosition = 0;
++    }
++}
++#endif
++
+ #ifdef FWRETRACT
+ static void lcd_control_retract_menu()
+ {
+@@ -743,21 +775,39 @@ menu_edit_type(float, float52, ftostr52, 100)
+ menu_edit_type(unsigned long, long5, ftostr5, 0.01)
+ 
+ #ifdef REPRAPWORLD_KEYPAD
+-    static void reprapworld_keypad_move_y_down() {
+-        encoderPosition = 1;
+-        move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
+-        lcd_move_y();
+-    }
+-    static void reprapworld_keypad_move_y_up() {
+-        encoderPosition = -1;
+-        move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
+-        lcd_move_y();
+-    }
+-    static void reprapworld_keypad_move_home() {
+-        //enquecommand_P((PSTR("G28"))); // move all axis home
+-        // TODO gregor: move all axis home, i have currently only one axis on my prusa i3
+-        enquecommand_P((PSTR("G28 Y")));
+-    }
++	static void reprapworld_keypad_move_z_up() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_z();
++  }
++	static void reprapworld_keypad_move_z_down() {
++    encoderPosition = -1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_z();
++  }
++	static void reprapworld_keypad_move_x_left() {
++    encoderPosition = -1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_x();
++  }
++	static void reprapworld_keypad_move_x_right() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_x();
++	}
++	static void reprapworld_keypad_move_y_down() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_y();
++	}
++	static void reprapworld_keypad_move_y_up() {
++		encoderPosition = -1;
++		move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++    lcd_move_y();
++	}
++	static void reprapworld_keypad_move_home() {
++		enquecommand_P((PSTR("G28"))); // move all axis home
++	}
+ #endif
+ 
+ /** End of menus **/
+@@ -884,17 +934,29 @@ void lcd_update()
+     if (lcd_next_update_millis < millis())
+     {
+ #ifdef ULTIPANEL
+-        #ifdef REPRAPWORLD_KEYPAD
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN) {
+-            reprapworld_keypad_move_y_down();
+-        }
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_UP) {
+-            reprapworld_keypad_move_y_up();
+-        }
+-        if (REPRAPWORLD_KEYPAD_MOVE_HOME) {
+-            reprapworld_keypad_move_home();
+-        }
+-        #endif
++		#ifdef REPRAPWORLD_KEYPAD
++        	if (REPRAPWORLD_KEYPAD_MOVE_Z_UP) {
++        		reprapworld_keypad_move_z_up();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Z_DOWN) {
++        		reprapworld_keypad_move_z_down();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_X_LEFT) {
++        		reprapworld_keypad_move_x_left();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_X_RIGHT) {
++        		reprapworld_keypad_move_x_right();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN) {
++        		reprapworld_keypad_move_y_down();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Y_UP) {
++        		reprapworld_keypad_move_y_up();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_HOME) {
++        		reprapworld_keypad_move_home();
++        	}
++		#endif
+         if (encoderDiff)
+         {
+             lcdDrawUpdate = 1;
+@@ -969,6 +1031,14 @@ void lcd_reset_alert_level()
+     lcd_status_message_level = 0;
+ }
+ 
++#ifdef DOGLCD
++void lcd_setcontrast(uint8_t value)
++{
++    lcd_contrast = value & 63;
++    u8g.setContrast(lcd_contrast);	
++}
++#endif
++
+ #ifdef ULTIPANEL
+ /* Warning: This function is called from interrupt context */
+ void lcd_buttons_update()
+@@ -980,22 +1050,22 @@ void lcd_buttons_update()
+   #if BTN_ENC > 0
+     if((blocking_enc<millis()) && (READ(BTN_ENC)==0))
+         newbutton |= EN_C;
+-  #endif      
+-  #ifdef REPRAPWORLD_KEYPAD
+-    // for the reprapworld_keypad
+-    uint8_t newbutton_reprapworld_keypad=0;
+-    WRITE(SHIFT_LD,LOW);
+-    WRITE(SHIFT_LD,HIGH);
+-    for(int8_t i=0;i<8;i++) {
+-        newbutton_reprapworld_keypad = newbutton_reprapworld_keypad>>1;
+-        if(READ(SHIFT_OUT))
+-            newbutton_reprapworld_keypad|=(1<<7);
+-        WRITE(SHIFT_CLK,HIGH);
+-        WRITE(SHIFT_CLK,LOW);
+-    }
+-    newbutton |= ((~newbutton_reprapworld_keypad) << REPRAPWORLD_BTN_OFFSET); //invert it, because a pressed switch produces a logical 0
+   #endif
+     buttons = newbutton;
++    #ifdef REPRAPWORLD_KEYPAD
++      // for the reprapworld_keypad
++      uint8_t newbutton_reprapworld_keypad=0;
++      WRITE(SHIFT_LD,LOW);
++      WRITE(SHIFT_LD,HIGH);
++      for(int8_t i=0;i<8;i++) {
++          newbutton_reprapworld_keypad = newbutton_reprapworld_keypad>>1;
++          if(READ(SHIFT_OUT))
++              newbutton_reprapworld_keypad|=(1<<7);
++          WRITE(SHIFT_CLK,HIGH);
++          WRITE(SHIFT_CLK,LOW);
++      }
++      buttons_reprapworld_keypad=~newbutton_reprapworld_keypad; //invert it, because a pressed switch produces a logical 0
++	#endif
+ #else   //read it from the shift register
+     uint8_t newbutton=0;
+     WRITE(SHIFT_LD,LOW);
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 5d3c3c0..d6fa0fd 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,7 +11,12 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
+-  
++
++#ifdef DOGLCD
++  extern int lcd_contrast;
++  void lcd_setcontrast(uint8_t value);
++#endif
++
+   static unsigned char blink = 0;	// Variable for visualisation of fan rotation in GLCD
+ 
+   #define LCD_MESSAGEPGM(x) lcd_setstatuspgm(PSTR(x))
+@@ -22,6 +27,10 @@
+ 
+   #ifdef ULTIPANEL
+   void lcd_buttons_update();
++  extern volatile uint8_t buttons;  //the last checked buttons in a bit array.
++  #ifdef REPRAPWORLD_KEYPAD
++    extern volatile uint8_t buttons_reprapworld_keypad; // to store the keypad shiftregister values
++  #endif
+   #else
+   FORCE_INLINE void lcd_buttons_update() {}
+   #endif
+@@ -37,6 +46,45 @@
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+ 
++  #ifdef NEWPANEL
++    #define EN_C (1<<BLEN_C)
++    #define EN_B (1<<BLEN_B)
++    #define EN_A (1<<BLEN_A)
++
++    #define LCD_CLICKED (buttons&EN_C)
++    #ifdef REPRAPWORLD_KEYPAD
++  	  #define EN_REPRAPWORLD_KEYPAD_F3 (1<<BLEN_REPRAPWORLD_KEYPAD_F3)
++  	  #define EN_REPRAPWORLD_KEYPAD_F2 (1<<BLEN_REPRAPWORLD_KEYPAD_F2)
++  	  #define EN_REPRAPWORLD_KEYPAD_F1 (1<<BLEN_REPRAPWORLD_KEYPAD_F1)
++  	  #define EN_REPRAPWORLD_KEYPAD_UP (1<<BLEN_REPRAPWORLD_KEYPAD_UP)
++  	  #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<BLEN_REPRAPWORLD_KEYPAD_RIGHT)
++  	  #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<BLEN_REPRAPWORLD_KEYPAD_MIDDLE)
++  	  #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<BLEN_REPRAPWORLD_KEYPAD_DOWN)
++  	  #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<BLEN_REPRAPWORLD_KEYPAD_LEFT)
++
++  	  #define LCD_CLICKED ((buttons&EN_C) || (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F1))
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Z_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F2)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Z_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F3)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_X_LEFT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_LEFT)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_X_RIGHT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_RIGHT)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_DOWN)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_UP)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_MIDDLE)
++    #endif //REPRAPWORLD_KEYPAD
++  #else
++    //atomatic, do not change
++    #define B_LE (1<<BL_LE)
++    #define B_UP (1<<BL_UP)
++    #define B_MI (1<<BL_MI)
++    #define B_DW (1<<BL_DW)
++    #define B_RI (1<<BL_RI)
++    #define B_ST (1<<BL_ST)
++    #define EN_B (1<<BLEN_B)
++    #define EN_A (1<<BLEN_A)
++    
++    #define LCD_CLICKED ((buttons&B_MI)||(buttons&B_ST))
++  #endif//NEWPANEL
++
+ #else //no lcd
+   FORCE_INLINE void lcd_update() {}
+   FORCE_INLINE void lcd_init() {}
+diff --git a/README.md b/README.md
+index 97c8477..0148717 100644
+--- a/README.md
++++ b/README.md
+@@ -41,6 +41,8 @@ Features:
+ *   Heater power reporting. Useful for PID monitoring.
+ *   PID tuning
+ *   CoreXY kinematics (www.corexy.com/theory.html)
++*   Delta kinematics
++*   Dual X-carriage support for multiple extruder systems
+ *   Configurable serial port to support connection of wireless adaptors.
+ *   Automatic operation of extruder/cold-end cooling fans based on nozzle temperature
+ *   RC Servo Support, specify angle or duration for continuous rotation servos.
+@@ -142,17 +144,9 @@ Implemented G Codes:
+ *  G91 - Use Relative Coordinates
+ *  G92 - Set current position to cordinates given
+ 
+-RepRap M Codes
++M Codes
+ *  M0   - Unconditional stop - Wait for user to press a button on the LCD (Only if ULTRA_LCD is enabled)
+ *  M1   - Same as M0
+-*  M104 - Set extruder target temp
+-*  M105 - Read current temp
+-*  M106 - Fan on
+-*  M107 - Fan off
+-*  M109 - Wait for extruder current temp to reach target temp.
+-*  M114 - Display current position
+-
+-Custom M Codes
+ *  M17  - Enable/Power all stepper motors
+ *  M18  - Disable all stepper motors; same as M84
+ *  M20  - List SD card
+@@ -167,6 +161,7 @@ Custom M Codes
+ *  M29  - Stop SD write
+ *  M30  - Delete file from SD (M30 filename.g)
+ *  M31  - Output time since last M109 or SD card start to serial
++*  M32  - Select file and start SD print (Can be used when printing from SD card)
+ *  M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+ *  M80  - Turn on Power Supply
+ *  M81  - Turn off Power Supply
+@@ -175,6 +170,12 @@ Custom M Codes
+ *  M84  - Disable steppers until next move, or use S<seconds> to specify an inactivity timeout, after which the steppers will be disabled.  S0 to disable the timeout.
+ *  M85  - Set inactivity shutdown timer with parameter S<seconds>. To disable set zero (default)
+ *  M92  - Set axis_steps_per_unit - same syntax as G92
++*  M104 - Set extruder target temp
++*  M105 - Read current temp
++*  M106 - Fan on
++*  M107 - Fan off
++*  M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
++*         Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
+ *  M114 - Output current position to serial port
+ *  M115 - Capabilities string
+ *  M117 - display message
+@@ -184,7 +185,8 @@ Custom M Codes
+ *  M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ *  M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ *  M140 - Set bed target temp
+-*  M190 - Wait for bed current temp to reach target temp.
++*  M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
++*         Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+ *  M200 - Set filament diameter
+ *  M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ *  M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+

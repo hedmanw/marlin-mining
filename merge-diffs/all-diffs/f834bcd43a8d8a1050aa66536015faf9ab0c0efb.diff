@@ -1,0 +1,347 @@
+commit f834bcd43a8d8a1050aa66536015faf9ab0c0efb (from 047c412df69c2a99349347e0f176f91b5c58797f)
+Merge: 047c412 865dcf3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 7 19:08:42 2016 -0700
+
+    Merge pull request #3415 from thinkyhead/rc_filwidth_issue
+    
+    Fix FILAMENT_WIDTH_SENSOR measurement
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index c627405..feda4bb 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -341,8 +341,7 @@ extern bool axis_homed[3]; // axis[n].is_homed
+   extern bool filament_sensor;  //indicates that filament sensor readings should control extrusion
+   extern float filament_width_meas; //holds the filament diameter as accurately measured
+   extern int8_t measurement_delay[];  //ring buffer to delay measurement
+-  extern int delay_index1, delay_index2;  //ring buffer index. used by planner, temperature, and main code
+-  extern float delay_dist; //delay distance counter
++  extern int filwidth_delay_index1, filwidth_delay_index2;  //ring buffer index. used by planner, temperature, and main code
+   extern int meas_delay_cm; //delay distance
+ #endif
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1deabb4..863b651 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -411,9 +411,8 @@ static uint8_t target_extruder;
+   bool filament_sensor = false;  //M405 turns on filament_sensor control, M406 turns it off
+   float filament_width_meas = DEFAULT_MEASURED_FILAMENT_DIA; //Stores the measured filament diameter
+   int8_t measurement_delay[MAX_MEASUREMENT_DELAY + 1]; //ring buffer to delay measurement  store extruder factor after subtracting 100
+-  int delay_index1 = 0;  //index into ring buffer
+-  int delay_index2 = -1;  //index into ring buffer - set to -1 on startup to indicate ring buffer needs to be initialized
+-  float delay_dist = 0; //delay distance counter
++  int filwidth_delay_index1 = 0;  //index into ring buffer
++  int filwidth_delay_index2 = -1;  //index into ring buffer - set to -1 on startup to indicate ring buffer needs to be initialized
+   int meas_delay_cm = MEASUREMENT_DELAY_CM;  //distance delay setting
+ #endif
+ 
+@@ -5428,13 +5427,13 @@ inline void gcode_M400() { st_synchronize(); }
+     if (code_seen('D')) meas_delay_cm = code_value();
+     NOMORE(meas_delay_cm, MAX_MEASUREMENT_DELAY);
+ 
+-    if (delay_index2 == -1) { //initialize the ring buffer if it has not been done since startup
++    if (filwidth_delay_index2 == -1) { // Initialize the ring buffer if not done since startup
+       int temp_ratio = widthFil_to_size_ratio();
+ 
+-      for (delay_index1 = 0; delay_index1 < (int)COUNT(measurement_delay); ++delay_index1)
+-        measurement_delay[delay_index1] = temp_ratio - 100;  //subtract 100 to scale within a signed byte
++      for (uint8_t i = 0; i < COUNT(measurement_delay); ++i)
++        measurement_delay[i] = temp_ratio - 100;  // Subtract 100 to scale within a signed byte
+ 
+-      delay_index1 = delay_index2 = 0;
++      filwidth_delay_index1 = filwidth_delay_index2 = 0;
+     }
+ 
+     filament_sensor = true;
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index ed3aa78..318b5bd 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -852,25 +852,34 @@ float junction_deviation = 0.1;
+   block->nominal_rate = ceil(block->step_event_count * inverse_second); // (step/sec) Always > 0
+ 
+   #if ENABLED(FILAMENT_WIDTH_SENSOR)
++    static float filwidth_e_count = 0, filwidth_delay_dist = 0;
++
+     //FMM update ring buffer used for delay with filament measurements
+-    if (extruder == FILAMENT_SENSOR_EXTRUDER_NUM && delay_index2 > -1) {  //only for extruder with filament sensor and if ring buffer is initialized
++    if (extruder == FILAMENT_SENSOR_EXTRUDER_NUM && filwidth_delay_index2 >= 0) {  //only for extruder with filament sensor and if ring buffer is initialized
++
++      const int MMD_CM = MAX_MEASUREMENT_DELAY + 1, MMD_MM = MMD_CM * 10;
++
++      // increment counters with next move in e axis
++      filwidth_e_count += delta_mm[E_AXIS];
++      filwidth_delay_dist += delta_mm[E_AXIS];
+ 
+-      const int MMD = MAX_MEASUREMENT_DELAY + 1, MMD10 = MMD * 10;
++      // Only get new measurements on forward E movement
++      if (filwidth_e_count > 0.0001) {
+ 
+-      delay_dist += delta_mm[E_AXIS];  // increment counter with next move in e axis
+-      while (delay_dist >= MMD10) delay_dist -= MMD10; // loop around the buffer
+-      while (delay_dist < 0) delay_dist += MMD10;
++        // Loop the delay distance counter (modulus by the mm length)
++        while (filwidth_delay_dist >= MMD_MM) filwidth_delay_dist -= MMD_MM;
+ 
+-      delay_index1 = delay_dist / 10.0;  // calculate index
+-      delay_index1 = constrain(delay_index1, 0, MAX_MEASUREMENT_DELAY); // (already constrained above)
++        // Convert into an index into the measurement array
++        filwidth_delay_index1 = (int)(filwidth_delay_dist / 10.0 + 0.0001);
+ 
+-      if (delay_index1 != delay_index2) { // moved index
+-        int8_t meas_sample = widthFil_to_size_ratio() - 100;  // Subtract 100 to reduce magnitude - to store in a signed char
+-        while (delay_index1 != delay_index2) {
+-          // Increment and loop around buffer
+-          if (++delay_index2 >= MMD) delay_index2 -= MMD;
+-          delay_index2 = constrain(delay_index2, 0, MAX_MEASUREMENT_DELAY);
+-          measurement_delay[delay_index2] = meas_sample;
++        // If the index has changed (must have gone forward)...
++        if (filwidth_delay_index1 != filwidth_delay_index2) {
++          filwidth_e_count = 0; // Reset the E movement counter
++          int8_t meas_sample = widthFil_to_size_ratio() - 100; // Subtract 100 to reduce magnitude - to store in a signed char
++          do {
++            filwidth_delay_index2 = (filwidth_delay_index2 + 1) % MMD_CM; // The next unused slot
++            measurement_delay[filwidth_delay_index2] = meas_sample;       // Store the measurement
++          } while (filwidth_delay_index1 != filwidth_delay_index2);       // More slots to fill?
+         }
+       }
+     }
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 22797a0..a689836 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -705,7 +705,7 @@ void manage_heater() {
+   // Control the extruder rate based on the width sensor
+   #if ENABLED(FILAMENT_WIDTH_SENSOR)
+     if (filament_sensor) {
+-      meas_shift_index = delay_index1 - meas_delay_cm;
++      meas_shift_index = filwidth_delay_index1 - meas_delay_cm;
+       if (meas_shift_index < 0) meas_shift_index += MAX_MEASUREMENT_DELAY + 1;  //loop around buffer if needed
+ 
+       // Get the delayed info and add 100 to reconstitute to a percent of
+
+commit f834bcd43a8d8a1050aa66536015faf9ab0c0efb (from 865dcf3fb4c460ee1d591fa697b80d8d501d9517)
+Merge: 047c412 865dcf3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Apr 7 19:08:42 2016 -0700
+
+    Merge pull request #3415 from thinkyhead/rc_filwidth_issue
+    
+    Fix FILAMENT_WIDTH_SENSOR measurement
+
+diff --git a/Marlin/language_nl.h b/Marlin/language_nl.h
+index 889afb3..4ccc7f0 100644
+--- a/Marlin/language_nl.h
++++ b/Marlin/language_nl.h
+@@ -153,21 +153,21 @@
+ #define MSG_BED_Z                           "Bed Z"
+ #define MSG_A_TRAVEL                        "A-travel"
+ #define MSG_HEATING_FAILED_LCD              "voorverw. fout"
+-#define MSG_ERR_REDUNDANT_TEMP              "Fout: Redundant temp fout"
+-#define MSG_THERMAL_RUNAWAY                 "Thermische wegloop"
+-#define MSG_ERR_MAXTEMP                     "Fout: Max. temp"
+-#define MSG_ERR_MINTEMP                     "Fout: Min. temp"
+-#define MSG_ERR_MAXTEMP_BED                 "Fout: Max. temp bed"
+-#define MSG_ERR_MINTEMP_BED                 "Fout: Min. temp bed"
++#define MSG_ERR_REDUNDANT_TEMP              "Redun. temp fout"
++#define MSG_THERMAL_RUNAWAY                 "Therm. wegloop"
++#define MSG_ERR_MAXTEMP                     "Err: Max. temp"
++#define MSG_ERR_MINTEMP                     "Err: Min. temp"
++#define MSG_ERR_MAXTEMP_BED                 "Err: Max.tmp bed"
++#define MSG_ERR_MINTEMP_BED                 "Err: Min.tmp bed"
+ #define MSG_HEATING                         "Voorwarmen..."
+-#define MSG_HEATING_COMPLETE                "voorverw. kompleet"
+-#define MSG_BED_HEATING                     "Bed voorverwarmen"
++#define MSG_HEATING_COMPLETE                "Voorverw. kompl."
++#define MSG_BED_HEATING                     "Bed voorverw."
+ #define MSG_BED_DONE                        "Bed is voorverw."
+ #define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+ #define MSG_LEVEL_BED_WAITING               "Klik voor begin"
+-#define MSG_LEVEL_BED_DONE                  "Bed leveling kompleet!"
+-#define MSG_LEVEL_BED_CANCEL                "Bed leveling afbreken"
+-#define MSG_HOME_OFFSETS_APPLIED            "Home offsets toegepast"
++#define MSG_LEVEL_BED_DONE                  "Bed level kompl."
++#define MSG_LEVEL_BED_CANCEL                "Bed level afbr."
++#define MSG_HOME_OFFSETS_APPLIED            "H offset toegep."
+ 
+ #if ENABLED(DELTA_CALIBRATION_MENU)
+   #define MSG_DELTA_CALIBRATE               "Delta Calibratie"
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index af31e95..1e474bc 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1842,7 +1842,7 @@ menu_edit_type(unsigned long, long5, ftostr5, 0.01);
+     lcd_move_y();
+   }
+   static void reprapworld_keypad_move_home() {
+-    enqueue_and_echo_commands_P((PSTR("G28"))); // move all axis home
++    enqueue_and_echo_commands_P(PSTR("G28")); // move all axes home
+   }
+ #endif // REPRAPWORLD_KEYPAD
+ 
+@@ -2091,13 +2091,22 @@ void lcd_update() {
+     #if ENABLED(ULTIPANEL)
+ 
+       #if ENABLED(REPRAPWORLD_KEYPAD)
+-        if (REPRAPWORLD_KEYPAD_MOVE_Z_UP)     reprapworld_keypad_move_z_up();
+-        if (REPRAPWORLD_KEYPAD_MOVE_Z_DOWN)   reprapworld_keypad_move_z_down();
+-        if (REPRAPWORLD_KEYPAD_MOVE_X_LEFT)   reprapworld_keypad_move_x_left();
+-        if (REPRAPWORLD_KEYPAD_MOVE_X_RIGHT)  reprapworld_keypad_move_x_right();
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN)   reprapworld_keypad_move_y_down();
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_UP)     reprapworld_keypad_move_y_up();
+-        if (REPRAPWORLD_KEYPAD_MOVE_HOME)     reprapworld_keypad_move_home();
++
++        #if ENABLED(DELTA) || ENABLED(SCARA)
++          #define _KEYPAD_MOVE_ALLOWED (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS])
++        #else
++          #define _KEYPAD_MOVE_ALLOWED true
++        #endif
++
++        if (REPRAPWORLD_KEYPAD_MOVE_HOME)       reprapworld_keypad_move_home();
++        if (_KEYPAD_MOVE_ALLOWED) {
++          if (REPRAPWORLD_KEYPAD_MOVE_Z_UP)     reprapworld_keypad_move_z_up();
++          if (REPRAPWORLD_KEYPAD_MOVE_Z_DOWN)   reprapworld_keypad_move_z_down();
++          if (REPRAPWORLD_KEYPAD_MOVE_X_LEFT)   reprapworld_keypad_move_x_left();
++          if (REPRAPWORLD_KEYPAD_MOVE_X_RIGHT)  reprapworld_keypad_move_x_right();
++          if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN)   reprapworld_keypad_move_y_down();
++          if (REPRAPWORLD_KEYPAD_MOVE_Y_UP)     reprapworld_keypad_move_y_up();
++        }
+       #endif
+ 
+       bool encoderPastThreshold = (abs(encoderDiff) >= ENCODER_PULSES_PER_STEP);
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index cbc5e05..61abf9c 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -65,9 +65,6 @@
+   #if ENABLED(ULTIPANEL)
+     void lcd_buttons_update();
+     extern volatile uint8_t buttons;  //the last checked buttons in a bit array.
+-    #if ENABLED(REPRAPWORLD_KEYPAD)
+-      extern volatile uint8_t buttons_reprapworld_keypad; // to store the keypad shift register values
+-    #endif
+   #else
+     FORCE_INLINE void lcd_buttons_update() {}
+   #endif
+@@ -89,33 +86,52 @@
+   void lcd_ignore_click(bool b=true);
+   bool lcd_blink();
+ 
++  #if ENABLED(ULTIPANEL) && ENABLED(REPRAPWORLD_KEYPAD)
++
++    #define REPRAPWORLD_BTN_OFFSET 0 // bit offset into buttons for shift register values
++
++    #define BLEN_REPRAPWORLD_KEYPAD_F3     0
++    #define BLEN_REPRAPWORLD_KEYPAD_F2     1
++    #define BLEN_REPRAPWORLD_KEYPAD_F1     2
++    #define BLEN_REPRAPWORLD_KEYPAD_DOWN   3
++    #define BLEN_REPRAPWORLD_KEYPAD_RIGHT  4
++    #define BLEN_REPRAPWORLD_KEYPAD_MIDDLE 5
++    #define BLEN_REPRAPWORLD_KEYPAD_UP     6
++    #define BLEN_REPRAPWORLD_KEYPAD_LEFT   7
++
++    #define EN_REPRAPWORLD_KEYPAD_F3      (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_F3))
++    #define EN_REPRAPWORLD_KEYPAD_F2      (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_F2))
++    #define EN_REPRAPWORLD_KEYPAD_F1      (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_F1))
++    #define EN_REPRAPWORLD_KEYPAD_DOWN    (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_DOWN))
++    #define EN_REPRAPWORLD_KEYPAD_RIGHT   (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_RIGHT))
++    #define EN_REPRAPWORLD_KEYPAD_MIDDLE  (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_MIDDLE))
++    #define EN_REPRAPWORLD_KEYPAD_UP      (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_UP))
++    #define EN_REPRAPWORLD_KEYPAD_LEFT    (_BV(REPRAPWORLD_BTN_OFFSET + BLEN_REPRAPWORLD_KEYPAD_LEFT))
++
++    #define REPRAPWORLD_KEYPAD_MOVE_Z_DOWN  (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_F3)
++    #define REPRAPWORLD_KEYPAD_MOVE_Z_UP    (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_F2)
++    #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN  (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_DOWN)
++    #define REPRAPWORLD_KEYPAD_MOVE_X_RIGHT (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_RIGHT)
++    #define REPRAPWORLD_KEYPAD_MOVE_HOME    (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_MIDDLE)
++    #define REPRAPWORLD_KEYPAD_MOVE_Y_UP    (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_UP)
++    #define REPRAPWORLD_KEYPAD_MOVE_X_LEFT  (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_LEFT)
++
++  #endif //ULTIPANEL && REPRAPWORLD_KEYPAD
++
+   #if ENABLED(NEWPANEL)
++
+     #define EN_C (_BV(BLEN_C))
+     #define EN_B (_BV(BLEN_B))
+     #define EN_A (_BV(BLEN_A))
+ 
+     #if ENABLED(REPRAPWORLD_KEYPAD)
+-      #define EN_REPRAPWORLD_KEYPAD_F3 (_BV(BLEN_REPRAPWORLD_KEYPAD_F3))
+-      #define EN_REPRAPWORLD_KEYPAD_F2 (_BV(BLEN_REPRAPWORLD_KEYPAD_F2))
+-      #define EN_REPRAPWORLD_KEYPAD_F1 (_BV(BLEN_REPRAPWORLD_KEYPAD_F1))
+-      #define EN_REPRAPWORLD_KEYPAD_UP (_BV(BLEN_REPRAPWORLD_KEYPAD_UP))
+-      #define EN_REPRAPWORLD_KEYPAD_RIGHT (_BV(BLEN_REPRAPWORLD_KEYPAD_RIGHT))
+-      #define EN_REPRAPWORLD_KEYPAD_MIDDLE (_BV(BLEN_REPRAPWORLD_KEYPAD_MIDDLE))
+-      #define EN_REPRAPWORLD_KEYPAD_DOWN (_BV(BLEN_REPRAPWORLD_KEYPAD_DOWN))
+-      #define EN_REPRAPWORLD_KEYPAD_LEFT (_BV(BLEN_REPRAPWORLD_KEYPAD_LEFT))
+-
+       #define LCD_CLICKED ((buttons&EN_C) || (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F1))
+-      #define REPRAPWORLD_KEYPAD_MOVE_Z_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F2)
+-      #define REPRAPWORLD_KEYPAD_MOVE_Z_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F3)
+-      #define REPRAPWORLD_KEYPAD_MOVE_X_LEFT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_LEFT)
+-      #define REPRAPWORLD_KEYPAD_MOVE_X_RIGHT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_RIGHT)
+-      #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_DOWN)
+-      #define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_UP)
+-      #define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_MIDDLE)
+     #else
+       #define LCD_CLICKED (buttons&EN_C)
+-    #endif //REPRAPWORLD_KEYPAD
+-  #else
++    #endif
++
++  #else //!NEWPANEL
++
+     //atomic, do not change
+     #define B_LE (_BV(BL_LE))
+     #define B_UP (_BV(BL_UP))
+@@ -127,7 +143,8 @@
+     #define EN_A (_BV(BLEN_A))
+ 
+     #define LCD_CLICKED ((buttons&B_MI)||(buttons&B_ST))
+-  #endif//NEWPANEL
++
++  #endif //!NEWPANEL
+ 
+ #else //no LCD
+   FORCE_INLINE void lcd_update() {}
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 6fdee2a..5fc0316 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -98,31 +98,8 @@ extern volatile uint8_t buttons;  //an extended version of the last checked butt
+     #endif
+ 
+   #elif ENABLED(REPRAPWORLD_KEYPAD)
+-    // define register bit values, don't change it
+-    #define BLEN_REPRAPWORLD_KEYPAD_F3 0
+-    #define BLEN_REPRAPWORLD_KEYPAD_F2 1
+-    #define BLEN_REPRAPWORLD_KEYPAD_F1 2
+-    #define BLEN_REPRAPWORLD_KEYPAD_UP 6
+-    #define BLEN_REPRAPWORLD_KEYPAD_RIGHT 4
+-    #define BLEN_REPRAPWORLD_KEYPAD_MIDDLE 5
+-    #define BLEN_REPRAPWORLD_KEYPAD_DOWN 3
+-    #define BLEN_REPRAPWORLD_KEYPAD_LEFT 7
+-
+-    #define REPRAPWORLD_BTN_OFFSET 0 // bit offset into buttons for shift register values
+-
+-    #define EN_REPRAPWORLD_KEYPAD_F3 (_BV(BLEN_REPRAPWORLD_KEYPAD_F3+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F2 (_BV(BLEN_REPRAPWORLD_KEYPAD_F2+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F1 (_BV(BLEN_REPRAPWORLD_KEYPAD_F1+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_UP (_BV(BLEN_REPRAPWORLD_KEYPAD_UP+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_RIGHT (_BV(BLEN_REPRAPWORLD_KEYPAD_RIGHT+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_MIDDLE (_BV(BLEN_REPRAPWORLD_KEYPAD_MIDDLE+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_DOWN (_BV(BLEN_REPRAPWORLD_KEYPAD_DOWN+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_LEFT (_BV(BLEN_REPRAPWORLD_KEYPAD_LEFT+REPRAPWORLD_BTN_OFFSET))
+-
+-    //#define LCD_CLICKED ((buttons&EN_C) || (buttons&EN_REPRAPWORLD_KEYPAD_F1))
+-    //#define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons&EN_REPRAPWORLD_KEYPAD_DOWN)
+-    //#define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons&EN_REPRAPWORLD_KEYPAD_UP)
+-    //#define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons&EN_REPRAPWORLD_KEYPAD_MIDDLE)
++
++    // REPRAPWORLD_KEYPAD defined in ultralcd.h
+ 
+   #elif ENABLED(NEWPANEL)
+     #define LCD_CLICKED (buttons&EN_C)
+

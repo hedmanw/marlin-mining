@@ -1,0 +1,2380 @@
+commit bd4ec727e7c7aba528ef957dcafa6ef412d07682 (from 692a6e7c91914a946a0cb660a8cbe6d755535702)
+Merge: 692a6e7 eab44b3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Jun 17 17:32:55 2016 -0700
+
+    Merge pull request #4066 from thinkyhead/rc_M851_with_probe
+    
+    Make M851 standard with a bed probe
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index dba9786..3861f13 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -384,24 +384,6 @@
+   #endif
+ 
+   /**
+-   * Z Safe Homing dependencies
+-   */
+-  #if ENABLED(Z_SAFE_HOMING)
+-    #ifndef X_PROBE_OFFSET_FROM_EXTRUDER
+-      #define X_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+-    #ifndef Y_PROBE_OFFSET_FROM_EXTRUDER
+-      #define Y_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+-    #ifndef Z_PROBE_OFFSET_FROM_EXTRUDER
+-      #define Z_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+-    #ifndef XY_TRAVEL_SPEED
+-      #define XY_TRAVEL_SPEED 4000
+-    #endif
+-  #endif
+-
+-  /**
+    * Host keep alive
+    */
+   #ifndef DEFAULT_KEEPALIVE_INTERVAL
+@@ -776,6 +758,30 @@
+   #define HAS_BED_PROBE (PROBE_SELECTED && PROBE_PIN_CONFIGURED)
+ 
+   /**
++   * Probe dependencies
++   */
++  #if HAS_BED_PROBE
++    #ifndef X_PROBE_OFFSET_FROM_EXTRUDER
++      #define X_PROBE_OFFSET_FROM_EXTRUDER 0
++    #endif
++    #ifndef Y_PROBE_OFFSET_FROM_EXTRUDER
++      #define Y_PROBE_OFFSET_FROM_EXTRUDER 0
++    #endif
++    #ifndef Z_PROBE_OFFSET_FROM_EXTRUDER
++      #define Z_PROBE_OFFSET_FROM_EXTRUDER 0
++    #endif
++    #ifndef Z_PROBE_OFFSET_RANGE_MIN
++      #define Z_PROBE_OFFSET_RANGE_MIN -20
++    #endif
++    #ifndef Z_PROBE_OFFSET_RANGE_MAX
++      #define Z_PROBE_OFFSET_RANGE_MAX 20
++    #endif
++    #ifndef XY_TRAVEL_SPEED
++      #define XY_TRAVEL_SPEED 4000
++    #endif
++  #endif
++
++  /**
+    * Delta radius/rod trimmers
+    */
+   #if ENABLED(DELTA)
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 7e5417c..05916e4 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -691,7 +691,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -719,18 +719,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index db7cc55..d0fd221 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index f7c51e2..b99c3fb 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -319,7 +319,7 @@ float code_value_temp_diff();
+   extern float z_endstop_adj;
+ #endif
+ 
+-#if ENABLED(AUTO_BED_LEVELING_FEATURE)
++#if HAS_BED_PROBE
+   extern float zprobe_zoffset;
+ #endif
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b2ed811..77a275e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -364,9 +364,12 @@ static millis_t stepper_inactive_time = (DEFAULT_STEPPER_DEACTIVE_TIME) * 1000UL
+ 
+ static uint8_t target_extruder;
+ 
++#if HAS_BED_PROBE
++  float zprobe_zoffset = Z_PROBE_OFFSET_FROM_EXTRUDER;
++#endif
++
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+   int xy_travel_speed = XY_TRAVEL_SPEED;
+-  float zprobe_zoffset = Z_PROBE_OFFSET_FROM_EXTRUDER;
+   bool bed_leveling_in_progress = false;
+ #endif
+ 
+@@ -1482,7 +1485,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+     current_position[axis] = base_home_pos(axis) + home_offset[axis];
+     update_software_endstops(axis);
+ 
+-    #if ENABLED(AUTO_BED_LEVELING_FEATURE) && Z_HOME_DIR < 0
++    #if HAS_BED_PROBE && Z_HOME_DIR < 0
+       if (axis == Z_AXIS) {
+         current_position[Z_AXIS] -= zprobe_zoffset;
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -6224,9 +6227,9 @@ inline void gcode_M503() {
+ 
+ #endif // ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+ 
+-#ifdef CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
++#if HAS_BED_PROBE
+ 
+-  inline void gcode_SET_Z_PROBE_OFFSET() {
++  inline void gcode_M851() {
+ 
+     SERIAL_ECHO_START;
+     SERIAL_ECHOPGM(MSG_ZPROBE_ZOFFSET);
+@@ -6252,7 +6255,7 @@ inline void gcode_M503() {
+     SERIAL_EOL;
+   }
+ 
+-#endif // CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
++#endif // HAS_BED_PROBE
+ 
+ #if ENABLED(FILAMENTCHANGEENABLE)
+ 
+@@ -7361,7 +7364,7 @@ void process_next_command() {
+ 
+       #ifdef CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
+         case CUSTOM_M_CODE_SET_Z_PROBE_OFFSET:
+-          gcode_SET_Z_PROBE_OFFSET();
++          gcode_M851();
+           break;
+       #endif // CUSTOM_M_CODE_SET_Z_PROBE_OFFSET
+ 
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 1307631..4bad3ce 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -210,7 +210,7 @@ void Config_StoreSettings()  {
+     for (uint8_t q = 0; q < mesh_num_x * mesh_num_y; q++) EEPROM_WRITE_VAR(i, dummy);
+   #endif // MESH_BED_LEVELING
+ 
+-  #if DISABLED(AUTO_BED_LEVELING_FEATURE)
++  #if !HAS_BED_PROBE
+     float zprobe_zoffset = 0;
+   #endif
+   EEPROM_WRITE_VAR(i, zprobe_zoffset);
+@@ -389,7 +389,7 @@ void Config_RetrieveSettings() {
+       for (uint8_t q = 0; q < mesh_num_x * mesh_num_y; q++) EEPROM_READ_VAR(i, dummy);
+     #endif // MESH_BED_LEVELING
+ 
+-    #if DISABLED(AUTO_BED_LEVELING_FEATURE)
++    #if !HAS_BED_PROBE
+       float zprobe_zoffset = 0;
+     #endif
+     EEPROM_READ_VAR(i, zprobe_zoffset);
+@@ -554,7 +554,7 @@ void Config_ResetDefault() {
+     mbl.reset();
+   #endif
+ 
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++  #if HAS_BED_PROBE
+     zprobe_zoffset = Z_PROBE_OFFSET_FROM_EXTRUDER;
+   #endif
+ 
+@@ -927,20 +927,13 @@ void Config_PrintSettings(bool forReplay) {
+   /**
+    * Auto Bed Leveling
+    */
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #if ENABLED(CUSTOM_M_CODES)
+-      if (!forReplay) {
+-        CONFIG_ECHO_START;
+-        SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
+-      }
++  #if HAS_BED_PROBE
++    if (!forReplay) {
+       CONFIG_ECHO_START;
+-      SERIAL_ECHOPAIR("  M" STRINGIFY(CUSTOM_M_CODE_SET_Z_PROBE_OFFSET) " Z", zprobe_zoffset);
+-    #else
+-      if (!forReplay) {
+-        CONFIG_ECHO_START;
+-        SERIAL_ECHOPAIR("Z-Probe Offset (mm):", zprobe_zoffset);
+-      }
+-    #endif
++      SERIAL_ECHOLNPGM("Z-Probe Offset (mm):");
++    }
++    CONFIG_ECHO_START;
++    SERIAL_ECHOPAIR("  M851 Z", zprobe_zoffset);
+     SERIAL_EOL;
+   #endif
+ }
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 476a991..1159bb8 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -690,7 +690,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -718,18 +718,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 7f61cf4..c69dc70 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 4ae2fd7..77b02a1 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -673,7 +673,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -702,18 +702,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index d0df4f7..1cdad67 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index fe0c589..7d3ef3d 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -671,7 +671,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -700,18 +700,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 337d361..39ee26f 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -683,7 +683,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -711,18 +711,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 11c6130..537c9f5 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 30c7fb0..431c511 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -685,7 +685,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -713,17 +713,10 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
++// @section probes
+ 
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -5
+-    #define Z_PROBE_OFFSET_RANGE_MAX  0
+-  #endif
+-#endif
++#define Z_PROBE_OFFSET_RANGE_MIN -5
++#define Z_PROBE_OFFSET_RANGE_MAX  0
+ 
+ // @section extras
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 33e5078..f5dad62 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   #define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a5b4cbf..e12f099 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -708,7 +708,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -736,18 +736,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index e6bb3bb..00f203d 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -423,9 +423,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -516,9 +517,9 @@ const unsigned int dropsegments = 2; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 32 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index e9a1f6e..416d6ac 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -691,7 +691,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -719,18 +719,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index c327bca..b66f641 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -685,7 +685,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -714,18 +714,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index daffc55..9f4ef31 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 8
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 4dd49cf..3fd2d26 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -699,7 +699,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -727,18 +727,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-//#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index a694aa5..add39fa 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index a76f9f7..b1c3763 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -712,7 +712,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -740,18 +740,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 914644a..96e38bc 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -425,9 +425,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -518,9 +519,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 64e36be..28db20c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -683,7 +683,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -711,18 +711,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 11c6130..537c9f5 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index d6281d3..9cfa2ab 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -691,7 +691,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -719,18 +719,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 08e1246..5ff3a53 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -777,7 +777,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -808,18 +808,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 72117cc..b90ca6a 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -419,9 +419,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -512,9 +513,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index bdf73c0..8085cfc 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -771,7 +771,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -802,18 +802,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index ffd3343..bb3674b 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -419,9 +419,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -512,9 +513,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index db683c5..a8a14bb 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -774,7 +774,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -805,18 +805,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index f182a71..cfd313d 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -418,9 +418,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -511,9 +512,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index f9b9459..b66ddc6 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -768,7 +768,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -805,17 +805,10 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
++// @section probes
+ 
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -15
+-    #define Z_PROBE_OFFSET_RANGE_MAX -5
+-  #endif
+-#endif
++#define Z_PROBE_OFFSET_RANGE_MIN -15
++#define Z_PROBE_OFFSET_RANGE_MAX   5
+ 
+ // @section extras
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index f4408f3..221ddb1 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -423,9 +423,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -516,9 +517,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 102490e..b77e485 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -769,7 +769,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -807,18 +807,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 4c62908..7286e3a 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -419,9 +419,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -512,9 +513,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 2328949..dc51bdd 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -694,7 +694,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -722,18 +722,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index ffe73bc..820d9d5 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index d8aadd7..e84e1bf 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -681,7 +681,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ 
+-// @section movement
++// @section motion
+ 
+ /**
+  * MOVEMENT SETTINGS
+@@ -713,18 +713,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //============================= Additional Features ===========================
+ //=============================================================================
+ 
+-// @section more
+-
+-// Custom M code points
+-#define CUSTOM_M_CODES
+-#if ENABLED(CUSTOM_M_CODES)
+-  #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-    #define CUSTOM_M_CODE_SET_Z_PROBE_OFFSET 851
+-    #define Z_PROBE_OFFSET_RANGE_MIN -20
+-    #define Z_PROBE_OFFSET_RANGE_MAX 20
+-  #endif
+-#endif
+-
+ // @section extras
+ 
+ //
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index b943173..fd96c89 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -417,9 +417,10 @@
+   //#define USE_SMALL_INFOFONT
+ #endif // DOGLCD
+ 
+-// @section more
++// @section safety
+ 
+-// The hardware watchdog should reset the microcontroller disabling all outputs, in case the firmware gets stuck and doesn't do temperature regulation.
++// The hardware watchdog should reset the microcontroller disabling all outputs,
++// in case the firmware gets stuck and doesn't do temperature regulation.
+ #define USE_WATCHDOG
+ 
+ #if ENABLED(USE_WATCHDOG)
+@@ -510,9 +511,9 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
+-// @section more
++// @section serial
+ 
+-//The ASCII buffer for receiving from the serial:
++// The ASCII buffer for serial input
+ #define MAX_CMD_SIZE 96
+ #define BUFSIZE 4
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index add6cb0..5372626 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1684,7 +1684,7 @@ static void lcd_status_screen() {
+   static void lcd_control_motion_menu() {
+     START_MENU();
+     MENU_ITEM(back, MSG_CONTROL);
+-    #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++    #if HAS_BED_PROBE
+       MENU_ITEM_EDIT(float32, MSG_ZPROBE_ZOFFSET, &zprobe_zoffset, Z_PROBE_OFFSET_RANGE_MIN, Z_PROBE_OFFSET_RANGE_MAX);
+     #endif
+     // Manual bed leveling, Bed Z:
+
+commit bd4ec727e7c7aba528ef957dcafa6ef412d07682 (from eab44b30d487999450f33bc0695e21d214a148f3)
+Merge: 692a6e7 eab44b3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Jun 17 17:32:55 2016 -0700
+
+    Merge pull request #4066 from thinkyhead/rc_M851_with_probe
+    
+    Make M851 standard with a bed probe
+
+diff --git a/.travis.yml b/.travis.yml
+index 496b616..40a6525 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -90,10 +90,11 @@ script:
+   - opt_enable PIDTEMPBED
+   - build_marlin
+   #
+-  # Test AUTO_BED_LEVELING & DEBUG_LEVELING_FEATURE
++  # Test AUTO_BED_LEVELING_FEATURE & DEBUG_LEVELING_FEATURE with a Servo Probe
+   #
+   - restore_configs
+-  - opt_enable ENABLE_AUTO_BED_LEVELING DEBUG_LEVELING_FEATURE
++  - opt_enable AUTO_BED_LEVELING_FEATURE DEBUG_LEVELING_FEATURE
++  - opt_enable NUM_SERVOS Z_ENDSTOP_SERVO_NR Z_SERVO_ANGLES DEACTIVATE_SERVOS_AFTER_MOVE
+   - build_marlin
+   #
+   # Test MESH_BED_LEVELING feature, with LCD
+@@ -102,11 +103,6 @@ script:
+   - opt_enable MESH_BED_LEVELING MESH_G28_REST_ORIGIN MANUAL_BED_LEVELING ULTIMAKERCONTROLLER
+   - build_marlin
+   #
+-  # Test AUTO_BED_LEVELING & DEBUG_LEVELING_FEATURE with Servos
+-  #
+-  - opt_enable NUM_SERVOS Z_ENDSTOP_SERVO_NR SERVO_ENDSTOP_ANGLES DEACTIVATE_SERVOS_AFTER_MOVE
+-  - build_marlin
+-  #
+   # Test EEPROM_SETTINGS, EEPROM_CHITCHAT, M100_FREE_MEMORY_WATCHER,
+   #   INCH_MODE_SUPPORT, TEMPERATURE_UNITS_SUPPORT
+   #
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index d732dbc..3861f13 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -373,8 +373,8 @@
+     #define MAX_PROBE_Y (min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+   #endif
+ 
+-  #define HAS_Z_ENDSTOP_SERVO (defined(Z_ENDSTOP_SERVO_NR) && Z_ENDSTOP_SERVO_NR >= 0)
+-  #define SERVO_LEVELING (ENABLED(AUTO_BED_LEVELING_FEATURE) && HAS_Z_ENDSTOP_SERVO)
++  #define HAS_Z_SERVO_ENDSTOP (defined(Z_ENDSTOP_SERVO_NR) && Z_ENDSTOP_SERVO_NR >= 0)
++  #define SERVO_LEVELING (ENABLED(AUTO_BED_LEVELING_FEATURE) && HAS_Z_SERVO_ENDSTOP)
+ 
+   /**
+    * Sled Options
+@@ -746,22 +746,12 @@
+   #define HAS_BUZZER (PIN_EXISTS(BEEPER) || defined(LCD_USE_I2C_BUZZER))
+ 
+   #if HAS_SERVOS
+-    #ifndef X_ENDSTOP_SERVO_NR
+-      #define X_ENDSTOP_SERVO_NR -1
+-    #endif
+-    #ifndef Y_ENDSTOP_SERVO_NR
+-      #define Y_ENDSTOP_SERVO_NR -1
+-    #endif
+     #ifndef Z_ENDSTOP_SERVO_NR
+       #define Z_ENDSTOP_SERVO_NR -1
+     #endif
+-    #if X_ENDSTOP_SERVO_NR >= 0 || Y_ENDSTOP_SERVO_NR >= 0 || HAS_Z_ENDSTOP_SERVO
+-      #define HAS_SERVO_ENDSTOPS
+-      #define SERVO_ENDSTOP_IDS { X_ENDSTOP_SERVO_NR, Y_ENDSTOP_SERVO_NR, Z_ENDSTOP_SERVO_NR }
+-    #endif
+   #endif
+ 
+-  #define PROBE_SELECTED (ENABLED(FIX_MOUNTED_PROBE) || ENABLED(MECHANICAL_PROBE) || ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_ENDSTOP_SERVO || ENABLED(Z_PROBE_SLED))
++  #define PROBE_SELECTED (ENABLED(FIX_MOUNTED_PROBE) || ENABLED(MECHANICAL_PROBE) || ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))
+ 
+   #define PROBE_PIN_CONFIGURED (HAS_Z_MIN_PROBE_PIN || (HAS_Z_MIN && ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)))
+ 
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index b5a1f61..05916e4 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -420,7 +420,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1152,10 +1152,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2b68164..77a275e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -394,9 +394,8 @@ static uint8_t target_extruder;
+   };
+ #endif
+ 
+-#if ENABLED(HAS_SERVO_ENDSTOPS)
+-  const int servo_endstop_id[] = SERVO_ENDSTOP_IDS;
+-  const int servo_endstop_angle[][2] = SERVO_ENDSTOP_ANGLES;
++#if HAS_Z_SERVO_ENDSTOP
++  const int z_servo_angle[2] = Z_SERVO_ANGLES;
+ #endif
+ 
+ #if ENABLED(BARICUDA)
+@@ -491,10 +490,8 @@ static bool send_ok[BUFSIZE];
+ #if HAS_SERVOS
+   Servo servo[NUM_SERVOS];
+   #define MOVE_SERVO(I, P) servo[I].move(P)
+-  #define SERVO_ENDSTOP_EXISTS(I) (servo_endstop_id[I] >= 0)
+-  #define MOVE_SERVO_ENDSTOP(I, J) MOVE_SERVO(servo_endstop_id[I], servo_endstop_angle[I][J])
+-  #define DEPLOY_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 0)
+-  #define STOW_SERVO_ENDSTOP(I) MOVE_SERVO_ENDSTOP(I, 1)
++  #define DEPLOY_Z_SERVO() MOVE_SERVO(Z_ENDSTOP_SERVO_NR, z_servo_angle[0])
++  #define STOW_Z_SERVO() MOVE_SERVO(Z_ENDSTOP_SERVO_NR, z_servo_angle[1])
+ #endif
+ 
+ #ifdef CHDK
+@@ -752,14 +749,12 @@ void servo_init() {
+     servo[3].detach();
+   #endif
+ 
+-   #if ENABLED(HAS_SERVO_ENDSTOPS)
++  #if HAS_Z_SERVO_ENDSTOP
+ 
+     endstops.enable_z_probe(false);
+ 
+     /**
+-     * Set position of all defined Servo Endstops
+-     *
+-     * ** UNSAFE! - NEEDS UPDATE! **
++     * Set position of Z Servo Endstop
+      *
+      * The servo might be deployed and positioned too low to stow
+      * when starting up the machine or rebooting the board.
+@@ -767,11 +762,8 @@ void servo_init() {
+      * homing has been done - no homing with z-probe without init!
+      *
+      */
+-    for (int i = 0; i < 3; i++)
+-      if (SERVO_ENDSTOP_EXISTS(i))
+-        STOW_SERVO_ENDSTOP(i);
+-
+-  #endif // HAS_SERVO_ENDSTOPS
++    STOW_Z_SERVO();
++  #endif // HAS_Z_SERVO_ENDSTOP
+ 
+ }
+ 
+@@ -1247,14 +1239,14 @@ inline bool code_value_bool() { return code_value_byte() > 0; }
+   }
+ 
+   inline float code_value_linear_units() { return code_value_float() * linear_unit_factor; }
+-  inline float code_value_per_axis_unit(int axis) { return code_value_float() / axis_unit_factor(axis); }
+   inline float code_value_axis_units(int axis) { return code_value_float() * axis_unit_factor(axis); }
++  inline float code_value_per_axis_unit(int axis) { return code_value_float() / axis_unit_factor(axis); }
+ 
+ #else
+ 
+   inline float code_value_linear_units() { return code_value_float(); }
+-  inline float code_value_per_axis_unit(int axis) { return code_value_float(); }
+-  inline float code_value_axis_units(int axis) { return code_value_float(); }
++  inline float code_value_axis_units(int axis) { UNUSED(axis); return code_value_float(); }
++  inline float code_value_per_axis_unit(int axis) { UNUSED(axis); return code_value_float(); }
+ 
+ #endif
+ 
+@@ -1840,11 +1832,10 @@ static void setup_for_endstop_move() {
+ 
+     if (endstops.z_probe_enabled) return;
+ 
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
++    #if HAS_Z_SERVO_ENDSTOP
+ 
+       // Engage Z Servo endstop if enabled
+-      if (SERVO_ENDSTOP_EXISTS(Z_AXIS))
+-        DEPLOY_SERVO_ENDSTOP(Z_AXIS);
++      DEPLOY_Z_SERVO();
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+       feedrate = Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE;
+@@ -1928,7 +1919,7 @@ static void setup_for_endstop_move() {
+   }
+ 
+   static void stow_z_probe(bool doRaise = true) {
+-    #if !(ENABLED(HAS_SERVO_ENDSTOPS) && (Z_RAISE_AFTER_PROBING > 0))
++    #if !(HAS_Z_SERVO_ENDSTOP && (Z_RAISE_AFTER_PROBING > 0))
+       UNUSED(doRaise);
+     #endif
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -1937,21 +1928,18 @@ static void setup_for_endstop_move() {
+ 
+     if (!endstops.z_probe_enabled) return;
+ 
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
++    #if HAS_Z_SERVO_ENDSTOP
+ 
+       // Retract Z Servo endstop if enabled
+-      if (SERVO_ENDSTOP_EXISTS(Z_AXIS)) {
+-
+-        #if Z_RAISE_AFTER_PROBING > 0
+-          if (doRaise) {
+-            raise_z_after_probing(); // this also updates current_position
+-            stepper.synchronize();
+-          }
+-        #endif
++      #if Z_RAISE_AFTER_PROBING > 0
++        if (doRaise) {
++          raise_z_after_probing(); // this also updates current_position
++          stepper.synchronize();
++        }
++      #endif
+ 
+-        // Change the Z servo angle
+-        STOW_SERVO_ENDSTOP(Z_AXIS);
+-      }
++      // Change the Z servo angle
++      STOW_Z_SERVO();
+ 
+     #elif ENABLED(Z_PROBE_ALLEN_KEY)
+ 
+@@ -2171,16 +2159,25 @@ static void setup_for_endstop_move() {
+ 
+   #endif // DELTA
+ 
+-  #if ENABLED(HAS_SERVO_ENDSTOPS) && DISABLED(Z_PROBE_SLED)
++  #if HAS_Z_SERVO_ENDSTOP
+ 
+-    void raise_z_for_servo() {
+-      float zpos = current_position[Z_AXIS], z_dest = Z_RAISE_BEFORE_PROBING;
+-      /**
+-       * The zprobe_zoffset is negative any switch below the nozzle, so
+-       * multiply by Z_HOME_DIR (-1) to move enough away from bed for the probe
+-       */
+-      z_dest += axis_homed[Z_AXIS] ? zprobe_zoffset * Z_HOME_DIR : zpos;
+-      if (zpos < z_dest) do_blocking_move_to_z(z_dest); // also updates current_position
++    /**
++     * Raise Z to a minimum height to make room for a servo to move
++     *
++     * zprobe_zoffset: Negative of the Z height where the probe engages
++     *         z_dest: The before / after probing raise distance
++     *
++     * The zprobe_zoffset is negative for a switch below the nozzle, so
++     * multiply by Z_HOME_DIR (-1) to move enough away from the bed.
++     */
++    void raise_z_for_servo(float z_dest) {
++      z_dest += home_offset[Z_AXIS];
++
++      if ((Z_HOME_DIR) < 0 && zprobe_zoffset < 0)
++        z_dest -= zprobe_zoffset;
++
++      if (z_dest > current_position[Z_AXIS])
++        do_blocking_move_to_z(z_dest); // also updates current_position
+     }
+ 
+   #endif
+@@ -2280,23 +2277,24 @@ static void homeaxis(AxisEnum axis) {
+     sync_plan_position();
+ 
+     #if ENABLED(Z_PROBE_SLED)
+-      #define _Z_SERVO_TEST       (axis != Z_AXIS)      // already deployed Z
+-      #define _Z_SERVO_SUBTEST    false                 // Z will never be invoked
+       #define _Z_DEPLOY           (dock_sled(false))
+       #define _Z_STOW             (dock_sled(true))
+-    #elif SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE)
+       #define _Z_SERVO_TEST       (axis != Z_AXIS)      // already deployed Z
+       #define _Z_SERVO_SUBTEST    false                 // Z will never be invoked
++    #elif SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE)
+       #define _Z_DEPLOY           (deploy_z_probe())
+       #define _Z_STOW             (stow_z_probe())
+-    #elif ENABLED(HAS_SERVO_ENDSTOPS)
++      #define _Z_SERVO_TEST       (axis != Z_AXIS)      // already deployed Z
++      #define _Z_SERVO_SUBTEST    false                 // Z will never be invoked
++    #elif HAS_Z_SERVO_ENDSTOP
++      #define _Z_DEPLOY           do{ raise_z_for_servo(Z_RAISE_BEFORE_PROBING); DEPLOY_Z_SERVO(); endstops.z_probe_enabled = true; }while(0)
++      #define _Z_STOW             do{ raise_z_for_servo(Z_RAISE_AFTER_PROBING); STOW_Z_SERVO(); endstops.z_probe_enabled = false; }while(0)
+       #define _Z_SERVO_TEST       true                  // Z not deployed yet
+       #define _Z_SERVO_SUBTEST    (axis == Z_AXIS)      // Z is a probe
+     #endif
+ 
+-    // If there's a Z probe that needs deployment...
+-    #if ENABLED(Z_PROBE_SLED) || SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE)
+-      // ...and homing Z towards the bed? Deploy it.
++    // Homing Z towards the bed? Deploy the Z probe or endstop.
++    #if ENABLED(Z_PROBE_SLED) || SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE) || HAS_Z_SERVO_ENDSTOP
+       if (axis == Z_AXIS && axis_home_dir < 0) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> SERVO_LEVELING > " STRINGIFY(_Z_DEPLOY));
+@@ -2305,14 +2303,6 @@ static void homeaxis(AxisEnum axis) {
+       }
+     #endif
+ 
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      // Engage an X, Y (or Z) Servo endstop if enabled
+-      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
+-        DEPLOY_SERVO_ENDSTOP(axis);
+-        if (_Z_SERVO_SUBTEST) endstops.z_probe_enabled = true;
+-      }
+-    #endif
+-
+     // Set a flag for Z motor locking
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+       if (axis == Z_AXIS) stepper.set_homing_flag(true);
+@@ -2426,8 +2416,8 @@ static void homeaxis(AxisEnum axis) {
+     axis_known_position[axis] = true;
+     axis_homed[axis] = true;
+ 
+-    // Put away the Z probe with a function
+-    #if ENABLED(Z_PROBE_SLED) || SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE)
++    // Put away the Z probe
++    #if ENABLED(Z_PROBE_SLED) || SERVO_LEVELING || ENABLED(FIX_MOUNTED_PROBE) || HAS_Z_SERVO_ENDSTOP
+       if (axis == Z_AXIS && axis_home_dir < 0) {
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+           if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> SERVO_LEVELING > " STRINGIFY(_Z_STOW));
+@@ -2436,33 +2426,6 @@ static void homeaxis(AxisEnum axis) {
+       }
+     #endif
+ 
+-    // Retract X, Y (or Z) Servo endstop if enabled
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      if (_Z_SERVO_TEST && SERVO_ENDSTOP_EXISTS(axis)) {
+-        // Raise the servo probe before stow outside ABL context.
+-        // This is a workaround to allow use of a Servo Probe without
+-        // ABL until more global probe handling is implemented.
+-        #if Z_RAISE_AFTER_PROBING > 0
+-          if (axis == Z_AXIS) {
+-            #if ENABLED(DEBUG_LEVELING_FEATURE)
+-              if (DEBUGGING(LEVELING)) SERIAL_ECHOPAIR("Raise Z (after) by ", Z_RAISE_AFTER_PROBING);
+-            #endif
+-            current_position[Z_AXIS] = Z_RAISE_AFTER_PROBING;
+-            feedrate = homing_feedrate[Z_AXIS];
+-            line_to_current_position();
+-            stepper.synchronize();
+-          }
+-        #endif
+-
+-        #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> SERVO_ENDSTOPS > Stow with servo.move()");
+-        #endif
+-        STOW_SERVO_ENDSTOP(axis);
+-        if (_Z_SERVO_SUBTEST) endstops.enable_z_probe(false);
+-      }
+-
+-    #endif // HAS_SERVO_ENDSTOPS
+-
+   }
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -3804,7 +3767,7 @@ inline void gcode_G28() {
+         #endif
+ 
+         current_position[Z_AXIS] = -zprobe_zoffset + (z_tmp - real_z)
+-          #if ENABLED(HAS_SERVO_ENDSTOPS) || ENABLED(Z_PROBE_ALLEN_KEY) || ENABLED(Z_PROBE_SLED)
++          #if HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_ALLEN_KEY) || ENABLED(Z_PROBE_SLED)
+              + Z_RAISE_AFTER_PROBING
+           #endif
+           ;
+@@ -3819,11 +3782,9 @@ inline void gcode_G28() {
+       // Sled assembly for Cartesian bots
+       #if ENABLED(Z_PROBE_SLED)
+         dock_sled(true); // dock the sled
+-      #else
++      #elif !HAS_Z_SERVO_ENDSTOP && DISABLED(Z_PROBE_ALLEN_KEY) && DISABLED(Z_PROBE_SLED)
+         // Raise Z axis for non-delta and non servo based probes
+-        #if DISABLED(HAS_SERVO_ENDSTOPS) && DISABLED(Z_PROBE_ALLEN_KEY) && DISABLED(Z_PROBE_SLED)
+-          raise_z_after_probing();
+-        #endif
++        raise_z_after_probing();
+       #endif
+ 
+     #endif // !DELTA
+@@ -3865,8 +3826,8 @@ inline void gcode_G28() {
+      * G30: Do a single Z probe at the current XY
+      */
+     inline void gcode_G30() {
+-      #if ENABLED(HAS_SERVO_ENDSTOPS)
+-        raise_z_for_servo();
++      #if HAS_Z_SERVO_ENDSTOP
++        raise_z_for_servo(Z_RAISE_BEFORE_PROBING);
+       #endif
+       deploy_z_probe(); // Engage Z Servo endstop if available. Z_PROBE_SLED is missed here.
+ 
+@@ -3887,8 +3848,8 @@ inline void gcode_G28() {
+ 
+       clean_up_after_endstop_move(); // Too early. must be done after the stowing.
+ 
+-      #if ENABLED(HAS_SERVO_ENDSTOPS)
+-        raise_z_for_servo();
++      #if HAS_Z_SERVO_ENDSTOP
++        raise_z_for_servo(Z_RAISE_AFTER_PROBING);
+       #endif
+       stow_z_probe(false); // Retract Z Servo endstop if available. Z_PROBE_SLED is missed here.
+ 
+@@ -4895,7 +4856,7 @@ inline void gcode_M110() {
+  * M111: Set the debug level
+  */
+ inline void gcode_M111() {
+-  marlin_debug_flags = code_seen('S') ? code_value_byte() : DEBUG_NONE;
++  marlin_debug_flags = code_seen('S') ? code_value_byte() : (uint8_t) DEBUG_NONE;
+ 
+   const static char str_debug_1[] PROGMEM = MSG_DEBUG_ECHO;
+   const static char str_debug_2[] PROGMEM = MSG_DEBUG_INFO;
+@@ -6022,14 +5983,14 @@ inline void gcode_M303() {
+  */
+ inline void gcode_M400() { stepper.synchronize(); }
+ 
+-#if ENABLED(AUTO_BED_LEVELING_FEATURE) && DISABLED(Z_PROBE_SLED) && (ENABLED(HAS_SERVO_ENDSTOPS) || ENABLED(Z_PROBE_ALLEN_KEY))
++#if ENABLED(AUTO_BED_LEVELING_FEATURE) && DISABLED(Z_PROBE_SLED) && (HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_ALLEN_KEY))
+ 
+   /**
+    * M401: Engage Z Servo endstop if available
+    */
+   inline void gcode_M401() {
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      raise_z_for_servo();
++    #if HAS_Z_SERVO_ENDSTOP
++      raise_z_for_servo(Z_RAISE_BEFORE_PROBING);
+     #endif
+     deploy_z_probe();
+   }
+@@ -6038,13 +5999,13 @@ inline void gcode_M400() { stepper.synchronize(); }
+    * M402: Retract Z Servo endstop if enabled
+    */
+   inline void gcode_M402() {
+-    #if ENABLED(HAS_SERVO_ENDSTOPS)
+-      raise_z_for_servo();
++    #if HAS_Z_SERVO_ENDSTOP
++      raise_z_for_servo(Z_RAISE_AFTER_PROBING);
+     #endif
+     stow_z_probe(false);
+   }
+ 
+-#endif // AUTO_BED_LEVELING_FEATURE && (ENABLED(HAS_SERVO_ENDSTOPS) || Z_PROBE_ALLEN_KEY) && !Z_PROBE_SLED
++#endif // AUTO_BED_LEVELING_FEATURE && (HAS_Z_SERVO_ENDSTOP || Z_PROBE_ALLEN_KEY) && !Z_PROBE_SLED
+ 
+ #if ENABLED(FILAMENT_WIDTH_SENSOR)
+ 
+@@ -7341,14 +7302,14 @@ void process_next_command() {
+         gcode_M400();
+         break;
+ 
+-      #if ENABLED(AUTO_BED_LEVELING_FEATURE) && (ENABLED(HAS_SERVO_ENDSTOPS) || ENABLED(Z_PROBE_ALLEN_KEY)) && DISABLED(Z_PROBE_SLED)
++      #if ENABLED(AUTO_BED_LEVELING_FEATURE) && (HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_ALLEN_KEY)) && DISABLED(Z_PROBE_SLED)
+         case 401:
+           gcode_M401();
+           break;
+         case 402:
+           gcode_M402();
+           break;
+-      #endif // AUTO_BED_LEVELING_FEATURE && (ENABLED(HAS_SERVO_ENDSTOPS) || Z_PROBE_ALLEN_KEY) && !Z_PROBE_SLED
++      #endif // AUTO_BED_LEVELING_FEATURE && (HAS_Z_SERVO_ENDSTOP || Z_PROBE_ALLEN_KEY) && !Z_PROBE_SLED
+ 
+       #if ENABLED(FILAMENT_WIDTH_SENSOR)
+         case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or display nominal filament width
+@@ -7418,7 +7379,7 @@ void process_next_command() {
+           gcode_M605();
+           break;
+       #endif // DUAL_X_CARRIAGE
+-      
++
+       #if ENABLED(LIN_ADVANCE)
+         case 905: // M905 Set advance factor.
+           gcode_M905();
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 063f4af..bc3bf65 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -170,26 +170,19 @@
+ /**
+  * Limited number of servos
+  */
+-#if NUM_SERVOS > 4
+-  #error "The maximum number of SERVOS in Marlin is 4."
+-#endif
+ #if defined(NUM_SERVOS) && NUM_SERVOS > 0
+-  #if X_ENDSTOP_SERVO_NR >= 0 || Y_ENDSTOP_SERVO_NR >= 0 || Z_ENDSTOP_SERVO_NR >= 0
+-    #if X_ENDSTOP_SERVO_NR >= NUM_SERVOS
+-      #error "X_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+-    #elif Y_ENDSTOP_SERVO_NR >= NUM_SERVOS
+-      #error "Y_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+-    #elif Z_ENDSTOP_SERVO_NR >= NUM_SERVOS
+-      #error "Z_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+-    #endif
++  #if NUM_SERVOS > 4
++    #error "The maximum number of SERVOS in Marlin is 4."
++  #elif HAS_Z_SERVO_ENDSTOP && Z_ENDSTOP_SERVO_NR >= NUM_SERVOS
++    #error "Z_ENDSTOP_SERVO_NR must be smaller than NUM_SERVOS."
+   #endif
+ #endif
+ 
+ /**
+  * Servo deactivation depends on servo endstops
+  */
+-#if ENABLED(DEACTIVATE_SERVOS_AFTER_MOVE) && DISABLED(HAS_SERVO_ENDSTOPS)
+-  #error "At least one of the ?_ENDSTOP_SERVO_NR is required for DEACTIVATE_SERVOS_AFTER_MOVE."
++#if ENABLED(DEACTIVATE_SERVOS_AFTER_MOVE) && !HAS_Z_SERVO_ENDSTOP
++  #error "Z_ENDSTOP_SERVO_NR is required for DEACTIVATE_SERVOS_AFTER_MOVE."
+ #endif
+ 
+ /**
+@@ -253,10 +246,10 @@
+   /**
+    * Only allow one probe option to be defined
+    */
+-  #if (ENABLED(FIX_MOUNTED_PROBE) && (ENABLED(MECHANICAL_PROBE) || ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_ENDSTOP_SERVO || ENABLED(Z_PROBE_SLED))) \
+-       || (ENABLED(MECHANICAL_PROBE) && (ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_ENDSTOP_SERVO || ENABLED(Z_PROBE_SLED))) \
+-       || (ENABLED(Z_PROBE_ALLEN_KEY) && (HAS_Z_ENDSTOP_SERVO || ENABLED(Z_PROBE_SLED))) \
+-       || (HAS_Z_ENDSTOP_SERVO && ENABLED(Z_PROBE_SLED))
++  #if (ENABLED(FIX_MOUNTED_PROBE) && (ENABLED(MECHANICAL_PROBE) || ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
++       || (ENABLED(MECHANICAL_PROBE) && (ENABLED(Z_PROBE_ALLEN_KEY) || HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
++       || (ENABLED(Z_PROBE_ALLEN_KEY) && (HAS_Z_SERVO_ENDSTOP || ENABLED(Z_PROBE_SLED))) \
++       || (HAS_Z_SERVO_ENDSTOP && ENABLED(Z_PROBE_SLED))
+     #error "Please define only one type of probe: Z Servo, MECHANICAL_PROBE, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+   #endif
+ 
+@@ -288,8 +281,8 @@
+     //#if Z_ENDSTOP_SERVO_NR < 0
+     //  #error "You must have Z_ENDSTOP_SERVO_NR set to at least 0 or above to use Z_MIN_PROBE_ENDSTOP."
+     //#endif
+-    //#ifndef SERVO_ENDSTOP_ANGLES
+-    //  #error "You must have SERVO_ENDSTOP_ANGLES defined for Z Extend and Retract to use Z_MIN_PROBE_ENDSTOP."
++    //#ifndef Z_SERVO_ANGLES
++    //  #error "You must have Z_SERVO_ANGLES defined for Z Extend and Retract to use Z_MIN_PROBE_ENDSTOP."
+     //#endif
+   #endif
+ 
+@@ -613,6 +606,10 @@
+   #error "PID_PARAMS_PER_EXTRUDER is deprecated. Use PID_PARAMS_PER_HOTEND instead."
+ #elif defined(EXTRUDER_WATTS)
+   #error "EXTRUDER_WATTS is deprecated. Use HOTEND_WATTS instead."
++#elif defined(SERVO_ENDSTOP_ANGLES)
++  #error "SERVO_ENDSTOP_ANGLES is deprecated. Use Z_SERVO_ANGLES instead."
++#elif defined(X_ENDSTOP_SERVO_NR) || defined(Y_ENDSTOP_SERVO_NR)
++  #error "X_ENDSTOP_SERVO_NR and Y_ENDSTOP_SERVO_NR are deprecated and should be removed."
+ #endif
+ 
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index bf8b34e..1159bb8 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -807,8 +807,10 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //
+ // Here you may choose the language used by Marlin on the LCD menus, the following
+ // list of languages are available:
+-//    en, pl, fr, de, es, ru, bg, it, pt, pt_utf8, pt-br, pt-br_utf8,
+-//    fi, an, nl, ca, eu, kana, kana_utf8, cn, cz, test
++//    en, an, bg, ca, cn, cz, de, es, eu, fi, fr, gl, hr, it, kana,
++//    kana_utf8, nl, pl, pt, pt_utf8, pt-br, pt-br_utf8, ru, test
++//
++// :{'en':'English','an':'Aragonese','bg':'Bulgarian','ca':'Catalan','cn':'Chinese','cz':'Czech','de':'German','es':'Spanish','eu':'Basque-Euskera','fi':'Finnish','fr':'French','gl':'Galician','hr':'Croatian','it':'Italian','kana':'Japanese','kana_utf8':'Japanese (UTF8)','nl':'Dutch','pl':'Polish','pt':'Portuguese','pt-br':'Portuguese (Brazilian)','pt-br_utf8':'Portuguese (Brazilian UTF8)','pt_utf8':'Portuguese (UTF8)','ru':'Russian','test':'TEST'}
+ //
+ #define LCD_LANGUAGE en
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index a81b408..77b02a1 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -402,7 +402,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1135,10 +1135,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 2bacc90..7d3ef3d 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -400,7 +400,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1133,10 +1133,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 7a4c2e5..39ee26f 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -412,7 +412,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1144,10 +1144,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 4d91ef5..431c511 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -414,7 +414,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1151,10 +1151,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 5f9217e..e12f099 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -437,7 +437,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1169,10 +1169,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 1ec58c7..416d6ac 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -420,7 +420,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1152,10 +1152,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index e4237e5..b66f641 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -414,7 +414,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1149,10 +1149,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index ee289a2..3fd2d26 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -428,7 +428,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1160,10 +1160,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 82c9314..b1c3763 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -441,7 +441,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1173,10 +1173,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index ccde396..28db20c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -412,7 +412,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1144,10 +1144,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 12df1d5..9cfa2ab 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -420,7 +420,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1152,10 +1152,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index c32698c..5ff3a53 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -462,7 +462,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1241,10 +1241,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 7a9584b..8085cfc 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -462,7 +462,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1235,10 +1235,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index f4cfe56..a8a14bb 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -462,7 +462,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1238,10 +1238,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index fa4eb52..b66ddc6 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -451,7 +451,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1243,10 +1243,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 9d60cd7..b77e485 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -460,7 +460,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1240,10 +1240,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 6266437..dc51bdd 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -423,7 +423,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1155,10 +1155,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index ee7e208..e84e1bf 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -410,7 +410,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // To use a separate Z probe, your board must define a Z_MIN_PROBE_PIN.
+ //
+ // For a servo-based Z probe, you must set up servo support below, including
+-// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and SERVO_ENDSTOP_ANGLES.
++// NUM_SERVOS, Z_ENDSTOP_SERVO_NR and Z_SERVO_ANGLES.
+ //
+ // - RAMPS 1.3/1.4 boards may be able to use the 5V, GND, and Aux4->D32 pin.
+ // - Use 5V for powered (usu. inductive) sensors.
+@@ -1146,10 +1146,8 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // This allows for servo actuated endstops, primary usage is for the Z Axis to eliminate calibration or bed height changes.
+ // Use M851 to set the Z probe vertical offset from the nozzle. Store that setting with M500.
+ //
+-//#define X_ENDSTOP_SERVO_NR 1
+-//#define Y_ENDSTOP_SERVO_NR 2
+ //#define Z_ENDSTOP_SERVO_NR 0
+-//#define SERVO_ENDSTOP_ANGLES {{0,0}, {0,0}, {70,0}} // X,Y,Z Axis Extend and Retract angles
++//#define Z_SERVO_ANGLES {70,0} // Z Servo Extend and Retract angles
+ 
+ // Servo deactivation
+ //
+diff --git a/README.md b/README.md
+index d9341bc..58597ef 100644
+--- a/README.md
++++ b/README.md
+@@ -14,7 +14,7 @@ __Not for production use – use with caution!__
+ 
+ You can download earlier versions of Marlin on the [Releases page](https://github.com/MarlinFirmware/Marlin/releases). (The latest "stable" release of Marlin is 1.0.2-1.)
+ 
+-You'll always find the latest Release Candidate in the ["RC" branch](https://github.com/MarlinFirmware/Marlin/tree/RC). Bugs that we find in the current Release Candidate are patched in the ["RCBugFix" branch](https://github.com/MarlinFirmware/Marlin/tree/RC), so during beta testing this is where you can always find the latest code on its way towards release.
++You'll always find the latest Release Candidate in the ["RC" branch](https://github.com/MarlinFirmware/Marlin/tree/RC). Bugs that we find in the current Release Candidate are patched in the ["RCBugFix" branch](https://github.com/MarlinFirmware/Marlin/tree/RCBugFix), so during beta testing this is where you can always find the latest code on its way towards release.
+ 
+ Future development (Marlin 1.2 and beyond) takes place in the [MarlinDev repository](https://github.com/MarlinFirmware/MarlinDev/).
+ 
+

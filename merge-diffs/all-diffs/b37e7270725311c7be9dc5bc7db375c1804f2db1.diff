@@ -1,0 +1,1534 @@
+commit b37e7270725311c7be9dc5bc7db375c1804f2db1 (from 4a8e191cec36e4e5fe0e9ffb8999d93bfd5f0079)
+Merge: 4a8e191 a06c516
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Jul 2 16:20:20 2016 -0700
+
+    Merge pull request #3662 from thinkyhead/rc_fixup_auto_filament_change
+    
+    Rewritten FILAMENT_CHANGE_ENABLE feature
+
+diff --git a/.travis.yml b/.travis.yml
+index 81808fe..eb471fd 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -161,11 +161,11 @@ script:
+   - opt_set MOTHERBOARD BOARD_MINIRAMBO
+   - build_marlin
+   #
+-  # Test FILAMENTCHANGEENABLE and LCD_INFO_MENU
++  # Test FILAMENT_CHANGE_FEATURE and LCD_INFO_MENU
+   #
+   - restore_configs
+   - opt_enable ULTIMAKERCONTROLLER
+-  - opt_enable_adv FILAMENTCHANGEENABLE LCD_INFO_MENU
++  - opt_enable_adv FILAMENT_CHANGE_FEATURE LCD_INFO_MENU
+   - build_marlin
+   #
+   # Enable filament sensor
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 25ec27a..3a673a6 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index c4298aa..616a8bf 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -123,8 +123,8 @@ FORCE_INLINE void serialprintPGM(const char* str) {
+ }
+ 
+ void idle(
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    bool no_stepper_sleep=false  // pass true to keep steppers from disabling on timeout
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    bool no_stepper_sleep = false  // pass true to keep steppers from disabling on timeout
+   #endif
+ );
+ 
+@@ -346,6 +346,15 @@ float code_value_temp_diff();
+   extern int meas_delay_cm; //delay distance
+ #endif
+ 
++#if ENABLED(FILAMENT_CHANGE_FEATURE)
++  enum FilamentChangeMenuResponse {
++    FILAMENT_CHANGE_RESPONSE_WAIT_FOR,
++    FILAMENT_CHANGE_RESPONSE_EXTRUDE_MORE,
++    FILAMENT_CHANGE_RESPONSE_RESUME_PRINT
++  };
++  extern FilamentChangeMenuResponse filament_change_menu_response;
++#endif
++
+ #if ENABLED(PID_ADD_EXTRUSION_RATE)
+   extern int lpq_len;
+ #endif
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b05f5b5..59f526f 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -294,6 +294,7 @@ static char command_queue[BUFSIZE][MAX_CMD_SIZE];
+ #endif
+ 
+ const float homing_feedrate[] = HOMING_FEEDRATE;
++
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+ int feedrate_multiplier = 100; //100->1 200->2
+ int saved_feedrate_multiplier;
+@@ -490,6 +491,10 @@ static uint8_t target_extruder;
+   static bool filament_ran_out = false;
+ #endif
+ 
++#if ENABLED(FILAMENT_CHANGE_FEATURE)
++  FilamentChangeMenuResponse filament_change_menu_response;
++#endif
++
+ static bool send_ok[BUFSIZE];
+ 
+ #if HAS_SERVOS
+@@ -1564,9 +1569,8 @@ inline void line_to_z(float zPosition) {
+ inline void line_to_destination(float mm_m) {
+   planner.buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], mm_m / 60, active_extruder);
+ }
+-inline void line_to_destination() {
+-  line_to_destination(feedrate);
+-}
++inline void line_to_destination() { line_to_destination(feedrate); }
++
+ /**
+  * sync_plan_position
+  * Set planner / stepper positions to the cartesian current_position.
+@@ -3123,7 +3127,7 @@ inline void gcode_G28() {
+   enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet, MeshSetZOffset, MeshReset };
+ 
+   inline void _mbl_goto_xy(float x, float y) {
+-    saved_feedrate = feedrate;
++    float old_feedrate = feedrate;
+     feedrate = homing_feedrate[X_AXIS];
+ 
+     current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+@@ -3144,7 +3148,7 @@ inline void gcode_G28() {
+       line_to_current_position();
+     #endif
+ 
+-    feedrate = saved_feedrate;
++    feedrate = old_feedrate;
+     stepper.synchronize();
+   }
+ 
+@@ -6131,7 +6135,7 @@ inline void gcode_M503() {
+ 
+ #endif // HAS_BED_PROBE
+ 
+-#if ENABLED(FILAMENTCHANGEENABLE)
++#if ENABLED(FILAMENT_CHANGE_FEATURE)
+ 
+   /**
+    * M600: Pause for filament change
+@@ -6153,129 +6157,160 @@ inline void gcode_M503() {
+       return;
+     }
+ 
++    // Show initial message and wait for synchronize steppers
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_INIT);
++    stepper.synchronize();
++
+     float lastpos[NUM_AXIS];
+-    #if ENABLED(DELTA)
+-      float fr60 = feedrate / 60;
+-    #endif
+ 
+-    for (int i = 0; i < NUM_AXIS; i++)
++    // Save current position of all axes
++    for (uint8_t i = 0; i < NUM_AXIS; i++)
+       lastpos[i] = destination[i] = current_position[i];
+ 
++    // Define runplan for move axes
+     #if ENABLED(DELTA)
+-      #define RUNPLAN calculate_delta(destination); \
+-                      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], fr60, active_extruder);
++      #define RUNPLAN(RATE) calculate_delta(destination); \
++                            planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], RATE, active_extruder);
+     #else
+-      #define RUNPLAN line_to_destination();
++      #define RUNPLAN(RATE) line_to_destination(RATE * 60);
+     #endif
+ 
+-    //retract by E
++    KEEPALIVE_STATE(IN_HANDLER);
++
++    // Initial retract before move to filament change position
+     if (code_seen('E')) destination[E_AXIS] += code_value_axis_units(E_AXIS);
+-    #ifdef FILAMENTCHANGE_FIRSTRETRACT
+-      else destination[E_AXIS] += FILAMENTCHANGE_FIRSTRETRACT;
++    #if defined(FILAMENT_CHANGE_RETRACT_LENGTH) && FILAMENT_CHANGE_RETRACT_LENGTH > 0
++      else destination[E_AXIS] -= FILAMENT_CHANGE_RETRACT_LENGTH;
+     #endif
+ 
+-    RUNPLAN;
++    RUNPLAN(FILAMENT_CHANGE_RETRACT_FEEDRATE);
+ 
+-    //lift Z
+-    if (code_seen('Z')) destination[Z_AXIS] += code_value_axis_units(Z_AXIS);
+-    #ifdef FILAMENTCHANGE_ZADD
+-      else destination[Z_AXIS] += FILAMENTCHANGE_ZADD;
+-    #endif
++    // Lift Z axis
++    float z_lift = code_seen('Z') ? code_value_axis_units(Z_AXIS) :
++      #if defined(FILAMENT_CHANGE_Z_ADD) && FILAMENT_CHANGE_Z_ADD > 0
++        FILAMENT_CHANGE_Z_ADD
++      #else
++        0
++      #endif
++    ;
+ 
+-    RUNPLAN;
++    if (z_lift > 0) {
++      destination[Z_AXIS] += z_lift;
++      NOMORE(destination[Z_AXIS], Z_MAX_POS);
++      RUNPLAN(FILAMENT_CHANGE_Z_FEEDRATE);
++    }
+ 
+-    //move xy
++    // Move XY axes to filament exchange position
+     if (code_seen('X')) destination[X_AXIS] = code_value_axis_units(X_AXIS);
+-    #ifdef FILAMENTCHANGE_XPOS
+-      else destination[X_AXIS] = FILAMENTCHANGE_XPOS;
++    #ifdef FILAMENT_CHANGE_X_POS
++      else destination[X_AXIS] = FILAMENT_CHANGE_X_POS;
+     #endif
+ 
+     if (code_seen('Y')) destination[Y_AXIS] = code_value_axis_units(Y_AXIS);
+-    #ifdef FILAMENTCHANGE_YPOS
+-      else destination[Y_AXIS] = FILAMENTCHANGE_YPOS;
++    #ifdef FILAMENT_CHANGE_Y_POS
++      else destination[Y_AXIS] = FILAMENT_CHANGE_Y_POS;
+     #endif
+ 
+-    RUNPLAN;
++    RUNPLAN(FILAMENT_CHANGE_XY_FEEDRATE);
++
++    stepper.synchronize();
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_UNLOAD);
+ 
++    // Unload filament
+     if (code_seen('L')) destination[E_AXIS] += code_value_axis_units(E_AXIS);
+-    #ifdef FILAMENTCHANGE_FINALRETRACT
+-      else destination[E_AXIS] += FILAMENTCHANGE_FINALRETRACT;
++    #if defined(FILAMENT_CHANGE_UNLOAD_LENGTH) && FILAMENT_CHANGE_UNLOAD_LENGTH > 0
++      else destination[E_AXIS] -= FILAMENT_CHANGE_UNLOAD_LENGTH;
+     #endif
+ 
+-    RUNPLAN;
++    RUNPLAN(FILAMENT_CHANGE_UNLOAD_FEEDRATE);
+ 
+-    //finish moves
++    // Synchronize steppers and then disable extruders steppers for manual filament changing
+     stepper.synchronize();
+-    //disable extruder steppers so filament can be removed
+     disable_e0();
+     disable_e1();
+     disable_e2();
+     disable_e3();
+     delay(100);
+-    LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+-    #if DISABLED(AUTO_FILAMENT_CHANGE)
+-      millis_t next_tick = 0;
+-    #endif
+-    KEEPALIVE_STATE(PAUSED_FOR_USER);
++
++    millis_t next_tick = 0;
++
++    // Wait for filament insert by user and press button
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_INSERT);
++
+     while (!lcd_clicked()) {
+-      #if DISABLED(AUTO_FILAMENT_CHANGE)
++      #if HAS_BUZZER
+         millis_t ms = millis();
+-        if (ELAPSED(ms, next_tick)) {
+-          lcd_quick_feedback();
+-          next_tick = ms + 2500UL; // feedback every 2.5s while waiting
++        if (ms >= next_tick) {
++          buzzer.tone(300, 2000);
++          next_tick = ms + 2500; // Beep every 2.5s while waiting
+         }
+-        idle(true);
+-      #else
+-        current_position[E_AXIS] += AUTO_FILAMENT_CHANGE_LENGTH;
+-        destination[E_AXIS] = current_position[E_AXIS];
+-        line_to_destination(AUTO_FILAMENT_CHANGE_FEEDRATE);
+-        stepper.synchronize();
+       #endif
+-    } // while(!lcd_clicked)
+-    KEEPALIVE_STATE(IN_HANDLER);
+-    lcd_quick_feedback(); // click sound feedback
++      idle(true);
++    }
++    delay(100);
++    while (lcd_clicked()) idle(true);
++    delay(100);
+ 
+-    #if ENABLED(AUTO_FILAMENT_CHANGE)
+-      current_position[E_AXIS] = 0;
+-      stepper.synchronize();
+-    #endif
++    // Show load message
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_LOAD);
+ 
+-    //return to normal
++    // Load filament
+     if (code_seen('L')) destination[E_AXIS] -= code_value_axis_units(E_AXIS);
+-    #ifdef FILAMENTCHANGE_FINALRETRACT
+-      else destination[E_AXIS] -= FILAMENTCHANGE_FINALRETRACT;
++    #if defined(FILAMENT_CHANGE_LOAD_LENGTH) && FILAMENT_CHANGE_LOAD_LENGTH > 0
++      else destination[E_AXIS] += FILAMENT_CHANGE_LOAD_LENGTH;
+     #endif
+ 
+-    current_position[E_AXIS] = destination[E_AXIS]; //the long retract of L is compensated by manual filament feeding
+-    sync_plan_position_e();
++    RUNPLAN(FILAMENT_CHANGE_LOAD_FEEDRATE);
++    stepper.synchronize();
+ 
+-    RUNPLAN; //should do nothing
++    #if defined(FILAMENT_CHANGE_EXTRUDE_LENGTH) && FILAMENT_CHANGE_EXTRUDE_LENGTH > 0
++      do {
++        // Extrude filament to get into hotend
++        lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_EXTRUDE);
++        destination[E_AXIS] += FILAMENT_CHANGE_EXTRUDE_LENGTH;
++        RUNPLAN(FILAMENT_CHANGE_EXTRUDE_FEEDRATE);
++        stepper.synchronize();
++        // Ask user if more filament should be extruded
++        KEEPALIVE_STATE(PAUSED_FOR_USER);
++        lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_OPTION);
++        while (filament_change_menu_response == FILAMENT_CHANGE_RESPONSE_WAIT_FOR) idle(true);
++        KEEPALIVE_STATE(IN_HANDLER);
++      } while (filament_change_menu_response != FILAMENT_CHANGE_RESPONSE_RESUME_PRINT);
++    #endif
++
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_RESUME);
+ 
+-    lcd_reset_alert_level();
++    KEEPALIVE_STATE(IN_HANDLER);
++
++    // Set extruder to saved position
++    current_position[E_AXIS] = lastpos[E_AXIS];
++    destination[E_AXIS] = lastpos[E_AXIS];
++    planner.set_e_position_mm(current_position[E_AXIS]);
+ 
+     #if ENABLED(DELTA)
+       // Move XYZ to starting position, then E
+       calculate_delta(lastpos);
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], fr60, active_extruder);
+-      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], lastpos[E_AXIS], fr60, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], destination[E_AXIS], FILAMENT_CHANGE_XY_FEEDRATE, active_extruder);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], lastpos[E_AXIS], FILAMENT_CHANGE_XY_FEEDRATE, active_extruder);
+     #else
+       // Move XY to starting position, then Z, then E
+       destination[X_AXIS] = lastpos[X_AXIS];
+       destination[Y_AXIS] = lastpos[Y_AXIS];
+-      line_to_destination();
++      RUNPLAN(FILAMENT_CHANGE_XY_FEEDRATE);
+       destination[Z_AXIS] = lastpos[Z_AXIS];
+-      line_to_destination();
+-      destination[E_AXIS] = lastpos[E_AXIS];
+-      line_to_destination();
++      RUNPLAN(FILAMENT_CHANGE_Z_FEEDRATE);
+     #endif
++    stepper.synchronize();
+ 
+     #if ENABLED(FILAMENT_RUNOUT_SENSOR)
+       filament_ran_out = false;
+     #endif
+ 
++    // Show status screen
++    lcd_filament_change_show_message(FILAMENT_CHANGE_MESSAGE_STATUS);
+   }
+ 
+-#endif // FILAMENTCHANGEENABLE
++#endif // FILAMENT_CHANGE_FEATURE
+ 
+ #if ENABLED(DUAL_X_CARRIAGE)
+ 
+@@ -6464,11 +6499,11 @@ inline void gcode_T(uint8_t tmp_extruder) {
+ 
+   #if HOTENDS > 1
+ 
+-    float stored_feedrate = feedrate;
++    float old_feedrate = feedrate;
+ 
+     if (code_seen('F')) {
+       float next_feedrate = code_value_axis_units(X_AXIS);
+-      if (next_feedrate > 0.0) stored_feedrate = feedrate = next_feedrate;
++      if (next_feedrate > 0.0) old_feedrate = feedrate = next_feedrate;
+     }
+     else
+       feedrate = XY_PROBE_FEEDRATE;
+@@ -6624,7 +6659,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+       enable_solenoid_on_active_extruder();
+     #endif // EXT_SOLENOID
+ 
+-    feedrate = stored_feedrate;
++    feedrate = old_feedrate;
+ 
+   #else // !HOTENDS > 1
+ 
+@@ -7232,11 +7267,11 @@ void process_next_command() {
+           break;
+       #endif // HAS_BED_PROBE
+ 
+-      #if ENABLED(FILAMENTCHANGEENABLE)
++      #if ENABLED(FILAMENT_CHANGE_FEATURE)
+         case 600: //Pause for filament change X[pos] Y[pos] Z[relative lift] E[initial retract] L[later retract distance for removal]
+           gcode_M600();
+           break;
+-      #endif // FILAMENTCHANGEENABLE
++      #endif // FILAMENT_CHANGE_FEATURE
+ 
+       #if ENABLED(DUAL_X_CARRIAGE)
+         case 605:
+@@ -7993,14 +8028,14 @@ void disable_all_steppers() {
+  * Standard idle routine keeps the machine alive
+  */
+ void idle(
+-  #if ENABLED(FILAMENTCHANGEENABLE)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
+     bool no_stepper_sleep/*=false*/
+   #endif
+ ) {
+   lcd_update();
+   host_keepalive();
+   manage_inactivity(
+-    #if ENABLED(FILAMENTCHANGEENABLE)
++    #if ENABLED(FILAMENT_CHANGE_FEATURE)
+       no_stepper_sleep
+     #endif
+   );
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index ad8ca86..941821b 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -124,8 +124,8 @@
+ /**
+  * Filament Change with Extruder Runout Prevention
+  */
+-#if ENABLED(FILAMENTCHANGEENABLE) && ENABLED(EXTRUDER_RUNOUT_PREVENT)
+-  #error "EXTRUDER_RUNOUT_PREVENT currently incompatible with FILAMENTCHANGE."
++#if ENABLED(FILAMENT_CHANGE_FEATURE) && ENABLED(EXTRUDER_RUNOUT_PREVENT)
++  #error "EXTRUDER_RUNOUT_PREVENT is incompatible with FILAMENT_CHANGE_FEATURE."
+ #endif
+ 
+ /**
+@@ -623,6 +623,8 @@
+   #error "PROBE_SERVO_DEACTIVATION_DELAY is deprecated. Use DEACTIVATE_SERVOS_AFTER_MOVE instead."
+ #elif defined(SERVO_DEACTIVATION_DELAY)
+   #error "SERVO_DEACTIVATION_DELAY is deprecated. Use SERVO_DELAY instead."
++#elif ENABLED(FILAMENTCHANGEENABLE)
++  #error "FILAMENTCHANGEENABLE is now FILAMENT_CHANGE_FEATURE. Please update your configuration."
+ #endif
+ 
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 6813d3a..ffe6a52 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -473,14 +473,14 @@ static void lcd_implementation_mark_as_selected(uint8_t row, bool isSelected) {
+   u8g.setPrintPos((START_ROW) * (DOG_CHAR_WIDTH), (row + 1) * (DOG_CHAR_HEIGHT));
+ }
+ 
+-#if ENABLED(LCD_INFO_MENU)
++#if ENABLED(LCD_INFO_MENU) || ENABLED(FILAMENT_CHANGE_FEATURE)
+ 
+-  static void lcd_implementation_drawmenu_static(uint8_t row, const char* pstr, const char* valstr=NULL, bool center=false) {
++  static void lcd_implementation_drawmenu_static(uint8_t row, const char* pstr, const char* valstr=NULL, bool center=true) {
+     char c;
+     int8_t n = LCD_WIDTH;
+     u8g.setPrintPos(0, (row + 1) * (DOG_CHAR_HEIGHT));
+     u8g.setColorIndex(1); // normal text
+-    if (center) {
++    if (center && !valstr) {
+       int8_t pad = (LCD_WIDTH - lcd_strlen_P(pstr)) / 2;
+       while (--pad >= 0) { lcd_print(' '); n--; }
+     }
+@@ -495,10 +495,9 @@ static void lcd_implementation_mark_as_selected(uint8_t row, bool isSelected) {
+     while (n-- > 0) lcd_print(' ');
+   }
+ 
+-#endif // LCD_INFO_MENU
++#endif // LCD_INFO_MENU || FILAMENT_CHANGE_FEATURE
+ 
+ static void lcd_implementation_drawmenu_generic(bool isSelected, uint8_t row, const char* pstr, char pre_char, char post_char) {
+-  UNUSED(pstr);
+   UNUSED(pre_char);
+ 
+   char c;
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index d514288..ffad119 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index b4062e8..8956c41 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index d86b8c0..704b20c 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index ae64887..1a00bb3 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -557,16 +557,30 @@ const unsigned int dropsegments = 2; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 7b608f8..e1280f2 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index 58d3623..475e033 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 11b9e6c..1a6ab80 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -559,16 +559,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  #define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    //#define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    //#define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    //#define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  #define FILAMENT_CHANGE_FEATURE               // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index b4062e8..8956c41 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 1978c09..894e861 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -553,16 +553,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index f673a20..fba0096 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -553,16 +553,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 93e9e30..7265b76 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -552,16 +552,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index f417a57..69eb9ce 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -557,16 +557,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index bcbf1c1..f224fd6 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -553,16 +553,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 7b7b4f9..857f320 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index d58dbb3..69ee6e0 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -551,16 +551,30 @@ const unsigned int dropsegments = 5; //everything with less than this number of
+ 
+ // Add support for experimental filament exchange support M600; requires display
+ #if ENABLED(ULTIPANEL)
+-  //#define FILAMENTCHANGEENABLE
+-  #if ENABLED(FILAMENTCHANGEENABLE)
+-    #define FILAMENTCHANGE_XPOS 3
+-    #define FILAMENTCHANGE_YPOS 3
+-    #define FILAMENTCHANGE_ZADD 10
+-    #define FILAMENTCHANGE_FIRSTRETRACT -2
+-    #define FILAMENTCHANGE_FINALRETRACT -100
+-    #define AUTO_FILAMENT_CHANGE                //This extrude filament until you press the button on LCD
+-    #define AUTO_FILAMENT_CHANGE_LENGTH 0.04    //Extrusion length on automatic extrusion loop
+-    #define AUTO_FILAMENT_CHANGE_FEEDRATE 300   //Extrusion feedrate (mm/min) on automatic extrusion loop
++  // #define FILAMENT_CHANGE_FEATURE             // Enable filament exchange menu and M600 g-code (used for runout sensor too)
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    #define FILAMENT_CHANGE_X_POS 3             // X position of hotend
++    #define FILAMENT_CHANGE_Y_POS 3             // Y position of hotend
++    #define FILAMENT_CHANGE_Z_ADD 10            // Z addition of hotend (lift)
++    #define FILAMENT_CHANGE_XY_FEEDRATE 100     // X and Y axes feedrate in mm/s (also used for delta printers Z axis)
++    #define FILAMENT_CHANGE_Z_FEEDRATE 5        // Z axis feedrate in mm/s (not used for delta printers)
++    #define FILAMENT_CHANGE_RETRACT_LENGTH 2    // Initial retract in mm
++                                                // It is a short retract used immediately after print interrupt before move to filament exchange position
++    #define FILAMENT_CHANGE_RETRACT_FEEDRATE 60 // Initial retract feedrate in mm/s
++    #define FILAMENT_CHANGE_UNLOAD_LENGTH 100   // Unload filament length from hotend in mm
++                                                // Longer length for bowden printers to unload filament from whole bowden tube,
++                                                // shorter lenght for printers without bowden to unload filament from extruder only,
++                                                // 0 to disable unloading for manual unloading
++    #define FILAMENT_CHANGE_UNLOAD_FEEDRATE 10  // Unload filament feedrate in mm/s - filament unloading can be fast
++    #define FILAMENT_CHANGE_LOAD_LENGTH 0       // Load filament length over hotend in mm
++                                                // Longer length for bowden printers to fast load filament into whole bowden tube over the hotend,
++                                                // Short or zero length for printers without bowden where loading is not used
++    #define FILAMENT_CHANGE_LOAD_FEEDRATE 10    // Load filament feedrate in mm/s - filament loading into the bowden tube can be fast
++    #define FILAMENT_CHANGE_EXTRUDE_LENGTH 50   // Extrude filament length in mm after filament is load over the hotend,
++                                                // 0 to disable for manual extrusion
++                                                // Filament can be extruded repeatedly from the filament exchange menu to fill the hotend,
++                                                // or until outcoming filament color is not clear for filament color change
++    #define FILAMENT_CHANGE_EXTRUDE_FEEDRATE 3  // Extrude filament feedrate in mm/s - must be slower than load feedrate
+   #endif
+ #endif
+ 
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index cc8508e..730ad62 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -200,4 +200,27 @@
+ #define MSG_DELTA_CALIBRATE_Z               "Kalibrovat Z"
+ #define MSG_DELTA_CALIBRATE_CENTER          "Kalibrovat Stred"
+ 
++#define MSG_FILAMENT_CHANGE_HEADER          "VYMENA FILAMENTU"
++#define MSG_FILAMENT_CHANGE_INIT_1          "Cekejte prosim"
++#define MSG_FILAMENT_CHANGE_INIT_2          "na zahajeni"
++#define MSG_FILAMENT_CHANGE_INIT_3          "vymeny filamentu"
++#define MSG_FILAMENT_CHANGE_UNLOAD_1        "Cekejte prosim"
++#define MSG_FILAMENT_CHANGE_UNLOAD_2        "na vysunuti"
++#define MSG_FILAMENT_CHANGE_UNLOAD_3        "filamentu"
++#define MSG_FILAMENT_CHANGE_INSERT_1        "Vlozte filament"
++#define MSG_FILAMENT_CHANGE_INSERT_2        "a stisknete"
++#define MSG_FILAMENT_CHANGE_INSERT_3        "tlacitko..."
++#define MSG_FILAMENT_CHANGE_LOAD_1          "Cekejte prosim"
++#define MSG_FILAMENT_CHANGE_LOAD_2          "na zavedeni"
++#define MSG_FILAMENT_CHANGE_LOAD_3          "filamentu"
++#define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Cekejte prosim"
++#define MSG_FILAMENT_CHANGE_EXTRUDE_2       "na vytlaceni"
++#define MSG_FILAMENT_CHANGE_EXTRUDE_3       "filamentu"
++#define MSG_FILAMENT_CHANGE_OPTION_HEADER   "CO DAL?"
++#define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Jeste vytlacit"
++#define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Obnovit tisk"
++#define MSG_FILAMENT_CHANGE_RESUME_1        "Cekejte prosim"
++#define MSG_FILAMENT_CHANGE_RESUME_2        "na pokracovani"
++#define MSG_FILAMENT_CHANGE_RESUME_3        "tisku"
++
+ #endif // LANGUAGE_CZ_H
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 1e9c955..aa9a52d 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -563,4 +563,92 @@
+   #define MSG_INFO_PSU                        "Power Supply"
+ #endif
+ 
++#ifndef MSG_FILAMENT_CHANGE_HEADER
++  #define MSG_FILAMENT_CHANGE_HEADER          "CHANGE FILAMENT"
++#endif
++#ifndef MSG_FILAMENT_CHANGE_OPTION_HEADER
++  #define MSG_FILAMENT_CHANGE_OPTION_HEADER   "CHANGE OPTIONS:"
++#endif
++#ifndef MSG_FILAMENT_CHANGE_OPTION_EXTRUDE
++  #define MSG_FILAMENT_CHANGE_OPTION_EXTRUDE  "Extrude more"
++#endif
++#ifndef MSG_FILAMENT_CHANGE_OPTION_RESUME
++  #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Resume print"
++#endif
++#if LCD_HEIGHT >= 4
++  #ifndef MSG_FILAMENT_CHANGE_INIT_1
++    #define MSG_FILAMENT_CHANGE_INIT_1          "Wait for start"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INIT_2
++    #define MSG_FILAMENT_CHANGE_INIT_2          "of the filament"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INIT_3
++    #define MSG_FILAMENT_CHANGE_INIT_3          "change"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_UNLOAD_1
++    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Wait for"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_UNLOAD_2
++    #define MSG_FILAMENT_CHANGE_UNLOAD_2        "filament unload"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_UNLOAD_3
++    #define MSG_FILAMENT_CHANGE_UNLOAD_3        ""
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INSERT_1
++    #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert filament"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INSERT_2
++    #define MSG_FILAMENT_CHANGE_INSERT_2        "and press button"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INSERT_3
++    #define MSG_FILAMENT_CHANGE_INSERT_3        "to continue..."
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_LOAD_1
++    #define MSG_FILAMENT_CHANGE_LOAD_1          "Wait for"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_LOAD_2
++    #define MSG_FILAMENT_CHANGE_LOAD_2          "filament load"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_LOAD_3
++    #define MSG_FILAMENT_CHANGE_LOAD_3          ""
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_EXTRUDE_1
++    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Wait for"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_EXTRUDE_2
++    #define MSG_FILAMENT_CHANGE_EXTRUDE_2       "filament extrude"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_EXTRUDE_3
++    #define MSG_FILAMENT_CHANGE_EXTRUDE_3       ""
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_RESUME_1
++    #define MSG_FILAMENT_CHANGE_RESUME_1        "Wait for print"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_RESUME_2
++    #define MSG_FILAMENT_CHANGE_RESUME_2        "to resume"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_RESUME_3
++    #define MSG_FILAMENT_CHANGE_RESUME_3        ""
++  #endif
++#else // LCD_HEIGHT < 4
++  #ifndef MSG_FILAMENT_CHANGE_INIT_1
++    #define MSG_FILAMENT_CHANGE_INIT_1          "Please wait..."
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_UNLOAD_1
++    #define MSG_FILAMENT_CHANGE_UNLOAD_1        "Ejecting..."
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_INSERT_1
++    #define MSG_FILAMENT_CHANGE_INSERT_1        "Insert and Click"
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_LOAD_1
++    #define MSG_FILAMENT_CHANGE_LOAD_1          "Loading..."
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_EXTRUDE_1
++    #define MSG_FILAMENT_CHANGE_EXTRUDE_1       "Extruding..."
++  #endif
++  #ifndef MSG_FILAMENT_CHANGE_RESUME_1
++    #define MSG_FILAMENT_CHANGE_RESUME_1        "Resuming..."
++  #endif
++#endif // LCD_HEIGHT < 4
++
+ #endif // LANGUAGE_EN_H
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 11c998b..cf0b15f 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -128,7 +128,17 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+     static void lcd_info_thermistors_menu();
+     static void lcd_info_board_menu();
+     static void lcd_info_menu();
+-  #endif
++  #endif // LCD_INFO_MENU
++
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++    static void lcd_filament_change_option_menu();
++    static void lcd_filament_change_init_message();
++    static void lcd_filament_change_unload_message();
++    static void lcd_filament_change_insert_message();
++    static void lcd_filament_change_load_message();
++    static void lcd_filament_change_extrude_message();
++    static void lcd_filament_change_resume_message();
++  #endif 
+ 
+   #if HAS_LCD_CONTRAST
+     static void lcd_set_contrast();
+@@ -791,7 +801,7 @@ static void lcd_status_screen() {
+     //
+     // Change filament
+     //
+-    #if ENABLED(FILAMENTCHANGEENABLE)
++    #if ENABLED(FILAMENT_CHANGE_FEATURE)
+        MENU_ITEM(gcode, MSG_FILAMENTCHANGE, PSTR("M600"));
+     #endif
+ 
+@@ -2036,6 +2046,139 @@ static void lcd_status_screen() {
+     }
+   #endif // LCD_INFO_MENU
+ 
++  #if ENABLED(FILAMENT_CHANGE_FEATURE)
++
++    static void lcd_filament_change_resume_print() {
++      filament_change_menu_response = FILAMENT_CHANGE_RESPONSE_RESUME_PRINT;
++      lcdDrawUpdate = 2;
++      lcd_goto_screen(lcd_status_screen);
++    }
++
++    static void lcd_filament_change_extrude_more() {
++      filament_change_menu_response = FILAMENT_CHANGE_RESPONSE_EXTRUDE_MORE;
++    }
++
++    static void lcd_filament_change_option_menu() {
++      START_MENU();
++      #if LCD_HEIGHT > 2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_OPTION_HEADER);
++      #endif
++      MENU_ITEM(function, MSG_FILAMENT_CHANGE_OPTION_RESUME, lcd_filament_change_resume_print);
++      MENU_ITEM(function, MSG_FILAMENT_CHANGE_OPTION_EXTRUDE, lcd_filament_change_extrude_more);
++      END_MENU();
++    }
++
++    static void lcd_filament_change_init_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_INIT_1);
++      #ifdef MSG_FILAMENT_CHANGE_INIT_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_INIT_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_INIT_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_INIT_3);
++      #endif
++      END_MENU();
++    }
++
++    static void lcd_filament_change_unload_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_UNLOAD_1);
++      #ifdef MSG_FILAMENT_CHANGE_UNLOAD_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_UNLOAD_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_UNLOAD_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_UNLOAD_3);
++      #endif
++      END_MENU();
++    }
++
++    static void lcd_filament_change_insert_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_INSERT_1);
++      #ifdef MSG_FILAMENT_CHANGE_INSERT_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_INSERT_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_INSERT_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_INSERT_3);
++      #endif
++      END_MENU();
++    }
++
++    static void lcd_filament_change_load_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_LOAD_1);
++      #ifdef MSG_FILAMENT_CHANGE_LOAD_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_LOAD_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_LOAD_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_LOAD_3);
++      #endif
++      END_MENU();
++    }
++
++    static void lcd_filament_change_extrude_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_EXTRUDE_1);
++      #ifdef MSG_FILAMENT_CHANGE_EXTRUDE_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_EXTRUDE_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_EXTRUDE_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_EXTRUDE_3);
++      #endif
++      END_MENU();
++    }
++
++    static void lcd_filament_change_resume_message() {
++      START_MENU();
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_HEADER);
++      STATIC_ITEM(MSG_FILAMENT_CHANGE_RESUME_1);
++      #ifdef MSG_FILAMENT_CHANGE_RESUME_2
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_RESUME_2);
++      #endif
++      #ifdef MSG_FILAMENT_CHANGE_RESUME_3
++        STATIC_ITEM(MSG_FILAMENT_CHANGE_RESUME_3);
++      #endif
++      END_MENU();
++    }
++  
++    void lcd_filament_change_show_message(FilamentChangeMessage message) {
++      switch (message) {
++        case FILAMENT_CHANGE_MESSAGE_INIT:
++          defer_return_to_status = true;
++          lcd_goto_screen(lcd_filament_change_init_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_UNLOAD:
++          lcd_goto_screen(lcd_filament_change_unload_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_INSERT:
++          lcd_goto_screen(lcd_filament_change_insert_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_LOAD:
++          lcd_goto_screen(lcd_filament_change_load_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_EXTRUDE:
++          lcd_goto_screen(lcd_filament_change_extrude_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_OPTION:
++          filament_change_menu_response = FILAMENT_CHANGE_RESPONSE_WAIT_FOR;
++          lcd_goto_screen(lcd_filament_change_option_menu);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_RESUME:
++          lcd_goto_screen(lcd_filament_change_resume_message);
++          break;
++        case FILAMENT_CHANGE_MESSAGE_STATUS:
++          lcd_return_to_status();
++          break;
++      }
++    }
++
++  #endif // FILAMENT_CHANGE_FEATURE
++
+   /**
+    *
+    * Functions for editing single values
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 8e7e2ee..fd5c4fc 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -69,6 +69,21 @@
+     void lcd_quick_feedback(); // Audible feedback for a button click - could also be visual
+     bool lcd_clicked();
+     void lcd_ignore_click(bool b=true);
++
++    #if ENABLED(FILAMENT_CHANGE_FEATURE)
++      enum FilamentChangeMessage {
++        FILAMENT_CHANGE_MESSAGE_INIT,
++        FILAMENT_CHANGE_MESSAGE_UNLOAD,
++        FILAMENT_CHANGE_MESSAGE_INSERT,
++        FILAMENT_CHANGE_MESSAGE_LOAD,
++        FILAMENT_CHANGE_MESSAGE_EXTRUDE,
++        FILAMENT_CHANGE_MESSAGE_OPTION,
++        FILAMENT_CHANGE_MESSAGE_RESUME,
++        FILAMENT_CHANGE_MESSAGE_STATUS
++      };
++      void lcd_filament_change_show_message(FilamentChangeMessage message);
++    #endif // FILAMENT_CHANGE_FEATURE
++
+   #else
+     FORCE_INLINE void lcd_buttons_update() {}
+   #endif
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index e939241..edb496e 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -815,13 +815,13 @@ static void lcd_implementation_status_screen() {
+   lcd_print(lcd_status_message);
+ }
+ 
+-#if ENABLED(LCD_INFO_MENU)
++#if ENABLED(LCD_INFO_MENU) || ENABLED(FILAMENT_CHANGE_FEATURE)
+ 
+   static void lcd_implementation_drawmenu_static(uint8_t row, const char* pstr, const char *valstr=NULL, bool center=true) {
+     char c;
+     int8_t n = LCD_WIDTH;
+     lcd.setCursor(0, row);
+-    if (center) {
++    if (center && !valstr) {
+       int8_t pad = (LCD_WIDTH - lcd_strlen_P(pstr)) / 2;
+       while (--pad >= 0) { lcd.print(' '); n--; }
+     }
+@@ -836,7 +836,7 @@ static void lcd_implementation_status_screen() {
+     while (n-- > 0) lcd.print(' ');
+   }
+ 
+-#endif // LCD_INFO_MENU
++#endif // LCD_INFO_MENU || FILAMENT_CHANGE_FEATURE
+ 
+ static void lcd_implementation_drawmenu_generic(bool sel, uint8_t row, const char* pstr, char pre_char, char post_char) {
+   char c;
+

@@ -1,0 +1,880 @@
+commit ee876dcd7aad4042a235fa42c948dec33cc5e705 (from fdb6533730a5eded401c572b51452542766541b2)
+Merge: fdb6533 0c24e0e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Jun 27 20:35:22 2016 -0700
+
+    Merge pull request #4159 from thinkyhead/rc_rigidbot_diff
+    
+    Rigidbot V2 support - has MCP4728 digipot
+
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index e85e682..ae03bde 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -40,6 +40,7 @@
+ #define BOARD_RAMPS_13_SF       38   // RAMPS 1.3 (Power outputs: Spindle, Controller Fan)
+ #define BOARD_FELIX2            37   // Felix 2.0+ Electronics Board (RAMPS like)
+ #define BOARD_RIGIDBOARD        42   // Invent-A-Part RigidBoard
++#define BOARD_RIGIDBOARD_V2     52   // Invent-A-Part RigidBoard V2
+ #define BOARD_RAMPS_14_EFB      43   // RAMPS 1.4 (Power outputs: Hotend, Fan, Bed)
+ #define BOARD_RAMPS_14_EEB      44   // RAMPS 1.4 (Power outputs: Hotend0, Hotend1, Bed)
+ #define BOARD_RAMPS_14_EFF      45   // RAMPS 1.4 (Power outputs: Hotend, Fan0, Fan1)
+diff --git a/Marlin/dac_mcp4728.cpp b/Marlin/dac_mcp4728.cpp
+index 3060e6e..01e38ed 100644
+--- a/Marlin/dac_mcp4728.cpp
++++ b/Marlin/dac_mcp4728.cpp
+@@ -43,9 +43,9 @@ void mcp4728_init() {
+   Wire.begin();
+   Wire.requestFrom(int(DAC_DEV_ADDRESS), 24);
+   while(Wire.available()) {
+-    int deviceID = Wire.receive();
+-    int hiByte = Wire.receive();
+-    int loByte = Wire.receive();
++    int deviceID = Wire.read();
++    int hiByte = Wire.read();
++    int loByte = Wire.read();
+ 
+     int isEEPROM = (deviceID & 0B00001000) >> 3;
+     int channel = (deviceID & 0B00110000) >> 4;
+@@ -70,10 +70,10 @@ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value) {
+  */
+ uint8_t mcp4728_eepromWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(SEQWRITE);
++  Wire.write(SEQWRITE);
+   for (uint8_t channel=0; channel <= 3; channel++) {
+-    Wire.send(DAC_STEPPER_VREF << 7 | 0 << 5 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
+-    Wire.send(lowByte(mcp4728_values[channel]));
++    Wire.write(DAC_STEPPER_VREF << 7 | 0 << 5 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
++    Wire.write(lowByte(mcp4728_values[channel]));
+   }
+   return Wire.endTransmission();
+ }
+@@ -83,7 +83,7 @@ uint8_t mcp4728_eepromWrite() {
+  */
+ uint8_t mcp4728_setVref_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(VREFWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(VREFWRITE | value << 3 | value << 2 | value << 1 | value);
+   return Wire.endTransmission();
+ }
+ /**
+@@ -91,7 +91,7 @@ uint8_t mcp4728_setVref_all(uint8_t value) {
+  */
+ uint8_t mcp4728_setGain_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.send(GAINWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(GAINWRITE | value << 3 | value << 2 | value << 1 | value);
+   return Wire.endTransmission();
+ }
+ 
+@@ -120,8 +120,8 @@ uint16_t mcp4728_getVout(uint8_t channel) {
+ uint8_t mcp4728_fastWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+   for (uint8_t channel=0; channel <= 3; channel++) {
+-    Wire.send(highByte(mcp4728_values[channel]));
+-    Wire.send(lowByte(mcp4728_values[channel]));
++    Wire.write(highByte(mcp4728_values[channel]));
++    Wire.write(lowByte(mcp4728_values[channel]));
+   }
+   return Wire.endTransmission();
+ }
+@@ -131,7 +131,7 @@ uint8_t mcp4728_fastWrite() {
+  */
+ uint8_t mcp4728_simpleCommand(byte simpleCommand) {
+   Wire.beginTransmission(GENERALCALL);
+-  Wire.send(simpleCommand);
++  Wire.write(simpleCommand);
+   return Wire.endTransmission();
+ }
+ 
+diff --git a/Marlin/dac_mcp4728.h b/Marlin/dac_mcp4728.h
+index e1739c5..18d22f2 100644
+--- a/Marlin/dac_mcp4728.h
++++ b/Marlin/dac_mcp4728.h
+@@ -31,9 +31,7 @@
+ #include "Configuration_adv.h"
+ 
+ #if ENABLED(DAC_STEPPER_CURRENT)
+-#include "WProgram.h"
+ #include "Wire.h"
+-//#include <Wire.h>
+ 
+ #define defaultVDD 5000
+ #define BASE_ADDR 0x60
+@@ -50,7 +48,9 @@
+ #define GAINWRITE 0B11000000
+ 
+ // This is taken from the original lib, makes it easy to edit if needed
+-#define DAC_DEV_ADDRESS (BASE_ADDR | 0x00)
++// DAC_OR_ADDRESS defined in pins_BOARD.h  file
++#define DAC_DEV_ADDRESS (BASE_ADDR | DAC_OR_ADDRESS)
++
+ 
+ void mcp4728_init();
+ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value);
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 91e5dba..a0abbed 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -117,8 +117,11 @@
+ 
+ // The following define selects which electronics board you have.
+ // Please choose the name from boards.h that matches your setup
++// for Rigidbot version 1 : #define MOTHERBOARD BOARD_RIGIDBOARD
++// for Rigidbot Version 2 : #define MOTHERBOARD BOARD_RIGIDBOARD_V2
++
+ #ifndef MOTHERBOARD
+-  #define MOTHERBOARD BOARD_RIGIDBOARD
++  #define MOTHERBOARD BOARD_RIGIDBOARD_V2
+ #endif
+ 
+ // Optional custom name for your RepStrap or other custom machine
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 4a090f3..bbabe53 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -129,6 +129,8 @@
+   #include "pins_MKS_BASE.h"
+ #elif MB(RIGIDBOARD)
+   #include "pins_RIGIDBOARD.h"
++#elif MB(RIGIDBOARD_V2)
++  #include "pins_RIGIDBOARD_V2.h"
+ #elif MB(MEGACONTROLLER)
+   #include "pins_MEGACONTROLLER.h"
+ #elif MB(BQ_ZUM_MEGA_3D)
+diff --git a/Marlin/pins_PRINTRBOARD_REVF.h b/Marlin/pins_PRINTRBOARD_REVF.h
+index c677346..799eb37 100644
+--- a/Marlin/pins_PRINTRBOARD_REVF.h
++++ b/Marlin/pins_PRINTRBOARD_REVF.h
+@@ -89,6 +89,7 @@
+ #define DAC_STEPPER_MAX   3520
+ #define DAC_STEPPER_VREF     1 //internal Vref, gain 1x = 2.048V
+ #define DAC_STEPPER_GAIN     0
++#define DAC_OR_ADDRESS    0x00
+ 
+ #if DISABLED(SDSUPPORT)
+   // these pins are defined in the SD library if building with SD support
+diff --git a/Marlin/pins_RIGIDBOARD_V2.h b/Marlin/pins_RIGIDBOARD_V2.h
+new file mode 100644
+index 0000000..1226c56
+--- /dev/null
++++ b/Marlin/pins_RIGIDBOARD_V2.h
+@@ -0,0 +1,40 @@
++/**
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++/**
++ * RIGIDBOARD V2 Arduino Mega with RAMPS v1.4 pin assignments
++ */
++
++#include "pins_RIGIDBOARD.h"
++
++// I2C based DAC like on the Printrboard REVF
++#define DAC_STEPPER_CURRENT
++// Channels available for DAC, For Rigidboard there are 4
++#define DAC_STEPPER_ORDER {0,1,2,3}
++
++#define DAC_STEPPER_SENSE    0.11
++#define DAC_STEPPER_ADDRESS  0
++#define DAC_STEPPER_MAX   5000
++#define DAC_STEPPER_VREF     1 //internal Vref, gain 1x = 2.048V
++#define DAC_STEPPER_GAIN     0
++#define DAC_DISABLE_PIN     42 //  set low to enable DAC
++#define DAC_OR_ADDRESS    0x01
+diff --git a/Marlin/stepper_dac.cpp b/Marlin/stepper_dac.cpp
+index 2e3248d..2663ab9 100644
+--- a/Marlin/stepper_dac.cpp
++++ b/Marlin/stepper_dac.cpp
+@@ -51,6 +51,11 @@
+   const uint8_t dac_order[NUM_AXIS] = DAC_STEPPER_ORDER;
+ 
+   int dac_init() {
++    #if PIN_EXISTS(DAC_DISABLE)
++      pinMode(DAC_DISABLE_PIN, OUTPUT);
++      digitalWrite(DAC_DISABLE_PIN, LOW);  // set pin low to enable DAC
++    #endif
++
+     mcp4728_init();
+ 
+     if (mcp4728_simpleCommand(RESET)) return -1;
+
+commit ee876dcd7aad4042a235fa42c948dec33cc5e705 (from 0c24e0e44524686d2c12efe8d1f17e61fae48075)
+Merge: fdb6533 0c24e0e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Jun 27 20:35:22 2016 -0700
+
+    Merge pull request #4159 from thinkyhead/rc_rigidbot_diff
+    
+    Rigidbot V2 support - has MCP4728 digipot
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index f88b41d..5e70cb0 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -255,6 +255,7 @@
+ 
+     #define HAS_LCD_CONTRAST ( \
+         ENABLED(MAKRPANEL) \
++     || ENABLED(CARTESIO_UI) \
+      || ENABLED(VIKI2) \
+      || ENABLED(miniVIKI) \
+      || ENABLED(ELB_FULL_GRAPHIC_CONTROLLER) \
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 9891343..aaddca0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1713,27 +1713,37 @@ static void clean_up_after_endstop_or_probe_move() {
+       z_dest -= zprobe_zoffset;
+ 
+     if (z_dest > current_position[Z_AXIS]) {
+-      float old_feedrate = feedrate;
+-      feedrate = homing_feedrate[Z_AXIS];
+       do_blocking_move_to_z(z_dest);
+-      feedrate = old_feedrate;
+     }
+   }
+ 
+ #endif //HAS_BED_PROBE
+ 
+ #if ENABLED(Z_PROBE_SLED) || ENABLED(Z_SAFE_HOMING) || HAS_PROBING_PROCEDURE
+-  static void axis_unhomed_error(bool xyz=false) {
+-    if (xyz) {
+-      LCD_MESSAGEPGM(MSG_XYZ_UNHOMED);
+-      SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM(MSG_XYZ_UNHOMED);
+-    }
+-    else {
+-      LCD_MESSAGEPGM(MSG_YX_UNHOMED);
++  static bool axis_unhomed_error(const bool x, const bool y, const bool z) {
++    const bool xx = x && !axis_homed[X_AXIS],
++               yy = y && !axis_homed[Y_AXIS],
++               zz = z && !axis_homed[Z_AXIS];
++    if (xx || yy || zz) {
+       SERIAL_ECHO_START;
+-      SERIAL_ECHOLNPGM(MSG_YX_UNHOMED);
++      SERIAL_ECHOPGM(MSG_HOME " ");
++      if (xx) SERIAL_ECHOPGM(MSG_X);
++      if (yy) SERIAL_ECHOPGM(MSG_Y);
++      if (zz) SERIAL_ECHOPGM(MSG_Z);
++      SERIAL_ECHOLNPGM(" " MSG_FIRST);
++
++      #if ENABLED(ULTRA_LCD)
++        char message[3 * (LCD_WIDTH) + 1] = ""; // worst case is kana.utf with up to 3*LCD_WIDTH+1
++        strcat_P(message, PSTR(MSG_HOME " "));
++        if (xx) strcat_P(message, PSTR(MSG_X));
++        if (yy) strcat_P(message, PSTR(MSG_Y));
++        if (zz) strcat_P(message, PSTR(MSG_Z));
++        strcat_P(message, PSTR(" " MSG_FIRST));
++        lcd_setstatus(message);
++      #endif
++      return true;
+     }
++    return false;
+   }
+ #endif
+ 
+@@ -1746,45 +1756,27 @@ static void clean_up_after_endstop_or_probe_move() {
+   /**
+    * Method to dock/undock a sled designed by Charles Bell.
+    *
+-   * dock[in]     If true, move to MAX_X and engage the electromagnet
+-   * offset[in]   The additional distance to move to adjust docking location
++   * stow[in]     If false, move to MAX_X and engage the solenoid
++   *              If true, move to MAX_X and release the solenoid
+    */
+-  static void dock_sled(bool dock, int offset = 0) {
++  static void dock_sled(bool stow) {
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) {
+-        SERIAL_ECHOPAIR("dock_sled(", dock);
++        SERIAL_ECHOPAIR("dock_sled(", stow);
+         SERIAL_ECHOLNPGM(")");
+       }
+     #endif
+ 
+-    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
+-      axis_unhomed_error(true);
+-      return;
+-    }
+-
+-    if (endstops.z_probe_enabled == !dock) return; // already docked/undocked?
++    if (axis_unhomed_error(true, false, false)) return;
+ 
+     float oldXpos = current_position[X_AXIS]; // save x position
+-    float old_feedrate = feedrate;
+-    if (dock) {
+-      #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
+-        do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+-      #endif
+-      // Dock sled a bit closer to ensure proper capturing
+-      feedrate = XY_PROBE_FEEDRATE;
+-      do_blocking_move_to_x(X_MAX_POS + SLED_DOCKING_OFFSET + offset - 1);
+-      digitalWrite(SLED_PIN, LOW); // turn off magnet
+-    }
+-    else {
+-      feedrate = XY_PROBE_FEEDRATE;
+-      float z_loc = current_position[Z_AXIS];
+-      if (z_loc < _Z_RAISE_PROBE_DEPLOY_STOW + 5) z_loc = _Z_RAISE_PROBE_DEPLOY_STOW;
+-      do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], z_loc); // this also updates current_position
+-      digitalWrite(SLED_PIN, HIGH); // turn on magnet
+-    }
++
++    // Dock sled a bit closer to ensure proper capturing
++    do_blocking_move_to_x(X_MAX_POS + SLED_DOCKING_OFFSET - ((stow) ? 1 : 0));
++    digitalWrite(SLED_PIN, !stow); // switch solenoid
++
+     do_blocking_move_to_x(oldXpos); // return to position before docking
+ 
+-    feedrate = old_feedrate;
+   }
+ 
+ #endif // Z_PROBE_SLED
+@@ -1800,9 +1792,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     if (endstops.z_probe_enabled) return;
+ 
+     // Make room for probe
+-    #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
+-      do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+-    #endif
++    do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+ 
+     #if ENABLED(Z_PROBE_SLED)
+ 
+@@ -1904,9 +1894,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     if (!endstops.z_probe_enabled) return;
+ 
+     // Make more room for the servo
+-    #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
+-      do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+-    #endif
++    do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+ 
+     #if ENABLED(Z_PROBE_SLED)
+ 
+@@ -2844,28 +2832,33 @@ inline void gcode_G28() {
+ 
+     #elif defined(MIN_Z_HEIGHT_FOR_HOMING) && MIN_Z_HEIGHT_FOR_HOMING > 0
+ 
+-      // Raise Z before homing any other axes and z is not already high enough (never lower z)
+-      if (current_position[Z_AXIS] <= MIN_Z_HEIGHT_FOR_HOMING) {
+-        destination[Z_AXIS] = MIN_Z_HEIGHT_FOR_HOMING;
+-        feedrate = planner.max_feedrate[Z_AXIS] * 60;  // feedrate (mm/m) = max_feedrate (mm/s)
+-        #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) {
+-            SERIAL_ECHOPAIR("Raise Z (before homing) to ", (MIN_Z_HEIGHT_FOR_HOMING));
+-            SERIAL_EOL;
+-            DEBUG_POS("> (home_all_axis || homeZ)", current_position);
+-            DEBUG_POS("> (home_all_axis || homeZ)", destination);
+-          }
+-        #endif
+-        line_to_destination();
+-        stepper.synchronize();
++      #if HAS_BED_PROBE
++        do_probe_raise(MIN_Z_HEIGHT_FOR_HOMING);
++        destination[Z_AXIS] = current_position[Z_AXIS];
++      #else
++        // Raise Z before homing any other axes and z is not already high enough (never lower z)
++        if (current_position[Z_AXIS] <= MIN_Z_HEIGHT_FOR_HOMING) {
++          destination[Z_AXIS] = MIN_Z_HEIGHT_FOR_HOMING;
++          feedrate = planner.max_feedrate[Z_AXIS] * 60;  // feedrate (mm/m) = max_feedrate (mm/s)
++          #if ENABLED(DEBUG_LEVELING_FEATURE)
++            if (DEBUGGING(LEVELING)) {
++              SERIAL_ECHOPAIR("Raise Z (before homing) to ", (MIN_Z_HEIGHT_FOR_HOMING));
++              SERIAL_EOL;
++              DEBUG_POS("> (home_all_axis || homeZ)", current_position);
++              DEBUG_POS("> (home_all_axis || homeZ)", destination);
++            }
++          #endif
++          line_to_destination();
++          stepper.synchronize();
+ 
+-        /**
+-         * Update the current Z position even if it currently not real from
+-         * Z-home otherwise each call to line_to_destination() will want to
+-         * move Z-axis by MIN_Z_HEIGHT_FOR_HOMING.
+-         */
+-        current_position[Z_AXIS] = destination[Z_AXIS];
+-      }
++          /**
++           * Update the current Z position even if it currently not real from
++           * Z-home otherwise each call to line_to_destination() will want to
++           * move Z-axis by MIN_Z_HEIGHT_FOR_HOMING.
++           */
++          current_position[Z_AXIS] = destination[Z_AXIS];
++        }
++      #endif
+     #endif
+ 
+     #if ENABLED(QUICK_HOME)
+@@ -2922,7 +2915,12 @@ inline void gcode_G28() {
+ 
+     #if ENABLED(HOME_Y_BEFORE_X)
+       // Home Y
+-      if (home_all_axis || homeY) HOMEAXIS(Y);
++      if (home_all_axis || homeY) {
++        HOMEAXIS(Y);
++        #if ENABLED(DEBUG_LEVELING_FEATURE)
++          if (DEBUGGING(LEVELING)) DEBUG_POS("> homeY", current_position);
++        #endif
++      }
+     #endif
+ 
+     // Home X
+@@ -3015,32 +3013,27 @@ inline void gcode_G28() {
+           else if (homeZ) { // Don't need to Home Z twice
+ 
+             // Let's see if X and Y are homed
+-            if (axis_homed[X_AXIS] && axis_homed[Y_AXIS]) {
+-
+-              /**
+-               * Make sure the Z probe is within the physical limits
+-               * NOTE: This doesn't necessarily ensure the Z probe is also
+-               * within the bed!
+-               */
+-              float cpx = current_position[X_AXIS], cpy = current_position[Y_AXIS];
+-              if (   cpx >= X_MIN_POS - (X_PROBE_OFFSET_FROM_EXTRUDER)
+-                  && cpx <= X_MAX_POS - (X_PROBE_OFFSET_FROM_EXTRUDER)
+-                  && cpy >= Y_MIN_POS - (Y_PROBE_OFFSET_FROM_EXTRUDER)
+-                  && cpy <= Y_MAX_POS - (Y_PROBE_OFFSET_FROM_EXTRUDER)) {
+-
+-                // Home the Z axis
+-                HOMEAXIS(Z);
+-              }
+-              else {
+-                LCD_MESSAGEPGM(MSG_ZPROBE_OUT);
+-                SERIAL_ECHO_START;
+-                SERIAL_ECHOLNPGM(MSG_ZPROBE_OUT);
+-              }
++            if (axis_unhomed_error(true, true, false)) return;
++
++            /**
++             * Make sure the Z probe is within the physical limits
++             * NOTE: This doesn't necessarily ensure the Z probe is also
++             * within the bed!
++             */
++            float cpx = current_position[X_AXIS], cpy = current_position[Y_AXIS];
++            if (   cpx >= X_MIN_POS - (X_PROBE_OFFSET_FROM_EXTRUDER)
++                && cpx <= X_MAX_POS - (X_PROBE_OFFSET_FROM_EXTRUDER)
++                && cpy >= Y_MIN_POS - (Y_PROBE_OFFSET_FROM_EXTRUDER)
++                && cpy <= Y_MAX_POS - (Y_PROBE_OFFSET_FROM_EXTRUDER)) {
++
++              // Home the Z axis
++              HOMEAXIS(Z);
+             }
+             else {
+-              axis_unhomed_error();
++              LCD_MESSAGEPGM(MSG_ZPROBE_OUT);
++              SERIAL_ECHO_START;
++              SERIAL_ECHOLNPGM(MSG_ZPROBE_OUT);
+             }
+-
+           } // !home_all_axes && homeZ
+ 
+           #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -3381,10 +3374,7 @@ inline void gcode_G28() {
+     #endif
+ 
+     // Don't allow auto-leveling without homing first
+-    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
+-      axis_unhomed_error(true);
+-      return;
+-    }
++    if (axis_unhomed_error(true, true, true)) return;
+ 
+     int verbose_level = code_seen('V') ? code_value_int() : 1;
+     if (verbose_level < 0 || verbose_level > 4) {
+@@ -3394,7 +3384,7 @@ inline void gcode_G28() {
+ 
+     bool dryrun = code_seen('D');
+ 
+-    #if ENABLED(Z_PROBE_SLED) || ENABLED(Z_PROBE_ALLEN_KEY)
++    #if ENABLED(Z_PROBE_ALLEN_KEY)
+       const bool stow_probe_after_each = false;
+     #else
+       bool stow_probe_after_each = code_seen('E');
+@@ -4136,10 +4126,7 @@ inline void gcode_M42() {
+    */
+   inline void gcode_M48() {
+ 
+-    if (!axis_homed[X_AXIS] || !axis_homed[Y_AXIS] || !axis_homed[Z_AXIS]) {
+-      axis_unhomed_error(true);
+-      return;
+-    }
++    if (axis_unhomed_error(true, true, true)) return;
+ 
+     int8_t verbose_level = code_seen('V') ? code_value_byte() : 1;
+     if (verbose_level < 0 || verbose_level > 4) {
+@@ -4159,7 +4146,7 @@ inline void gcode_M42() {
+     float  X_current = current_position[X_AXIS],
+            Y_current = current_position[Y_AXIS];
+ 
+-    #if ENABLED(Z_PROBE_SLED) || ENABLED(Z_PROBE_ALLEN_KEY)
++    #if ENABLED(Z_PROBE_ALLEN_KEY)
+       const bool stow_probe_after_each = false;
+     #else
+       bool stow_probe_after_each = code_seen('E');
+diff --git a/Marlin/language_an.h b/Marlin/language_an.h
+index fbfb4dd..968fa51 100644
+--- a/Marlin/language_an.h
++++ b/Marlin/language_an.h
+@@ -142,7 +142,8 @@
+ #define MSG_INIT_SDCARD                     "Encetan. tarcheta"
+ #define MSG_CNG_SDCARD                      "Cambiar tarcheta"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y before Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_bg.h b/Marlin/language_bg.h
+index c86e97b..3fc7a5b 100644
+--- a/Marlin/language_bg.h
++++ b/Marlin/language_bg.h
+@@ -143,7 +143,8 @@
+ #define MSG_INIT_SDCARD                     "Иниц. SD-Карта"
+ #define MSG_CNG_SDCARD                      "Смяна SD-Карта"
+ #define MSG_ZPROBE_OUT                      "Z-сондата е извадена"
+-#define MSG_YX_UNHOMED                      "Задайте X/Y преди Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Отстояние"
+ #define MSG_BABYSTEP_X                      "Министъпка X"
+ #define MSG_BABYSTEP_Y                      "Министъпка Y"
+diff --git a/Marlin/language_ca.h b/Marlin/language_ca.h
+index 8866c9e..9c2ba49 100644
+--- a/Marlin/language_ca.h
++++ b/Marlin/language_ca.h
+@@ -143,7 +143,8 @@
+ #define MSG_INIT_SDCARD                     "Iniciant SD"
+ #define MSG_CNG_SDCARD                      "Canviar SD"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y abans Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_cn.h b/Marlin/language_cn.h
+index 40f1908..e2306a4 100644
+--- a/Marlin/language_cn.h
++++ b/Marlin/language_cn.h
+@@ -142,7 +142,8 @@
+ #define MSG_INIT_SDCARD                     "Init. SD card"
+ #define MSG_CNG_SDCARD                      "Change SD card"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y before Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_cz.h b/Marlin/language_cz.h
+index bd8ae6d..cc8508e 100644
+--- a/Marlin/language_cz.h
++++ b/Marlin/language_cz.h
+@@ -174,8 +174,8 @@
+ #define MSG_INIT_SDCARD                     "Nacist SD kartu"
+ #define MSG_CNG_SDCARD                      "Vymenit SD kartu"
+ #define MSG_ZPROBE_OUT                      "Sonda Z mimo podl"
+-#define MSG_YX_UNHOMED                      "Domu X/Y pred Z"
+-#define MSG_XYZ_UNHOMED                     "Domu XYZ prvni"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z ofset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_da.h b/Marlin/language_da.h
+index 42d8dfa..55c9fd4 100644
+--- a/Marlin/language_da.h
++++ b/Marlin/language_da.h
+@@ -170,8 +170,8 @@
+ #define MSG_INIT_SDCARD                     "Init. SD card"
+ #define MSG_CNG_SDCARD                      "Skift SD kort"
+ #define MSG_ZPROBE_OUT                      "Probe udenfor plade"
+-#define MSG_YX_UNHOMED                      "Home X/Y før Z"
+-#define MSG_XYZ_UNHOMED                     "Home XYZ first"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_de.h b/Marlin/language_de.h
+index d4d5c3c..58acd95 100644
+--- a/Marlin/language_de.h
++++ b/Marlin/language_de.h
+@@ -145,7 +145,8 @@
+ #define MSG_INIT_SDCARD                     "SD-Karte erkennen"  // Manually initialize the SD-card via user interface
+ #define MSG_CNG_SDCARD                      "SD-Karte getauscht" // SD-card changed by user. For machines with no autocarddetect. Both send "M21"
+ #define MSG_ZPROBE_OUT                      "Sensor ausserhalb"
+-#define MSG_YX_UNHOMED                      "X/Y vor Z homen!"
++#define MSG_HOME                            "Vorher"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "homen"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index e85d342..8f20bc0 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -445,11 +445,11 @@
+ #ifndef MSG_ZPROBE_OUT
+   #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+ #endif
+-#ifndef MSG_YX_UNHOMED
+-  #define MSG_YX_UNHOMED                      "Home X/Y before Z"
++#ifndef MSG_HOME
++  #define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+ #endif
+-#ifndef MSG_XYZ_UNHOMED
+-  #define MSG_XYZ_UNHOMED                     "Home XYZ first"
++#ifndef MSG_FIRST
++  #define MSG_FIRST                           "first"
+ #endif
+ #ifndef MSG_ZPROBE_ZOFFSET
+   #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+diff --git a/Marlin/language_es.h b/Marlin/language_es.h
+index cf1785c..9722ccd 100644
+--- a/Marlin/language_es.h
++++ b/Marlin/language_es.h
+@@ -169,8 +169,8 @@
+ #define MSG_INIT_SDCARD                     "Iniciando tarjeta"
+ #define MSG_CNG_SDCARD                      "Cambiar tarjeta"
+ #define MSG_ZPROBE_OUT                      "Sonda Z fuera"
+-#define MSG_YX_UNHOMED                      "Reiniciar X/Y y Z"
+-#define MSG_XYZ_UNHOMED                     "Reiniciar XYZ"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Desfase Z"
+ #define MSG_BABYSTEP_X                      "Micropaso X"
+ #define MSG_BABYSTEP_Y                      "Micropaso Y"
+diff --git a/Marlin/language_eu.h b/Marlin/language_eu.h
+index 8af3aab..f87ac2f 100644
+--- a/Marlin/language_eu.h
++++ b/Marlin/language_eu.h
+@@ -142,7 +142,8 @@
+ #define MSG_INIT_SDCARD                     "Hasieratu txartela"
+ #define MSG_CNG_SDCARD                      "Aldatu txartela"
+ #define MSG_ZPROBE_OUT                      "Z ohe hasiera"
+-#define MSG_YX_UNHOMED                      "Posizio ezezaguna"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z konpentsatu"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_fi.h b/Marlin/language_fi.h
+index 87cbb1f..be3db64 100644
+--- a/Marlin/language_fi.h
++++ b/Marlin/language_fi.h
+@@ -142,7 +142,8 @@
+ #define MSG_INIT_SDCARD                     "Init. SD-Card"
+ #define MSG_CNG_SDCARD                      "Change SD-Card"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y before Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_fr.h b/Marlin/language_fr.h
+index 7536d53..f22abce 100644
+--- a/Marlin/language_fr.h
++++ b/Marlin/language_fr.h
+@@ -145,7 +145,8 @@
+ #define MSG_INIT_SDCARD                     "Init. la carte SD"
+ #define MSG_CNG_SDCARD                      "Changer de carte"
+ #define MSG_ZPROBE_OUT                      "Z sonde exte. lit"
+-#define MSG_YX_UNHOMED                      "Rev. dans XY av.Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Decalage Z"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_gl.h b/Marlin/language_gl.h
+index 5363010..f4e4639 100644
+--- a/Marlin/language_gl.h
++++ b/Marlin/language_gl.h
+@@ -170,8 +170,8 @@
+ #define MSG_INIT_SDCARD                     "Iniciando SD"
+ #define MSG_CNG_SDCARD                      "Cambiar SD"
+ #define MSG_ZPROBE_OUT                      "Sonda-Z sen cama"
+-#define MSG_YX_UNHOMED                      "X/Y antes que Z"
+-#define MSG_XYZ_UNHOMED                     "Orixe XYZ antes"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Offset Z"
+ #define MSG_BABYSTEP_X                      "Micropaso X"
+ #define MSG_BABYSTEP_Y                      "Micropaso Y"
+diff --git a/Marlin/language_hr.h b/Marlin/language_hr.h
+index f3bf014..d48e58c 100644
+--- a/Marlin/language_hr.h
++++ b/Marlin/language_hr.h
+@@ -171,8 +171,8 @@
+ #define MSG_INIT_SDCARD                     "Init. SD karticu"
+ #define MSG_CNG_SDCARD                      "Promijeni SD karticu"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home-aj X/Y prije Z"
+-#define MSG_XYZ_UNHOMED                     "Home-aj XYZ prvo"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index 6e305e1..481b725 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -150,8 +150,8 @@
+ #define MSG_INIT_SDCARD                     "Iniz. SD-Card"
+ #define MSG_CNG_SDCARD                      "Cambia SD-Card"
+ #define MSG_ZPROBE_OUT                      "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y prima di Z"
+-#define MSG_XYZ_UNHOMED                     "Home XYZ prima"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 80c4224..7eb6f59 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -184,6 +184,10 @@
+ #define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                       // "SDｶｰﾄﾞｻｲﾖﾐｺﾐ" ("Init. SD card")
+ #define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                               // "SDｶｰﾄﾞｺｳｶﾝ" ("Change SD card")
+ #define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2"    // "Zﾌﾟﾛｰﾌﾞ ﾍﾞｯﾄﾞｶﾞｲ" ("Z probe out. bed")
++
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
++/*
+ #if LCD_WIDTH < 20
+   #define MSG_YX_UNHOMED                    "\xbb\xb7\xc6X/Y\xa6\xcc\xaf\xb7\xbb\xbe\xd6"                                   // "ｻｷﾆX/Yｦﾌｯｷｻｾﾖ" ("Home X/Y before Z")
+   #define MSG_XYZ_UNHOMED                   "\xbb\xb7\xc6\xb9\xde\xdd\xc3\xdd\xcc\xaf\xb7\xa6\xbe\xd6"                      // "ｻｷﾆｹﾞﾝﾃﾝﾌｯｷｦｾﾖ" ("Home XYZ first")
+@@ -191,6 +195,7 @@
+   #define MSG_YX_UNHOMED                    "\xbb\xb7\xc6X/Y\xa6\xcc\xaf\xb7\xbb\xbe\xc3\xb8\xc0\xde\xbb\xb2"               // "ｻｷﾆX/Yｦﾌｯｷｻｾﾃｸﾀﾞｻｲ" ("Home X/Y before Z")
+   #define MSG_XYZ_UNHOMED                   "\xbb\xb7\xc6\xb9\xde\xdd\xc3\xdd\xcc\xaf\xb7\xa6\xbc\xc3\xb8\xc0\xde\xbb\xb2"  // "ｻｷﾆｹﾞﾝﾃﾝﾌｯｷｦｼﾃｸﾀﾞｻｲ" ("Home XYZ first")
+ #endif
++*/
+ #define MSG_ZPROBE_ZOFFSET                  "Z\xb5\xcc\xbe\xaf\xc4"                                            // "Zｵﾌｾｯﾄ" ("Z Offset")
+ #define MSG_BABYSTEP_X                      "X\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                            // "Xｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep X")
+ #define MSG_BABYSTEP_Y                      "Y\xbc\xde\xb8\x20\xcb\xde\xc4\xde\xb3"                            // "Yｼﾞｸ ﾋﾞﾄﾞｳ" ("Babystep Y")
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index 1188c63..8a35e7c 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -155,8 +155,8 @@
+ #define MSG_INIT_SDCARD                     "SDカードサイヨミコミ"             // "Init. SD card"
+ #define MSG_CNG_SDCARD                      "SDカードコウカン"               // "Change SD card"
+ #define MSG_ZPROBE_OUT                      "Zプローブ ベッドガイ"            // "Z probe out. bed"
+-#define MSG_YX_UNHOMED                      "サキニX/Yヲフッキサセテクダサイ"    // "Home X/Y before Z"
+-#define MSG_XYZ_UNHOMED                     "サキニゲンテンフッキヲシテクダサイ"   // "Home XYZ first"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Zオフセット"                   // "Z Offset"
+ #define MSG_BABYSTEP_X                      "Xジク ビドウ"                  // "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Yジク ビドウ"                  // "Babystep Y"
+diff --git a/Marlin/language_nl.h b/Marlin/language_nl.h
+index dcac940..c74ad8f 100644
+--- a/Marlin/language_nl.h
++++ b/Marlin/language_nl.h
+@@ -144,7 +144,8 @@
+ #define MSG_INIT_SDCARD                     "Init. SD kaart"
+ #define MSG_CNG_SDCARD                      "Verv. SD Kaart"
+ #define MSG_ZPROBE_OUT                      "Z probe uit. bed"
+-#define MSG_YX_UNHOMED                      "Home X/Y voor Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Z Offset"
+ #define MSG_BABYSTEP_X                      "Babystap X"
+ #define MSG_BABYSTEP_Y                      "Babystap Y"
+diff --git a/Marlin/language_pl.h b/Marlin/language_pl.h
+index 8a54f64..bbaae33 100644
+--- a/Marlin/language_pl.h
++++ b/Marlin/language_pl.h
+@@ -167,7 +167,8 @@
+ #define MSG_INIT_SDCARD                     "Inicjal. karty SD"
+ #define MSG_CNG_SDCARD                      "Zmiana karty SD"
+ #define MSG_ZPROBE_OUT                      "Sonda Z za lozem"
+-#define MSG_YX_UNHOMED                      "Wroc w XY przed Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Offset Z"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_pt-br.h b/Marlin/language_pt-br.h
+index 3bc25d9..cc37f31 100644
+--- a/Marlin/language_pt-br.h
++++ b/Marlin/language_pt-br.h
+@@ -144,7 +144,8 @@
+ #define MSG_INIT_SDCARD                     "Iniciar SD"
+ #define MSG_CNG_SDCARD                      "Trocar SD"
+ #define MSG_ZPROBE_OUT                      "Son. fora da mesa"
+-#define MSG_YX_UNHOMED                      "Pos. Desconhecida"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Deslocamento no Z"
+ #define MSG_BABYSTEP_X                      "Passinho X"
+ #define MSG_BABYSTEP_Y                      "Passinho Y"
+diff --git a/Marlin/language_pt-br_utf8.h b/Marlin/language_pt-br_utf8.h
+index a746ad6..feb38b4 100644
+--- a/Marlin/language_pt-br_utf8.h
++++ b/Marlin/language_pt-br_utf8.h
+@@ -144,7 +144,8 @@
+ #define MSG_INIT_SDCARD                     "Iniciar SD"
+ #define MSG_CNG_SDCARD                      "Trocar SD"
+ #define MSG_ZPROBE_OUT                      "Son. fora da mesa"
+-#define MSG_YX_UNHOMED                      "Pos. Desconhecida"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Deslocamento no Z"
+ #define MSG_BABYSTEP_X                      "Passinho X"
+ #define MSG_BABYSTEP_Y                      "Passinho Y"
+diff --git a/Marlin/language_pt.h b/Marlin/language_pt.h
+index e4bb049..4c857a7 100644
+--- a/Marlin/language_pt.h
++++ b/Marlin/language_pt.h
+@@ -152,7 +152,8 @@
+ #define MSG_INIT_SDCARD                     "Inici. cartao SD"
+ #define MSG_CNG_SDCARD                      "Trocar cartao SD"
+ #define MSG_ZPROBE_OUT                      "Sensor fora/base"
+-#define MSG_YX_UNHOMED                      "XY antes de Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Desvio Z"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+diff --git a/Marlin/language_pt_utf8.h b/Marlin/language_pt_utf8.h
+index 02b46bd..c2fab4d 100644
+--- a/Marlin/language_pt_utf8.h
++++ b/Marlin/language_pt_utf8.h
+@@ -152,7 +152,8 @@
+ #define MSG_INIT_SDCARD                     "Inici. cartão SD"
+ #define MSG_CNG_SDCARD                      "Trocar cartão SD"
+ #define MSG_ZPROBE_OUT                      "Sensor fora/base"
+-#define MSG_YX_UNHOMED                      "XY antes de Z"
++#define MSG_HOME                            "Home"  // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
++#define MSG_FIRST                           "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Desvio Z"
+ #define MSG_BABYSTEP_X                      "Babystep X"
+ #define MSG_BABYSTEP_Y                      "Babystep Y"
+

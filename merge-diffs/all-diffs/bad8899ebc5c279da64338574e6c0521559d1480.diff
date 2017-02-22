@@ -1,0 +1,625 @@
+commit bad8899ebc5c279da64338574e6c0521559d1480 (from 73ce3a61c733bc72110e2e4220d9362eab79ef52)
+Merge: 73ce3a6 0d538f3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Oct 1 06:57:17 2016 -0500
+
+    Merge pull request #4900 from thinkyhead/rc_g38_changes
+    
+    Cleanup of G38.2 / G38.3
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index ceec7e6..ec3ece2 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 1daefe7..b890b6a 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -209,6 +209,11 @@ void manage_inactivity(bool ignore_stepper_queue = false);
+ 
+ #endif // !MIXING_EXTRUDER
+ 
++#if ENABLED(G38_PROBE_TARGET)
++  extern bool G38_move,        // flag to tell the interrupt handler that a G38 command is being run
++              G38_endstop_hit; // flag from the interrupt handler to indicate if the endstop went active
++#endif
++
+ /**
+  * The axis order in all axis related arrays is X, Y, Z, E
+  */
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 9c9d0dd..849a999 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -117,6 +117,7 @@
+  * G30 - Single Z probe, probes bed at current XY location.
+  * G31 - Dock sled (Z_PROBE_SLED only)
+  * G32 - Undock sled (Z_PROBE_SLED only)
++ * G38 - Probe target - similar to G28 except it uses the Z_MIN endstop for all three axes
+  * G90 - Use Absolute Coordinates
+  * G91 - Use Relative Coordinates
+  * G92 - Set current position to coordinates given
+@@ -276,6 +277,11 @@
+   TWIBus i2c;
+ #endif
+ 
++#if ENABLED(G38_PROBE_TARGET)
++  bool G38_move = false,
++       G38_endstop_hit = false;
++#endif
++
+ bool Running = true;
+ 
+ uint8_t marlin_debug_flags = DEBUG_NONE;
+@@ -1337,7 +1343,7 @@ static void set_home_offset(AxisEnum axis, float v) {
+  * SCARA should wait until all XY homing is done before setting the XY
+  * current_position to home, because neither X nor Y is at home until
+  * both are at home. Z can however be homed individually.
+- * 
++ *
+  */
+ static void set_axis_is_at_home(AxisEnum axis) {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -2325,6 +2331,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+ #endif // AUTO_BED_LEVELING_BILINEAR
+ 
++
+ /**
+  * Home an individual linear axis
+  */
+@@ -4158,6 +4165,94 @@ inline void gcode_G28() {
+ 
+ #endif // HAS_BED_PROBE
+ 
++#if ENABLED(G38_PROBE_TARGET)
++
++  static bool G38_run_probe() {
++
++    bool G38_pass_fail = false;
++
++    // Get direction of move and retract
++    float retract_mm[XYZ];
++    LOOP_XYZ(i) {
++      float dist = destination[i] - current_position[i];
++      retract_mm[i] = fabs(dist) < G38_MINIMUM_MOVE ? 0 : home_bump_mm(i) * (dist > 0 ? -1 : 1);
++    }
++
++    stepper.synchronize();  // wait until the machine is idle
++
++    // Move until destination reached or target hit
++    endstops.enable(true);
++    G38_move = true;
++    G38_endstop_hit = false;
++    prepare_move_to_destination();
++    stepper.synchronize();
++    G38_move = false;
++
++    endstops.hit_on_purpose();
++    set_current_from_steppers_for_axis(ALL_AXES);
++    SYNC_PLAN_POSITION_KINEMATIC();
++
++    // Only do remaining moves if target was hit
++    if (G38_endstop_hit) {
++
++      G38_pass_fail = true;
++
++      // Move away by the retract distance
++      set_destination_to_current();
++      LOOP_XYZ(i) destination[i] += retract_mm[i];
++      endstops.enable(false);
++      prepare_move_to_destination();
++      stepper.synchronize();
++
++      feedrate_mm_s /= 4;
++
++      // Bump the target more slowly
++      LOOP_XYZ(i) destination[i] -= retract_mm[i] * 2;
++
++      endstops.enable(true);
++      G38_move = true;
++      prepare_move_to_destination();
++      stepper.synchronize();
++      G38_move = false;
++
++      set_current_from_steppers_for_axis(ALL_AXES);
++      SYNC_PLAN_POSITION_KINEMATIC();
++    }
++
++    endstops.hit_on_purpose();
++    endstops.not_homing();
++    return G38_pass_fail;
++  }
++
++  /**
++   * G38.2 - probe toward workpiece, stop on contact, signal error if failure
++   * G38.3 - probe toward workpiece, stop on contact
++   *
++   * Like G28 except uses Z min endstop for all axes
++   */
++  inline void gcode_G38(bool is_38_2) {
++    // Get X Y Z E F
++    gcode_get_destination();
++
++    setup_for_endstop_or_probe_move();
++
++    // If any axis has enough movement, do the move
++    LOOP_XYZ(i)
++      if (fabs(destination[i] - current_position[i]) >= G38_MINIMUM_MOVE) {
++        if (!code_seen('F')) feedrate_mm_s = homing_feedrate_mm_s[i];
++        // If G38.2 fails throw an error
++        if (!G38_run_probe() && is_38_2) {
++          SERIAL_ERROR_START;
++          SERIAL_ERRORLNPGM("Failed to reach target");
++        }
++        break;
++      }
++
++    clean_up_after_endstop_or_probe_move();
++  }
++
++#endif // G38_PROBE_TARGET
++
+ /**
+  * G92: Set current position to given X Y Z E
+  */
+@@ -7279,6 +7374,11 @@ void process_next_command() {
+   // Skip spaces to get the numeric part
+   while (*cmd_ptr == ' ') cmd_ptr++;
+ 
++  // Allow for decimal point in command
++  #if ENABLED(G38_PROBE_TARGET)
++    uint8_t subcode = 0;
++  #endif
++
+   uint16_t codenum = 0; // define ahead of goto
+ 
+   // Bail early if there's no code
+@@ -7291,6 +7391,15 @@ void process_next_command() {
+     cmd_ptr++;
+   } while (NUMERIC(*cmd_ptr));
+ 
++  // Allow for decimal point in command
++  #if ENABLED(G38_PROBE_TARGET)
++    if (*cmd_ptr == '.') {
++      cmd_ptr++;
++      while (NUMERIC(*cmd_ptr))
++        subcode = (subcode * 10) + (*cmd_ptr++ - '0');
++    }
++  #endif
++
+   // Skip all spaces to get to the first argument, or nul
+   while (*cmd_ptr == ' ') cmd_ptr++;
+ 
+@@ -7391,6 +7500,13 @@ void process_next_command() {
+         #endif // Z_PROBE_SLED
+       #endif // HAS_BED_PROBE
+ 
++      #if ENABLED(G38_PROBE_TARGET)
++        case 38: // G38.2 & G38.3
++          if (subcode == 2 || subcode == 3)
++            gcode_G38(subcode == 2);
++          break;
++      #endif
++
+       case 90: // G90
+         relative_mode = false;
+         break;
+@@ -8899,7 +9015,7 @@ void prepare_move_to_destination() {
+    * Morgan SCARA Inverse Kinematics. Results in delta[].
+    *
+    * See http://forums.reprap.org/read.php?185,283327
+-   * 
++   *
+    * Maths and first version by QHARLEY.
+    * Integrated into Marlin and slightly restructured by Joachim Cerny.
+    */
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index d14eda6..b2c9bfc 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -852,6 +852,17 @@
+ #endif
+ 
+ /**
++ * G38 Probe Target
++ */
++#if ENABLED(G38_PROBE_TARGET)
++  #if !HAS_BED_PROBE
++    #error "G38_PROBE_TARGET requires a bed probe."
++  #elif !IS_CARTESIAN
++    #error "G38_PROBE_TARGET requires a Cartesian machine."
++  #endif
++#endif
++
++/**
+  * Make sure only one display is enabled
+  *
+  * Note: BQ_LCD_SMART_CONTROLLER => REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 1c50eb6..ffc8c69 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -243,14 +243,28 @@ void Endstops::update() {
+   // COPY_BIT: copy the value of COPY_BIT to BIT in bits
+   #define COPY_BIT(bits, COPY_BIT, BIT) SET_BIT(bits, BIT, TEST(bits, COPY_BIT))
+ 
+-  #define UPDATE_ENDSTOP(AXIS,MINMAX) do { \
++  #define _UPDATE_ENDSTOP(AXIS,MINMAX,CODE) do { \
+       UPDATE_ENDSTOP_BIT(AXIS, MINMAX); \
+       if (TEST_ENDSTOP(_ENDSTOP(AXIS, MINMAX)) && stepper.current_block->steps[_AXIS(AXIS)] > 0) { \
+         _ENDSTOP_HIT(AXIS); \
+         stepper.endstop_triggered(_AXIS(AXIS)); \
++        CODE; \
+       } \
+     } while(0)
+ 
++  #if ENABLED(G38_PROBE_TARGET) && PIN_EXISTS(Z_MIN)  // If G38 command then check Z_MIN for every axis and every direction  
++
++    #define UPDATE_ENDSTOP(AXIS,MINMAX) do { \
++        _UPDATE_ENDSTOP(AXIS,MINMAX,NOOP); \
++        if (G38_move) _UPDATE_ENDSTOP(Z, MIN, G38_endstop_hit = true); \
++      } while(0)
++
++  #else	
++
++    #define UPDATE_ENDSTOP(AXIS,MINMAX) _UPDATE_ENDSTOP(AXIS,MINMAX,NOOP)
++
++  #endif
++
+   #if ENABLED(COREXY) || ENABLED(COREXZ)
+     // Head direction in -X axis for CoreXY and CoreXZ bots.
+     // If DeltaA == -DeltaB, the movement is only in Y or Z axis
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index 2578fed..1a7d31a 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index 4a3a266..3680971 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index 6b728a5..f8f094f 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index bcf864e..c1c4bc3 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 23b8273..d8707cb 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -538,6 +538,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 3
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index e0b3143..5071ace 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index 68c6b26..8c3a942 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index e826927..5739c96 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index 06b0ff3..e18ec4b 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -540,6 +540,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index 6b728a5..f8f094f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index ec94e3e..c50cf88 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -534,6 +534,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 6b632a8..55951f1 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -534,6 +534,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 6b632a8..55951f1 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -534,6 +534,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 3df9899..7d9cb66 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -539,6 +539,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 85ebd93..dfa2145 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -534,6 +534,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index 22c3ad3..fb5b576 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 0b51804..7e9c207 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -532,6 +532,12 @@
+ // Support for G5 with XYZE destination and IJPQ offsets. Requires ~2666 bytes.
+ //#define BEZIER_CURVE_SUPPORT
+ 
++// G38.2 and G38.3 Probe Target
++//#define G38_PROBE_TARGET
++#if ENABLED(G38_PROBE_TARGET)
++  #define G38_MINIMUM_MOVE 0.0275 // minimum distance in mm that will produce a move (determined using the print statement in check_move)
++#endif
++
+ // Moves (or segments) with fewer steps than this will be joined with the next move
+ #define MIN_STEPS_PER_SEGMENT 6
+ 
+
+commit bad8899ebc5c279da64338574e6c0521559d1480 (from 0d538f3db67c5615577811b80d63cf49768ec342)
+Merge: 73ce3a6 0d538f3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Oct 1 06:57:17 2016 -0500
+
+    Merge pull request #4900 from thinkyhead/rc_g38_changes
+    
+    Cleanup of G38.2 / G38.3
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 7bc7c92..849a999 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3790,29 +3790,27 @@ inline void gcode_G28() {
+         #define PR_INNER_END abl_grid_points_x
+       #endif
+ 
+-      #if ENABLED(MAKERARM_SCARA)
+-        bool zig = true;
+-      #else
+-        bool zig = PR_OUTER_END & 1; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
+-      #endif
++      bool zig = PR_OUTER_END & 1;  // Always end at RIGHT and BACK_PROBE_BED_POSITION
+ 
++      // Outer loop is Y with PROBE_Y_FIRST disabled
+       for (uint8_t PR_OUTER_VAR = 0; PR_OUTER_VAR < PR_OUTER_END; PR_OUTER_VAR++) {
+ 
+         int8_t inStart, inStop, inInc;
+ 
+-        if (zig) {
++        if (zig) { // away from origin
+           inStart = 0;
+           inStop = PR_INNER_END;
+           inInc = 1;
+         }
+-        else {
++        else {     // towards origin
+           inStart = PR_INNER_END - 1;
+           inStop = -1;
+           inInc = -1;
+         }
+ 
+-        zig = !zig;
++        zig = !zig; // zag
+ 
++        // Inner loop is Y with PROBE_Y_FIRST enabled
+         for (int8_t PR_INNER_VAR = inStart; PR_INNER_VAR != inStop; PR_INNER_VAR += inInc) {
+ 
+           float xBase = left_probe_bed_position + xGridSpacing * xCount,
+

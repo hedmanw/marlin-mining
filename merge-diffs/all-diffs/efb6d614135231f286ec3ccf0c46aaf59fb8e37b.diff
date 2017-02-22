@@ -1,0 +1,362 @@
+commit efb6d614135231f286ec3ccf0c46aaf59fb8e37b (from e541323741c08ba36f21db0cb803907bae26d2fe)
+Merge: e541323 38192cb
+Author: neildarlow <neil@darlow.co.uk>
+Date:   Sat May 24 13:08:58 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2989392..c3ccea4 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -119,6 +119,7 @@
+ // M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+ //        Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
+ //        IF AUTOTEMP is enabled, S<mintemp> B<maxtemp> F<factor>. Exit autotemp by any M109 without F
++// M112 - Emergency stop
+ // M114 - Output current position to serial port
+ // M115 - Capabilities string
+ // M117 - display message
+@@ -673,6 +674,11 @@ void get_command()
+           }
+ 
+         }
++
++        //If command was e-stop process now
++        if(strcmp(cmdbuffer[bufindw], "M112") == 0)
++          kill();
++        
+         bufindw = (bufindw + 1)%BUFSIZE;
+         buflen += 1;
+       }
+@@ -1177,19 +1183,21 @@ void process_commands()
+         //ClearToSend();
+         return;
+       }
+-      //break;
++      break;
+     case 2: // G2  - CW ARC
+       if(Stopped == false) {
+         get_arc_coordinates();
+         prepare_arc_move(true);
+         return;
+       }
++      break;
+     case 3: // G3  - CCW ARC
+       if(Stopped == false) {
+         get_arc_coordinates();
+         prepare_arc_move(false);
+         return;
+       }
++      break;
+     case 4: // G4 dwell
+       LCD_MESSAGEPGM(MSG_DWELL);
+       codenum = 0;
+@@ -1799,7 +1807,7 @@ void process_commands()
+         int pin_number = LED_PIN;
+         if (code_seen('P') && pin_status >= 0 && pin_status <= 255)
+           pin_number = code_value();
+-        for(int8_t i = 0; i < (int8_t)sizeof(sensitive_pins); i++)
++        for(int8_t i = 0; i < (int8_t)(sizeof(sensitive_pins)/sizeof(int)); i++)
+         {
+           if (sensitive_pins[i] == pin_number)
+           {
+@@ -1830,6 +1838,9 @@ void process_commands()
+ #endif
+       setWatch();
+       break;
++    case 112: //  M112 -Emergency Stop
++      kill();
++      break;
+     case 140: // M140 set bed temp
+       if (code_seen('S')) setTargetBed(code_value());
+       break;
+@@ -2153,8 +2164,9 @@ void process_commands()
+       }
+       break;
+     case 85: // M85
+-      code_seen('S');
+-      max_inactive_time = code_value() * 1000;
++      if(code_seen('S')) {
++        max_inactive_time = code_value() * 1000;
++      }
+       break;
+     case 92: // M92
+       for(int8_t i=0; i < NUM_AXIS; i++)
+@@ -2275,6 +2287,7 @@ void process_commands()
+           if(tmp_extruder >= EXTRUDERS) {
+             SERIAL_ECHO_START;
+             SERIAL_ECHO(MSG_M200_INVALID_EXTRUDER);
++            break;
+           }
+         }
+         volumetric_multiplier[tmp_extruder] = 1 / area;
+@@ -2466,7 +2479,7 @@ void process_commands()
+ 
+         if(pin_state >= -1 && pin_state <= 1){
+ 
+-          for(int8_t i = 0; i < (int8_t)sizeof(sensitive_pins); i++)
++          for(int8_t i = 0; i < (int8_t)(sizeof(sensitive_pins)/sizeof(int)); i++)
+           {
+             if (sensitive_pins[i] == pin_number)
+             {
+@@ -3424,6 +3437,9 @@ void handle_status_leds(void) {
+ 
+ void manage_inactivity()
+ {
++  if(buflen < (BUFSIZE-1))
++    get_command();
++
+   if( (millis() - previous_millis_cmd) >  max_inactive_time )
+     if(max_inactive_time)
+       kill();
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 737d075..aac6ca6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -179,7 +179,7 @@ void PID_autotune(float temp, int extruder, int ncycles)
+   float Kp, Ki, Kd;
+   float max = 0, min = 10000;
+ 
+-  if ((extruder > EXTRUDERS)
++  if ((extruder >= EXTRUDERS)
+   #if (TEMP_BED_PIN <= -1)
+        ||(extruder < 0)
+   #endif
+@@ -609,6 +609,7 @@ static float analog2temp(int raw, uint8_t e) {
+       SERIAL_ERROR((int)e);
+       SERIAL_ERRORLNPGM(" - Invalid extruder number !");
+       kill();
++      return 0.0;
+   } 
+   #ifdef HEATER_0_USES_MAX6675
+     if (e == 0)
+@@ -909,7 +910,7 @@ void disable_heater()
+    #endif
+   #endif
+      
+-  #if defined(TEMP_1_PIN) && TEMP_1_PIN > -1
++  #if defined(TEMP_1_PIN) && TEMP_1_PIN > -1 && EXTRUDERS > 1
+     target_temperature[1]=0;
+     soft_pwm[1]=0;
+     #if defined(HEATER_1_PIN) && HEATER_1_PIN > -1 
+@@ -917,7 +918,7 @@ void disable_heater()
+     #endif
+   #endif
+       
+-  #if defined(TEMP_2_PIN) && TEMP_2_PIN > -1
++  #if defined(TEMP_2_PIN) && TEMP_2_PIN > -1 && EXTRUDERS > 2
+     target_temperature[2]=0;
+     soft_pwm[2]=0;
+     #if defined(HEATER_2_PIN) && HEATER_2_PIN > -1  
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index fd33744..c321125 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -305,7 +305,7 @@ static void lcd_implementation_init()
+         B00000
+     }; //thanks Sonny Mounicou
+ 
+-#if defined(LCDI2C_TYPE_PCF8575)
++#if defined(LCD_I2C_TYPE_PCF8575)
+     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+   #ifdef LCD_I2C_PIN_BL
+     lcd.setBacklightPin(LCD_I2C_PIN_BL,POSITIVE);
+diff --git a/README.md b/README.md
+index 9455268..17e920e 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,8 @@
+ ==========================
+ Marlin 3D Printer Firmware
+ ==========================
++[![Coverity Scan Build Status](https://scan.coverity.com/projects/2224/badge.svg)](https://scan.coverity.com/projects/2224)
++
+ Marlin has a GPL license because I believe in open development.
+ Please do not use this code in products (3D printers, CNC etc) that are closed source or are crippled by a patent.
+ 
+@@ -193,6 +195,7 @@ M Codes
+ *  M107 - Fan off
+ *  M109 - Sxxx Wait for extruder current temp to reach target temp. Waits only when heating
+ *         Rxxx Wait for extruder current temp to reach target temp. Waits when heating and cooling
++*  M112 - Emergency stop
+ *  M114 - Output current position to serial port
+ *  M115 - Capabilities string
+ *  M117 - display message
+
+commit efb6d614135231f286ec3ccf0c46aaf59fb8e37b (from 38192cb5f3e5f55ee7805faef90cf374ba335495)
+Merge: e541323 38192cb
+Author: neildarlow <neil@darlow.co.uk>
+Date:   Sat May 24 13:08:58 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c4afca7..c3ccea4 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1655,6 +1655,8 @@ void process_commands()
+           lcd_update();
+         }
+       }else{
++          if (!lcd_detected())
++            break;
+         while(!lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 5fb8dcc..036a34e 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -150,9 +150,17 @@ void CardReader::initsd()
+   if(root.isOpen())
+     root.close();
+ #ifdef SDSLOW
+-  if (!card.init(SPI_HALF_SPEED,SDSS))
++  if (!card.init(SPI_HALF_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_HALF_SPEED,LCD_SDSS)
++  #endif
++    )
+ #else
+-  if (!card.init(SPI_FULL_SPEED,SDSS))
++  if (!card.init(SPI_FULL_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_FULL_SPEED,LCD_SDSS)
++  #endif
++    )
+ #endif
+   {
+     //if (!card.init(SPI_HALF_SPEED,SDSS))
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 14eff02..e4e9460 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -700,14 +700,14 @@
+         #define BTN_EN1 47  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 43
+         #define BTN_ENC 32
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT -1
+         #define KILL_PIN 41
+       #elif defined(LCD_I2C_VIKI)
+         #define BTN_EN1 22  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 7
+         #define BTN_ENC -1
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT 49
+       #else
+         //arduino pin which triggers an piezzo beeper
+@@ -1225,7 +1225,7 @@
+      #ifdef LCD_I2C_PANELOLU2
+        #ifdef MELZI
+          #define BTN_ENC 29 //the click switch
+-         #define SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
++         #define LCD_SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
+        #else
+          #define BTN_ENC 30 //the click switch
+        #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index f09dd41..a1b8789 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1185,7 +1185,7 @@ void lcd_update()
+     lcd_buttons_update();
+ 
+     #if (SDCARDDETECT > 0)
+-    if((IS_SD_INSERTED != lcd_oldcardstatus))
++    if((IS_SD_INSERTED != lcd_oldcardstatus && lcd_detected()))
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+@@ -1282,6 +1282,11 @@ void lcd_setstatus(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setstatuspgm(const char* message)
+@@ -1289,6 +1294,11 @@ void lcd_setstatuspgm(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setalertstatuspgm(const char* message)
+@@ -1397,6 +1407,15 @@ void lcd_buttons_update()
+     lastEncoderBits = enc;
+ }
+ 
++bool lcd_detected(void)
++{
++#if (defined(LCD_I2C_TYPE_MCP23017) || defined(LCD_I2C_TYPE_MCP23008)) && defined(DETECT_DEVICE)
++  return lcd.LcdDetected() == 1;
++#else
++  return true;
++#endif
++}
++
+ void lcd_buzz(long duration, uint16_t freq)
+ {
+ #ifdef LCD_USE_I2C_BUZZER
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index f4570f6..fce23ba 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,6 +11,7 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
++  bool lcd_detected(void);
+ 
+ #ifdef DOGLCD
+   extern int lcd_contrast;
+@@ -92,6 +93,7 @@
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+   FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) 
+   #define LCD_ALERTMESSAGEPGM(x) 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 11e0a95..c321125 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -166,13 +166,21 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+   
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+

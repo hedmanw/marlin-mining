@@ -1,0 +1,789 @@
+commit 71a74080128fe66737e597f1b8309ae3c2256d76 (from 5e469622c96caaca1ed1304e9c4e07d255449f07)
+Merge: 5e46962 dcb8ec3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jun 21 02:48:46 2016 -0700
+
+    Merge pull request #4106 from thinkyhead/rc_temp_compile_err
+    
+    Fix compile error with watch_bed_next_ms
+
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index b80950f..cb10f9d 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -101,7 +101,7 @@ unsigned char Temperature::soft_pwm_bed;
+   millis_t Temperature::watch_heater_next_ms[HOTENDS] = { 0 };
+ #endif
+ 
+-#if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_BED_TEMP_PERIOD > 0
++#if ENABLED(THERMAL_PROTECTION_BED) && WATCH_BED_TEMP_PERIOD > 0
+   int Temperature::watch_target_bed_temp = 0;
+   millis_t Temperature::watch_bed_next_ms = 0;
+ #endif
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index 9cb9909..60aa80d 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -105,7 +105,7 @@ class Temperature {
+       static millis_t watch_heater_next_ms[HOTENDS];
+     #endif
+ 
+-    #if ENABLED(THERMAL_PROTECTION_HOTENDS) && WATCH_BED_TEMP_PERIOD > 0
++    #if ENABLED(THERMAL_PROTECTION_BED) && WATCH_BED_TEMP_PERIOD > 0
+       static int watch_target_bed_temp;
+       static millis_t watch_bed_next_ms;
+     #endif
+
+commit 71a74080128fe66737e597f1b8309ae3c2256d76 (from dcb8ec32eef06e4870430be848db30b8f97a1acb)
+Merge: 5e46962 dcb8ec3
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jun 21 02:48:46 2016 -0700
+
+    Merge pull request #4106 from thinkyhead/rc_temp_compile_err
+    
+    Fix compile error with watch_bed_next_ms
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 49a4c84..84cf416 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -504,6 +504,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+ //#define DISABLE_Z_MIN_PROBE_ENDSTOP
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -620,7 +623,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 119131b..c9172e7 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1685,6 +1685,14 @@ static void setup_for_endstop_move() {
+     do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z);
+   }
+ 
++  inline void raise_z_after_probing() {
++    #if Z_RAISE_AFTER_PROBING > 0
++      #if ENABLED(DEBUG_LEVELING_FEATURE)
++        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("raise_z_after_probing()");
++      #endif
++      do_blocking_move_to_z(current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING);
++    #endif
++  }
+ #endif //HAS_BED_PROBE
+ 
+ #if HAS_Z_SERVO_ENDSTOP
+@@ -1710,18 +1718,6 @@ static void setup_for_endstop_move() {
+ 
+ #endif
+ 
+-#if HAS_BED_PROBE
+-
+-  inline void raise_z_after_probing() {
+-    #if Z_RAISE_AFTER_PROBING > 0
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("raise_z_after_probing()");
+-      #endif
+-      do_blocking_move_to_z(current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING);
+-    #endif
+-  }
+-#endif
+-
+ #if ENABLED(Z_PROBE_SLED)
+ 
+   #ifndef SLED_DOCKING_OFFSET
+@@ -1964,89 +1960,6 @@ static void setup_for_endstop_move() {
+     endstops.enable_z_probe(false);
+   }
+ 
+-#endif // HAS_BED_PROBE
+-
+-#if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-
+-  #if ENABLED(AUTO_BED_LEVELING_GRID)
+-
+-    #if DISABLED(DELTA)
+-
+-      static void set_bed_level_equation_lsq(double* plane_equation_coefficients) {
+-
+-        //planner.bed_level_matrix.debug("bed level before");
+-
+-        #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          planner.bed_level_matrix.set_to_identity();
+-          if (DEBUGGING(LEVELING)) {
+-            vector_3 uncorrected_position = planner.adjusted_position();
+-            DEBUG_POS(">>> set_bed_level_equation_lsq", uncorrected_position);
+-            DEBUG_POS(">>> set_bed_level_equation_lsq", current_position);
+-          }
+-        #endif
+-
+-        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
+-        planner.bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+-
+-        vector_3 corrected_position = planner.adjusted_position();
+-        current_position[X_AXIS] = corrected_position.x;
+-        current_position[Y_AXIS] = corrected_position.y;
+-        current_position[Z_AXIS] = corrected_position.z;
+-
+-        #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) DEBUG_POS("<<< set_bed_level_equation_lsq", corrected_position);
+-        #endif
+-
+-        sync_plan_position();
+-      }
+-
+-    #endif // !DELTA
+-
+-  #else // !AUTO_BED_LEVELING_GRID
+-
+-    static void set_bed_level_equation_3pts(float z_at_pt_1, float z_at_pt_2, float z_at_pt_3) {
+-
+-      planner.bed_level_matrix.set_to_identity();
+-
+-      vector_3 pt1 = vector_3(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, z_at_pt_1);
+-      vector_3 pt2 = vector_3(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, z_at_pt_2);
+-      vector_3 pt3 = vector_3(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, z_at_pt_3);
+-      vector_3 planeNormal = vector_3::cross(pt1 - pt2, pt3 - pt2).get_normal();
+-
+-      if (planeNormal.z < 0) {
+-        planeNormal.x = -planeNormal.x;
+-        planeNormal.y = -planeNormal.y;
+-        planeNormal.z = -planeNormal.z;
+-      }
+-
+-      planner.bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+-
+-      vector_3 corrected_position = planner.adjusted_position();
+-
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) {
+-          vector_3 uncorrected_position = corrected_position;
+-          DEBUG_POS("set_bed_level_equation_3pts", uncorrected_position);
+-        }
+-      #endif
+-
+-      current_position[X_AXIS] = corrected_position.x;
+-      current_position[Y_AXIS] = corrected_position.y;
+-      current_position[Z_AXIS] = corrected_position.z;
+-
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("set_bed_level_equation_3pts", corrected_position);
+-      #endif
+-
+-      sync_plan_position();
+-    }
+-
+-  #endif // !AUTO_BED_LEVELING_GRID
+-
+-#endif // AUTO_BED_LEVELING_FEATURE
+-
+-#if HAS_BED_PROBE
+-
+   static void run_z_probe() {
+ 
+     float old_feedrate = feedrate;
+@@ -2138,6 +2051,81 @@ static void setup_for_endstop_move() {
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
++  #if ENABLED(AUTO_BED_LEVELING_GRID)
++
++    #if DISABLED(DELTA)
++
++      static void set_bed_level_equation_lsq(double* plane_equation_coefficients) {
++
++        //planner.bed_level_matrix.debug("bed level before");
++
++        #if ENABLED(DEBUG_LEVELING_FEATURE)
++          planner.bed_level_matrix.set_to_identity();
++          if (DEBUGGING(LEVELING)) {
++            vector_3 uncorrected_position = planner.adjusted_position();
++            DEBUG_POS(">>> set_bed_level_equation_lsq", uncorrected_position);
++            DEBUG_POS(">>> set_bed_level_equation_lsq", current_position);
++          }
++        #endif
++
++        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
++        planner.bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
++
++        vector_3 corrected_position = planner.adjusted_position();
++        current_position[X_AXIS] = corrected_position.x;
++        current_position[Y_AXIS] = corrected_position.y;
++        current_position[Z_AXIS] = corrected_position.z;
++
++        #if ENABLED(DEBUG_LEVELING_FEATURE)
++          if (DEBUGGING(LEVELING)) DEBUG_POS("<<< set_bed_level_equation_lsq", corrected_position);
++        #endif
++
++        sync_plan_position();
++      }
++
++    #endif // !DELTA
++
++  #else // !AUTO_BED_LEVELING_GRID
++
++    static void set_bed_level_equation_3pts(float z_at_pt_1, float z_at_pt_2, float z_at_pt_3) {
++
++      planner.bed_level_matrix.set_to_identity();
++
++      vector_3 pt1 = vector_3(ABL_PROBE_PT_1_X, ABL_PROBE_PT_1_Y, z_at_pt_1);
++      vector_3 pt2 = vector_3(ABL_PROBE_PT_2_X, ABL_PROBE_PT_2_Y, z_at_pt_2);
++      vector_3 pt3 = vector_3(ABL_PROBE_PT_3_X, ABL_PROBE_PT_3_Y, z_at_pt_3);
++      vector_3 planeNormal = vector_3::cross(pt1 - pt2, pt3 - pt2).get_normal();
++
++      if (planeNormal.z < 0) {
++        planeNormal.x = -planeNormal.x;
++        planeNormal.y = -planeNormal.y;
++        planeNormal.z = -planeNormal.z;
++      }
++
++      planner.bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
++
++      vector_3 corrected_position = planner.adjusted_position();
++
++      #if ENABLED(DEBUG_LEVELING_FEATURE)
++        if (DEBUGGING(LEVELING)) {
++          vector_3 uncorrected_position = corrected_position;
++          DEBUG_POS("set_bed_level_equation_3pts", uncorrected_position);
++        }
++      #endif
++
++      current_position[X_AXIS] = corrected_position.x;
++      current_position[Y_AXIS] = corrected_position.y;
++      current_position[Z_AXIS] = corrected_position.z;
++
++      #if ENABLED(DEBUG_LEVELING_FEATURE)
++        if (DEBUGGING(LEVELING)) DEBUG_POS("set_bed_level_equation_3pts", corrected_position);
++      #endif
++
++      sync_plan_position();
++    }
++
++  #endif // !AUTO_BED_LEVELING_GRID
++
+   inline void do_blocking_move_to_xy(float x, float y) {
+     do_blocking_move_to(x, y, current_position[Z_AXIS]);
+   }
+@@ -4176,19 +4164,7 @@ inline void gcode_M42() {
+   } // code_seen('S')
+ }
+ 
+-#if ENABLED(AUTO_BED_LEVELING_FEATURE) && ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
+-
+-  /**
+-   * This is redundant since the SanityCheck.h already checks for a valid
+-   *  Z_MIN_PROBE_PIN, but here for clarity.
+-   */
+-  #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+-    #if !HAS_Z_MIN_PROBE_PIN
+-      #error "You must define Z_MIN_PROBE_PIN to enable Z probe repeatability calculation."
+-    #endif
+-  #elif !HAS_Z_MIN
+-    #error "You must define Z_MIN_PIN to enable Z probe repeatability calculation."
+-  #endif
++#if ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
+ 
+   /**
+    * M48: Z probe repeatability measurement function.
+@@ -4451,7 +4427,7 @@ inline void gcode_M42() {
+     report_current_position();
+   }
+ 
+-#endif // AUTO_BED_LEVELING_FEATURE && Z_MIN_PROBE_REPEATABILITY_TEST
++#endif // Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ /**
+  * M75: Start print timer
+@@ -6970,11 +6946,11 @@ void process_next_command() {
+         gcode_M42();
+         break;
+ 
+-      #if ENABLED(AUTO_BED_LEVELING_FEATURE) && ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
++      #if ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
+         case 48: // M48 Z probe repeatability
+           gcode_M48();
+           break;
+-      #endif // AUTO_BED_LEVELING_FEATURE && Z_MIN_PROBE_REPEATABILITY_TEST
++      #endif // Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+       case 75: // Start print timer
+         gcode_M75();
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 9fa8b87..d80c2c2 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -300,10 +300,12 @@
+ #else
+ 
+   /**
+-   * Require some kind of probe for bed leveling
++   * Require some kind of probe for bed leveling and probe testing
+    */
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+     #error "AUTO_BED_LEVELING_FEATURE requires a probe! Define a Z Servo, MECHANICAL_PROBE, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
++  #elif ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
++    #error "Z_MIN_PROBE_REPEATABILITY_TEST requires a probe! Define a Z Servo, MECHANICAL_PROBE, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+   #endif
+ 
+ #endif
+@@ -318,11 +320,7 @@
+    */
+   #if !PIN_EXISTS(Z_MIN)
+     #if !PIN_EXISTS(Z_MIN_PROBE) || (DISABLED(Z_MIN_PROBE_ENDSTOP) || ENABLED(DISABLE_Z_MIN_PROBE_ENDSTOP)) // It's possible for someone to set a pin for the Z probe, but not enable it.
+-      #if ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
+-        #error "You must have a Z_MIN or Z_PROBE endstop to enable Z_MIN_PROBE_REPEATABILITY_TEST."
+-      #else
+-        #error "AUTO_BED_LEVELING_FEATURE requires a Z_MIN or Z_PROBE endstop. Z_MIN_PIN or Z_MIN_PROBE_PIN must point to a valid hardware pin."
+-      #endif
++      #error "AUTO_BED_LEVELING_FEATURE requires a Z_MIN or Z_PROBE endstop. Z_MIN_PIN or Z_MIN_PROBE_PIN must point to a valid hardware pin."
+     #endif
+   #endif
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index ad240da..47fea58 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -503,6 +503,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // If you're using the Z MIN endstop connector for your Z probe, this has no effect.
+ //#define DISABLE_Z_MIN_PROBE_ENDSTOP
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -619,7 +622,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 2b03a99..acb3e8e 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -486,6 +486,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -602,8 +605,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 8aa3797..a00e802 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -484,6 +484,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -600,8 +603,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index ea372e1..18f2734 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -496,6 +496,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -612,7 +615,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 012117e..62b75ff 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -498,6 +498,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -614,7 +617,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index c9c352f..40755a0 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -521,6 +521,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -637,7 +640,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 0bf4195..64a79f7 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -504,6 +504,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -620,7 +623,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index d6f7fec..fefb7a9 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -498,6 +498,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -614,8 +617,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 1325404..bc848f1 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -512,6 +512,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -628,8 +631,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 077ae99..5412a49 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -525,6 +525,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -641,7 +644,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 40eace6..9719583 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -496,6 +496,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -612,7 +615,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 64aedcc..be76093 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -504,6 +504,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -620,7 +623,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index a1d1282..846d760 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -583,6 +583,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -699,8 +702,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 215df5f..a50d083 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -577,6 +577,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -693,8 +696,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 688a53d..45fe403 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -580,6 +580,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -696,8 +699,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 8af093a..ff02bdf 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -574,6 +574,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -690,8 +693,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index d97d5df..c516ec7 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -575,6 +575,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -691,8 +694,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ #define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-//#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+-
++//
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+   // There are 2 different ways to specify probing locations:
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index d06bbb0..6f30d11 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -507,6 +507,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -623,7 +626,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index ef06e42..643372b 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -494,6 +494,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+ 
++// Enable Z Probe Repeatability test to see how accurate your probe is
++//#define Z_MIN_PROBE_REPEATABILITY_TEST
++
+ //
+ // Probe Raise options provide clearance for the probe to deploy and stow.
+ //
+@@ -610,7 +613,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+ //#define AUTO_BED_LEVELING_FEATURE // Delete the comment to enable (remove // at the start of the line)
+ //#define DEBUG_LEVELING_FEATURE
+-#define Z_MIN_PROBE_REPEATABILITY_TEST  // If not commented out, Z Probe Repeatability test will be included if Auto Bed Leveling is Enabled.
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+ 
+

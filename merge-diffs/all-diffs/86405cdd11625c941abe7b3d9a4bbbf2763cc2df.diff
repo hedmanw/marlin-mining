@@ -1,0 +1,183 @@
+commit 86405cdd11625c941abe7b3d9a4bbbf2763cc2df (from 6c45c3f4e70d3d9e71d03bba73bb85136238415f)
+Merge: 6c45c3f 95dff34
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Thu May 16 10:06:59 2013 -0700
+
+    Merge pull request #479 from MStohn/thermocouple
+    
+    BUGFIXES for temperature.cpp / add RUMBA thermocouple support
+
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index a13c522..ad88338 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -1053,17 +1053,56 @@
+ #define PS_ON_PIN          45
+ #define KILL_PIN           46
+ 
+-#define HEATER_0_PIN       2    // EXTRUDER 1
+-#define HEATER_1_PIN       3    // EXTRUDER 2
+-#define HEATER_2_PIN       6    // EXTRUDER 3
++#if (TEMP_SENSOR_0==0)
++ #define TEMP_0_PIN         -1
++ #define HEATER_0_PIN       -1
++#else
++ #define HEATER_0_PIN        2    // EXTRUDER 1
++ #if (TEMP_SENSOR_0==-1)
++  #define TEMP_0_PIN         6    // ANALOG NUMBERING - connector *K1* on RUMBA thermocouple ADD ON is used
++ #else
++  #define TEMP_0_PIN         15   // ANALOG NUMBERING - default connector for thermistor *T0* on rumba board is used
++ #endif
++#endif 
++
++#if (TEMP_SENSOR_1==0)
++ #define TEMP_1_PIN         -1
++ #define HEATER_1_PIN       -1
++#else
++ #define HEATER_1_PIN        3    // EXTRUDER 2
++ #if (TEMP_SENSOR_1==-1)
++  #define TEMP_1_PIN         5    // ANALOG NUMBERING - connector *K2* on RUMBA thermocouple ADD ON is used
++ #else
++  #define TEMP_1_PIN         14   // ANALOG NUMBERING - default connector for thermistor *T1* on rumba board is used
++ #endif
++#endif
++
++#if (TEMP_SENSOR_2==0)
++ #define TEMP_2_PIN         -1
++ #define HEATER_2_PIN       -1
++#else
++ #define HEATER_2_PIN        6    // EXTRUDER 3
++ #if (TEMP_SENSOR_2==-1)
++  #define TEMP_2_PIN         7    // ANALOG NUMBERING - connector *K3* on RUMBA thermocouple ADD ON is used <-- this can not be used when TEMP_SENSOR_BED is defined as thermocouple
++ #else
++  #define TEMP_2_PIN         13   // ANALOG NUMBERING - default connector for thermistor *T2* on rumba board is used
++ #endif
++#endif
++
++//optional for extruder 4 or chamber: #define TEMP_X_PIN         12   // ANALOG NUMBERING - default connector for thermistor *T3* on rumba board is used
+ //optional FAN1 can be used as 4th heater output: #define HEATER_3_PIN       8    // EXTRUDER 4
+-#define HEATER_BED_PIN     9    // BED
+ 
+-#define TEMP_0_PIN         15   // ANALOG NUMBERING
+-#define TEMP_1_PIN         14   // ANALOG NUMBERING
+-#define TEMP_2_PIN         13   // ANALOG NUMBERING
+-//optional for extruder 4 or chamber: #define TEMP_2_PIN         12   // ANALOG NUMBERING
+-#define TEMP_BED_PIN       11   // ANALOG NUMBERING
++#if (TEMP_SENSOR_BED==0)
++ #define TEMP_BED_PIN       -1
++ #define HEATER_BED_PIN     -1
++#else
++ #define HEATER_BED_PIN      9    // BED
++ #if (TEMP_SENSOR_BED==-1)
++  #define TEMP_BED_PIN       7    // ANALOG NUMBERING - connector *K3* on RUMBA thermocouple ADD ON is used <-- this can not be used when TEMP_SENSOR_2 is defined as thermocouple
++ #else
++  #define TEMP_BED_PIN       11   // ANALOG NUMBERING - default connector for thermistor *THB* on rumba board is used
++ #endif
++#endif
+ 
+ #define SDPOWER            -1
+ #define SDSS               53
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 8501775..18cdec6 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -571,6 +571,12 @@ static void updateTemperaturesFromRawValues()
+ 
+ void tp_init()
+ {
++#if (MOTHERBOARD == 80) && ((TEMP_SENSOR_0==-1)||(TEMP_SENSOR_1==-1)||(TEMP_SENSOR_2==-1)||(TEMP_SENSOR_BED==-1))
++  //disable RUMBA JTAG in case the thermocouple extension is plugged on top of JTAG connector
++  MCUCR=(1<<JTD); 
++  MCUCR=(1<<JTD);
++#endif
++  
+   // Finish init of mult extruder arrays 
+   for(int e = 0; e < EXTRUDERS; e++) {
+     // populate with the first value 
+@@ -647,7 +653,7 @@ void tp_init()
+     #if TEMP_2_PIN < 8
+        DIDR0 |= 1 << TEMP_2_PIN; 
+     #else
+-       DIDR2 = 1<<(TEMP_2_PIN - 8); 
++       DIDR2 |= 1<<(TEMP_2_PIN - 8); 
+     #endif
+   #endif
+   #if (TEMP_BED_PIN > -1)
+@@ -689,7 +695,7 @@ void tp_init()
+ 
+ #if (EXTRUDERS > 1) && defined(HEATER_1_MINTEMP)
+   minttemp[1] = HEATER_1_MINTEMP;
+-  while(analog2temp(minttemp_raw[1], 1) > HEATER_1_MINTEMP) {
++  while(analog2temp(minttemp_raw[1], 1) < HEATER_1_MINTEMP) {
+ #if HEATER_1_RAW_LO_TEMP < HEATER_1_RAW_HI_TEMP
+     minttemp_raw[1] += OVERSAMPLENR;
+ #else
+@@ -710,7 +716,7 @@ void tp_init()
+ 
+ #if (EXTRUDERS > 2) && defined(HEATER_2_MINTEMP)
+   minttemp[2] = HEATER_2_MINTEMP;
+-  while(analog2temp(minttemp_raw[2], 2) > HEATER_2_MINTEMP) {
++  while(analog2temp(minttemp_raw[2], 2) < HEATER_2_MINTEMP) {
+ #if HEATER_2_RAW_LO_TEMP < HEATER_2_RAW_HI_TEMP
+     minttemp_raw[2] += OVERSAMPLENR;
+ #else
+
+commit 86405cdd11625c941abe7b3d9a4bbbf2763cc2df (from 95dff34b734d3b43857ab6b3feaa95a8e5b97fea)
+Merge: 6c45c3f 95dff34
+Author: ErikZalm <erik@vdzalm.eu>
+Date:   Thu May 16 10:06:59 2013 -0700
+
+    Merge pull request #479 from MStohn/thermocouple
+    
+    BUGFIXES for temperature.cpp / add RUMBA thermocouple support
+
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 1a37cec..35bda42 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -440,10 +440,8 @@ void check_axes_activity()
+   unsigned char e_active = 0;
+   unsigned char tail_fan_speed = fanSpeed;
+   #ifdef BARICUDA
+-  unsigned char valve_pressure = 0;
+-  unsigned char e_to_p_pressure = 0;
+-  unsigned char tail_valve_pressure = 0;
+-  unsigned char tail_e_to_p_pressure = 0;
++  unsigned char tail_valve_pressure = ValvePressure;
++  unsigned char tail_e_to_p_pressure = EtoPPressure;
+   #endif
+   block_t *block;
+ 
+@@ -499,31 +497,11 @@ void check_axes_activity()
+ 
+ #ifdef BARICUDA
+   #if HEATER_1_PIN > -1
+-    if (ValvePressure != 0){
+-      analogWrite(HEATER_1_PIN,ValvePressure); // If buffer is empty use current valve pressure
+-    }
+-
+-    if((ValvePressure == 0) && (valve_pressure ==0)) {
+-      analogWrite(HEATER_1_PIN, 0);
+-    }
+-
+-    if (ValvePressure != 0 && tail_valve_pressure !=0) { 
+       analogWrite(HEATER_1_PIN,tail_valve_pressure);
+-    }
+   #endif
+ 
+   #if HEATER_2_PIN > -1
+-    if (EtoPPressure != 0){
+-      analogWrite(HEATER_2_PIN,EtoPPressure); // If buffer is empty use current EtoP pressure
+-    }
+-
+-    if((EtoPPressure == 0) && (e_to_p_pressure ==0)) {
+-      analogWrite(HEATER_2_PIN, 0);
+-    }
+-
+-    if (EtoPPressure != 0 && tail_e_to_p_pressure !=0) { 
+       analogWrite(HEATER_2_PIN,tail_e_to_p_pressure);
+-    }
+   #endif
+ #endif
+ }
+

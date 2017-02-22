@@ -1,0 +1,793 @@
+commit f30df89ee1afa54478c4fa9e6ca9f15bd05e450e (from 937123ab3260062f54f5ae3142afa78d87fff572)
+Merge: 937123a bd99a2b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Wed Jun 22 03:18:54 2016 -0700
+
+    Merge pull request #4122 from thinkyhead/rc_xy_travel_feedrate
+    
+    Make XY Probe (travel) Speed available in G28
+
+diff --git a/.travis.yml b/.travis.yml
+index 900d438..eacedee 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -90,10 +90,10 @@ script:
+   - opt_enable PIDTEMPBED
+   - build_marlin
+   #
+-  # Test a "Fix Mounted" Probe
++  # Test a "Fix Mounted" Probe along with Safe Homing
+   #
+   - restore_configs
+-  - opt_enable FIX_MOUNTED_PROBE
++  - opt_enable FIX_MOUNTED_PROBE Z_SAFE_HOMING
+   - build_marlin
+   #
+   # ...with AUTO_BED_LEVELING_FEATURE & DEBUG_LEVELING_FEATURE
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 8ecf49e..ad7d23c 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -371,15 +371,6 @@
+     #define MAX_PROBE_X (min(X_MAX_POS, X_MAX_POS + X_PROBE_OFFSET_FROM_EXTRUDER))
+     #define MIN_PROBE_Y (max(Y_MIN_POS, Y_MIN_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+     #define MAX_PROBE_Y (min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+-
+-    #ifndef XY_TRAVEL_SPEED
+-      #ifdef HOMING_FEEDRATE_XYZ
+-        #define XY_TRAVEL_SPEED HOMING_FEEDRATE_XYZ
+-      #else
+-        #define XY_TRAVEL_SPEED 4000
+-      #endif
+-    #endif
+-
+   #endif
+ 
+   #define HAS_Z_SERVO_ENDSTOP (defined(Z_ENDSTOP_SERVO_NR) && Z_ENDSTOP_SERVO_NR >= 0)
+@@ -784,8 +775,12 @@
+     #ifndef Z_PROBE_OFFSET_RANGE_MAX
+       #define Z_PROBE_OFFSET_RANGE_MAX 20
+     #endif
+-    #ifndef XY_TRAVEL_SPEED
+-      #define XY_TRAVEL_SPEED 4000
++    #ifndef XY_PROBE_SPEED
++      #ifdef HOMING_FEEDRATE_XYZ
++        #define XY_PROBE_SPEED HOMING_FEEDRATE_XYZ
++      #else
++        #define XY_PROBE_SPEED 4000
++      #endif
+     #endif
+   #endif
+ 
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 13f855f..a55c878 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -456,6 +456,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER 10  // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -667,8 +670,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c9172e7..ad83f42 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -367,8 +367,13 @@ static uint8_t target_extruder;
+ #endif
+ 
+ #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-  int xy_travel_speed = XY_TRAVEL_SPEED;
++  int xy_probe_speed = XY_PROBE_SPEED;
+   bool bed_leveling_in_progress = false;
++  #define XY_PROBE_FEEDRATE xy_probe_speed
++#elif defined(XY_PROBE_SPEED)
++  #define XY_PROBE_FEEDRATE XY_PROBE_SPEED
++#else
++  #define XY_PROBE_FEEDRATE (min(planner.max_feedrate[X_AXIS], planner.max_feedrate[Y_AXIS]) * 60)
+ #endif
+ 
+ #if ENABLED(Z_DUAL_ENDSTOPS) && DISABLED(DELTA)
+@@ -1633,13 +1638,7 @@ static void setup_for_endstop_move() {
+ 
+     #if ENABLED(DELTA)
+ 
+-      feedrate =
+-        #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-          xy_travel_speed
+-        #else
+-          min(planner.max_feedrate[X_AXIS], planner.max_feedrate[Y_AXIS]) * 60
+-        #endif
+-      ;
++      feedrate = XY_PROBE_FEEDRATE;
+ 
+       destination[X_AXIS] = x;
+       destination[Y_AXIS] = y;
+@@ -1658,13 +1657,7 @@ static void setup_for_endstop_move() {
+       line_to_current_position();
+       stepper.synchronize();
+ 
+-      feedrate =
+-        #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-          xy_travel_speed
+-        #else
+-          min(planner.max_feedrate[X_AXIS], planner.max_feedrate[Y_AXIS]) * 60
+-        #endif
+-      ;
++      feedrate = XY_PROBE_FEEDRATE;
+ 
+       current_position[X_AXIS] = x;
+       current_position[Y_AXIS] = y;
+@@ -2981,7 +2974,8 @@ inline void gcode_G28() {
+             destination[X_AXIS] = round(Z_SAFE_HOMING_X_POINT - (X_PROBE_OFFSET_FROM_EXTRUDER));
+             destination[Y_AXIS] = round(Z_SAFE_HOMING_Y_POINT - (Y_PROBE_OFFSET_FROM_EXTRUDER));
+             destination[Z_AXIS] = current_position[Z_AXIS]; //z is already at the right height
+-            feedrate = XY_TRAVEL_SPEED;
++
++            feedrate = XY_PROBE_FEEDRATE;
+ 
+             #if ENABLED(DEBUG_LEVELING_FEATURE)
+               if (DEBUGGING(LEVELING)) {
+@@ -3403,7 +3397,7 @@ inline void gcode_G28() {
+         }
+       #endif
+ 
+-      xy_travel_speed = code_seen('S') ? (int)code_value_linear_units() : XY_TRAVEL_SPEED;
++      xy_probe_speed = code_seen('S') ? (int)code_value_linear_units() : XY_PROBE_SPEED;
+ 
+       int left_probe_bed_position = code_seen('L') ? (int)code_value_axis_units(X_AXIS) : LEFT_PROBE_BED_POSITION,
+           right_probe_bed_position = code_seen('R') ? (int)code_value_axis_units(X_AXIS) : RIGHT_PROBE_BED_POSITION,
+@@ -6564,8 +6558,8 @@ inline void gcode_T(uint8_t tmp_extruder) {
+     }
+     else {
+       feedrate =
+-        #ifdef XY_TRAVEL_SPEED
+-          XY_TRAVEL_SPEED
++        #ifdef XY_PROBE_SPEED
++          XY_PROBE_SPEED
+         #else
+           min(planner.max_feedrate[X_AXIS], planner.max_feedrate[Y_AXIS]) * 60
+         #endif
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 8d2edc5..a757f8a 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -623,6 +623,8 @@
+   #error "SERVO_ENDSTOP_ANGLES is deprecated. Use Z_SERVO_ANGLES instead."
+ #elif defined(X_ENDSTOP_SERVO_NR) || defined(Y_ENDSTOP_SERVO_NR)
+   #error "X_ENDSTOP_SERVO_NR and Y_ENDSTOP_SERVO_NR are deprecated and should be removed."
++#elif defined(XY_TRAVEL_SPEED)
++  #error "XY_TRAVEL_SPEED is deprecated. Use XY_PROBE_SPEED instead."
+ #endif
+ 
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 84794bd..5eebcb0 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -455,6 +455,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER 10  // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -666,8 +669,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index cab1522..fce00f7 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -438,6 +438,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -649,8 +652,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 322b36f..4881d29 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -436,6 +436,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -647,8 +650,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 59a111d..91d879d 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -448,6 +448,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -659,8 +662,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index e74c1af..dce0c97 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -450,6 +450,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER 15  // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER 0   // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -661,8 +664,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 2  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 16ae40d..0431ff3 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -473,6 +473,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -684,8 +687,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index a249256..b847308 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -456,6 +456,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -667,8 +670,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 5cbf98f..7d84255 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -450,6 +450,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -661,8 +664,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 1da70ab..7bb2c7d 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -464,6 +464,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -675,8 +678,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index fc78055..fbaed6a 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -477,6 +477,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -688,8 +691,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 7712caa..1fa1f66 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -448,6 +448,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -659,8 +662,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 8225450..1d24232 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -456,6 +456,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -667,8 +670,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 1f57ead..527e917 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -498,6 +498,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -10   // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -3.5  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 4000
++
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+ //#define Z_PROBE_ALLEN_KEY
+@@ -510,32 +513,32 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (XY_TRAVEL_SPEED)/2
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (XY_PROBE_SPEED)/2
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Y -122.00
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_2_X 36.00 // move down to retract probe
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Y -122.00
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Z 25.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_TRAVEL_SPEED)/2
++  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_PROBE_SPEED)/2
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_PROBE_SPEED
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -750,8 +753,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 4000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index acfe15c..c870c8a 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -498,6 +498,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -10   // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -3.5  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 4000
++
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+ //#define Z_PROBE_ALLEN_KEY
+@@ -509,27 +512,27 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_TRAVEL_SPEED)/10
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_PROBE_SPEED)/10
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_TRAVEL_SPEED)/10
++  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_PROBE_SPEED)/10
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_PROBE_SPEED
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -744,8 +747,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 4000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 34fcddc..2052ccf 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -498,6 +498,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -10   // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -3.5  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 4000
++
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+ #define Z_PROBE_ALLEN_KEY
+@@ -510,29 +513,29 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_TRAVEL_SPEED/10)
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_PROBE_SPEED/10)
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_DEPTH 20
+   // Move the probe into position
+   #define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_PROBE_SPEED
+   // Move the nozzle down further to push the probe into retracted position.
+   #define Z_PROBE_ALLEN_KEY_STOW_2_X  Z_PROBE_ALLEN_KEY_STOW_1_X
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Y  Z_PROBE_ALLEN_KEY_STOW_1_Y
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Z  (Z_PROBE_ALLEN_KEY_STOW_1_Z-Z_PROBE_ALLEN_KEY_STOW_DEPTH)
+-  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_TRAVEL_SPEED/10)
++  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_PROBE_SPEED/10)
+   // Raise things back up slightly so we don't bump into anything
+   #define Z_PROBE_ALLEN_KEY_STOW_3_X  Z_PROBE_ALLEN_KEY_STOW_2_X
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Y  Z_PROBE_ALLEN_KEY_STOW_2_Y
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Z  (Z_PROBE_ALLEN_KEY_STOW_1_Z+Z_PROBE_ALLEN_KEY_STOW_DEPTH)
+-  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE (XY_TRAVEL_SPEED/2)
++  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE (XY_PROBE_SPEED/2)
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -747,8 +750,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 4000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 10bc948..64c242b 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -489,6 +489,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ // not giving someone a head crash. Use something like G29 Z-0.2 to adjust as needed.
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -17.25  // Increase this if the first layer is too thin (remember: it's a negative number so increase means closer to zero).
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+ #define Z_PROBE_ALLEN_KEY
+@@ -501,32 +504,32 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_X -105.00 // Move left but not quite so far that we'll bump the belt
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y 0.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_X -110.00 // Move outward to position deploy pin to the left of the arm
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y -125.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z Z_PROBE_ALLEN_KEY_DEPLOY_1_Z
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_X 45.00 // Move right to trigger deploy pin
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Y -125.00
+   #define Z_PROBE_ALLEN_KEY_DEPLOY_3_Z Z_PROBE_ALLEN_KEY_DEPLOY_2_Z
+-  #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (XY_TRAVEL_SPEED)/2
++  #define Z_PROBE_ALLEN_KEY_DEPLOY_3_FEEDRATE (XY_PROBE_SPEED)/2
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_1_X 36.00 // Line up with bed retaining clip
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Y -125.00
+   #define Z_PROBE_ALLEN_KEY_STOW_1_Z 75.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_PROBE_SPEED
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_2_X Z_PROBE_ALLEN_KEY_STOW_1_X // move down to retract probe
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Y Z_PROBE_ALLEN_KEY_STOW_1_Y
+   #define Z_PROBE_ALLEN_KEY_STOW_2_Z 0.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_TRAVEL_SPEED)/2
++  #define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_PROBE_SPEED)/2
+ 
+   #define Z_PROBE_ALLEN_KEY_STOW_3_X 0.0  // return to 0,0,100
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Y 0.0
+   #define Z_PROBE_ALLEN_KEY_STOW_3_Z 100.0
+-  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_TRAVEL_SPEED
++  #define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_PROBE_SPEED
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -741,8 +744,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 1c295bd..a992ffb 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -496,6 +496,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER 0.0     // Z probe to nozzle Y offset: -front +behind
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER 0.3     // Z probe to nozzle Z offset: -below (always!)
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+ //#define Z_PROBE_ALLEN_KEY
+@@ -507,27 +510,27 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_X 30.0
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Y DELTA_PRINTABLE_RADIUS
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_Z 100.0
+-  //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_TRAVEL_SPEED
++  //#define Z_PROBE_ALLEN_KEY_DEPLOY_1_FEEDRATE XY_PROBE_SPEED
+ 
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_X 0.0
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Y DELTA_PRINTABLE_RADIUS
+   //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_Z 100.0
+-  //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_TRAVEL_SPEED)/10
++  //#define Z_PROBE_ALLEN_KEY_DEPLOY_2_FEEDRATE (XY_PROBE_SPEED)/10
+ 
+   //#define Z_PROBE_ALLEN_KEY_STOW_1_X -64.0 // Move the probe into position
+   //#define Z_PROBE_ALLEN_KEY_STOW_1_Y 56.0
+   //#define Z_PROBE_ALLEN_KEY_STOW_1_Z 23.0
+-  //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_TRAVEL_SPEED
++  //#define Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE XY_PROBE_SPEED
+ 
+   //#define Z_PROBE_ALLEN_KEY_STOW_2_X -64.0 // Push it down
+   //#define Z_PROBE_ALLEN_KEY_STOW_2_Y 56.0
+   //#define Z_PROBE_ALLEN_KEY_STOW_2_Z 3.0
+-  //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_TRAVEL_SPEED)/10
++  //#define Z_PROBE_ALLEN_KEY_STOW_2_FEEDRATE (XY_PROBE_SPEED)/10
+ 
+   //#define Z_PROBE_ALLEN_KEY_STOW_3_X -64.0 // Move it up to clear
+   //#define Z_PROBE_ALLEN_KEY_STOW_3_Y 56.0
+   //#define Z_PROBE_ALLEN_KEY_STOW_3_Z 50.0
+-  //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_TRAVEL_SPEED
++  //#define Z_PROBE_ALLEN_KEY_STOW_3_FEEDRATE XY_PROBE_SPEED
+ 
+ #endif // Z_PROBE_ALLEN_KEY
+ 
+@@ -742,8 +745,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 10 // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 76bc85c..af2b9f9 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -459,6 +459,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -670,8 +673,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index e79d722..efbc931 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -446,6 +446,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #define Y_PROBE_OFFSET_FROM_EXTRUDER -29     // Y offset: -front +behind [the nozzle]
+ #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35  // Z offset: -below +above  [the nozzle]
+ 
++// X and Y axis travel speed (mm/m) between probes
++#define XY_PROBE_SPEED 8000
++
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+ //
+@@ -657,8 +660,6 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ 
+   #endif // !AUTO_BED_LEVELING_GRID
+ 
+-  #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min.
+-
+   #define Z_RAISE_BETWEEN_PROBINGS 5  // How much the Z axis will be raised when traveling from between next probing points.
+ 
+   //#define Z_PROBE_END_SCRIPT "G1 Z10 F12000\nG1 X15 Y330\nG1 Z0.5\nG1 Z10" // These commands will be executed in the end of G29 routine.
+

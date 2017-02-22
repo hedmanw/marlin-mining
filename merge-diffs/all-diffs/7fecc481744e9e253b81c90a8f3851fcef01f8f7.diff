@@ -1,0 +1,237 @@
+commit 7fecc481744e9e253b81c90a8f3851fcef01f8f7 (from 8b2cd930c3b420df2864b43621e69afdbee5f755)
+Merge: 8b2cd93 d256380
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri May 15 22:16:59 2015 -0700
+
+    Merge pull request #2081 from thinkyhead/better_lsdive
+    
+    Allow lsDive to recurse with minimal stack usage
+
+diff --git a/Marlin/SdBaseFile.cpp b/Marlin/SdBaseFile.cpp
+index c72eced..f92f48e 100644
+--- a/Marlin/SdBaseFile.cpp
++++ b/Marlin/SdBaseFile.cpp
+@@ -1097,8 +1097,9 @@ int16_t SdBaseFile::read(void* buf, uint16_t nbyte) {
+  fail:
+   return -1;
+ }
+-//------------------------------------------------------------------------------
+-/** Read the next directory entry from a directory file.
++
++/**
++ * Read the next entry in a directory.
+  *
+  * \param[out] dir The dir_t struct that will receive the data.
+  *
+@@ -1114,50 +1115,38 @@ int8_t SdBaseFile::readDir(dir_t* dir, char* longFilename) {
+   if (!isDir() || (0X1F & curPosition_)) return -1;
+   
+   //If we have a longFilename buffer, mark it as invalid. If we find a long filename it will be filled automaticly.
+-  if (longFilename != NULL)
+-  {
+-  	longFilename[0] = '\0';
+-  }
++  if (longFilename != NULL) longFilename[0] = '\0';
+ 
+   while (1) {
++
+     n = read(dir, sizeof(dir_t));
+     if (n != sizeof(dir_t)) return n == 0 ? 0 : -1;
++
+     // last entry if DIR_NAME_FREE
+     if (dir->name[0] == DIR_NAME_FREE) return 0;
++
+     // skip empty entries and entry for .  and ..
+     if (dir->name[0] == DIR_NAME_DELETED || dir->name[0] == '.') continue;
+-    //Fill the long filename if we have a long filename entry,
+-	// long filename entries are stored before the actual filename.
+-	if (DIR_IS_LONG_NAME(dir) && longFilename != NULL)
+-    {
+-    	vfat_t *VFAT = (vfat_t*)dir;
+-		//Sanity check the VFAT entry. The first cluster is always set to zero. And th esequence number should be higher then 0
+-    	if (VFAT->firstClusterLow == 0 && (VFAT->sequenceNumber & 0x1F) > 0 && (VFAT->sequenceNumber & 0x1F) <= MAX_VFAT_ENTRIES)
+-    	{
+-			//TODO: Store the filename checksum to verify if a none-long filename aware system modified the file table.
+-    		n = ((VFAT->sequenceNumber & 0x1F) - 1) * FILENAME_LENGTH;
+-			longFilename[n+0] = VFAT->name1[0];
+-			longFilename[n+1] = VFAT->name1[1];
+-			longFilename[n+2] = VFAT->name1[2];
+-			longFilename[n+3] = VFAT->name1[3];
+-			longFilename[n+4] = VFAT->name1[4];
+-			longFilename[n+5] = VFAT->name2[0];
+-			longFilename[n+6] = VFAT->name2[1];
+-			longFilename[n+7] = VFAT->name2[2];
+-			longFilename[n+8] = VFAT->name2[3];
+-			longFilename[n+9] = VFAT->name2[4];
+-			longFilename[n+10] = VFAT->name2[5];
+-			longFilename[n+11] = VFAT->name3[0];
+-			longFilename[n+12] = VFAT->name3[1];
+-			//If this VFAT entry is the last one, add a NUL terminator at the end of the string
+-			if (VFAT->sequenceNumber & 0x40)
+-				longFilename[n+FILENAME_LENGTH] = '\0';
+-		}
++
++    // Fill the long filename if we have a long filename entry.
++    // Long filename entries are stored before the short filename.
++    if (longFilename != NULL && DIR_IS_LONG_NAME(dir)) {
++      vfat_t *VFAT = (vfat_t*)dir;
++      // Sanity-check the VFAT entry. The first cluster is always set to zero. And the sequence number should be higher than 0
++      if (VFAT->firstClusterLow == 0 && (VFAT->sequenceNumber & 0x1F) > 0 && (VFAT->sequenceNumber & 0x1F) <= MAX_VFAT_ENTRIES) {
++        // TODO: Store the filename checksum to verify if a none-long filename aware system modified the file table.
++        n = ((VFAT->sequenceNumber & 0x1F) - 1) * FILENAME_LENGTH;
++        for (uint8_t i=0; i<FILENAME_LENGTH; i++)
++          longFilename[n+i] = (i < 5) ? VFAT->name1[i] : (i < 11) ? VFAT->name2[i-5] : VFAT->name3[i-11];
++        // If this VFAT entry is the last one, add a NUL terminator at the end of the string
++        if (VFAT->sequenceNumber & 0x40) longFilename[n+FILENAME_LENGTH] = '\0';
++      }
+     }
+-    // return if normal file or subdirectory
++    // Return if normal file or subdirectory
+     if (DIR_IS_FILE_OR_SUBDIR(dir)) return n;
+   }
+ }
++
+ //------------------------------------------------------------------------------
+ // Read next directory entry into the cache
+ // Assumes file is correctly positioned
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 4b60172..a2a6d8e 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -40,24 +40,43 @@ char *createFilename(char *buffer, const dir_t &p) { //buffer > 12characters
+   return buffer;
+ }
+ 
++/**
++ * Dive into a folder and recurse depth-first to perform a pre-set operation lsAction:
++ *   LS_Count       - Add +1 to nrFiles for every file within the parent
++ *   LS_GetFilename - Get the filename of the file indexed by nrFiles
++ *   LS_SerialPrint - Print the full path of each file to serial output
++ */
+ void CardReader::lsDive(const char *prepend, SdFile parent, const char * const match/*=NULL*/) {
+   dir_t p;
+   uint8_t cnt = 0;
+ 
++  // Read the next entry from a directory
+   while (parent.readDir(p, longFilename) > 0) {
+-    if (DIR_IS_SUBDIR(&p) && lsAction != LS_Count && lsAction != LS_GetFilename) { // hence LS_SerialPrint
+-      char path[FILENAME_LENGTH*2];
++
++    // If the entry is a directory and the action is LS_SerialPrint
++    if (DIR_IS_SUBDIR(&p) && lsAction != LS_Count && lsAction != LS_GetFilename) {
++
++      // Allocate enough stack space for the full path to a folder
++      int len = strlen(prepend) + FILENAME_LENGTH + 1;
++      char path[len];
++
++      // Get the short name for the item, which we know is a folder
+       char lfilename[FILENAME_LENGTH];
+       createFilename(lfilename, p);
+ 
+-      path[0] = 0;
+-      if (prepend[0] == 0) strcat(path, "/"); //avoid leading / if already in prepend
++      // Append the FOLDERNAME12/ to the passed string.
++      // It contains the full path to the "parent" argument.
++      // We now have the full path to the item in this folder.
++      path[0] = '\0';
++      if (prepend[0] == '\0') strcat(path, "/"); // a root slash if prepend is empty
+       strcat(path, prepend);
+       strcat(path, lfilename);
+       strcat(path, "/");
+ 
+-      //Serial.print(path);
++      // Serial.print(path);
+ 
++      // Get a new directory object using the full path
++      // and dive recursively into it.
+       SdFile dir;
+       if (!dir.open(parent, lfilename, O_READ)) {
+         if (lsAction == LS_SerialPrint) {
+@@ -67,14 +86,13 @@ void CardReader::lsDive(const char *prepend, SdFile parent, const char * const m
+         }
+       }
+       lsDive(path, dir);
+-      //close done automatically by destructor of SdFile
++      // close() is done automatically by destructor of SdFile
+     }
+     else {
+       char pn0 = p.name[0];
+       if (pn0 == DIR_NAME_FREE) break;
+       if (pn0 == DIR_NAME_DELETED || pn0 == '.') continue;
+-      char lf0 = longFilename[0];
+-      if (lf0 == '.') continue;
++      if (longFilename[0] == '.') continue;
+ 
+       if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
+ 
+@@ -82,24 +100,27 @@ void CardReader::lsDive(const char *prepend, SdFile parent, const char * const m
+ 
+       if (!filenameIsDir && (p.name[8] != 'G' || p.name[9] == '~')) continue;
+ 
+-      //if (cnt++ != nr) continue;
+-      createFilename(filename, p);
+-      if (lsAction == LS_SerialPrint) {
+-        SERIAL_PROTOCOL(prepend);
+-        SERIAL_PROTOCOLLN(filename);
+-      }
+-      else if (lsAction == LS_Count) {
+-        nrFiles++;
+-      }
+-      else if (lsAction == LS_GetFilename) {
+-        if (match != NULL) {
+-          if (strcasecmp(match, filename) == 0) return;
+-        }
+-        else if (cnt == nrFiles) return;
+-        cnt++;
++      switch (lsAction) {
++        case LS_Count:
++          nrFiles++;
++          break;
++        case LS_SerialPrint:
++          createFilename(filename, p);
++          SERIAL_PROTOCOL(prepend);
++          SERIAL_PROTOCOLLN(filename);
++          break;
++        case LS_GetFilename:
++          createFilename(filename, p);
++          if (match != NULL) {
++            if (strcasecmp(match, filename) == 0) return;
++          }
++          else if (cnt == nrFiles) return;
++          cnt++;
++          break;
+       }
++
+     }
+-  }
++  } // while readDir
+ }
+ 
+ void CardReader::ls()  {
+@@ -238,7 +259,7 @@ void CardReader::openFile(char* name, bool read, bool replace_current/*=true*/)
+   char *dirname_start, *dirname_end;
+   if (name[0] == '/') {
+     dirname_start = &name[1];
+-    while(dirname_start > 0) {
++    while (dirname_start > 0) {
+       dirname_end = strchr(dirname_start, '/');
+       //SERIAL_ECHO("start:");SERIAL_ECHOLN((int)(dirname_start - name));
+       //SERIAL_ECHO("end  :");SERIAL_ECHOLN((int)(dirname_end - name));
+@@ -288,14 +309,14 @@ void CardReader::openFile(char* name, bool read, bool replace_current/*=true*/)
+     else {
+       SERIAL_PROTOCOLPGM(MSG_SD_OPEN_FILE_FAIL);
+       SERIAL_PROTOCOL(fname);
+-      SERIAL_PROTOCOLCHAR('.');
++      SERIAL_PROTOCOLPGM(".\n");
+     }
+   }
+   else { //write
+     if (!file.open(curDir, fname, O_CREAT | O_APPEND | O_WRITE | O_TRUNC)) {
+       SERIAL_PROTOCOLPGM(MSG_SD_OPEN_FILE_FAIL);
+       SERIAL_PROTOCOL(fname);
+-      SERIAL_PROTOCOLCHAR('.');
++      SERIAL_PROTOCOLPGM(".\n");
+     }
+     else {
+       saving = true;
+

@@ -1,0 +1,251 @@
+commit e63e224a33011f2aa302ee435acc066af8a87ddb (from e7dca8614be5cac516c0d7989a28abdf21d412d8)
+Merge: e7dca86 46f80e8
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Fri Nov 18 19:04:09 2011 +0100
+
+    Merge remote-tracking branch 'origin/Marlin_v1' into Marlin_v1
+    
+    Conflicts:
+    	Marlin/Configuration.h
+    	Marlin/Marlin.pde
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 7cbb66c..cf38cea 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -58,7 +58,6 @@
+ //#define BED_USES_THERMISTOR
+ //#define BED_USES_AD595
+ 
+-#define HEATER_CHECK_INTERVAL 50 //ms
+ #define BED_CHECK_INTERVAL 5000 //ms
+ 
+ //// Experimental watchdog and minimal temp
+@@ -243,10 +242,12 @@ const bool ENDSTOPS_INVERTING = true; // set to true to invert the logic of the
+ // The watchdog waits for the watchperiod in milliseconds whenever an M104 or M109 increases the target temperature
+ // this enables the watchdog interrupt.
+ //#define USE_WATCHDOG
+-// you cannot reboot on a mega2560 due to a bug in he bootloader. Hence, you have to reset manually, and this is done hereby:
++#ifdef USE_WATCHDOG
++  // you cannot reboot on a mega2560 due to a bug in he bootloader. Hence, you have to reset manually, and this is done hereby:
+ //#define RESET_MANUAL
+ //#define WATCHDOG_TIMEOUT 4  //seconds
+ 
++
+ // extruder advance constant (s2/mm3)
+ //
+ // advance (steps) = STEPS_PER_CUBIC_MM_E * EXTUDER_ADVANCE_K * cubic mm per second ^ 2
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 440a44a..acfc3c2 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -100,7 +100,7 @@ void prepare_move();
+ void kill();
+ 
+ void enquecommand(const char *cmd); //put an ascii command at the end of the current buffer.
+-
++void prepare_arc_move(char isclockwise);
+ 
+ #ifndef CRITICAL_SECTION_START
+   #define CRITICAL_SECTION_START  unsigned char _sreg = SREG; cli();
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 3a6d4e6..128f697 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -37,6 +37,7 @@
+ #include "temperature.h"
+ #include "motion_control.h"
+ #include "cardreader.h"
++#include "watchdog.h"
+ 
+ 
+ #define VERSION_STRING  "1.0.0 Alpha 1"
+@@ -193,6 +194,12 @@ extern "C"{
+ }
+ 
+ 
++
++
++
++
++
++
+ //adds an command to the main command buffer
+ //thats really done in a non-safe way.
+ //needs overworking someday
+@@ -235,6 +242,7 @@ void setup()
+   tp_init();    // Initialize temperature loop 
+   plan_init();  // Initialize planner;
+   st_init();    // Initialize stepper;
++  wd_init();
+ }
+ 
+ 
+@@ -659,7 +667,8 @@ inline void process_commands()
+       break;
+     case 105: // M105
+       //SERIAL_ECHOLN(freeMemory());
+-          
++       //test watchdog:
++       //delay(20000);
+       #if (TEMP_0_PIN > -1) || defined (HEATER_USES_AD595)
+         SERIAL_PROTOCOLPGM("ok T:");
+         SERIAL_PROTOCOL( degHotend0()); 
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index b3f514f..d75f93a 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -33,6 +33,7 @@ public:
+   inline bool eof() { return sdpos>=filesize ;};
+   inline int16_t get() {  sdpos = file.curPosition();return (int16_t)file.read();};
+   inline void setIndex(long index) {sdpos = index;file.seekSet(index);};
++  inline uint8_t percentDone(){if(!sdprinting) return 0; if(filesize) return sdpos*100/filesize; else return 0;};
+ 
+ public:
+   bool saving;
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index bc07c25..6bae43d 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -97,7 +97,7 @@
+   #define BLOCK ;
+ #endif 
+   
+-  
++void lcd_statuspgm(const char* message);
+   
+ #endif //ULTRALCD
+-
++
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index d951671..c4ea234 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -374,6 +374,17 @@ void MainMenu::showStatus()
+     lcd.print(fillto(LCD_WIDTH,messagetext));
+     messagetext[0]='\0';
+   }
++  
++  static uint8_t oldpercent=101;
++  uint8_t percent=card.percentDone();
++  if(oldpercent!=percent ||force_lcd_update)
++  {
++     lcd.setCursor(7,2);
++    lcd.print(itostr3((int)percent));
++    lcdprintPGM("%SD");
++    
++  }
++  
+ #else //smaller LCDS----------------------------------
+   static int olddegHotEnd0=-1;
+   static int oldtargetHotEnd0=-1;
+@@ -686,7 +697,7 @@ void MainMenu::showControl()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(" Vxy-jerk: ");
+-          lcd.setCursor(13,line);lcd.print(itostr3(max_xy_jerk/60));
++          lcd.setCursor(13,line);lcd.print(itostr3(max_xy_jerk));
+         }
+         
+         if((activeline==line) )
+@@ -696,11 +707,11 @@ void MainMenu::showControl()
+             linechanging=!linechanging;
+             if(linechanging)
+             {
+-               encoderpos=(int)max_xy_jerk/60;
++               encoderpos=(int)max_xy_jerk;
+             }
+             else
+             {
+-              max_xy_jerk= encoderpos*60;
++              max_xy_jerk= encoderpos;
+               encoderpos=activeline*lcdslow;
+                 
+             }
+@@ -866,7 +877,7 @@ void MainMenu::showControl()
+           if(i==ItemC_vmaxy)lcdprintPGM("y:");
+           if(i==ItemC_vmaxz)lcdprintPGM("z:");
+           if(i==ItemC_vmaxe)lcdprintPGM("e:");
+-          lcd.setCursor(13,line);lcd.print(itostr3(max_feedrate[i-ItemC_vmaxx]/60));
++          lcd.setCursor(13,line);lcd.print(itostr3(max_feedrate[i-ItemC_vmaxx]));
+         }
+         
+         if((activeline==line) )
+@@ -876,11 +887,11 @@ void MainMenu::showControl()
+             linechanging=!linechanging;
+             if(linechanging)
+             {
+-               encoderpos=(int)max_feedrate[i-ItemC_vmaxx]/60;
++               encoderpos=(int)max_feedrate[i-ItemC_vmaxx];
+             }
+             else
+             {
+-              max_feedrate[i-ItemC_vmaxx]= encoderpos*60;
++              max_feedrate[i-ItemC_vmaxx]= encoderpos;
+               encoderpos=activeline*lcdslow;
+                 
+             }
+@@ -901,7 +912,7 @@ void MainMenu::showControl()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(" Vmin:");
+-          lcd.setCursor(13,line);lcd.print(itostr3(minimumfeedrate/60));
++          lcd.setCursor(13,line);lcd.print(itostr3(minimumfeedrate));
+         }
+         
+         if((activeline==line) )
+@@ -911,11 +922,11 @@ void MainMenu::showControl()
+             linechanging=!linechanging;
+             if(linechanging)
+             {
+-               encoderpos=(int)(minimumfeedrate/60.);
++               encoderpos=(int)(minimumfeedrate);
+             }
+             else
+             {
+-              minimumfeedrate= encoderpos*60;
++              minimumfeedrate= encoderpos;
+               encoderpos=activeline*lcdslow;
+                 
+             }
+@@ -935,7 +946,7 @@ void MainMenu::showControl()
+       if(force_lcd_update)
+         {
+           lcd.setCursor(0,line);lcdprintPGM(" VTrav min:");
+-          lcd.setCursor(13,line);lcd.print(itostr3(mintravelfeedrate/60));
++          lcd.setCursor(13,line);lcd.print(itostr3(mintravelfeedrate));
+         }
+         
+         if((activeline==line) )
+@@ -945,11 +956,11 @@ void MainMenu::showControl()
+             linechanging=!linechanging;
+             if(linechanging)
+             {
+-               encoderpos=(int)mintravelfeedrate/60;
++               encoderpos=(int)mintravelfeedrate;
+             }
+             else
+             {
+-              mintravelfeedrate= encoderpos*60;
++              mintravelfeedrate= encoderpos;
+               encoderpos=activeline*lcdslow;
+                 
+             }
+diff --git a/Marlin/watchdog.pde b/Marlin/watchdog.pde
+index be10f58..7af540c 100644
+--- a/Marlin/watchdog.pde
++++ b/Marlin/watchdog.pde
+@@ -42,10 +42,12 @@ ISR(WDT_vect)
+  
+     #ifdef RESET_MANUAL
+       LCD_MESSAGEPGM("Please Reset!");
++      LCD_STATUS;
+       SERIAL_ERROR_START;
+       SERIAL_ERRORLNPGM("Something is wrong, please turn off the printer.");
+     #else
+       LCD_MESSAGEPGM("Timeout, resetting!");
++      LCD_STATUS;
+     #endif 
+     //disable watchdog, it will survife reboot.
+     WDTCSR |= (1<<WDCE) | (1<<WDE);
+

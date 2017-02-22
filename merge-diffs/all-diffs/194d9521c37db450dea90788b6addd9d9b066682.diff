@@ -1,0 +1,1146 @@
+commit 194d9521c37db450dea90788b6addd9d9b066682 (from 6137a1d93419ea9ad6953d56342f9e86b3d90124)
+Merge: 6137a1d 4a6ed5e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 19:02:39 2016 -0700
+
+    Merge pull request #4356 from thinkyhead/rc_simpler_run_z_probe
+    
+    Unify run_z_probe
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 084b629..fe77dd0 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2f5c5d9..dc52989 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1591,7 +1591,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+ /**
+  * Some planner shorthand inline functions
+  */
+-inline float set_homing_bump_feedrate(AxisEnum axis) {
++inline float get_homing_bump_feedrate(AxisEnum axis) {
+   const int homing_bump_divisor[] = HOMING_BUMP_DIVISOR;
+   int hbd = homing_bump_divisor[axis];
+   if (hbd < 1) {
+@@ -1599,8 +1599,7 @@ inline float set_homing_bump_feedrate(AxisEnum axis) {
+     SERIAL_ECHO_START;
+     SERIAL_ECHOLNPGM("Warning: Homing Bump Divisor < 1");
+   }
+-  feedrate_mm_m = homing_feedrate_mm_m[axis] / hbd;
+-  return feedrate_mm_m;
++  return homing_feedrate_mm_m[axis] / hbd;
+ }
+ //
+ // line_to_current_position
+@@ -1620,7 +1619,7 @@ inline void line_to_axis_pos(AxisEnum axis, float where, float fr_mm_m = 0.0) {
+   current_position[axis] = where;
+   feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : homing_feedrate_mm_m[axis];
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
+-  stepper.synchronize(); // The lost one
++  stepper.synchronize();
+   feedrate_mm_m = old_feedrate_mm_m;
+ }
+ 
+@@ -2068,85 +2067,35 @@ static void clean_up_after_endstop_or_probe_move() {
+   // at the height where the probe triggered.
+   static float run_z_probe() {
+ 
+-    float old_feedrate_mm_m = feedrate_mm_m;
+-
+     // Prevent stepper_inactive_time from running out and EXTRUDER_RUNOUT_PREVENT from extruding
+     refresh_cmd_timeout();
+ 
+-    #if ENABLED(DELTA)
+-
+-      float start_z = current_position[Z_AXIS];
+-      long start_steps = stepper.position(Z_AXIS);
+-
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe (DELTA) 1", current_position);
+-      #endif
+-
+-      // move down slowly until you find the bed
+-      feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS] / 4;
+-      destination[Z_AXIS] = -10;
+-      prepare_move_to_destination_raw(); // this will also set_current_to_destination
+-      stepper.synchronize();
+-      endstops.hit_on_purpose(); // clear endstop hit flags
+-
+-      /**
+-       * We have to let the planner know where we are right now as it
+-       * is not where we said to go.
+-       */
+-      long stop_steps = stepper.position(Z_AXIS);
+-      float mm = start_z - float(start_steps - stop_steps) / planner.axis_steps_per_mm[Z_AXIS];
+-      current_position[Z_AXIS] = mm;
+-
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe (DELTA) 2", current_position);
+-      #endif
+-
+-    #else // !DELTA
+-
+-      #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+-        planner.bed_level_matrix.set_to_identity();
+-      #endif
+-
+-      feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS];
+-
+-      // Move down until the Z probe (or endstop?) is triggered
+-      float zPosition = -(Z_MAX_LENGTH + 10);
+-      line_to_z(zPosition);
+-      stepper.synchronize();
+-
+-      // Tell the planner where we ended up - Get this from the stepper handler
+-      zPosition = stepper.get_axis_position_mm(Z_AXIS);
+-      planner.set_position_mm(
+-        current_position[X_AXIS], current_position[Y_AXIS], zPosition,
+-        current_position[E_AXIS]
+-      );
+-
+-      // move up the retract distance
+-      zPosition += home_bump_mm(Z_AXIS);
+-      line_to_z(zPosition);
+-      stepper.synchronize();
+-      endstops.hit_on_purpose(); // clear endstop hit flags
+-
+-      // move back down slowly to find bed
+-      set_homing_bump_feedrate(Z_AXIS);
+-
+-      zPosition -= home_bump_mm(Z_AXIS) * 2;
+-      line_to_z(zPosition);
+-      stepper.synchronize();
+-      endstops.hit_on_purpose(); // clear endstop hit flags
+-
+-      // Get the current stepper position after bumping an endstop
+-      current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
++    #if ENABLED(AUTO_BED_LEVELING_FEATURE)
++      planner.bed_level_matrix.set_to_identity();
++    #endif
+ 
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe", current_position);
+-      #endif
++    current_position[Z_AXIS] = -(Z_MAX_LENGTH + 10);
++    do_blocking_move_to_z(current_position[Z_AXIS], Z_PROBE_SPEED_FAST);
++    endstops.hit_on_purpose(); // clear endstop hit flags
++    // Get the current stepper position after bumping an endstop
++    current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
++    SYNC_PLAN_POSITION_KINEMATIC(); // tell the planner where we are      feedrate_mm_m = homing_feedrate_mm_m[Z_AXIS];
+ 
+-    #endif // !DELTA
++    // move up the retract distance
++    current_position[Z_AXIS] += home_bump_mm(Z_AXIS);
++    do_blocking_move_to_z(current_position[Z_AXIS], Z_PROBE_SPEED_FAST);
+ 
+-    SYNC_PLAN_POSITION_KINEMATIC();
++    // move back down slowly to find bed
++    current_position[Z_AXIS] -= home_bump_mm(Z_AXIS) * 2;
++    do_blocking_move_to_z(current_position[Z_AXIS], Z_PROBE_SPEED_SLOW);
++    endstops.hit_on_purpose(); // clear endstop hit flags
++    // Get the current stepper position after bumping an endstop
++    current_position[Z_AXIS] = stepper.get_axis_position_mm(Z_AXIS);
++    SYNC_PLAN_POSITION_KINEMATIC(); // tell the planner where we are
+ 
+-    feedrate_mm_m = old_feedrate_mm_m;
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe", current_position);
++    #endif
+ 
+     return current_position[Z_AXIS];
+   }
+@@ -2431,7 +2380,7 @@ static void homeaxis(AxisEnum axis) {
+   line_to_axis_pos(axis, -home_bump_mm(axis) * axis_home_dir);
+ 
+   // Move slowly towards the endstop until triggered
+-  line_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, set_homing_bump_feedrate(axis));
++  line_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, get_homing_bump_feedrate(axis));
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("> TRIGGER ENDSTOP", current_position);
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index db188b8..c0e1d33 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index d486589..a70ee13 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -481,6 +481,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index b751dee..fe90682 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -479,6 +479,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 96a4287..5013b50 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -491,6 +491,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 9027007..98d2d4f 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -493,6 +493,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index f0b30f8..f562b8a 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -516,6 +516,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index c9c649a..bc106ea 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 4212cdd..e49bac6 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 38c1d54..9333135 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 540b3f6..b3a35bf 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -496,6 +496,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 3d534f7..d9fa05a 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -507,6 +507,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 9e56cdd..fbcd5e7 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -520,6 +520,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 650a21c..014f85f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -491,6 +491,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 179cbb9..a5718d6 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -499,6 +499,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index ff70e8c..b745d4f 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -541,6 +541,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 4000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index a623e98..4db0091 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -541,6 +541,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 4000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 3f35411..8599d74 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -541,6 +541,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 4000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 7dc1412..8cfd219 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -532,6 +532,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 9392105..97e656a 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -539,6 +539,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ // Allen key retractable z-probe as seen on many Kossel delta printers - http://reprap.org/wiki/Kossel#Automatic_bed_leveling_probe
+ // Deploys by touching z-axis belt. Retracts by pushing the probe down. Uses Z_MIN_PIN.
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index d26549a..693c951 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -502,6 +502,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 9d3f102..f516ff9 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -489,6 +489,10 @@
+ 
+ // X and Y axis travel speed (mm/m) between probes
+ #define XY_PROBE_SPEED 8000
++// Speed for the first approach when probing
++#define Z_PROBE_SPEED_FAST HOMING_FEEDRATE_Z
++// Speed for the second approach when probing
++#define Z_PROBE_SPEED_SLOW (Z_PROBE_SPEED_FAST / 2)
+ 
+ //
+ // Allen Key Probe is defined in the Delta example configurations.
+
+commit 194d9521c37db450dea90788b6addd9d9b066682 (from 4a6ed5e22170d26b8c4eb907a32b46830ba46f2b)
+Merge: 6137a1d 4a6ed5e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 19:02:39 2016 -0700
+
+    Merge pull request #4356 from thinkyhead/rc_simpler_run_z_probe
+    
+    Unify run_z_probe
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 88bcec5..29d6439 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -829,8 +829,8 @@
+       #define Z_PROBE_OFFSET_RANGE_MAX 20
+     #endif
+     #ifndef XY_PROBE_SPEED
+-      #ifdef HOMING_FEEDRATE_XYZ
+-        #define XY_PROBE_SPEED HOMING_FEEDRATE_XYZ
++      #ifdef HOMING_FEEDRATE_XY
++        #define XY_PROBE_SPEED HOMING_FEEDRATE_XY
+       #else
+         #define XY_PROBE_SPEED 4000
+       #endif
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index d934986..fe77dd0 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 605b527..dc52989 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -306,7 +306,14 @@ static uint8_t cmd_queue_index_r = 0,
+  * Feed rates are often configured with mm/m
+  * but the planner and stepper like mm/s units.
+  */
+-const float homing_feedrate_mm_m[] = HOMING_FEEDRATE;
++const float homing_feedrate_mm_m[] = {
++  #if ENABLED(DELTA)
++    HOMING_FEEDRATE_Z, HOMING_FEEDRATE_Z,
++  #else
++    HOMING_FEEDRATE_XY, HOMING_FEEDRATE_XY,
++  #endif
++  HOMING_FEEDRATE_Z, 0
++};
+ static float feedrate_mm_m = 1500.0, saved_feedrate_mm_m;
+ int feedrate_percentage = 100, saved_feedrate_percentage;
+ 
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index bd5f962..174f3b4 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -682,6 +682,8 @@
+   #error "ABS_PREHEAT_FAN_SPEED is now PREHEAT_2_FAN_SPEED. Please update your configuration."
+ #elif defined(ENDSTOPS_ONLY_FOR_HOMING)
+   #error "ENDSTOPS_ONLY_FOR_HOMING is deprecated. Use (disable) ENDSTOPS_ALWAYS_ON_DEFAULT instead."
++#elif defined(HOMING_FEEDRATE)
++  #error "HOMING_FEEDRATE is deprecated. Set individual rates with HOMING_FEEDRATE_(XY|Z|E) instead."
+ #endif
+ 
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 212e9f0..c0e1d33 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (10*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE  {3000, 3000, 600, 20}   // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index fb0634d..a70ee13 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -735,14 +735,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 3608f21..fe90682 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -733,14 +733,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 44913e1..5013b50 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -745,14 +745,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY 2000
++#define HOMING_FEEDRATE_Z  150
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {2000, 2000, 150, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index acbe237..98d2d4f 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -747,14 +747,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (150*60)
++#define HOMING_FEEDRATE_Z  200
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {150*60, 150*60, 3.3*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index a19b23e..f562b8a 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -770,14 +770,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index caab776..bc106ea 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (8*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 8*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 399f426..e49bac6 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (8*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 8*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 7f4af7e..9333135 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 26ca4d7..b3a35bf 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -750,14 +750,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (15*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 15*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 2848d89..d9fa05a 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -761,14 +761,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (40*60)
++#define HOMING_FEEDRATE_Z  (10*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {40*60, 40*60, 10*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index e1b1553..fbcd5e7 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -774,14 +774,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (8*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 8*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 4182d2e..014f85f 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -745,14 +745,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (120*60)
++#define HOMING_FEEDRATE_Z  432
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {120*60, 120*60, 7.2*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 7c41be3..a5718d6 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -753,14 +753,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 69c2e06..b745d4f 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -846,16 +846,13 @@
+ #endif
+ 
+ 
+-// @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
++// Delta only homes to Z
++#define HOMING_FEEDRATE_Z  (200*30)
+ 
+-// delta homing speeds must be the same on xyz
+-#define HOMING_FEEDRATE_XYZ (200*30)
+-#define HOMING_FEEDRATE_E 0
+-#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
++//
++// MOVEMENT SETTINGS
++// @section motion
++//
+ 
+ // default settings
+ // delta speeds must be the same on xyz
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index cbaa2a5..4db0091 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -840,16 +840,13 @@
+ #endif
+ 
+ 
+-// @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
++// Delta only homes to Z
++#define HOMING_FEEDRATE_Z  (200*60)
+ 
+-// delta homing speeds must be the same on xyz
+-#define HOMING_FEEDRATE_XYZ (200*60)
+-#define HOMING_FEEDRATE_E 0
+-#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
++//
++// MOVEMENT SETTINGS
++// @section motion
++//
+ 
+ // default settings
+ // delta speeds must be the same on xyz
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index a9b717ba..8599d74 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -843,16 +843,13 @@
+ #endif
+ 
+ 
+-// @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
++// Delta only homes to Z
++#define HOMING_FEEDRATE_Z  (200*60)
+ 
+-// delta homing speeds must be the same on xyz
+-#define HOMING_FEEDRATE_XYZ (200*60)
+-#define HOMING_FEEDRATE_E 0
+-#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
++//
++// MOVEMENT SETTINGS
++// @section motion
++//
+ 
+ // default settings
+ // delta speeds must be the same on xyz
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 36e9131..8cfd219 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -837,16 +837,13 @@
+ #endif
+ 
+ 
+-// @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
++// Delta only homes to Z
++#define HOMING_FEEDRATE_Z  (200*60)
+ 
+-// delta homing speeds must be the same on xyz
+-#define HOMING_FEEDRATE_XYZ (200*60)
+-#define HOMING_FEEDRATE_E 0
+-#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
++//
++// MOVEMENT SETTINGS
++// @section motion
++//
+ 
+ #define XYZ_FULL_STEPS_PER_ROTATION 200
+ #define XYZ_MICROSTEPS 32
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 809d77c..97e656a 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -837,17 +837,13 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Delta only homes to Z
++#define HOMING_FEEDRATE_Z  (60*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-// delta homing speeds must be the same on xyz
+-#define HOMING_FEEDRATE_XYZ (60*60)
+-#define HOMING_FEEDRATE_E 0
+-#define HOMING_FEEDRATE { HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_XYZ, HOMING_FEEDRATE_E }
++//
+ 
+ // variables to calculate steps
+ #define XYZ_FULL_STEPS_PER_ROTATION 200
+@@ -858,6 +854,8 @@
+ // delta speeds must be the same on xyz
+ #define XYZ_STEPS (XYZ_FULL_STEPS_PER_ROTATION * XYZ_MICROSTEPS / double(XYZ_BELT_PITCH) / double(XYZ_PULLEY_TEETH))
+ 
++// default settings
++
+ #define DEFAULT_AXIS_STEPS_PER_UNIT   {XYZ_STEPS, XYZ_STEPS, XYZ_STEPS, 158}   // default steps per unit for PowerWasp
+ #define DEFAULT_MAX_FEEDRATE          {200, 200, 200, 25}    // (mm/sec)
+ #define DEFAULT_MAX_ACCELERATION      {9000,9000,9000,10000}    // X, Y, Z, E maximum start speed for accelerated moves. E default values are good for skeinforge 40+, for older versions raise them a lot.
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 2092bf1..693c951 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -756,14 +756,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY 1500
++#define HOMING_FEEDRATE_Z  (2*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {1500, 1500, 120, 0}  // set the homing speeds (mm/min)   ***** MakiBox A6 *****
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 264bb55..f516ff9 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -743,14 +743,14 @@
+   #define Z_SAFE_HOMING_Y_POINT ((Y_MIN_POS + Y_MAX_POS) / 2)    // Y point for Z homing when homing all axis (G28).
+ #endif
+ 
++// Homing speeds (mm/m)
++#define HOMING_FEEDRATE_XY (50*60)
++#define HOMING_FEEDRATE_Z  (4*60)
+ 
++//
++// MOVEMENT SETTINGS
+ // @section motion
+-
+-/**
+- * MOVEMENT SETTINGS
+- */
+-
+-#define HOMING_FEEDRATE {50*60, 50*60, 4*60, 0}  // set the homing speeds (mm/min)
++//
+ 
+ // default settings
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 02a0e3a..7264f7b 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2469,10 +2469,10 @@ void lcd_init() {
+ int lcd_strlen(const char* s) {
+   int i = 0, j = 0;
+   while (s[i]) {
+-    #ifdef MAPPER_NON
++    #if ENABLED(MAPPER_NON)
+       j++;
+     #else
+-      if ((s[i] & 0xc0) != 0x80) j++;
++      if ((s[i] & 0xC0u) != 0x80u) j++;
+     #endif
+     i++;
+   }
+@@ -2482,10 +2482,10 @@ int lcd_strlen(const char* s) {
+ int lcd_strlen_P(const char* s) {
+   int j = 0;
+   while (pgm_read_byte(s)) {
+-    #ifdef MAPPER_NON
++    #if ENABLED(MAPPER_NON)
+       j++;
+     #else
+-      if ((pgm_read_byte(s) & 0xc0) != 0x80) j++;
++      if ((pgm_read_byte(s) & 0xC0u) != 0x80u) j++;
+     #endif
+     s++;
+   }
+

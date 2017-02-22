@@ -1,0 +1,232 @@
+commit cb02bc6db458bde59ddbf8ef37356a3eb5c0f4a8 (from f3597cf55a973b8c47a933f78e73482af2776816)
+Merge: f3597cf 340d165
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 4 17:29:56 2015 -0700
+
+    Merge pull request #1817 from AnHardt/dogm_looptest
+    
+    Execute DOGM display-loop less often
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 8aada85..034adc3 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -262,8 +262,7 @@ static void lcd_goto_menu(menuFunc_t menu, const uint32_t encoder=0, const bool
+ }
+ 
+ /* Main status screen. It's up to the implementation specific part to show what is needed. As this is very display dependent */
+-static void lcd_status_screen()
+-{
++static void lcd_status_screen() {
+ 	encoderRateMultiplierEnabled = false;
+ 
+   #ifdef LCD_PROGRESS_BAR
+@@ -296,15 +295,7 @@ static void lcd_status_screen()
+     #endif
+   #endif //LCD_PROGRESS_BAR
+ 
+-  if (lcd_status_update_delay)
+-    lcd_status_update_delay--;
+-  else
+-    lcdDrawUpdate = 1;
+-
+-  if (lcdDrawUpdate) {
+     lcd_implementation_status_screen();
+-    lcd_status_update_delay = 10;   /* redraw the main screen every second. This is easier then trying keep track of all things that change on the screen */
+-  }
+ 
+ #ifdef ULTIPANEL
+ 
+@@ -1298,7 +1289,7 @@ void lcd_update() {
+       }
+     }
+   #endif//CARDINSERTED
+-
++  
+   uint32_t ms = millis();
+   if (ms > lcd_next_update_millis) {
+ 
+@@ -1349,27 +1340,36 @@ void lcd_update() {
+             } // encoderRateMultiplierEnabled
+           #endif //ENCODER_RATE_MULTIPLIER
+ 
+-          lcdDrawUpdate = 1;
+           encoderPosition += (encoderDiff * encoderMultiplier) / ENCODER_PULSES_PER_STEP;
+           encoderDiff = 0;
+         }
+         timeoutToStatus = ms + LCD_TIMEOUT_TO_STATUS;
++        lcdDrawUpdate = 1;
+       }
+-
+     #endif //ULTIPANEL
+ 
++    if (currentMenu == lcd_status_screen) {
++      if (!lcd_status_update_delay) {
++        lcdDrawUpdate = 1;
++        lcd_status_update_delay = 10;   /* redraw the main screen every second. This is easier then trying keep track of all things that change on the screen */
++      }
++      else {
++        lcd_status_update_delay--;
++      }
++    }
+     #ifdef DOGLCD  // Changes due to different driver architecture of the DOGM display
+-      blink++;     // Variable for fan animation and alive dot
+-      u8g.firstPage();
+-      do {
+-        lcd_setFont(FONT_MENU);
+-        u8g.setPrintPos(125, 0);
+-        if (blink % 2) u8g.setColorIndex(1); else u8g.setColorIndex(0); // Set color for the alive dot
+-        u8g.drawPixel(127, 63); // draw alive dot
+-        u8g.setColorIndex(1); // black on white
+-        (*currentMenu)();
+-        if (!lcdDrawUpdate) break; // Terminate display update, when nothing new to draw. This must be done before the last dogm.next()
+-      } while( u8g.nextPage() );
++      if (lcdDrawUpdate) {
++        blink++;     // Variable for fan animation and alive dot
++        u8g.firstPage();
++        do {
++          lcd_setFont(FONT_MENU);
++          u8g.setPrintPos(125, 0);
++          if (blink % 2) u8g.setColorIndex(1); else u8g.setColorIndex(0); // Set color for the alive dot
++          u8g.drawPixel(127, 63); // draw alive dot
++          u8g.setColorIndex(1); // black on white
++          (*currentMenu)();
++        } while( u8g.nextPage() );
++      }
+     #else
+       (*currentMenu)();
+     #endif
+
+commit cb02bc6db458bde59ddbf8ef37356a3eb5c0f4a8 (from 340d165a9cb87dfbfbacc680989717c79b5bdffe)
+Merge: f3597cf 340d165
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 4 17:29:56 2015 -0700
+
+    Merge pull request #1817 from AnHardt/dogm_looptest
+    
+    Execute DOGM display-loop less often
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 8d3e75d..871d69c 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -31,7 +31,7 @@ Here are some standard links for getting your machine calibrated:
+ //===========================================================================
+ //============================= SCARA Printer ===============================
+ //===========================================================================
+-// For a Delta printer replace the configuration files with the files in the
++// For a Scara printer replace the configuration files with the files in the
+ // example_configurations/SCARA directory.
+ //
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 1e3c2b6..28e1afb 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -76,15 +76,14 @@ unsigned char soft_pwm_bed;
+ #define HAS_HEATER_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_PERIOD) && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0)
+ #define HAS_BED_THERMAL_PROTECTION (defined(THERMAL_RUNAWAY_PROTECTION_BED_PERIOD) && THERMAL_RUNAWAY_PROTECTION_BED_PERIOD > 0 && TEMP_SENSOR_BED != 0)
+ #if HAS_HEATER_THERMAL_PROTECTION || HAS_BED_THERMAL_PROTECTION
+-  enum TRState { TRInactive, TRFirstHeating, TRStable };
+-  static bool thermal_runaway = false;
++  enum TRState { TRReset, TRInactive, TRFirstHeating, TRStable, TRRunaway };
+   void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
+   #if HAS_HEATER_THERMAL_PROTECTION
+-    static TRState thermal_runaway_state_machine[4] = { TRInactive, TRInactive, TRInactive, TRInactive };
++    static TRState thermal_runaway_state_machine[4] = { TRReset, TRReset, TRReset, TRReset };
+     static unsigned long thermal_runaway_timer[4]; // = {0,0,0,0};
+   #endif
+   #if HAS_BED_THERMAL_PROTECTION
+-    static TRState thermal_runaway_bed_state_machine = TRInactive;
++    static TRState thermal_runaway_bed_state_machine = TRReset;
+     static unsigned long thermal_runaway_bed_timer;
+   #endif
+ #endif
+@@ -1007,7 +1006,7 @@ void setWatch() {
+ 
+   void thermal_runaway_protection(TRState *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc) {
+ 
+-    static int tr_target_temperature[EXTRUDERS+1];
++    static float tr_target_temperature[EXTRUDERS+1] = { 0.0 };
+ 
+     /*
+         SERIAL_ECHO_START;
+@@ -1023,20 +1022,23 @@ void setWatch() {
+         SERIAL_ECHOPGM(target_temperature);
+         SERIAL_EOL;
+     */
+-    if (target_temperature == 0 || thermal_runaway) {
+-      *state = TRInactive;
+-      *timer = 0;
+-      return;
+-    }
+ 
+     int heater_index = heater_id >= 0 ? heater_id : EXTRUDERS;
+ 
++    // If the target temperature changes, restart
++    if (tr_target_temperature[heater_index] != target_temperature)
++      *state = TRReset;
++
+     switch (*state) {
++      case TRReset:
++        *timer = 0;
++        *state = TRInactive;
++        break;
+       // Inactive state waits for a target temperature to be set
+       case TRInactive:
+         if (target_temperature > 0) {
+-          *state = TRFirstHeating;
+           tr_target_temperature[heater_index] = target_temperature;
++          *state = TRFirstHeating;
+         }
+         break;
+       // When first heating, wait for the temperature to be reached then go to Stable state
+@@ -1045,31 +1047,24 @@ void setWatch() {
+         break;
+       // While the temperature is stable watch for a bad temperature
+       case TRStable:
+-      {
+-        // If the target temperature changes, restart
+-        if (tr_target_temperature[heater_index] != target_temperature) {
+-          *state = TRInactive;
+-          break;
+-        }
+-
+         // If the temperature is over the target (-hysteresis) restart the timer
+-        if (temperature >= tr_target_temperature[heater_index] - hysteresis_degc) *timer = millis();
+-
+-        // If the timer goes too long without a reset, trigger shutdown
+-        else if (millis() > *timer + period_seconds * 1000UL) {
+-          SERIAL_ERROR_START;
+-          SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
+-          if (heater_id < 0) SERIAL_ERRORLNPGM("bed"); else SERIAL_ERRORLN(heater_id);
+-          LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY);
+-          thermal_runaway = true;
+-          for (;;) {
+-            disable_heater();
+-            disable_all_steppers();
+-            manage_heater();
+-            lcd_update();
+-          }
++        if (temperature >= tr_target_temperature[heater_index] - hysteresis_degc)
++          *timer = millis();
++          // If the timer goes too long without a reset, trigger shutdown
++        else if (millis() > *timer + period_seconds * 1000UL)
++          *state = TRRunaway;
++        break;
++      case TRRunaway:
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM(MSG_THERMAL_RUNAWAY_STOP);
++        if (heater_id < 0) SERIAL_ERRORLNPGM("bed"); else SERIAL_ERRORLN(heater_id);
++        LCD_ALERTMESSAGEPGM(MSG_THERMAL_RUNAWAY);
++        disable_heater();
++        disable_all_steppers();
++        for (;;) {
++          manage_heater();
++          lcd_update();
+         }
+-      } break;
+     }
+   }
+ 
+

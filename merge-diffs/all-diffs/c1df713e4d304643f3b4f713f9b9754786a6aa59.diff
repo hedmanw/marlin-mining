@@ -1,0 +1,252 @@
+commit c1df713e4d304643f3b4f713f9b9754786a6aa59 (from a5ed3e96f2b8ac0615280780c90fa495d4dd17fd)
+Merge: a5ed3e9 ec33df0
+Author: Bo Herrmannsen <bo.herrmannsen@gmail.com>
+Date:   Sun Dec 28 19:56:32 2014 +0100
+
+    Merge pull request #1258 from fmalpartida/Development
+    
+    Merge branch 'SAV-MkI_merge' into Development
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 738ed90..980efc5 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -656,11 +656,13 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Shift register panels
+ // ---------------------
+ // 2 wire Non-latching LCD SR from:
+-// https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection
+-//#define SR_LCD
+-#ifdef SR_LCD
+-   #define SR_LCD_2W_NL    // Non latching 2 wire shift register
+-   //#define NEWPANEL
++// https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection 
++
++//#define SAV_3DLCD
++#ifdef SAV_3DLCD
++   #define SR_LCD_2W_NL    // Non latching 2 wire shiftregister
++   #define NEWPANEL
++   #define ULTIPANEL
+ #endif
+ 
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d093371..644ae31 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -463,11 +463,21 @@ void enquecommand_P(const char *cmd)
+ void setup_killpin()
+ {
+   #if defined(KILL_PIN) && KILL_PIN > -1
+-    pinMode(KILL_PIN,INPUT);
++    SET_INPUT(KILL_PIN);
+     WRITE(KILL_PIN,HIGH);
+   #endif
+ }
+ 
++// Set home pin
++void setup_homepin(void)
++{
++#if defined(HOME_PIN) && HOME_PIN > -1
++   SET_INPUT(HOME_PIN);
++   WRITE(HOME_PIN,HIGH);
++#endif
++}
++
++
+ void setup_photpin()
+ {
+   #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+@@ -600,6 +610,7 @@ void setup()
+   pinMode(SERVO0_PIN, OUTPUT);
+   digitalWrite(SERVO0_PIN, LOW); // turn it off
+ #endif // Z_PROBE_SLED
++  setup_homepin();
+ }
+ 
+ 
+@@ -4303,6 +4314,18 @@ void handle_status_leds(void) {
+ 
+ void manage_inactivity()
+ {
++	
++#if defined(KILL_PIN) && KILL_PIN > -1
++	static int killCount = 0;   // make the inactivity button a bit less responsive
++   const int KILL_DELAY = 10000;
++#endif
++
++#if defined(HOME_PIN) && HOME_PIN > -1
++   static int homeDebounceCount = 0;   // poor man's debouncing count
++   const int HOME_DEBOUNCE_DELAY = 10000;
++#endif
++   
++	
+   if(buflen < (BUFSIZE-1))
+     get_command();
+ 
+@@ -4332,9 +4355,49 @@ void manage_inactivity()
+   #endif
+   
+   #if defined(KILL_PIN) && KILL_PIN > -1
++    
++    // Check if the kill button was pressed and wait just in case it was an accidental
++    // key kill key press
++    // -------------------------------------------------------------------------------
+     if( 0 == READ(KILL_PIN) )
+-      kill();
++    {
++       killCount++;
++    }
++    else if (killCount > 0)
++    {
++       killCount--;
++    }
++    // Exceeded threshold and we can confirm that it was not accidental
++    // KILL the machine
++    // ----------------------------------------------------------------
++    if ( killCount >= KILL_DELAY)
++    {
++       kill();
++    }
+   #endif
++
++#if defined(HOME_PIN) && HOME_PIN > -1
++    // Check to see if we have to home, use poor man's debouncer
++    // ---------------------------------------------------------
++    if ( 0 == READ(HOME_PIN) )
++    {
++       if (homeDebounceCount == 0)
++       {
++          enquecommand_P((PSTR("G28")));
++          homeDebounceCount++;
++          LCD_ALERTMESSAGEPGM(MSG_AUTO_HOME);
++       }
++       else if (homeDebounceCount < HOME_DEBOUNCE_DELAY)
++       {
++          homeDebounceCount++;
++       }
++       else
++       {
++          homeDebounceCount = 0;
++       }
++    }
++#endif
++    
+   #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
+     controllerFan(); //Check if fan should be turned on to cool stepper drivers down
+   #endif
+@@ -4391,6 +4454,14 @@ void kill()
+   SERIAL_ERROR_START;
+   SERIAL_ERRORLNPGM(MSG_ERR_KILLED);
+   LCD_ALERTMESSAGEPGM(MSG_KILLED);
++  
++  // FMC small patch to update the LCD before ending
++  sei();   // enable interrupts
++  for ( int i=5; i--; lcd_update())
++  {
++     delay(200);	
++  }
++  cli();   // disable interrupts
+   suicide();
+   while(1) { /* Intentionally left empty */ } // Wait for reset
+ }
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 2e54a88..a4f0647 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -43,6 +43,9 @@
+ #elif MB(5DPRINT)
+ 	#define MACHINE_NAME "Makibox"
+ 	#define FIRMWARE_URL "https://github.com/ErikZalm/Marlin/"
++#elif MB(SAV_MKI)
++	#define MACHINE_NAME "SAV MkI"
++	#define FIRMWARE_URL "https://github.com/fmalpartida/Marlin/tree/SAV-MkI-config"
+ #else
+ 	#ifdef CUSTOM_MENDEL_NAME
+ 		#define MACHINE_NAME CUSTOM_MENDEL_NAME
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 906522b..d8bec78 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -1904,6 +1904,8 @@
+   #define X_STOP_PIN         13
+   #define Y_STOP_PIN         14
+   #define Z_STOP_PIN         15
++//  #define Z_STOP_PIN         36  // For inductive sensor.
++
+   #define TEMP_0_PIN          7  // Extruder / Analog pin numbering
+   #define TEMP_BED_PIN        6  // Bed / Analog pin numbering
+ 
+@@ -1914,7 +1916,6 @@
+ #define SDSS               20  // PB0 - 8 in marlin env.
+ #define LED_PIN            -1
+ #define PS_ON_PIN          -1
+-#define KILL_PIN           -1
+ #define ALARM_PIN          -1
+ #define SDCARDDETECT       -1
+ 
+@@ -1933,13 +1934,24 @@
+ #define LCD_PINS_D5        -1
+ #define LCD_PINS_D6        -1
+ #define LCD_PINS_D7        -1
+-#define BTN_EN1            -1
+-#define BTN_EN2            -1
+-#define BTN_ENC            -1
+ 
++#ifdef SAV_3DLCD
+ // For LCD SHIFT register LCD
+-#define SR_DATA_PIN         0
+-#define SR_CLK_PIN          1
++#define SR_DATA_PIN         1
++#define SR_CLK_PIN          0
++
++#define BTN_EN1            41
++#define BTN_EN2            40
++#define BTN_ENC            12
++
++#define KILL_PIN           42 // A2 = 42 - teensy = 40
++#define HOME_PIN          -1 // A4 = marlin 44 - teensy = 42
++
++#ifdef NUM_SERVOS
++  #define SERVO0_PIN       41 // In teensy's pin definition for pinMode (in Servo.cpp)
++#endif
++
++#endif
+ 
+ #endif // SAV_MKI
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4537e3f..9161148 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1075,12 +1075,12 @@ void lcd_init()
+     lcd_implementation_init();
+ 
+ #ifdef NEWPANEL
+-    pinMode(BTN_EN1,INPUT);
+-    pinMode(BTN_EN2,INPUT);
++    SET_INPUT(BTN_EN1);
++    SET_INPUT(BTN_EN2);
+     WRITE(BTN_EN1,HIGH);
+     WRITE(BTN_EN2,HIGH);
+   #if BTN_ENC > 0
+-    pinMode(BTN_ENC,INPUT);
++    SET_INPUT(BTN_ENC);
+     WRITE(BTN_ENC,HIGH);
+   #endif
+   #ifdef REPRAPWORLD_KEYPAD
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 36af684..bf50812 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -190,7 +190,8 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+ // 2 wire Non-latching LCD SR from:
+ // https://bitbucket.org/fmalpartida/new-liquidcrystal/wiki/schematics#!shiftregister-connection 
+ #elif defined(SR_LCD_2W_NL)
+-   
++
++  extern "C" void __cxa_pure_virtual() { while (1); }
+   #include <LCD.h>
+   #include <LiquidCrystal_SR.h>
+   #define LCD_CLASS LiquidCrystal_SR
+

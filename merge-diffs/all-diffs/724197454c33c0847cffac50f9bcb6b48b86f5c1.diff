@@ -1,0 +1,578 @@
+commit 724197454c33c0847cffac50f9bcb6b48b86f5c1 (from 058e4465313191bf769e00a347ceccb4fbd1112c)
+Merge: 058e446 110c5dc
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sat Oct 11 23:10:00 2014 +0200
+
+    Merge pull request #1104 from ch100/Marlin_v1
+    
+    Fixed typo.
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 6b4a19a..734c859 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -800,7 +800,7 @@ static void lcd_control_temperature_menu()
+ 
+     START_MENU();
+     MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
+-#if TEMP_SENSOR_1 != 0
++#if TEMP_SENSOR_0 != 0
+     MENU_ITEM_EDIT(int3, MSG_NOZZLE, &target_temperature[0], 0, HEATER_0_MAXTEMP - 15);
+ #endif
+ #if TEMP_SENSOR_1 != 0
+
+commit 724197454c33c0847cffac50f9bcb6b48b86f5c1 (from 110c5dcf230f8fdd5e426f07e5f4e687e76af31f)
+Merge: 058e446 110c5dc
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sat Oct 11 23:10:00 2014 +0200
+
+    Merge pull request #1104 from ch100/Marlin_v1
+    
+    Fixed typo.
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 9f9141a..d2aba19 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -193,7 +193,7 @@
+                                   // is more then PID_FUNCTIONAL_RANGE then the PID will be shut off and the heater will be set to min/max.
+   #define PID_INTEGRAL_DRIVE_MAX 255  //limit for the integral term
+   #define K1 0.95 //smoothing factor within the PID
+-  #define PID_dT ((OVERSAMPLENR * 8.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
++  #define PID_dT ((OVERSAMPLENR * 10.0)/(F_CPU / 64.0 / 256.0)) //sampling period of the temperature routine
+ 
+ // If you are using a pre-configured hotend then you can use one of the value sets by uncommenting it
+ // Ultimaker
+@@ -766,6 +766,35 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ //#define SERVO_ENDSTOPS {-1, -1, 0} // Servo index for X, Y, Z. Disable with -1
+ //#define SERVO_ENDSTOP_ANGLES {0,0, 0,0, 70,0} // X,Y,Z Axis Extend and Retract angles
+ 
++/**********************************************************************\
++ * Support for a filament diameter sensor
++ * Also allows adjustment of diameter at print time (vs  at slicing)
++ * Single extruder only at this point (extruder 0)
++ * 
++ * Motherboards
++ * 34 - RAMPS1.4 - uses Analog input 5 on the AUX2 connector 
++ * 81 - Printrboard - Uses Analog input 2 on the Aux 2 connector
++ * 301 - Rambo  - uses Analog input 3
++ * Note may require analog pins to be defined for different motherboards
++ **********************************************************************/
++#define FILAMENT_SENSOR
++#define FILAMENT_SENSOR_EXTRUDER_NUM	0  //The number of the extruder that has the filament sensor (0,1,2)
++#define MEASUREMENT_DELAY_CM			14  //measurement delay in cm.  This is the distance from filament sensor to middle of barrel
++
++#define DEFAULT_NOMINAL_FILAMENT_DIA  3.0  //Enter the diameter (in mm) of the filament generally used (3.0 mm or 1.75 mm) - this is then used in the slicer software.  Used for sensor reading validation
++#define MEASURED_UPPER_LIMIT          3.30  //upper limit factor used for sensor reading validation in mm
++#define MEASURED_LOWER_LIMIT          1.90  //lower limit factor for sensor reading validation in mm
++#define MAX_MEASUREMENT_DELAY			20  //delay buffer size in bytes (1 byte = 1cm)- limits maximum measurement delay allowable (must be larger than MEASUREMENT_DELAY_CM  and lower number saves RAM)
++
++//defines used in the code
++#define DEFAULT_MEASURED_FILAMENT_DIA  DEFAULT_NOMINAL_FILAMENT_DIA  //set measured to nominal initially 
++
++
++
++
++
++
++
+ #include "Configuration_adv.h"
+ #include "thermistortables.h"
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index adc58b4..e271ddc 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -236,6 +236,16 @@ extern int EtoPPressure;
+ extern unsigned char fanSpeedSoftPwm;
+ #endif
+ 
++#ifdef FILAMENT_SENSOR
++  extern float filament_width_nominal;  //holds the theoretical filament diameter ie., 3.00 or 1.75 
++  extern bool filament_sensor;  //indicates that filament sensor readings should control extrusion  
++  extern float filament_width_meas; //holds the filament diameter as accurately measured 
++  extern signed char measurement_delay[];  //ring buffer to delay measurement
++  extern int delay_index1, delay_index2;  //index into ring buffer
++  extern float delay_dist; //delay distance counter
++  extern int meas_delay_cm; //delay distance
++#endif
++
+ #ifdef FWRETRACT
+ extern bool autoretract_enabled;
+ extern bool retracted[EXTRUDERS];
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 9c9dd38..94b3d26 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -159,6 +159,10 @@
+ // M400 - Finish all moves
+ // M401 - Lower z-probe if present
+ // M402 - Raise z-probe if present
++// M404 - N<dia in mm> Enter the nominal filament width (3mm, 1.75mm ) or will display nominal filament width without parameters
++// M405 - Turn on Filament Sensor extrusion control.  Optional D<delay in cm> to set delay in centimeters between sensor and extruder 
++// M406 - Turn off Filament Sensor extrusion control 
++// M407 - Displays measured filament diameter 
+ // M500 - stores parameters in EEPROM
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).
+ // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+@@ -313,6 +317,18 @@ float axis_scaling[3]={1,1,1};  // Build size scaling, default to 1
+ 
+ bool cancel_heatup = false ;
+ 
++#ifdef FILAMENT_SENSOR
++  //Variables for Filament Sensor input 
++  float filament_width_nominal=DEFAULT_NOMINAL_FILAMENT_DIA;  //Set nominal filament width, can be changed with M404 
++  bool filament_sensor=false;  //M405 turns on filament_sensor control, M406 turns it off 
++  float filament_width_meas=DEFAULT_MEASURED_FILAMENT_DIA; //Stores the measured filament diameter 
++  signed char measurement_delay[MAX_MEASUREMENT_DELAY+1];  //ring buffer to delay measurement  store extruder factor after subtracting 100 
++  int delay_index1=0;  //index into ring buffer
++  int delay_index2=-1;  //index into ring buffer - set to -1 on startup to indicate ring buffer needs to be initialized
++  float delay_dist=0; //delay distance counter  
++  int meas_delay_cm = MEASUREMENT_DELAY_CM;  //distance delay setting
++#endif
++
+ //===========================================================================
+ //=============================Private Variables=============================
+ //===========================================================================
+@@ -510,6 +526,7 @@ void servo_init()
+   #endif
+ }
+ 
++
+ void setup()
+ {
+   setup_killpin();
+@@ -559,6 +576,7 @@ void setup()
+   st_init();    // Initialize stepper, this enables interrupts!
+   setup_photpin();
+   servo_init();
++  
+ 
+   lcd_init();
+   _delay_ms(1000);	// wait 1sec to display the splash screen
+@@ -2780,6 +2798,8 @@ Sigma_Exit:
+         } else {
+           //reserved for setting filament diameter via UFID or filament measuring device
+           break;
++        
++          
+         }
+         tmp_extruder = active_extruder;
+         if(code_seen('T')) {
+@@ -3342,6 +3362,70 @@ Sigma_Exit:
+     }
+     break;
+ #endif
++
++#ifdef FILAMENT_SENSOR
++case 404:  //M404 Enter the nominal filament width (3mm, 1.75mm ) N<3.0> or display nominal filament width 
++    {
++    #if (FILWIDTH_PIN > -1) 
++    if(code_seen('N')) filament_width_nominal=code_value();
++    else{
++    SERIAL_PROTOCOLPGM("Filament dia (nominal mm):"); 
++    SERIAL_PROTOCOLLN(filament_width_nominal); 
++    }
++    #endif
++    }
++    break; 
++    
++    case 405:  //M405 Turn on filament sensor for control 
++    {
++    
++    
++    if(code_seen('D')) meas_delay_cm=code_value();
++       
++       if(meas_delay_cm> MAX_MEASUREMENT_DELAY)
++       	meas_delay_cm = MAX_MEASUREMENT_DELAY;
++    
++       if(delay_index2 == -1)  //initialize the ring buffer if it has not been done since startup
++    	   {
++    	   int temp_ratio = widthFil_to_size_ratio(); 
++       	    
++       	    for (delay_index1=0; delay_index1<(MAX_MEASUREMENT_DELAY+1); ++delay_index1 ){
++       	              measurement_delay[delay_index1]=temp_ratio-100;  //subtract 100 to scale within a signed byte
++       	        }
++       	    delay_index1=0;
++       	    delay_index2=0;	
++    	   }
++    
++    filament_sensor = true ; 
++    
++    //SERIAL_PROTOCOLPGM("Filament dia (measured mm):"); 
++    //SERIAL_PROTOCOL(filament_width_meas); 
++    //SERIAL_PROTOCOLPGM("Extrusion ratio(%):"); 
++    //SERIAL_PROTOCOL(extrudemultiply); 
++    } 
++    break; 
++    
++    case 406:  //M406 Turn off filament sensor for control 
++    {      
++    filament_sensor = false ; 
++    } 
++    break; 
++  
++    case 407:   //M407 Display measured filament diameter 
++    { 
++     
++    
++    
++    SERIAL_PROTOCOLPGM("Filament dia (measured mm):"); 
++    SERIAL_PROTOCOLLN(filament_width_meas);   
++    } 
++    break; 
++    #endif
++    
++
++
++
++
+     case 500: // M500 Store settings in EEPROM
+     {
+         Config_StoreSettings();
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 4b418ce..7488940 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -628,6 +628,15 @@
+     #define E1_DIR_PIN         34
+     #define E1_ENABLE_PIN      30
+ 
++#if MOTHERBOARD == 34  //FMM added for Filament Extruder
++#ifdef FILAMENT_SENSOR
++	  //define analog pin for the filament width sensor input
++	  //Use the RAMPS 1.4 Analog input 5 on the AUX2 connector
++      #define FILWIDTH_PIN        5
++#endif
++#endif
++
++
+     #if MOTHERBOARD == 68
+       #define E2_STEP_PIN        23
+       #define E2_DIR_PIN         25
+@@ -1762,6 +1771,9 @@
+   #define Z_STOP_PIN         36
+   #define TEMP_0_PIN          1  // Extruder / Analog pin numbering
+   #define TEMP_BED_PIN        0  // Bed / Analog pin numbering
++  #ifdef FILAMENT_SENSOR
++   #define FILWIDTH_PIN        2
++  #endif //FILAMENT_SENSOR
+ #endif
+ 
+ #define TEMP_1_PIN         -1
+@@ -2396,6 +2408,10 @@ DaveX plan for Teensylu/printrboard-type pinouts (ref teensylu & sprinter) for a
+   #endif
+ #endif //ULTRA_LCD
+ 
++#ifdef FILAMENT_SENSOR
++  //Filip added pin for Filament sensor analog input 
++  #define FILWIDTH_PIN        3
++#endif //FILAMENT_SENSOR
+ 
+ #endif
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4ae1871..fe61750 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -119,6 +119,10 @@ static long x_segment_time[3]={MAX_FREQ_TIME + 1,0,0};     // Segment times (in
+ static long y_segment_time[3]={MAX_FREQ_TIME + 1,0,0};
+ #endif
+ 
++#ifdef FILAMENT_SENSOR
++ static char meas_sample; //temporary variable to hold filament measurement sample
++#endif
++
+ // Returns the index of the next block in the ring buffer
+ // NOTE: Removed modulo (%) operator, which uses an expensive divide and multiplication.
+ static int8_t next_block_index(int8_t block_index) {
+@@ -762,6 +766,49 @@ block->steps_y = labs((target[X_AXIS]-position[X_AXIS]) - (target[Y_AXIS]-positi
+   block->nominal_speed = block->millimeters * inverse_second; // (mm/sec) Always > 0
+   block->nominal_rate = ceil(block->step_event_count * inverse_second); // (step/sec) Always > 0
+ 
++#ifdef FILAMENT_SENSOR
++  //FMM update ring buffer used for delay with filament measurements
++  
++  
++    if((extruder==FILAMENT_SENSOR_EXTRUDER_NUM) && (delay_index2 > -1))  //only for extruder with filament sensor and if ring buffer is initialized
++  	  {
++    delay_dist = delay_dist + delta_mm[E_AXIS];  //increment counter with next move in e axis
++  
++    while (delay_dist >= (10*(MAX_MEASUREMENT_DELAY+1)))  //check if counter is over max buffer size in mm
++      	  delay_dist = delay_dist - 10*(MAX_MEASUREMENT_DELAY+1);  //loop around the buffer
++    while (delay_dist<0)
++    	  delay_dist = delay_dist + 10*(MAX_MEASUREMENT_DELAY+1); //loop around the buffer
++      
++    delay_index1=delay_dist/10.0;  //calculate index
++    
++    //ensure the number is within range of the array after converting from floating point
++    if(delay_index1<0)
++    	delay_index1=0;
++    else if (delay_index1>MAX_MEASUREMENT_DELAY)
++    	delay_index1=MAX_MEASUREMENT_DELAY;
++    	
++    if(delay_index1 != delay_index2)  //moved index
++  	  {
++    	meas_sample=widthFil_to_size_ratio()-100;  //subtract off 100 to reduce magnitude - to store in a signed char
++  	  }
++    while( delay_index1 != delay_index2)
++  	  {
++  	  delay_index2 = delay_index2 + 1;
++  	if(delay_index2>MAX_MEASUREMENT_DELAY)
++  			  delay_index2=delay_index2-(MAX_MEASUREMENT_DELAY+1);  //loop around buffer when incrementing
++  	  if(delay_index2<0)
++  		delay_index2=0;
++  	  else if (delay_index2>MAX_MEASUREMENT_DELAY)
++  		delay_index2=MAX_MEASUREMENT_DELAY;  
++  	  
++  	  measurement_delay[delay_index2]=meas_sample;
++  	  }
++    	
++    
++  	  }
++#endif
++
++
+   // Calculate and limit speed in mm/sec for each axis
+   float current_speed[4];
+   float speed_factor = 1.0; //factor <=1 do decrease speed
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 6a5d58e..af5d8c1 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -74,7 +74,10 @@ unsigned char soft_pwm_bed;
+ #ifdef BABYSTEPPING
+   volatile int babystepsTodo[3]={0,0,0};
+ #endif
+-  
++
++#ifdef FILAMENT_SENSOR
++  int current_raw_filwidth = 0;  //Holds measured filament diameter - one extruder only
++#endif  
+ //===========================================================================
+ //=============================private variables============================
+ //===========================================================================
+@@ -161,6 +164,9 @@ unsigned long watchmillis[EXTRUDERS] = ARRAY_BY_EXTRUDERS(0,0,0);
+ #define SOFT_PWM_SCALE 0
+ #endif
+ 
++#ifdef FILAMENT_SENSOR
++  static int meas_shift_index;  //used to point to a delayed sample in buffer for filament width sensor
++#endif
+ //===========================================================================
+ //=============================   functions      ============================
+ //===========================================================================
+@@ -604,6 +610,28 @@ void manage_heater()
+       }
+     #endif
+   #endif
++  
++//code for controlling the extruder rate based on the width sensor 
++#ifdef FILAMENT_SENSOR
++  if(filament_sensor) 
++	{
++	meas_shift_index=delay_index1-meas_delay_cm;
++		  if(meas_shift_index<0)
++			  meas_shift_index = meas_shift_index + (MAX_MEASUREMENT_DELAY+1);  //loop around buffer if needed
++		  
++		  //get the delayed info and add 100 to reconstitute to a percent of the nominal filament diameter
++		  //then square it to get an area
++		  
++		  if(meas_shift_index<0)
++			  meas_shift_index=0;
++		  else if (meas_shift_index>MAX_MEASUREMENT_DELAY)
++			  meas_shift_index=MAX_MEASUREMENT_DELAY;
++		  
++		     volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM] = pow((float)(100+measurement_delay[meas_shift_index])/100.0,2);
++		     if (volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM] <0.01)
++		    	 volumetric_multiplier[FILAMENT_SENSOR_EXTRUDER_NUM]=0.01;
++	}
++#endif
+ }
+ 
+ #define PGM_RD_W(x)   (short)pgm_read_word(&x)
+@@ -697,6 +725,9 @@ static void updateTemperaturesFromRawValues()
+     #ifdef TEMP_SENSOR_1_AS_REDUNDANT
+       redundant_temperature = analog2temp(redundant_temperature_raw, 1);
+     #endif
++    #ifdef FILAMENT_SENSOR  && (FILWIDTH_PIN > -1)    //check if a sensor is supported 
++      filament_width_meas = analog2widthFil();
++    #endif  
+     //Reset the watchdog after we know we have a temperature measurement.
+     watchdog_reset();
+ 
+@@ -705,6 +736,36 @@ static void updateTemperaturesFromRawValues()
+     CRITICAL_SECTION_END;
+ }
+ 
++
++// For converting raw Filament Width to milimeters 
++#ifdef FILAMENT_SENSOR
++float analog2widthFil() { 
++return current_raw_filwidth/16383.0*5.0; 
++//return current_raw_filwidth; 
++} 
++ 
++// For converting raw Filament Width to a ratio 
++int widthFil_to_size_ratio() { 
++ 
++float temp; 
++      
++temp=filament_width_meas;
++if(filament_width_meas<MEASURED_LOWER_LIMIT)
++	temp=filament_width_nominal;  //assume sensor cut out
++else if (filament_width_meas>MEASURED_UPPER_LIMIT)
++	temp= MEASURED_UPPER_LIMIT;
++
++
++return(filament_width_nominal/temp*100); 
++
++
++} 
++#endif
++
++
++
++
++
+ void tp_init()
+ {
+ #if (MOTHERBOARD == 80) && ((TEMP_SENSOR_0==-1)||(TEMP_SENSOR_1==-1)||(TEMP_SENSOR_2==-1)||(TEMP_SENSOR_BED==-1))
+@@ -804,6 +865,17 @@ void tp_init()
+     #endif
+   #endif
+   
++  //Added for Filament Sensor 
++  #ifdef FILAMENT_SENSOR
++   #if defined(FILWIDTH_PIN) && (FILWIDTH_PIN > -1) 
++	#if FILWIDTH_PIN < 8 
++       	   DIDR0 |= 1<<FILWIDTH_PIN;  
++	#else 
++       	   DIDR2 |= 1<<(FILWIDTH_PIN - 8);  
++	#endif 
++   #endif
++  #endif
++  
+   // Use timer0 for temperature measurement
+   // Interleave temperature interrupt with millies interrupt
+   OCR0B = 128;
+@@ -1116,7 +1188,7 @@ ISR(TIMER0_COMPB_vect)
+   static unsigned long raw_temp_1_value = 0;
+   static unsigned long raw_temp_2_value = 0;
+   static unsigned long raw_temp_bed_value = 0;
+-  static unsigned char temp_state = 8;
++  static unsigned char temp_state = 10;
+   static unsigned char pwm_count = (1 << SOFT_PWM_SCALE);
+   static unsigned char soft_pwm_0;
+   #if (EXTRUDERS > 1) || defined(HEATERS_PARALLEL)
+@@ -1129,6 +1201,10 @@ ISR(TIMER0_COMPB_vect)
+   static unsigned char soft_pwm_b;
+   #endif
+   
++  #if defined(FILWIDTH_PIN) &&(FILWIDTH_PIN > -1)
++   static unsigned long raw_filwidth_value = 0;  //added for filament width sensor
++  #endif
++  
+   if(pwm_count == 0){
+     soft_pwm_0 = soft_pwm[0];
+     if(soft_pwm_0 > 0) { 
+@@ -1255,10 +1331,39 @@ ISR(TIMER0_COMPB_vect)
+       #if defined(TEMP_2_PIN) && (TEMP_2_PIN > -1)
+         raw_temp_2_value += ADC;
+       #endif
+-      temp_state = 0;
+-      temp_count++;
++      temp_state = 8;//change so that Filament Width is also measured
++      
+       break;
+-    case 8: //Startup, delay initial temp reading a tiny bit so the hardware can settle.
++    case 8: //Prepare FILWIDTH 
++     #if defined(FILWIDTH_PIN) && (FILWIDTH_PIN> -1) 
++      #if FILWIDTH_PIN>7 
++         ADCSRB = 1<<MUX5;
++      #else
++         ADCSRB = 0; 
++      #endif 
++      ADMUX = ((1 << REFS0) | (FILWIDTH_PIN & 0x07)); 
++      ADCSRA |= 1<<ADSC; // Start conversion 
++     #endif 
++     lcd_buttons_update();       
++     temp_state = 9; 
++     break; 
++    case 9:   //Measure FILWIDTH 
++     #if defined(FILWIDTH_PIN) &&(FILWIDTH_PIN > -1) 
++     //raw_filwidth_value += ADC;  //remove to use an IIR filter approach 
++      if(ADC>102)  //check that ADC is reading a voltage > 0.5 volts, otherwise don't take in the data.
++        {
++    	raw_filwidth_value= raw_filwidth_value-(raw_filwidth_value>>7);  //multipliy raw_filwidth_value by 127/128
++        
++        raw_filwidth_value= raw_filwidth_value + ((unsigned long)ADC<<7);  //add new ADC reading 
++        }
++     #endif 
++     temp_state = 0;   
++      
++     temp_count++;
++     break;      
++      
++      
++    case 10: //Startup, delay initial temp reading a tiny bit so the hardware can settle.
+       temp_state = 0;
+       break;
+ //    default:
+@@ -1267,7 +1372,7 @@ ISR(TIMER0_COMPB_vect)
+ //      break;
+   }
+     
+-  if(temp_count >= OVERSAMPLENR) // 8 * 16 * 1/(16000000/64/256)  = 131ms.
++  if(temp_count >= OVERSAMPLENR) // 10 * 16 * 1/(16000000/64/256)  = 164ms.
+   {
+     if (!temp_meas_ready) //Only update the raw values if they have been read. Else we could be updating them during reading.
+     {
+@@ -1283,6 +1388,12 @@ ISR(TIMER0_COMPB_vect)
+ #endif
+       current_temperature_bed_raw = raw_temp_bed_value;
+     }
++
++//Add similar code for Filament Sensor - can be read any time since IIR filtering is used 
++#if defined(FILWIDTH_PIN) &&(FILWIDTH_PIN > -1)
++  current_raw_filwidth = raw_filwidth_value>>10;  //need to divide to get to 0-16384 range since we used 1/128 IIR filter approach 
++#endif
++    
+     
+     temp_meas_ready = true;
+     temp_count = 0;
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index df2b5de..ca4efab 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -31,6 +31,14 @@
+ void tp_init();  //initialize the heating
+ void manage_heater(); //it is critical that this is called periodically.
+ 
++#ifdef FILAMENT_SENSOR
++// For converting raw Filament Width to milimeters 
++ float analog2widthFil(); 
++ 
++// For converting raw Filament Width to an extrusion ratio 
++ int widthFil_to_size_ratio();
++#endif
++
+ // low level conversion routines
+ // do not use these routines and variables outside of temperature.cpp
+ extern int target_temperature[EXTRUDERS];  
+diff --git a/README.md b/README.md
+index 017e989..5eda846 100644
+--- a/README.md
++++ b/README.md
+@@ -233,6 +233,10 @@ M Codes
+ *  M400 - Finish all moves
+ *  M401 - Lower z-probe if present
+ *  M402 - Raise z-probe if present
++*  M404 - N<dia in mm> Enter the nominal filament width (3mm, 1.75mm ) or will display nominal filament width without parameters
++*  M405 - Turn on Filament Sensor extrusion control.  Optional D<delay in cm> to set delay in centimeters between sensor and extruder
++*  M406 - Turn off Filament Sensor extrusion control
++*  M407 - Displays measured filament diameter
+ *  M500 - stores paramters in EEPROM
+ *  M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).
+ *  M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+

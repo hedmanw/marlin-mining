@@ -1,0 +1,510 @@
+commit dcd26b0403485b844496b9b1e6767e56507d22b2 (from 79ba983782ab30fc9a2602efd43289bda7e9dfb2)
+Merge: 79ba983 3a0a94b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Aug 13 21:22:27 2016 -0700
+
+    Merge pull request #4621 from thinkyhead/rc_fan_set_output
+    
+    Init PWM-able AUTO_FAN pins with SET_OUTPUT
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index de2e6e2..6e0f10f 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -440,10 +440,16 @@
+   #define HAS_AUTO_FAN_1 (PIN_EXISTS(EXTRUDER_1_AUTO_FAN))
+   #define HAS_AUTO_FAN_2 (PIN_EXISTS(EXTRUDER_2_AUTO_FAN))
+   #define HAS_AUTO_FAN_3 (PIN_EXISTS(EXTRUDER_3_AUTO_FAN))
++  #define AUTO_1_IS_0 (EXTRUDER_1_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN)
++  #define AUTO_2_IS_0 (EXTRUDER_2_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN)
++  #define AUTO_2_IS_1 (EXTRUDER_2_AUTO_FAN_PIN == EXTRUDER_1_AUTO_FAN_PIN)
++  #define AUTO_3_IS_0 (EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN)
++  #define AUTO_3_IS_1 (EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_1_AUTO_FAN_PIN)
++  #define AUTO_3_IS_2 (EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_2_AUTO_FAN_PIN)
+   #define HAS_AUTO_FAN (HAS_AUTO_FAN_0 || HAS_AUTO_FAN_1 || HAS_AUTO_FAN_2 || HAS_AUTO_FAN_3)
+   #define HAS_FAN0 (PIN_EXISTS(FAN))
+-  #define HAS_FAN1 (PIN_EXISTS(FAN1) && CONTROLLERFAN_PIN != FAN1_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN1_PIN)
+-  #define HAS_FAN2 (PIN_EXISTS(FAN2) && CONTROLLERFAN_PIN != FAN2_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN2_PIN)
++  #define HAS_FAN1 (PIN_EXISTS(FAN1) && CONTROLLERFAN_PIN != FAN1_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_3_AUTO_FAN_PIN != FAN1_PIN)
++  #define HAS_FAN2 (PIN_EXISTS(FAN2) && CONTROLLERFAN_PIN != FAN2_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_3_AUTO_FAN_PIN != FAN2_PIN)
+   #define HAS_CONTROLLERFAN (PIN_EXISTS(CONTROLLERFAN))
+   #define HAS_SERVOS (defined(NUM_SERVOS) && NUM_SERVOS > 0)
+   #define HAS_SERVO_0 (PIN_EXISTS(SERVO0))
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 4cb3ed9..78168c2 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -185,7 +185,7 @@ int Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TEMP ,
+ #endif
+ 
+ #if HAS_AUTO_FAN
+-  millis_t Temperature::next_auto_fan_check_ms;
++  millis_t Temperature::next_auto_fan_check_ms = 0;
+ #endif
+ 
+ unsigned char Temperature::soft_pwm[HOTENDS];
+@@ -465,21 +465,21 @@ int Temperature::getHeaterPower(int heater) {
+ 
+   void Temperature::checkExtruderAutoFans() {
+     const int8_t fanPin[] = { EXTRUDER_0_AUTO_FAN_PIN, EXTRUDER_1_AUTO_FAN_PIN, EXTRUDER_2_AUTO_FAN_PIN, EXTRUDER_3_AUTO_FAN_PIN };
+-    const int fanBit[] = { 0,
+-      EXTRUDER_1_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN ? 0 : 1,
+-      EXTRUDER_2_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN ? 0 :
+-      EXTRUDER_2_AUTO_FAN_PIN == EXTRUDER_1_AUTO_FAN_PIN ? 1 : 2,
+-      EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_0_AUTO_FAN_PIN ? 0 :
+-      EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_1_AUTO_FAN_PIN ? 1 :
+-      EXTRUDER_3_AUTO_FAN_PIN == EXTRUDER_2_AUTO_FAN_PIN ? 2 : 3
++    const int fanBit[] = {
++                    0,
++      AUTO_1_IS_0 ? 0 :               1,
++      AUTO_2_IS_0 ? 0 : AUTO_2_IS_1 ? 1 :               2,
++      AUTO_3_IS_0 ? 0 : AUTO_3_IS_1 ? 1 : AUTO_3_IS_2 ? 2 : 3
+     };
+     uint8_t fanState = 0;
++ 
+     HOTEND_LOOP() {
+       if (current_temperature[e] > EXTRUDER_AUTO_FAN_TEMPERATURE)
+         SBI(fanState, fanBit[e]);
+     }
++ 
+     uint8_t fanDone = 0;
+-    for (int8_t f = 0; f <= 3; f++) {
++    for (int8_t f = 0; f < COUNT(fanPin); f++) {
+       int8_t pin = fanPin[f];
+       if (pin >= 0 && !TEST(fanDone, fanBit[f])) {
+         unsigned char newFanSpeed = TEST(fanState, fanBit[f]) ? EXTRUDER_AUTO_FAN_SPEED : 0;
+@@ -987,39 +987,35 @@ void Temperature::init() {
+     SET_OUTPUT(HEATER_BED_PIN);
+   #endif
+ 
+-  #if ENABLED(FAST_PWM_FAN) || ENABLED(FAN_SOFT_PWM)
+-
+-    #if HAS_FAN0
+-      SET_OUTPUT(FAN_PIN);
+-      #if ENABLED(FAST_PWM_FAN)
+-        setPwmFrequency(FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
+-      #endif
+-      #if ENABLED(FAN_SOFT_PWM)
+-        soft_pwm_fan[0] = fanSpeedSoftPwm[0] / 2;
+-      #endif
++  #if HAS_FAN0
++    SET_OUTPUT(FAN_PIN);
++    #if ENABLED(FAST_PWM_FAN)
++      setPwmFrequency(FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
+     #endif
+-
+-    #if HAS_FAN1
+-      SET_OUTPUT(FAN1_PIN);
+-      #if ENABLED(FAST_PWM_FAN)
+-        setPwmFrequency(FAN1_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
+-      #endif
+-      #if ENABLED(FAN_SOFT_PWM)
+-        soft_pwm_fan[1] = fanSpeedSoftPwm[1] / 2;
+-      #endif
++    #if ENABLED(FAN_SOFT_PWM)
++      soft_pwm_fan[0] = fanSpeedSoftPwm[0] / 2;
+     #endif
++  #endif
+ 
+-    #if HAS_FAN2
+-      SET_OUTPUT(FAN2_PIN);
+-      #if ENABLED(FAST_PWM_FAN)
+-        setPwmFrequency(FAN2_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
+-      #endif
+-      #if ENABLED(FAN_SOFT_PWM)
+-        soft_pwm_fan[2] = fanSpeedSoftPwm[2] / 2;
+-      #endif
++  #if HAS_FAN1
++    SET_OUTPUT(FAN1_PIN);
++    #if ENABLED(FAST_PWM_FAN)
++      setPwmFrequency(FAN1_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++    #endif
++    #if ENABLED(FAN_SOFT_PWM)
++      soft_pwm_fan[1] = fanSpeedSoftPwm[1] / 2;
+     #endif
++  #endif
+ 
+-  #endif // FAST_PWM_FAN || FAN_SOFT_PWM
++  #if HAS_FAN2
++    SET_OUTPUT(FAN2_PIN);
++    #if ENABLED(FAST_PWM_FAN)
++      setPwmFrequency(FAN2_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++    #endif
++    #if ENABLED(FAN_SOFT_PWM)
++      soft_pwm_fan[2] = fanSpeedSoftPwm[2] / 2;
++    #endif
++  #endif
+ 
+   #if ENABLED(HEATER_0_USES_MAX6675)
+ 
+@@ -1068,16 +1064,44 @@ void Temperature::init() {
+   #endif
+ 
+   #if HAS_AUTO_FAN_0
+-    pinMode(EXTRUDER_0_AUTO_FAN_PIN, OUTPUT);
++    #if EXTRUDER_0_AUTO_FAN_PIN == FAN1_PIN
++      SET_OUTPUT(EXTRUDER_0_AUTO_FAN_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(EXTRUDER_0_AUTO_FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++    #else
++      pinMode(EXTRUDER_0_AUTO_FAN_PIN, OUTPUT);
++    #endif
+   #endif
+-  #if HAS_AUTO_FAN_1 && (EXTRUDER_1_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN)
+-    pinMode(EXTRUDER_1_AUTO_FAN_PIN, OUTPUT);
++  #if HAS_AUTO_FAN_1 && !AUTO_1_IS_0
++    #if EXTRUDER_1_AUTO_FAN_PIN == FAN1_PIN
++      SET_OUTPUT(EXTRUDER_1_AUTO_FAN_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(EXTRUDER_1_AUTO_FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++    #else
++      pinMode(EXTRUDER_1_AUTO_FAN_PIN, OUTPUT);
++    #endif
+   #endif
+-  #if HAS_AUTO_FAN_2 && (EXTRUDER_2_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN) && (EXTRUDER_2_AUTO_FAN_PIN != EXTRUDER_1_AUTO_FAN_PIN)
+-    pinMode(EXTRUDER_2_AUTO_FAN_PIN, OUTPUT);
++  #if HAS_AUTO_FAN_2 && !AUTO_2_IS_0 && !AUTO_2_IS_1
++    #if EXTRUDER_2_AUTO_FAN_PIN == FAN1_PIN
++      SET_OUTPUT(EXTRUDER_2_AUTO_FAN_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(EXTRUDER_2_AUTO_FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++    #else
++      pinMode(EXTRUDER_2_AUTO_FAN_PIN, OUTPUT);
++    #endif
+   #endif
+-  #if HAS_AUTO_FAN_3 && (EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_0_AUTO_FAN_PIN) && (EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_1_AUTO_FAN_PIN) && (EXTRUDER_3_AUTO_FAN_PIN != EXTRUDER_2_AUTO_FAN_PIN)
+-    pinMode(EXTRUDER_3_AUTO_FAN_PIN, OUTPUT);
++  #if HAS_AUTO_FAN_3 && !AUTO_3_IS_0 && !AUTO_3_IS_1 && !AUTO_3_IS_2
++    #if EXTRUDER_3_AUTO_FAN_PIN == FAN1_PIN
++      SET_OUTPUT(EXTRUDER_3_AUTO_FAN_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(EXTRUDER_3_AUTO_FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++    #else
++      pinMode(EXTRUDER_3_AUTO_FAN_PIN, OUTPUT);
++    #endif
+   #endif
+ 
+   // Use timer0 for temperature measurement
+
+commit dcd26b0403485b844496b9b1e6767e56507d22b2 (from 3a0a94b21ad9d6a00c936077a9436992a9b6e268)
+Merge: 79ba983 3a0a94b
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Aug 13 21:22:27 2016 -0700
+
+    Merge pull request #4621 from thinkyhead/rc_fan_set_output
+    
+    Init PWM-able AUTO_FAN pins with SET_OUTPUT
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a829347..5dab1f4 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -842,12 +842,7 @@ void servo_init() {
+   }
+ 
+   void i2c_on_request() {          // just send dummy data for now
+-    static const char *msg = "Hello World!\n";
+-    const char *adr = msg;
+-    char c;
+-    i2c.reset();
+-    while (c = *adr++) i2c.addbyte(c);
+-    i2c.send();
++    i2c.reply("Hello World!\n");
+   }
+ 
+ #endif
+diff --git a/Marlin/twibus.cpp b/Marlin/twibus.cpp
+index cbefbfd..ab04fa3 100644
+--- a/Marlin/twibus.cpp
++++ b/Marlin/twibus.cpp
+@@ -42,38 +42,60 @@ void TWIBus::reset() {
+   this->buffer[0] = 0x00;
+ }
+ 
+-void TWIBus::address(const uint8_t addr) {
+-  this->addr = addr;
++void TWIBus::address(const uint8_t adr) {
++  this->addr = adr;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("address"), this->addr);
++    debug(PSTR("address"), adr);
+   #endif
+ }
+ 
+ void TWIBus::addbyte(const char c) {
+-  if (buffer_s >= sizeof(this->buffer)) return;
++  if (this->buffer_s >= COUNT(this->buffer)) return;
+   this->buffer[this->buffer_s++] = c;
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("addbyte"), c);
++  #endif
++}
++
++void TWIBus::addbytes(char src[], uint8_t bytes) {
++  #if ENABLED(DEBUG_TWIBUS)
++    debug(PSTR("addbytes"), bytes);
++  #endif
++  while (bytes--) this->addbyte(*src++);
++}
+ 
++void TWIBus::addstring(char str[]) {
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("addbyte"), this->buffer[this->buffer_s - 1]);
++    debug(PSTR("addstring"), str);
+   #endif
++  while (char c = *str++) this->addbyte(c);
+ }
+ 
+ void TWIBus::send() {
+   if (!this->addr) return;
+ 
+   #if ENABLED(DEBUG_TWIBUS)
+-    debug(PSTR("send()"));
++    debug(PSTR("send"), this->addr);
+   #endif
+ 
+   Wire.beginTransmission(this->addr);
+   Wire.write(this->buffer, this->buffer_s);
+   Wire.endTransmission();
+ 
+-  // Reset the buffer after sending the data
+   this->reset();
+ }
+ 
++void TWIBus::echodata(uint8_t bytes, const char prefix[], uint8_t adr) {
++  SERIAL_ECHO_START;
++  serialprintPGM(prefix);
++  SERIAL_ECHOPAIR(": from:", adr);
++  SERIAL_ECHOPAIR(" bytes:", bytes);
++  SERIAL_ECHOPGM (" data:");
++  while (bytes-- && Wire.available()) SERIAL_CHAR(Wire.read());
++  SERIAL_EOL;
++}
++
+ void TWIBus::reqbytes(const uint8_t bytes) {
+   if (!this->addr) return;
+ 
+@@ -82,34 +104,57 @@ void TWIBus::reqbytes(const uint8_t bytes) {
+   #endif
+ 
+   // requestFrom() is a blocking function
+-  millis_t t = millis() + this->timeout;
+   Wire.requestFrom(this->addr, bytes);
+-  while (Wire.available() < bytes && PENDING(millis(), t)) { /*nada*/ }
+ 
+-  this->relaydata(bytes);
++  // Wait until all bytes arrive, or timeout
++  millis_t t = millis() + this->timeout;
++  while (Wire.available() < bytes && PENDING(millis(), t)) { /*nada*/ }
+ 
+-  // Reset the buffer after sending the data
+-  this->reset();
++  // Simply echo the data to the bus
++  this->echodata(bytes, PSTR("i2c-reply"), this->addr);
+ }
+ 
+-void TWIBus::relaydata(uint8_t bytes) {
+-  SERIAL_ECHO_START;
+-  SERIAL_ECHOPAIR("i2c-reply: from:", this->addr);
+-  SERIAL_ECHOPAIR(" bytes:", bytes);
+-  SERIAL_ECHOPGM (" data:");
+-  while (bytes-- && Wire.available()) SERIAL_CHAR(Wire.read());
+-  SERIAL_EOL;
+-}
++#if I2C_SLAVE_ADDRESS > 0
+ 
+-#if ENABLED(DEBUG_TWIBUS)
++  void TWIBus::receive(uint8_t bytes) {
++    #if ENABLED(DEBUG_TWIBUS)
++      debug(PSTR("receive"), bytes);
++    #endif
++    this->echodata(bytes, PSTR("i2c-receive"), 0);
++  }
++
++  void TWIBus::reply(char str[]/*=NULL*/) {
++    #if ENABLED(DEBUG_TWIBUS)
++      debug(PSTR("reply"), str);
++    #endif
+ 
+-  void TWIBus::debug(const char func[], int32_t val/*=-1*/) {
+-    if (DEBUGGING(INFO)) {
+-      SERIAL_ECHOPGM("TWIBus::");
+-      serialprintPGM(func);
+-      if (val >= 0) SERIAL_ECHOPAIR(": ", val);
+-      SERIAL_EOL;
++    if (str) {
++      this->reset();
++      this->addstring(str);
+     }
++
++    Wire.write(this->buffer, this->buffer_s);
++
++    this->reset();
++  }
++
++#endif
++
++#if ENABLED(DEBUG_TWIBUS)
++
++  void TWIBus::prefix(const char func[]) {
++    SERIAL_ECHOPGM("TWIBus::");
++    serialprintPGM(func);
++    SERIAL_ECHOPGM(": ");
++  }
++  void TWIBus::debug(const char func[], uint32_t adr) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(adr); }
++  }
++  void TWIBus::debug(const char func[], char c) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(c); }
++  }
++  void TWIBus::debug(const char func[], char str[]) {
++    if (DEBUGGING(INFO)) { prefix(func); SERIAL_ECHOLN(str); }
+   }
+ 
+ #endif
+diff --git a/Marlin/twibus.h b/Marlin/twibus.h
+index 083d3a7..32928a8 100644
+--- a/Marlin/twibus.h
++++ b/Marlin/twibus.h
+@@ -62,7 +62,7 @@ class TWIBus {
+ 
+     /**
+      * @brief Number of bytes on buffer
+-     * @description Number of bytes in the buffer waiting to be flushed to the bus.
++     * @description Number of bytes in the buffer waiting to be flushed to the bus
+      */
+     uint8_t buffer_s = 0;
+ 
+@@ -94,7 +94,7 @@ class TWIBus {
+ 
+     /**
+      * @brief Send the buffer data to the bus
+-     * @details Flush the buffer to the bus at the target address.
++     * @details Flush the buffer to the target address
+      */
+     void send();
+ 
+@@ -108,44 +108,56 @@ class TWIBus {
+     void addbyte(const char c);
+ 
+     /**
++     * @brief Add some bytes to the buffer
++     * @details Add bytes to the end of the buffer.
++     *          Concatenates at the buffer size.
++     *
++     * @param src source data address
++     * @param bytes the number of bytes to add
++     */
++    void addbytes(char src[], uint8_t bytes);
++
++    /**
++     * @brief Add a null-terminated string to the buffer
++     * @details Add bytes to the end of the buffer up to a nul.
++     *          Concatenates at the buffer size.
++     *
++     * @param str source string address
++     */
++    void addstring(char str[]);
++
++    /**
+      * @brief Set the target slave address
+-     * @details The target slave address for sending the full packet.
++     * @details The target slave address for sending the full packet
+      *
+-     * @param addr 7-bit integer address
++     * @param adr 7-bit integer address
+      */
+-    void address(const uint8_t addr);
++    void address(const uint8_t adr);
+ 
+     /**
+-     * @brief Request data from the slave device
+-     * @details Request a number of bytes from a slave device.
+-     *          This implementation simply sends the data to serial
+-     *          in a parser-friendly format.
++     * @brief Echo data on the bus to serial
++     * @details Echo some number of bytes from the bus
++     *          to serial in a parser-friendly format.
+      *
+      * @param bytes the number of bytes to request
+      */
+-    void reqbytes(const uint8_t bytes);
++    static void echodata(uint8_t bytes, const char prefix[], uint8_t adr);
+ 
+     /**
+-     * @brief Relay data from the slave device to serial
+-     * @details Relay a number of bytes from the bus to
+-     *          serial in a parser-friendly format.
++     * @brief Request data from the slave device
++     * @details Request a number of bytes from a slave device.
++     *          This implementation simply sends the data to serial
++     *          in a parser-friendly format.
+      *
+      * @param bytes the number of bytes to request
+      */
+-    void relaydata(uint8_t bytes);
++    void reqbytes(const uint8_t bytes);
+ 
+     #if I2C_SLAVE_ADDRESS > 0
+ 
+       /**
+-       * @brief Receive bytes (passively)
+-       * @details Receive bytes sent to our slave address.
+-       *          and simply echo them to serial.
+-       */
+-      inline void receive(uint8_t bytes) { relaydata(bytes); }
+-
+-      /**
+        * @brief Register a slave receive handler
+-       * @details Set a handler to receive data addressed to us.
++       * @details Set a handler to receive data addressed to us
+        *
+        * @param handler A function to handle receiving bytes
+        */
+@@ -153,12 +165,26 @@ class TWIBus {
+ 
+       /**
+        * @brief Register a slave request handler
+-       * @details Set a handler to send data requested from us.
++       * @details Set a handler to send data requested from us
+        *
+        * @param handler A function to handle receiving bytes
+        */
+       inline void onRequest(const twiRequestFunc_t handler) { Wire.onRequest(handler); }
+ 
++      /**
++       * @brief Default handler to receive
++       * @details Receive bytes sent to our slave address
++       *          and simply echo them to serial.
++       */
++      void receive(uint8_t bytes);
++
++      /**
++       * @brief Send a reply to the bus
++       * @details Send the buffer and clear it.
++       */
++      void reply(char str[]=NULL);
++      inline void reply(const char str[]) { this->reply((char*)str); }
++
+     #endif
+ 
+     #if ENABLED(DEBUG_TWIBUS)
+@@ -167,7 +193,11 @@ class TWIBus {
+        * @brief Prints a debug message
+        * @details Prints a simple debug message "TWIBus::function: value"
+        */
+-      static void debug(const char func[], int32_t val = -1);
++      static void prefix(const char func[]);
++      static void debug(const char func[], uint32_t adr);
++      static void debug(const char func[], char c);
++      static void debug(const char func[], char adr[]);
++      static inline void debug(const char func[], uint8_t v) { debug(func, (uint32_t)v); }
+ 
+     #endif
+ };
+

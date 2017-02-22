@@ -1,0 +1,817 @@
+commit dddaeb3f8c1a5548b3f32894290f221116d03f8a (from 4cf66cfa62ee10bc6f378c3664a5d8ab026b64df)
+Merge: 4cf66cf 7e2bd9a
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Aug 4 13:46:44 2016 -0700
+
+    Merge pull request #4528 from thinkyhead/rc_make_it_so
+    
+    Z-Height options replace Z-Raise options
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 59750fc..aa6b28a 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -575,10 +575,10 @@
+         #define XY_PROBE_SPEED 4000
+       #endif
+     #endif
+-    #if Z_RAISE_BETWEEN_PROBINGS > Z_RAISE_PROBE_DEPLOY_STOW
+-      #define _Z_RAISE_PROBE_DEPLOY_STOW Z_RAISE_BETWEEN_PROBINGS
++    #if Z_PROBE_TRAVEL_HEIGHT > Z_PROBE_DEPLOY_HEIGHT
++      #define _Z_PROBE_DEPLOY_HEIGHT Z_PROBE_TRAVEL_HEIGHT
+     #else
+-      #define _Z_RAISE_PROBE_DEPLOY_STOW Z_RAISE_PROBE_DEPLOY_STOW
++      #define _Z_PROBE_DEPLOY_HEIGHT Z_PROBE_DEPLOY_HEIGHT
+     #endif
+   #else
+     #undef X_PROBE_OFFSET_FROM_EXTRUDER
+@@ -647,17 +647,17 @@
+   #endif
+ 
+   /**
+-   * MIN_Z_HEIGHT_FOR_HOMING / Z_RAISE_BETWEEN_PROBINGS
++   * Z_HOMING_HEIGHT / Z_PROBE_TRAVEL_HEIGHT
+    */
+-  #ifndef MIN_Z_HEIGHT_FOR_HOMING
+-    #ifndef Z_RAISE_BETWEEN_PROBINGS
+-      #define MIN_Z_HEIGHT_FOR_HOMING 0
++  #ifndef Z_HOMING_HEIGHT
++    #ifndef Z_PROBE_TRAVEL_HEIGHT
++      #define Z_HOMING_HEIGHT 0
+     #else
+-      #define MIN_Z_HEIGHT_FOR_HOMING Z_RAISE_BETWEEN_PROBINGS
++      #define Z_HOMING_HEIGHT Z_PROBE_TRAVEL_HEIGHT
+     #endif
+   #endif
+-  #ifndef Z_RAISE_BETWEEN_PROBINGS
+-    #define Z_RAISE_BETWEEN_PROBING MIN_Z_HEIGHT_FOR_HOMING
++  #ifndef Z_PROBE_TRAVEL_HEIGHT
++    #define Z_PROBE_TRAVEL_HEIGHT Z_HOMING_HEIGHT
+   #endif
+ 
+ #endif // CONDITIONALS_POST_H
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 8083c1e..ad869b7 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 84493cf..d1c4876 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1802,10 +1802,6 @@ static void clean_up_after_endstop_or_probe_move() {
+       }
+     #endif
+     float z_dest = LOGICAL_Z_POSITION(z_raise);
+-
+-    if (zprobe_zoffset < 0)
+-      z_dest -= zprobe_zoffset;
+-
+     if (z_dest > current_position[Z_AXIS])
+       do_blocking_move_to_z(z_dest);
+   }
+@@ -2054,7 +2050,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     if (endstops.z_probe_enabled == deploy) return false;
+ 
+     // Make room for probe
+-    do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
++    do_probe_raise(_Z_PROBE_DEPLOY_HEIGHT);
+ 
+     #if ENABLED(Z_PROBE_SLED)
+       if (axis_unhomed_error(true, false, false)) { stop(); return true; }
+@@ -2163,7 +2159,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     float old_feedrate_mm_m = feedrate_mm_m;
+ 
+     // Ensure a minimum height before moving the probe
+-    do_probe_raise(Z_RAISE_BETWEEN_PROBINGS);
++    do_probe_raise(Z_PROBE_TRAVEL_HEIGHT);
+ 
+     // Move to the XY where we shall probe
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -2193,7 +2189,7 @@ static void clean_up_after_endstop_or_probe_move() {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("> do_probe_raise");
+       #endif
+-      do_probe_raise(Z_RAISE_BETWEEN_PROBINGS);
++      do_probe_raise(Z_PROBE_TRAVEL_HEIGHT);
+     }
+ 
+     if (verbose_level > 2) {
+@@ -2971,7 +2967,7 @@ inline void gcode_G28() {
+ 
+       if (home_all_axis || homeX || homeY) {
+         // Raise Z before homing any other axes and z is not already high enough (never lower z)
+-        destination[Z_AXIS] = LOGICAL_Z_POSITION(MIN_Z_HEIGHT_FOR_HOMING);
++        destination[Z_AXIS] = LOGICAL_Z_POSITION(Z_HOMING_HEIGHT);
+         if (destination[Z_AXIS] > current_position[Z_AXIS]) {
+ 
+           #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -3052,7 +3048,7 @@ inline void gcode_G28() {
+           if (home_all_axis) {
+ 
+             /**
+-             * At this point we already have Z at MIN_Z_HEIGHT_FOR_HOMING height
++             * At this point we already have Z at Z_HOMING_HEIGHT height
+              * No need to move Z any more as this height should already be safe
+              * enough to reach Z_SAFE_HOMING XY positions.
+              * Just make sure the planner is in sync.
+@@ -3216,10 +3212,10 @@ inline void gcode_G28() {
+     feedrate_mm_m = homing_feedrate_mm_m[X_AXIS];
+ 
+     current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+-      #if Z_RAISE_BETWEEN_PROBINGS > MIN_Z_HEIGHT_FOR_HOMING
+-        + Z_RAISE_BETWEEN_PROBINGS
+-      #elif MIN_Z_HEIGHT_FOR_HOMING > 0
+-        + MIN_Z_HEIGHT_FOR_HOMING
++      #if Z_PROBE_TRAVEL_HEIGHT > Z_HOMING_HEIGHT
++        + Z_PROBE_TRAVEL_HEIGHT
++      #elif Z_HOMING_HEIGHT > 0
++        + Z_HOMING_HEIGHT
+       #endif
+     ;
+     line_to_current_position();
+@@ -3228,7 +3224,7 @@ inline void gcode_G28() {
+     current_position[Y_AXIS] = LOGICAL_Y_POSITION(y);
+     line_to_current_position();
+ 
+-    #if Z_RAISE_BETWEEN_PROBINGS > 0 || MIN_Z_HEIGHT_FOR_HOMING > 0
++    #if Z_PROBE_TRAVEL_HEIGHT > 0 || Z_HOMING_HEIGHT > 0
+       current_position[Z_AXIS] = LOGICAL_Z_POSITION(MESH_HOME_SEARCH_Z);
+       line_to_current_position();
+     #endif
+@@ -3324,10 +3320,10 @@ inline void gcode_G28() {
+         else {
+           // One last "return to the bed" (as originally coded) at completion
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+-            #if Z_RAISE_BETWEEN_PROBINGS > MIN_Z_HEIGHT_FOR_HOMING
+-              + Z_RAISE_BETWEEN_PROBINGS
+-            #elif MIN_Z_HEIGHT_FOR_HOMING > 0
+-              + MIN_Z_HEIGHT_FOR_HOMING
++            #if Z_PROBE_TRAVEL_HEIGHT > Z_HOMING_HEIGHT
++              + Z_PROBE_TRAVEL_HEIGHT
++            #elif Z_HOMING_HEIGHT > 0
++              + Z_HOMING_HEIGHT
+             #endif
+           ;
+           line_to_current_position();
+@@ -3661,7 +3657,7 @@ inline void gcode_G28() {
+ 
+     #endif // !AUTO_BED_LEVELING_GRID
+ 
+-    // Raise to _Z_RAISE_PROBE_DEPLOY_STOW. Stow the probe.
++    // Raise to _Z_PROBE_DEPLOY_HEIGHT. Stow the probe.
+     if (STOW_PROBE()) return;
+ 
+     // Restore state after probing
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 6f1b73b..bec3d46 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -334,16 +334,14 @@
+   /**
+    * Make sure Z raise values are set
+    */
+-  #if defined(Z_RAISE_BEFORE_PROBING) || defined(Z_RAISE_AFTER_PROBING)
+-    #error "Z_RAISE_(BEFORE|AFTER)_PROBING are deprecated. Use Z_RAISE_PROBE_DEPLOY_STOW instead."
+-  #elif !defined(Z_RAISE_PROBE_DEPLOY_STOW)
+-    #error "You must set Z_RAISE_PROBE_DEPLOY_STOW in your configuration."
+-  #elif !defined(Z_RAISE_BETWEEN_PROBINGS)
+-    #error "You must set Z_RAISE_BETWEEN_PROBINGS in your configuration."
+-  #elif Z_RAISE_PROBE_DEPLOY_STOW < 0
+-    #error "Probes need Z_RAISE_PROBE_DEPLOY_STOW >= 0."
+-  #elif Z_RAISE_BETWEEN_PROBINGS < 0
+-    #error "Probes need Z_RAISE_BETWEEN_PROBINGS >= 0."
++  #if !defined(Z_PROBE_DEPLOY_HEIGHT)
++    #error "You must set Z_PROBE_DEPLOY_HEIGHT in your configuration."
++  #elif !defined(Z_PROBE_TRAVEL_HEIGHT)
++    #error "You must set Z_PROBE_TRAVEL_HEIGHT in your configuration."
++  #elif Z_PROBE_DEPLOY_HEIGHT < 0
++    #error "Probes need Z_PROBE_DEPLOY_HEIGHT >= 0."
++  #elif Z_PROBE_TRAVEL_HEIGHT < 0
++    #error "Probes need Z_PROBE_TRAVEL_HEIGHT >= 0."
+   #endif
+ 
+ #else
+@@ -681,8 +679,6 @@
+   #error "SDSLOW deprecated. Set SPI_SPEED to SPI_HALF_SPEED instead."
+ #elif defined(SDEXTRASLOW)
+   #error "SDEXTRASLOW deprecated. Set SPI_SPEED to SPI_QUARTER_SPEED instead."
+-#elif defined(Z_RAISE_BEFORE_HOMING)
+-  #error "Z_RAISE_BEFORE_HOMING is deprecated. Use MIN_Z_HEIGHT_FOR_HOMING instead."
+ #elif defined(FILAMENT_SENSOR)
+   #error "FILAMENT_SENSOR is deprecated. Use FILAMENT_WIDTH_SENSOR instead."
+ #elif defined(DISABLE_MAX_ENDSTOPS) || defined(DISABLE_MIN_ENDSTOPS)
+@@ -729,4 +725,12 @@
+   #error "MANUAL_HOME_POSITIONS is deprecated. Set MANUAL_[XYZ]_HOME_POS as-needed instead."
+ #elif defined(PID_ADD_EXTRUSION_RATE)
+   #error "PID_ADD_EXTRUSION_RATE is now PID_EXTRUSION_SCALING and is DISABLED by default. Are you sure you want to use this option? Please update your configuration."
++#elif defined(Z_RAISE_BEFORE_HOMING)
++  #error "Z_RAISE_BEFORE_HOMING is now Z_HOMING_HEIGHT. Please update your configuration."
++#elif defined(MIN_Z_HEIGHT_FOR_HOMING)
++  #error "MIN_Z_HEIGHT_FOR_HOMING is now Z_HOMING_HEIGHT. Please update your configuration."
++#elif defined(Z_RAISE_BEFORE_PROBING) || defined(Z_RAISE_AFTER_PROBING)
++  #error "Z_RAISE_(BEFORE|AFTER)_PROBING are deprecated. Use Z_PROBE_DEPLOY_HEIGHT instead."
++#elif defined(Z_RAISE_PROBE_DEPLOY_STOW) || defined(Z_RAISE_BETWEEN_PROBINGS)
++  #error "Z_RAISE_PROBE_DEPLOY_STOW and Z_RAISE_BETWEEN_PROBINGS are now Z_PROBE_DEPLOY_HEIGHT and Z_PROBE_TRAVEL_HEIGHT Please update your configuration."
+ #endif
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 54505b6..0d0c60b 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 95a4145..bb8f643 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -525,8 +525,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -571,8 +571,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 49ce86a..59f45c4 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -523,8 +523,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -569,8 +569,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 478d5c7..feab873 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -535,8 +535,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -581,8 +581,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index bb4b483..060f4f4 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -537,8 +537,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW  5 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 2  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT  5 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 2  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -583,8 +583,8 @@
+ 
+ // @section homing
+ 
+-#define MIN_Z_HEIGHT_FOR_HOMING 5   // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++#define Z_HOMING_HEIGHT 5    // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 1a74006..dbfe6b9 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -560,8 +560,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -606,8 +606,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index c525b22..47ab342 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 7713ed9..3ea963a 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 67d6dde..1c37511 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 1ea13b9..bbe545c 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -540,8 +540,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -586,8 +586,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 389c6de..bc60b75 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -551,8 +551,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -597,8 +597,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 113a4f9..c4de322 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -564,8 +564,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -610,8 +610,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index e422e7c..f9715f2 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -535,8 +535,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -581,8 +581,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 633d130..470279e 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -543,8 +543,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -589,8 +589,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 0f1ef7e..3033651 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -632,8 +632,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 50 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 50 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -678,8 +678,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index d6cb1a1..9d7a500 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -626,8 +626,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -672,8 +672,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index bdd3afc..1091e93 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -629,8 +629,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 50 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 50 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -675,8 +675,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 15// (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 15 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 3764b52..fde86a5 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -623,8 +623,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 100 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 100 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -669,8 +669,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 8c6195b..0cfd4e4 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -624,8 +624,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 20 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 10 // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 20 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 10 // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -670,8 +670,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 49196a1..d1ef7d3 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -546,8 +546,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -592,8 +592,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 60ba4d6..7a307cc 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -533,8 +533,8 @@
+ //
+ // Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+-#define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
++#define Z_PROBE_DEPLOY_HEIGHT 15 // Raise to make room for the probe to deploy / stow
++#define Z_PROBE_TRAVEL_HEIGHT 5  // Raise between probing points.
+ 
+ //
+ // For M851 give a range for adjusting the Z probe offset
+@@ -579,8 +579,8 @@
+ 
+ // @section homing
+ 
+-//#define MIN_Z_HEIGHT_FOR_HOMING 4 // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
+-                                    // Be sure you have this distance over your Z_MAX_POS in case.
++//#define Z_HOMING_HEIGHT 4  // (in mm) Minimal z height before homing (G28) for Z clearance above the bed, clamps, ...
++                             // Be sure you have this distance over your Z_MAX_POS in case.
+ 
+ // ENDSTOP SETTINGS:
+ // Sets direction of endstops when homing; 1=MAX, -1=MIN
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 6eb5eff..da214aa 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -985,16 +985,16 @@ void kill_screen(const char* lcd_msg) {
+     static uint8_t _lcd_level_bed_position;
+ 
+     // Utility to go to the next mesh point
+-    // A raise is added between points if MIN_Z_HEIGHT_FOR_HOMING is in use
++    // A raise is added between points if Z_HOMING_HEIGHT is in use
+     // Note: During Manual Bed Leveling the homed Z position is MESH_HOME_SEARCH_Z
+     // Z position will be restored with the final action, a G28
+     inline void _mbl_goto_xy(float x, float y) {
+-      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + MIN_Z_HEIGHT_FOR_HOMING;
++      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + Z_HOMING_HEIGHT;
+       line_to_current(Z_AXIS);
+       current_position[X_AXIS] = x + home_offset[X_AXIS];
+       current_position[Y_AXIS] = y + home_offset[Y_AXIS];
+       line_to_current(manual_feedrate_mm_m[X_AXIS] <= manual_feedrate_mm_m[Y_AXIS] ? X_AXIS : Y_AXIS);
+-      #if MIN_Z_HEIGHT_FOR_HOMING > 0
++      #if Z_HOMING_HEIGHT > 0
+         current_position[Z_AXIS] = MESH_HOME_SEARCH_Z; // How do condition and action match?
+         line_to_current(Z_AXIS);
+       #endif
+@@ -1045,7 +1045,7 @@ void kill_screen(const char* lcd_msg) {
+           if (_lcd_level_bed_position == (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS)) {
+             lcd_goto_screen(_lcd_level_bed_done, true);
+ 
+-            current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + MIN_Z_HEIGHT_FOR_HOMING;
++            current_position[Z_AXIS] = MESH_HOME_SEARCH_Z + Z_HOMING_HEIGHT;
+             line_to_current(Z_AXIS);
+             stepper.synchronize();
+ 
+

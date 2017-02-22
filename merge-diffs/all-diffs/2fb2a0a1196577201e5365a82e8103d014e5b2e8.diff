@@ -1,0 +1,2298 @@
+commit 2fb2a0a1196577201e5365a82e8103d014e5b2e8 (from 39d88bcccbfdf57b868ba111c36ab1464735a842)
+Merge: 39d88bc 8a08cca
+Author: bkubicek <bkubicek@x201.(none)>
+Date:   Tue Oct 22 10:08:21 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/BlinkM.cpp b/Marlin/BlinkM.cpp
+new file mode 100644
+index 0000000..de604ec
+--- /dev/null
++++ b/Marlin/BlinkM.cpp
+@@ -0,0 +1,29 @@
++/*
++  BlinkM.cpp - Library for controlling a BlinkM over i2c
++  Created by Tim Koster, August 21 2013.
++*/
++#include "Marlin.h"
++#ifdef BLINKM
++
++#if (ARDUINO >= 100)
++  # include "Arduino.h"
++#else
++  # include "WProgram.h"
++#endif
++
++#include "BlinkM.h"
++
++void SendColors(byte red, byte grn, byte blu)
++{
++  Wire.begin(); 
++  Wire.beginTransmission(0x09);
++  Wire.write('o');                    //to disable ongoing script, only needs to be used once
++  Wire.write('n');
++  Wire.write(red);
++  Wire.write(grn);
++  Wire.write(blu);
++  Wire.endTransmission();
++}
++
++#endif //BLINKM
++
+diff --git a/Marlin/BlinkM.h b/Marlin/BlinkM.h
+new file mode 100644
+index 0000000..5136828
+--- /dev/null
++++ b/Marlin/BlinkM.h
+@@ -0,0 +1,14 @@
++/*
++  BlinkM.h
++  Library header file for BlinkM library
++ */
++#if (ARDUINO >= 100)
++  # include "Arduino.h"
++#else
++  # include "WProgram.h"
++#endif
++
++#include "Wire.h"
++
++void SendColors(byte red, byte grn, byte blu);
++
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 502ebd4..8496a8b 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -309,7 +309,10 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+   #define X_PROBE_OFFSET_FROM_EXTRUDER -25
+   #define Y_PROBE_OFFSET_FROM_EXTRUDER -29
+   #define Z_PROBE_OFFSET_FROM_EXTRUDER -12.35
+-  
++
++  #define Z_RAISE_BEFORE_HOMING 4       // (in mm) Raise Z before homing (G28) for Probe Clearance.
++                                        // Be sure you have this distance over your Z_MAX_POS in case
++    
+   #define XY_TRAVEL_SPEED 8000         // X and Y axis travel speed between probes, in mm/min
+   
+   #define Z_RAISE_BEFORE_PROBING 15    //How much the extruder will be raised before traveling to the first probing point.
+@@ -330,12 +333,7 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ #define Y_MAX_POS 205
+ #define Y_MIN_POS 0
+ #define Z_MAX_POS 200
+-
+-#ifndef ENABLE_AUTO_BED_LEVELING
+ #define Z_MIN_POS 0
+-#else
+-#define Z_MIN_POS (-1*Z_PROBE_OFFSET_FROM_EXTRUDER)  //With Auto Bed Leveling, the Z_MIN MUST have the same distance as Z_PROBE
+-#endif
+ 
+ #define X_MAX_LENGTH (X_MAX_POS - X_MIN_POS)
+ #define Y_MAX_LENGTH (Y_MAX_POS - Y_MIN_POS)
+@@ -542,6 +540,11 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Increase the FAN pwm frequency. Removes the PWM noise but increases heating in the FET/Arduino
+ //#define FAST_PWM_FAN
+ 
++// Temperature status leds that display the hotend and bet temperature.
++// If alle hotends and bed temperature and temperature setpoint are < 54C then the BLUE led is on.
++// Otherwise the RED led is on. There is 1C hysteresis.
++//#define TEMP_STAT_LEDS
++
+ // Use software PWM to drive the fan, as for the heaters. This uses a very low frequency
+ // which is not ass annoying as with the hardware PWM. On the other hand, if this frequency
+ // is too low, you should also increment SOFT_PWM_SCALE.
+@@ -563,6 +566,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Support for the BariCUDA Paste Extruder.
+ //#define BARICUDA
+ 
++//define BlinkM/CyzRgb Support
++//#define BLINKM
++
+ /*********************************************************************\
+ * R/C SERVO support
+ * Sponsored by TrinityLabs, Reworked by codexmas
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 23ca5ef..06101f0 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -40,6 +40,10 @@
+   #define AUTOTEMP_OLDWEIGHT 0.98
+ #endif
+ 
++//Show Temperature ADC value
++//The M105 command return, besides traditional information, the ADC value read from temperature sensors.
++//#define SHOW_TEMP_ADC_VALUES
++
+ //  extruder run-out prevention. 
+ //if the machine is idle, and the temperature over MINTEMP, every couple of SECONDS some filament is extruded
+ //#define EXTRUDER_RUNOUT_PREVENT  
+@@ -146,6 +150,21 @@
+   #define EXTRUDERS 1
+ #endif
+ 
++// Same again but for Y Axis.
++//#define Y_DUAL_STEPPER_DRIVERS
++
++// Define if the two Y drives need to rotate in opposite directions
++#define INVERT_Y2_VS_Y_DIR true
++
++#ifdef Y_DUAL_STEPPER_DRIVERS
++  #undef EXTRUDERS
++  #define EXTRUDERS 1
++#endif
++
++#ifdef Z_DUAL_STEPPER_DRIVERS && Y_DUAL_STEPPER_DRIVERS
++  #error "You cannot have dual drivers for both Y and Z"
++#endif 
++
+ // Enable this for dual x-carriage printers. 
+ // A dual x-carriage design has the advantage that the inactive extruder can be parked which
+ // prevents hot-end ooze contaminating the print. It also reduces the weight of each x-carriage
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 6da0a83..fe1e751 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -109,8 +109,13 @@ void manage_inactivity();
+ #endif
+ 
+ #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
+-  #define  enable_y() WRITE(Y_ENABLE_PIN, Y_ENABLE_ON)
+-  #define disable_y() WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON)
++  #ifdef Y_DUAL_STEPPER_DRIVERS
++    #define  enable_y() { WRITE(Y_ENABLE_PIN, Y_ENABLE_ON); WRITE(Y2_ENABLE_PIN,  Y_ENABLE_ON); }
++    #define disable_y() { WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON); WRITE(Y2_ENABLE_PIN, !Y_ENABLE_ON); }
++  #else
++    #define  enable_y() WRITE(Y_ENABLE_PIN, Y_ENABLE_ON)
++    #define disable_y() WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON)
++  #endif
+ #else
+   #define enable_y() ;
+   #define disable_y() ;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 4bea72b..698caa8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -44,6 +44,11 @@
+ #include "language.h"
+ #include "pins_arduino.h"
+ 
++#ifdef BLINKM
++#include "BlinkM.h"
++#include "Wire.h" 
++#endif
++
+ #if NUM_SERVOS > 0
+ #include "Servo.h"
+ #endif
+@@ -118,6 +123,7 @@
+ // M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M140 - Set bed target temp
++// M150 - Set BlinkM Colour Output R: Red<0-255> U(!): Green<0-255> B: Blue<0-255> over i2c, G for green does not work.
+ // M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
+ //        Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+ // M200 - Set filament diameter
+@@ -935,19 +941,28 @@ static void homeaxis(int axis) {
+       axis_home_dir = x_home_dir(active_extruder);
+ #endif
+ 
++    current_position[axis] = 0;
++    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++	
+     // Engage Servo endstop if enabled
+     #ifdef SERVO_ENDSTOPS
+-#if defined (ENABLE_AUTO_BED_LEVELING) && (PROBE_SERVO_DEACTIVATION_DELAY > 0)
+-    if (axis==Z_AXIS) engage_z_probe();
+-	else
+-#endif
++      #if defined (ENABLE_AUTO_BED_LEVELING) && (PROBE_SERVO_DEACTIVATION_DELAY > 0)
++        if (axis==Z_AXIS) {
++          #if defined (Z_RAISE_BEFORE_HOMING) && (Z_RAISE_BEFORE_HOMING > 0)
++            destination[axis] = Z_RAISE_BEFORE_HOMING * axis_home_dir * (-1);    // Set destination away from bed
++            feedrate = max_feedrate[axis];
++            plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate, active_extruder);
++            st_synchronize();
++          #endif
++          engage_z_probe();
++        }
++	    else
++      #endif
+       if (servo_endstops[axis] > -1) {
+         servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
+       }
+     #endif
+ 
+-    current_position[axis] = 0;
+-    plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+     destination[axis] = 1.5 * max_length(axis) * axis_home_dir;
+     feedrate = homing_feedrate[axis];
+     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+@@ -1213,6 +1228,9 @@ void process_commands()
+           current_position[Z_AXIS]=code_value()+add_homeing[2];
+         }
+       }
++      #ifdef ENABLE_AUTO_BED_LEVELING
++         current_position[Z_AXIS] -= Z_PROBE_OFFSET_FROM_EXTRUDER;  //Add Z_Probe offset (the distance is negative)
++      #endif
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+ #endif // else DELTA
+ 
+@@ -1607,6 +1625,23 @@ void process_commands()
+         SERIAL_PROTOCOLPGM(" B@:");
+         SERIAL_PROTOCOL(getHeaterPower(-1));
+ 
++        #ifdef SHOW_TEMP_ADC_VALUES
++          #if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
++            SERIAL_PROTOCOLPGM("    ADC B:");
++            SERIAL_PROTOCOL_F(degBed(),1);
++            SERIAL_PROTOCOLPGM("C->");
++            SERIAL_PROTOCOL_F(rawBedTemp()/OVERSAMPLENR,0);
++          #endif
++          for (int8_t cur_extruder = 0; cur_extruder < EXTRUDERS; ++cur_extruder) {
++            SERIAL_PROTOCOLPGM("  T");
++            SERIAL_PROTOCOL(cur_extruder);
++            SERIAL_PROTOCOLPGM(":");
++            SERIAL_PROTOCOL_F(degHotend(cur_extruder),1);
++            SERIAL_PROTOCOLPGM("C->");
++            SERIAL_PROTOCOL_F(rawHotendTemp(cur_extruder)/OVERSAMPLENR,0);
++          }
++        #endif
++		
+         SERIAL_PROTOCOLLN("");
+       return;
+       break;
+@@ -1943,6 +1978,21 @@ void process_commands()
+       #endif
+       break;
+       //TODO: update for all axis, use for loop
++    #ifdef BLINKM  
++    case 150: // M150
++      {
++        byte red;
++        byte grn;
++        byte blu;
++        
++        if(code_seen('R')) red = code_value();
++        if(code_seen('U')) grn = code_value();
++        if(code_seen('B')) blu = code_value();
++        
++        SendColors(red,grn,blu);        
++      }
++      break;
++    #endif //BLINKM
+     case 201: // M201
+       for(int8_t i=0; i < NUM_AXIS; i++)
+       {
+@@ -2925,6 +2975,39 @@ void controllerFan()
+ }
+ #endif
+ 
++#ifdef TEMP_STAT_LEDS
++static bool blue_led = false;
++static bool red_led = false;
++static uint32_t stat_update = 0;
++
++void handle_status_leds(void) {
++  float max_temp = 0.0;
++  if(millis() > stat_update) {
++    stat_update += 500; // Update every 0.5s
++    for (int8_t cur_extruder = 0; cur_extruder < EXTRUDERS; ++cur_extruder) {
++       max_temp = max(max_temp, degHotend(cur_extruder));
++       max_temp = max(max_temp, degTargetHotend(cur_extruder));
++    }
++    #if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
++      max_temp = max(max_temp, degTargetBed());
++      max_temp = max(max_temp, degBed());
++    #endif
++    if((max_temp > 55.0) && (red_led == false)) {
++      digitalWrite(STAT_LED_RED, 1);
++      digitalWrite(STAT_LED_BLUE, 0);
++      red_led = true;
++      blue_led = false;
++    }
++    if((max_temp < 54.0) && (blue_led == false)) {
++      digitalWrite(STAT_LED_RED, 0);
++      digitalWrite(STAT_LED_BLUE, 1);
++      red_led = false;
++      blue_led = true;
++    }
++  }
++}
++#endif
++
+ void manage_inactivity()
+ {
+   if( (millis() - previous_millis_cmd) >  max_inactive_time )
+@@ -2978,7 +3061,10 @@ void manage_inactivity()
+       memcpy(destination,current_position,sizeof(destination));
+       prepare_move(); 
+     }
+-  #endif  
++  #endif
++  #ifdef TEMP_STAT_LEDS
++      handle_status_leds();
++  #endif
+   check_axes_activity();
+ }
+ 
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 1ae3cb4..12dd931 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -544,6 +544,13 @@
+     #endif
+   #endif
+ 
++  #ifdef TEMP_STAT_LEDS
++    #if MOTHERBOARD == 67
++      #define STAT_LED_RED       6
++      #define STAT_LED_BLUE     11
++    #endif
++  #endif
++  
+   #ifdef ULTRA_LCD
+ 
+     #ifdef NEWPANEL
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4f11ae9..f45ef7d 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -383,10 +383,20 @@ ISR(TIMER1_COMPA_vect)
+     }
+     if((out_bits & (1<<Y_AXIS))!=0){
+       WRITE(Y_DIR_PIN, INVERT_Y_DIR);
++	  
++	  #ifdef Y_DUAL_STEPPER_DRIVERS
++	    WRITE(Y2_DIR_PIN, !(INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
++	  #endif
++	  
+       count_direction[Y_AXIS]=-1;
+     }
+     else{
+       WRITE(Y_DIR_PIN, !INVERT_Y_DIR);
++	  
++	  #ifdef Y_DUAL_STEPPER_DRIVERS
++	    WRITE(Y2_DIR_PIN, (INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
++	  #endif
++	  
+       count_direction[Y_AXIS]=1;
+     }
+ 
+@@ -582,9 +592,18 @@ ISR(TIMER1_COMPA_vect)
+         counter_y += current_block->steps_y;
+         if (counter_y > 0) {
+           WRITE(Y_STEP_PIN, !INVERT_Y_STEP_PIN);
++		  
++		  #ifdef Y_DUAL_STEPPER_DRIVERS
++			WRITE(Y2_STEP_PIN, !INVERT_Y_STEP_PIN);
++		  #endif
++		  
+           counter_y -= current_block->step_event_count;
+           count_position[Y_AXIS]+=count_direction[Y_AXIS];
+           WRITE(Y_STEP_PIN, INVERT_Y_STEP_PIN);
++		  
++		  #ifdef Y_DUAL_STEPPER_DRIVERS
++			WRITE(Y2_STEP_PIN, INVERT_Y_STEP_PIN);
++		  #endif
+         }
+ 
+       counter_z += current_block->steps_z;
+@@ -756,6 +775,10 @@ void st_init()
+   #endif
+   #if defined(Y_DIR_PIN) && Y_DIR_PIN > -1
+     SET_OUTPUT(Y_DIR_PIN);
++		
++	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_DIR_PIN) && (Y2_DIR_PIN > -1)
++	  SET_OUTPUT(Y2_DIR_PIN);
++	#endif
+   #endif
+   #if defined(Z_DIR_PIN) && Z_DIR_PIN > -1
+     SET_OUTPUT(Z_DIR_PIN);
+@@ -787,6 +810,11 @@ void st_init()
+   #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
+     SET_OUTPUT(Y_ENABLE_PIN);
+     if(!Y_ENABLE_ON) WRITE(Y_ENABLE_PIN,HIGH);
++	
++	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_ENABLE_PIN) && (Y2_ENABLE_PIN > -1)
++	  SET_OUTPUT(Y2_ENABLE_PIN);
++	  if(!Y_ENABLE_ON) WRITE(Y2_ENABLE_PIN,HIGH);
++	#endif
+   #endif
+   #if defined(Z_ENABLE_PIN) && Z_ENABLE_PIN > -1
+     SET_OUTPUT(Z_ENABLE_PIN);
+@@ -869,6 +897,10 @@ void st_init()
+   #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1)
+     SET_OUTPUT(Y_STEP_PIN);
+     WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
++    #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && (Y2_STEP_PIN > -1)
++      SET_OUTPUT(Y2_STEP_PIN);
++      WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
++    #endif
+     disable_y();
+   #endif
+   #if defined(Z_STEP_PIN) && (Z_STEP_PIN > -1)
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index a597424..1bf47e0 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -35,6 +35,10 @@ void manage_heater(); //it is critical that this is called periodically.
+ // do not use these routines and variables outside of temperature.cpp
+ extern int target_temperature[EXTRUDERS];  
+ extern float current_temperature[EXTRUDERS];
++#ifdef SHOW_TEMP_ADC_VALUES
++  extern int current_temperature_raw[EXTRUDERS];
++  extern int current_temperature_bed_raw;
++#endif
+ extern int target_temperature_bed;
+ extern float current_temperature_bed;
+ #ifdef TEMP_SENSOR_1_AS_REDUNDANT
+@@ -66,6 +70,16 @@ FORCE_INLINE float degHotend(uint8_t extruder) {
+   return current_temperature[extruder];
+ };
+ 
++#ifdef SHOW_TEMP_ADC_VALUES
++  FORCE_INLINE float rawHotendTemp(uint8_t extruder) {  
++    return current_temperature_raw[extruder];
++  };
++
++  FORCE_INLINE float rawBedTemp() {  
++    return current_temperature_bed_raw;
++  };
++#endif
++
+ FORCE_INLINE float degBed() {
+   return current_temperature_bed;
+ };
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 12a9e23..895c3ed 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -104,6 +104,7 @@ static void menu_action_setting_edit_callback_long5(const char* pstr, unsigned l
+     if (encoderPosition > 0x8000) encoderPosition = 0; \
+     if (encoderPosition / ENCODER_STEPS_PER_MENU_ITEM < currentMenuViewOffset) currentMenuViewOffset = encoderPosition / ENCODER_STEPS_PER_MENU_ITEM;\
+     uint8_t _lineNr = currentMenuViewOffset, _menuItemNr; \
++    bool wasClicked = LCD_CLICKED;\
+     for(uint8_t _drawLineNr = 0; _drawLineNr < LCD_HEIGHT; _drawLineNr++, _lineNr++) { \
+         _menuItemNr = 0;
+ #define MENU_ITEM(type, label, args...) do { \
+@@ -142,7 +143,6 @@ uint8_t currentMenuViewOffset;              /* scroll offset in the current menu
+ uint32_t blocking_enc;
+ uint8_t lastEncoderBits;
+ uint32_t encoderPosition;
+-bool wasClicked;
+ #if (SDCARDDETECT > 0)
+ bool lcd_oldcardstatus;
+ #endif
+@@ -1042,7 +1042,6 @@ void lcd_update()
+     
+     if (lcd_next_update_millis < millis())
+     {
+-      wasClicked = LCD_CLICKED;
+ #ifdef ULTIPANEL
+ 		#ifdef REPRAPWORLD_KEYPAD
+         	if (REPRAPWORLD_KEYPAD_MOVE_Z_UP) {
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index ac397f6..36462d8 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -1,750 +1,761 @@
+-#ifndef ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
+-#define ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
+-
+-/**
+-* Implementation of the LCD display routines for a hitachi HD44780 display. These are common LCD character displays.
+-* When selecting the rusian language, a slightly different LCD implementation is used to handle UTF8 characters.
+-**/
+-
+-#ifndef REPRAPWORLD_KEYPAD
+-extern volatile uint8_t buttons;  //the last checked buttons in a bit array.
+-#else
+-extern volatile uint16_t buttons;  //an extended version of the last checked buttons in a bit array.
+-#endif
+-
+-////////////////////////////////////
+-// Setup button and encode mappings for each panel (into 'buttons' variable
+-//
+-// This is just to map common functions (across different panels) onto the same 
+-// macro name. The mapping is independent of whether the button is directly connected or 
+-// via a shift/i2c register.
+-
+-#ifdef ULTIPANEL
+-// All Ultipanels might have an encoder - so this is always be mapped onto first two bits
+-#define BLEN_B 1
+-#define BLEN_A 0
+-
+-#define EN_B (1<<BLEN_B) // The two encoder pins are connected through BTN_EN1 and BTN_EN2
+-#define EN_A (1<<BLEN_A)
+-
+-#if defined(BTN_ENC) && BTN_ENC > -1
+-  // encoder click is directly connected
+-  #define BLEN_C 2 
+-  #define EN_C (1<<BLEN_C) 
+-#endif 
+-  
+-//
+-// Setup other button mappings of each panel
+-//
+-#if defined(LCD_I2C_VIKI)
+-  #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
+-  
+-  // button and encoder bit positions within 'buttons'
+-  #define B_LE (BUTTON_LEFT<<B_I2C_BTN_OFFSET)    // The remaining normalized buttons are all read via I2C
+-  #define B_UP (BUTTON_UP<<B_I2C_BTN_OFFSET)
+-  #define B_MI (BUTTON_SELECT<<B_I2C_BTN_OFFSET)
+-  #define B_DW (BUTTON_DOWN<<B_I2C_BTN_OFFSET)
+-  #define B_RI (BUTTON_RIGHT<<B_I2C_BTN_OFFSET)
+-
+-  #if defined(BTN_ENC) && BTN_ENC > -1 
+-    // the pause/stop/restart button is connected to BTN_ENC when used
+-    #define B_ST (EN_C)                            // Map the pause/stop/resume button into its normalized functional name 
+-    #define LCD_CLICKED (buttons&(B_MI|B_RI|B_ST)) // pause/stop button also acts as click until we implement proper pause/stop.
+-  #else
+-    #define LCD_CLICKED (buttons&(B_MI|B_RI))
+-  #endif  
+-
+-  // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
+-  #define LCD_HAS_SLOW_BUTTONS
+-
+-#elif defined(LCD_I2C_PANELOLU2)
+-  // encoder click can be read through I2C if not directly connected
+-  #if BTN_ENC <= 0 
+-    #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
+-  
+-    #define B_MI (PANELOLU2_ENCODER_C<<B_I2C_BTN_OFFSET) // requires LiquidTWI2 library v1.2.3 or later
+-
+-    #define LCD_CLICKED (buttons&B_MI)
+-
+-    // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
+-    #define LCD_HAS_SLOW_BUTTONS
+-  #else
+-    #define LCD_CLICKED (buttons&EN_C)  
+-  #endif
+-
+-#elif defined(REPRAPWORLD_KEYPAD)
+-    // define register bit values, don't change it
+-    #define BLEN_REPRAPWORLD_KEYPAD_F3 0
+-    #define BLEN_REPRAPWORLD_KEYPAD_F2 1
+-    #define BLEN_REPRAPWORLD_KEYPAD_F1 2
+-    #define BLEN_REPRAPWORLD_KEYPAD_UP 3
+-    #define BLEN_REPRAPWORLD_KEYPAD_RIGHT 4
+-    #define BLEN_REPRAPWORLD_KEYPAD_MIDDLE 5
+-    #define BLEN_REPRAPWORLD_KEYPAD_DOWN 6
+-    #define BLEN_REPRAPWORLD_KEYPAD_LEFT 7
+-    
+-    #define REPRAPWORLD_BTN_OFFSET 3 // bit offset into buttons for shift register values
+-
+-    #define EN_REPRAPWORLD_KEYPAD_F3 (1<<(BLEN_REPRAPWORLD_KEYPAD_F3+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F2 (1<<(BLEN_REPRAPWORLD_KEYPAD_F2+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F1 (1<<(BLEN_REPRAPWORLD_KEYPAD_F1+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_UP (1<<(BLEN_REPRAPWORLD_KEYPAD_UP+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<(BLEN_REPRAPWORLD_KEYPAD_RIGHT+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<(BLEN_REPRAPWORLD_KEYPAD_MIDDLE+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<(BLEN_REPRAPWORLD_KEYPAD_DOWN+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<(BLEN_REPRAPWORLD_KEYPAD_LEFT+REPRAPWORLD_BTN_OFFSET))
+-
+-    #define LCD_CLICKED ((buttons&EN_C) || (buttons&EN_REPRAPWORLD_KEYPAD_F1))
+-    #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons&EN_REPRAPWORLD_KEYPAD_DOWN)
+-    #define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons&EN_REPRAPWORLD_KEYPAD_UP)
+-    #define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons&EN_REPRAPWORLD_KEYPAD_MIDDLE)
+-
+-#elif defined(NEWPANEL)
+-  #define LCD_CLICKED (buttons&EN_C)
+-  
+-#else // old style ULTIPANEL
+-  //bits in the shift register that carry the buttons for:
+-  // left up center down right red(stop)
+-  #define BL_LE 7
+-  #define BL_UP 6
+-  #define BL_MI 5
+-  #define BL_DW 4
+-  #define BL_RI 3
+-  #define BL_ST 2
+-
+-  //automatic, do not change
+-  #define B_LE (1<<BL_LE)
+-  #define B_UP (1<<BL_UP)
+-  #define B_MI (1<<BL_MI)
+-  #define B_DW (1<<BL_DW)
+-  #define B_RI (1<<BL_RI)
+-  #define B_ST (1<<BL_ST)
+-  
+-  #define LCD_CLICKED (buttons&(B_MI|B_ST))
+-#endif
+-
+-////////////////////////
+-// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
+-// These values are independent of which pins are used for EN_A and EN_B indications
+-// The rotary encoder part is also independent to the chipset used for the LCD
+-#if defined(EN_A) && defined(EN_B)
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-#endif 
+-
+-#endif //ULTIPANEL
+-
+-////////////////////////////////////
+-// Create LCD class instance and chipset-specific information
+-#if defined(LCD_I2C_TYPE_PCF8575)
+-  // note: these are register mapped pins on the PCF8575 controller not Arduino pins
+-  #define LCD_I2C_PIN_BL  3
+-  #define LCD_I2C_PIN_EN  2
+-  #define LCD_I2C_PIN_RW  1
+-  #define LCD_I2C_PIN_RS  0
+-  #define LCD_I2C_PIN_D4  4
+-  #define LCD_I2C_PIN_D5  5
+-  #define LCD_I2C_PIN_D6  6
+-  #define LCD_I2C_PIN_D7  7
+-
+-  #include <Wire.h>
+-  #include <LCD.h>
+-  #include <LiquidCrystal_I2C.h>
+-  #define LCD_CLASS LiquidCrystal_I2C
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS,LCD_I2C_PIN_EN,LCD_I2C_PIN_RW,LCD_I2C_PIN_RS,LCD_I2C_PIN_D4,LCD_I2C_PIN_D5,LCD_I2C_PIN_D6,LCD_I2C_PIN_D7);
+-  
+-#elif defined(LCD_I2C_TYPE_MCP23017)
+-  //for the LED indicators (which maybe mapped to different things in lcd_implementation_update_indicators())
+-  #define LED_A 0x04 //100
+-  #define LED_B 0x02 //010
+-  #define LED_C 0x01 //001
+-
+-  #define LCD_HAS_STATUS_INDICATORS
+-
+-  #include <Wire.h>
+-  #include <LiquidTWI2.h>
+-  #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
+-  
+-#elif defined(LCD_I2C_TYPE_MCP23008)
+-  #include <Wire.h>
+-  #include <LiquidTWI2.h>
+-  #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
+-
+-#elif defined(LCD_I2C_TYPE_PCA8574)
+-    #include <LiquidCrystal_I2C.h>
+-    #define LCD_CLASS LiquidCrystal_I2C
+-    LCD_CLASS lcd(LCD_I2C_ADDRESS, LCD_WIDTH, LCD_HEIGHT);
+-  
+-#else
+-  // Standard directly connected LCD implementations
+-  #if LANGUAGE_CHOICE == 6
+-    #include "LiquidCrystalRus.h"
+-    #define LCD_CLASS LiquidCrystalRus
+-  #else 
+-    #include <LiquidCrystal.h>
+-    #define LCD_CLASS LiquidCrystal
+-  #endif  
+-  LCD_CLASS lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7
+-#endif
+-
+-/* Custom characters defined in the first 8 characters of the LCD */
+-#define LCD_STR_BEDTEMP     "\x00"
+-#define LCD_STR_DEGREE      "\x01"
+-#define LCD_STR_THERMOMETER "\x02"
+-#define LCD_STR_UPLEVEL     "\x03"
+-#define LCD_STR_REFRESH     "\x04"
+-#define LCD_STR_FOLDER      "\x05"
+-#define LCD_STR_FEEDRATE    "\x06"
+-#define LCD_STR_CLOCK       "\x07"
+-#define LCD_STR_ARROW_RIGHT "\x7E"  /* from the default character set */
+-
+-static void lcd_implementation_init()
+-{
+-    byte bedTemp[8] =
+-    {
+-        B00000,
+-        B11111,
+-        B10101,
+-        B10001,
+-        B10101,
+-        B11111,
+-        B00000,
+-        B00000
+-    }; //thanks Sonny Mounicou
+-    byte degree[8] =
+-    {
+-        B01100,
+-        B10010,
+-        B10010,
+-        B01100,
+-        B00000,
+-        B00000,
+-        B00000,
+-        B00000
+-    };
+-    byte thermometer[8] =
+-    {
+-        B00100,
+-        B01010,
+-        B01010,
+-        B01010,
+-        B01010,
+-        B10001,
+-        B10001,
+-        B01110
+-    };
+-    byte uplevel[8]={
+-        B00100,
+-        B01110,
+-        B11111,
+-        B00100,
+-        B11100,
+-        B00000,
+-        B00000,
+-        B00000
+-    }; //thanks joris
+-    byte refresh[8]={
+-        B00000,
+-        B00110,
+-        B11001,
+-        B11000,
+-        B00011,
+-        B10011,
+-        B01100,
+-        B00000,
+-    }; //thanks joris
+-    byte folder [8]={
+-        B00000,
+-        B11100,
+-        B11111,
+-        B10001,
+-        B10001,
+-        B11111,
+-        B00000,
+-        B00000
+-    }; //thanks joris
+-    byte feedrate [8]={
+-        B11100,
+-        B10000,
+-        B11000,
+-        B10111,
+-        B00101,
+-        B00110,
+-        B00101,
+-        B00000
+-    }; //thanks Sonny Mounicou
+-    byte clock [8]={
+-        B00000,
+-        B01110,
+-        B10011,
+-        B10101,
+-        B10001,
+-        B01110,
+-        B00000,
+-        B00000
+-    }; //thanks Sonny Mounicou
+-
+-#if defined(LCDI2C_TYPE_PCF8575)
+-    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-  #ifdef LCD_I2C_PIN_BL
+-    lcd.setBacklightPin(LCD_I2C_PIN_BL,POSITIVE);
+-    lcd.setBacklight(HIGH);
+-  #endif
+-  
+-#elif defined(LCD_I2C_TYPE_MCP23017)
+-    lcd.setMCPType(LTI_TYPE_MCP23017);
+-    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-    lcd.setBacklight(0); //set all the LEDs off to begin with
+-    
+-#elif defined(LCD_I2C_TYPE_MCP23008)
+-    lcd.setMCPType(LTI_TYPE_MCP23008);
+-    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-
+-#elif defined(LCD_I2C_TYPE_PCA8574)
+-      lcd.init();
+-      lcd.backlight();
+-    
+-#else
+-    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
+-#endif
+-
+-    lcd.createChar(LCD_STR_BEDTEMP[0], bedTemp);
+-    lcd.createChar(LCD_STR_DEGREE[0], degree);
+-    lcd.createChar(LCD_STR_THERMOMETER[0], thermometer);
+-    lcd.createChar(LCD_STR_UPLEVEL[0], uplevel);
+-    lcd.createChar(LCD_STR_REFRESH[0], refresh);
+-    lcd.createChar(LCD_STR_FOLDER[0], folder);
+-    lcd.createChar(LCD_STR_FEEDRATE[0], feedrate);
+-    lcd.createChar(LCD_STR_CLOCK[0], clock);
+-    lcd.clear();
+-}
+-static void lcd_implementation_clear()
+-{
+-    lcd.clear();
+-}
+-/* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
+-static void lcd_printPGM(const char* str)
+-{
+-    char c;
+-    while((c = pgm_read_byte(str++)) != '\0')
+-    {
+-        lcd.write(c);
+-    }
+-}
+-/*
+-Possible status screens:
+-16x2   |0123456789012345|
+-       |000/000 B000/000|
+-       |Status line.....|
+-
+-16x4   |0123456789012345|
+-       |000/000 B000/000|
+-       |SD100%    Z000.0|
+-       |F100%     T--:--|
+-       |Status line.....|
+-
+-20x2   |01234567890123456789|
+-       |T000/000D B000/000D |
+-       |Status line.........|
+-
+-20x4   |01234567890123456789|
+-       |T000/000D B000/000D |
+-       |X+000.0 Y+000.0 Z+000.0|
+-       |F100%  SD100% T--:--|
+-       |Status line.........|
+-
+-20x4   |01234567890123456789|
+-       |T000/000D B000/000D |
+-       |T000/000D     Z000.0|
+-       |F100%  SD100% T--:--|
+-       |Status line.........|
+-*/
+-static void lcd_implementation_status_screen()
+-{
+-    int tHotend=int(degHotend(0) + 0.5);
+-    int tTarget=int(degTargetHotend(0) + 0.5);
+-
+-#if LCD_WIDTH < 20
+-    lcd.setCursor(0, 0);
+-    lcd.print(itostr3(tHotend));
+-    lcd.print('/');
+-    lcd.print(itostr3left(tTarget));
+-
+-# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+-    //If we have an 2nd extruder or heated bed, show that in the top right corner
+-    lcd.setCursor(8, 0);
+-#  if EXTRUDERS > 1
+-    tHotend = int(degHotend(1) + 0.5);
+-    tTarget = int(degTargetHotend(1) + 0.5);
+-    lcd.print(LCD_STR_THERMOMETER[0]);
+-#  else//Heated bed
+-    tHotend=int(degBed() + 0.5);
+-    tTarget=int(degTargetBed() + 0.5);
+-    lcd.print(LCD_STR_BEDTEMP[0]);
+-#  endif
+-    lcd.print(itostr3(tHotend));
+-    lcd.print('/');
+-    lcd.print(itostr3left(tTarget));
+-# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+-
+-#else//LCD_WIDTH > 19
+-    lcd.setCursor(0, 0);
+-    lcd.print(LCD_STR_THERMOMETER[0]);
+-    lcd.print(itostr3(tHotend));
+-    lcd.print('/');
+-    lcd.print(itostr3left(tTarget));
+-    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
+-    if (tTarget < 10)
+-        lcd.print(' ');
+-
+-# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+-    //If we have an 2nd extruder or heated bed, show that in the top right corner
+-    lcd.setCursor(10, 0);
+-#  if EXTRUDERS > 1
+-    tHotend = int(degHotend(1) + 0.5);
+-    tTarget = int(degTargetHotend(1) + 0.5);
+-    lcd.print(LCD_STR_THERMOMETER[0]);
+-#  else//Heated bed
+-    tHotend=int(degBed() + 0.5);
+-    tTarget=int(degTargetBed() + 0.5);
+-    lcd.print(LCD_STR_BEDTEMP[0]);
+-#  endif
+-    lcd.print(itostr3(tHotend));
+-    lcd.print('/');
+-    lcd.print(itostr3left(tTarget));
+-    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
+-    if (tTarget < 10)
+-        lcd.print(' ');
+-# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+-#endif//LCD_WIDTH > 19
+-
+-#if LCD_HEIGHT > 2
+-//Lines 2 for 4 line LCD
+-# if LCD_WIDTH < 20
+-#  ifdef SDSUPPORT
+-    lcd.setCursor(0, 2);
+-    lcd_printPGM(PSTR("SD"));
+-    if (IS_SD_PRINTING)
+-        lcd.print(itostr3(card.percentDone()));
+-    else
+-        lcd_printPGM(PSTR("---"));
+-    lcd.print('%');
+-#  endif//SDSUPPORT
+-# else//LCD_WIDTH > 19
+-#  if EXTRUDERS > 1 && TEMP_SENSOR_BED != 0
+-    //If we both have a 2nd extruder and a heated bed, show the heated bed temp on the 2nd line on the left, as the first line is filled with extruder temps
+-    tHotend=int(degBed() + 0.5);
+-    tTarget=int(degTargetBed() + 0.5);
+-
+-    lcd.setCursor(0, 1);
+-    lcd.print(LCD_STR_BEDTEMP[0]);
+-    lcd.print(itostr3(tHotend));
+-    lcd.print('/');
+-    lcd.print(itostr3left(tTarget));
+-    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
+-    if (tTarget < 10)
+-        lcd.print(' ');
+-#  else
+-    lcd.setCursor(0,1);
+-    lcd.print('X');
+-    lcd.print(ftostr3(current_position[X_AXIS]));
+-    lcd_printPGM(PSTR(" Y"));
+-    lcd.print(ftostr3(current_position[Y_AXIS]));
+-#  endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+-# endif//LCD_WIDTH > 19
+-    lcd.setCursor(LCD_WIDTH - 8, 1);
+-    lcd.print('Z');
+-    lcd.print(ftostr32(current_position[Z_AXIS]));
+-#endif//LCD_HEIGHT > 2
+-
+-#if LCD_HEIGHT > 3
+-    lcd.setCursor(0, 2);
+-    lcd.print(LCD_STR_FEEDRATE[0]);
+-    lcd.print(itostr3(feedmultiply));
+-    lcd.print('%');
+-# if LCD_WIDTH > 19
+-#  ifdef SDSUPPORT
+-    lcd.setCursor(7, 2);
+-    lcd_printPGM(PSTR("SD"));
+-    if (IS_SD_PRINTING)
+-        lcd.print(itostr3(card.percentDone()));
+-    else
+-        lcd_printPGM(PSTR("---"));
+-    lcd.print('%');
+-#  endif//SDSUPPORT
+-# endif//LCD_WIDTH > 19
+-    lcd.setCursor(LCD_WIDTH - 6, 2);
+-    lcd.print(LCD_STR_CLOCK[0]);
+-    if(starttime != 0)
+-    {
+-        uint16_t time = millis()/60000 - starttime/60000;
+-        lcd.print(itostr2(time/60));
+-        lcd.print(':');
+-        lcd.print(itostr2(time%60));
+-    }else{
+-        lcd_printPGM(PSTR("--:--"));
+-    }
+-#endif
+-
+-    //Status message line on the last line
+-    lcd.setCursor(0, LCD_HEIGHT - 1);
+-    lcd.print(lcd_status_message);
+-}
+-static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, char pre_char, char post_char)
+-{
+-    char c;
+-    //Use all characters in narrow LCDs
+-  #if LCD_WIDTH < 20
+-      uint8_t n = LCD_WIDTH - 1 - 1;
+-    #else
+-      uint8_t n = LCD_WIDTH - 1 - 2;
+-  #endif
+-    lcd.setCursor(0, row);
+-    lcd.print(pre_char);
+-    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        pstr++;
+-        n--;
+-    }
+-    while(n--)
+-        lcd.print(' ');
+-    lcd.print(post_char);
+-    lcd.print(' ');
+-}
+-static void lcd_implementation_drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char pre_char, char* data)
+-{
+-    char c;
+-    //Use all characters in narrow LCDs
+-  #if LCD_WIDTH < 20
+-      uint8_t n = LCD_WIDTH - 1 - 1 - strlen(data);
+-    #else
+-      uint8_t n = LCD_WIDTH - 1 - 2 - strlen(data);
+-  #endif
+-    lcd.setCursor(0, row);
+-    lcd.print(pre_char);
+-    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        pstr++;
+-        n--;
+-    }
+-    lcd.print(':');
+-    while(n--)
+-        lcd.print(' ');
+-    lcd.print(data);
+-}
+-static void lcd_implementation_drawmenu_setting_edit_generic_P(uint8_t row, const char* pstr, char pre_char, const char* data)
+-{
+-    char c;
+-    //Use all characters in narrow LCDs
+-  #if LCD_WIDTH < 20
+-      uint8_t n = LCD_WIDTH - 1 - 1 - strlen_P(data);
+-    #else
+-      uint8_t n = LCD_WIDTH - 1 - 2 - strlen_P(data);
+-  #endif
+-    lcd.setCursor(0, row);
+-    lcd.print(pre_char);
+-    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        pstr++;
+-        n--;
+-    }
+-    lcd.print(':');
+-    while(n--)
+-        lcd.print(' ');
+-    lcd_printPGM(data);
+-}
+-#define lcd_implementation_drawmenu_setting_edit_int3_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', itostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_int3(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', itostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float3_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float3(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float32_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr32(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float32(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr32(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float5_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float5(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float52_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr52(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float52(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr52(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float51_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr51(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_float51(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr51(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_long5_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_long5(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_bool_selected(row, pstr, pstr2, data) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+-#define lcd_implementation_drawmenu_setting_edit_bool(row, pstr, pstr2, data) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, ' ', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+-
+-//Add version for callback functions
+-#define lcd_implementation_drawmenu_setting_edit_callback_int3_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', itostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_int3(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', itostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float3_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float3(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr3(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float32_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr32(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float32(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr32(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float5_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float5(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float52_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr52(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float52(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr52(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float51_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr51(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_float51(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr51(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_long5_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_long5(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
+-#define lcd_implementation_drawmenu_setting_edit_callback_bool_selected(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+-#define lcd_implementation_drawmenu_setting_edit_callback_bool(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, ' ', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
+-
+-
+-void lcd_implementation_drawedit(const char* pstr, char* value)
+-{
+-    lcd.setCursor(1, 1);
+-    lcd_printPGM(pstr);
+-    lcd.print(':');
+-   #if LCD_WIDTH < 20
+-      lcd.setCursor(LCD_WIDTH - strlen(value), 1);
+-    #else
+-      lcd.setCursor(LCD_WIDTH -1 - strlen(value), 1);
+-   #endif
+-    lcd.print(value);
+-}
+-static void lcd_implementation_drawmenu_sdfile_selected(uint8_t row, const char* pstr, const char* filename, char* longFilename)
+-{
+-    char c;
+-    uint8_t n = LCD_WIDTH - 1;
+-    lcd.setCursor(0, row);
+-    lcd.print('>');
+-    if (longFilename[0] != '\0')
+-    {
+-        filename = longFilename;
+-        longFilename[LCD_WIDTH-1] = '\0';
+-    }
+-    while( ((c = *filename) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        filename++;
+-        n--;
+-    }
+-    while(n--)
+-        lcd.print(' ');
+-}
+-static void lcd_implementation_drawmenu_sdfile(uint8_t row, const char* pstr, const char* filename, char* longFilename)
+-{
+-    char c;
+-    uint8_t n = LCD_WIDTH - 1;
+-    lcd.setCursor(0, row);
+-    lcd.print(' ');
+-    if (longFilename[0] != '\0')
+-    {
+-        filename = longFilename;
+-        longFilename[LCD_WIDTH-1] = '\0';
+-    }
+-    while( ((c = *filename) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        filename++;
+-        n--;
+-    }
+-    while(n--)
+-        lcd.print(' ');
+-}
+-static void lcd_implementation_drawmenu_sddirectory_selected(uint8_t row, const char* pstr, const char* filename, char* longFilename)
+-{
+-    char c;
+-    uint8_t n = LCD_WIDTH - 2;
+-    lcd.setCursor(0, row);
+-    lcd.print('>');
+-    lcd.print(LCD_STR_FOLDER[0]);
+-    if (longFilename[0] != '\0')
+-    {
+-        filename = longFilename;
+-        longFilename[LCD_WIDTH-2] = '\0';
+-    }
+-    while( ((c = *filename) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        filename++;
+-        n--;
+-    }
+-    while(n--)
+-        lcd.print(' ');
+-}
+-static void lcd_implementation_drawmenu_sddirectory(uint8_t row, const char* pstr, const char* filename, char* longFilename)
+-{
+-    char c;
+-    uint8_t n = LCD_WIDTH - 2;
+-    lcd.setCursor(0, row);
+-    lcd.print(' ');
+-    lcd.print(LCD_STR_FOLDER[0]);
+-    if (longFilename[0] != '\0')
+-    {
+-        filename = longFilename;
+-        longFilename[LCD_WIDTH-2] = '\0';
+-    }
+-    while( ((c = *filename) != '\0') && (n>0) )
+-    {
+-        lcd.print(c);
+-        filename++;
+-        n--;
+-    }
+-    while(n--)
+-        lcd.print(' ');
+-}
+-#define lcd_implementation_drawmenu_back_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, LCD_STR_UPLEVEL[0], LCD_STR_UPLEVEL[0])
+-#define lcd_implementation_drawmenu_back(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', LCD_STR_UPLEVEL[0])
+-#define lcd_implementation_drawmenu_submenu_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, '>', LCD_STR_ARROW_RIGHT[0])
+-#define lcd_implementation_drawmenu_submenu(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', LCD_STR_ARROW_RIGHT[0])
+-#define lcd_implementation_drawmenu_gcode_selected(row, pstr, gcode) lcd_implementation_drawmenu_generic(row, pstr, '>', ' ')
+-#define lcd_implementation_drawmenu_gcode(row, pstr, gcode) lcd_implementation_drawmenu_generic(row, pstr, ' ', ' ')
+-#define lcd_implementation_drawmenu_function_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, '>', ' ')
+-#define lcd_implementation_drawmenu_function(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', ' ')
+-
+-static void lcd_implementation_quick_feedback()
+-{
+-#ifdef LCD_USE_I2C_BUZZER
+-    lcd.buzz(60,1000/6);
+-#elif defined(BEEPER) && BEEPER > -1
+-    SET_OUTPUT(BEEPER);
+-    for(int8_t i=0;i<10;i++)
+-    {
+-      WRITE(BEEPER,HIGH);
+-      delayMicroseconds(100);
+-      WRITE(BEEPER,LOW);
+-      delayMicroseconds(100);
+-    }
+-#endif
+-}
+-
+-#ifdef LCD_HAS_STATUS_INDICATORS
+-static void lcd_implementation_update_indicators()
+-{
+-  #if defined(LCD_I2C_PANELOLU2) || defined(LCD_I2C_VIKI)
+-    //set the LEDS - referred to as backlights by the LiquidTWI2 library 
+-    static uint8_t ledsprev = 0;
+-    uint8_t leds = 0;
+-    if (target_temperature_bed > 0) leds |= LED_A;
+-    if (target_temperature[0] > 0) leds |= LED_B;
+-    if (fanSpeed) leds |= LED_C;
+-    #if EXTRUDERS > 1  
+-      if (target_temperature[1] > 0) leds |= LED_C;
+-    #endif
+-    if (leds != ledsprev) {
+-      lcd.setBacklight(leds);
+-      ledsprev = leds;
+-    }
+-  #endif
+-}
+-#endif
+-
+-#ifdef LCD_HAS_SLOW_BUTTONS
+-static uint8_t lcd_implementation_read_slow_buttons()
+-{
+-  #ifdef LCD_I2C_TYPE_MCP23017
+-    // Reading these buttons this is likely to be too slow to call inside interrupt context
+-    // so they are called during normal lcd_update
+-    return lcd.readButtons() << B_I2C_BTN_OFFSET; 
+-  #endif
+-}
+-#endif
+-
+-#endif//ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
++#ifndef ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
++#define ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
++
++/**
++* Implementation of the LCD display routines for a hitachi HD44780 display. These are common LCD character displays.
++* When selecting the rusian language, a slightly different LCD implementation is used to handle UTF8 characters.
++**/
++
++#ifndef REPRAPWORLD_KEYPAD
++extern volatile uint8_t buttons;  //the last checked buttons in a bit array.
++#else
++extern volatile uint16_t buttons;  //an extended version of the last checked buttons in a bit array.
++#endif
++
++////////////////////////////////////
++// Setup button and encode mappings for each panel (into 'buttons' variable
++//
++// This is just to map common functions (across different panels) onto the same 
++// macro name. The mapping is independent of whether the button is directly connected or 
++// via a shift/i2c register.
++
++#ifdef ULTIPANEL
++// All Ultipanels might have an encoder - so this is always be mapped onto first two bits
++#define BLEN_B 1
++#define BLEN_A 0
++
++#define EN_B (1<<BLEN_B) // The two encoder pins are connected through BTN_EN1 and BTN_EN2
++#define EN_A (1<<BLEN_A)
++
++#if defined(BTN_ENC) && BTN_ENC > -1
++  // encoder click is directly connected
++  #define BLEN_C 2 
++  #define EN_C (1<<BLEN_C) 
++#endif 
++  
++//
++// Setup other button mappings of each panel
++//
++#if defined(LCD_I2C_VIKI)
++  #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
++  
++  // button and encoder bit positions within 'buttons'
++  #define B_LE (BUTTON_LEFT<<B_I2C_BTN_OFFSET)    // The remaining normalized buttons are all read via I2C
++  #define B_UP (BUTTON_UP<<B_I2C_BTN_OFFSET)
++  #define B_MI (BUTTON_SELECT<<B_I2C_BTN_OFFSET)
++  #define B_DW (BUTTON_DOWN<<B_I2C_BTN_OFFSET)
++  #define B_RI (BUTTON_RIGHT<<B_I2C_BTN_OFFSET)
++
++  #if defined(BTN_ENC) && BTN_ENC > -1 
++    // the pause/stop/restart button is connected to BTN_ENC when used
++    #define B_ST (EN_C)                            // Map the pause/stop/resume button into its normalized functional name 
++    #define LCD_CLICKED (buttons&(B_MI|B_RI|B_ST)) // pause/stop button also acts as click until we implement proper pause/stop.
++  #else
++    #define LCD_CLICKED (buttons&(B_MI|B_RI))
++  #endif  
++
++  // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
++  #define LCD_HAS_SLOW_BUTTONS
++
++#elif defined(LCD_I2C_PANELOLU2)
++  // encoder click can be read through I2C if not directly connected
++  #if BTN_ENC <= 0 
++    #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
++  
++    #define B_MI (PANELOLU2_ENCODER_C<<B_I2C_BTN_OFFSET) // requires LiquidTWI2 library v1.2.3 or later
++
++    #define LCD_CLICKED (buttons&B_MI)
++
++    // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
++    #define LCD_HAS_SLOW_BUTTONS
++  #else
++    #define LCD_CLICKED (buttons&EN_C)  
++  #endif
++
++#elif defined(REPRAPWORLD_KEYPAD)
++    // define register bit values, don't change it
++    #define BLEN_REPRAPWORLD_KEYPAD_F3 0
++    #define BLEN_REPRAPWORLD_KEYPAD_F2 1
++    #define BLEN_REPRAPWORLD_KEYPAD_F1 2
++    #define BLEN_REPRAPWORLD_KEYPAD_UP 3
++    #define BLEN_REPRAPWORLD_KEYPAD_RIGHT 4
++    #define BLEN_REPRAPWORLD_KEYPAD_MIDDLE 5
++    #define BLEN_REPRAPWORLD_KEYPAD_DOWN 6
++    #define BLEN_REPRAPWORLD_KEYPAD_LEFT 7
++    
++    #define REPRAPWORLD_BTN_OFFSET 3 // bit offset into buttons for shift register values
++
++    #define EN_REPRAPWORLD_KEYPAD_F3 (1<<(BLEN_REPRAPWORLD_KEYPAD_F3+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_F2 (1<<(BLEN_REPRAPWORLD_KEYPAD_F2+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_F1 (1<<(BLEN_REPRAPWORLD_KEYPAD_F1+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_UP (1<<(BLEN_REPRAPWORLD_KEYPAD_UP+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<(BLEN_REPRAPWORLD_KEYPAD_RIGHT+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<(BLEN_REPRAPWORLD_KEYPAD_MIDDLE+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<(BLEN_REPRAPWORLD_KEYPAD_DOWN+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<(BLEN_REPRAPWORLD_KEYPAD_LEFT+REPRAPWORLD_BTN_OFFSET))
++
++    #define LCD_CLICKED ((buttons&EN_C) || (buttons&EN_REPRAPWORLD_KEYPAD_F1))
++    #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons&EN_REPRAPWORLD_KEYPAD_DOWN)
++    #define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons&EN_REPRAPWORLD_KEYPAD_UP)
++    #define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons&EN_REPRAPWORLD_KEYPAD_MIDDLE)
++
++#elif defined(NEWPANEL)
++  #define LCD_CLICKED (buttons&EN_C)
++  
++#else // old style ULTIPANEL
++  //bits in the shift register that carry the buttons for:
++  // left up center down right red(stop)
++  #define BL_LE 7
++  #define BL_UP 6
++  #define BL_MI 5
++  #define BL_DW 4
++  #define BL_RI 3
++  #define BL_ST 2
++
++  //automatic, do not change
++  #define B_LE (1<<BL_LE)
++  #define B_UP (1<<BL_UP)
++  #define B_MI (1<<BL_MI)
++  #define B_DW (1<<BL_DW)
++  #define B_RI (1<<BL_RI)
++  #define B_ST (1<<BL_ST)
++  
++  #define LCD_CLICKED (buttons&(B_MI|B_ST))
++#endif
++
++////////////////////////
++// Setup Rotary Encoder Bit Values (for two pin encoders to indicate movement)
++// These values are independent of which pins are used for EN_A and EN_B indications
++// The rotary encoder part is also independent to the chipset used for the LCD
++#if defined(EN_A) && defined(EN_B)
++    #define encrot0 0
++    #define encrot1 2
++    #define encrot2 3
++    #define encrot3 1
++#endif 
++
++#endif //ULTIPANEL
++
++////////////////////////////////////
++// Create LCD class instance and chipset-specific information
++#if defined(LCD_I2C_TYPE_PCF8575)
++  // note: these are register mapped pins on the PCF8575 controller not Arduino pins
++  #define LCD_I2C_PIN_BL  3
++  #define LCD_I2C_PIN_EN  2
++  #define LCD_I2C_PIN_RW  1
++  #define LCD_I2C_PIN_RS  0
++  #define LCD_I2C_PIN_D4  4
++  #define LCD_I2C_PIN_D5  5
++  #define LCD_I2C_PIN_D6  6
++  #define LCD_I2C_PIN_D7  7
++
++  #include <Wire.h>
++  #include <LCD.h>
++  #include <LiquidCrystal_I2C.h>
++  #define LCD_CLASS LiquidCrystal_I2C
++  LCD_CLASS lcd(LCD_I2C_ADDRESS,LCD_I2C_PIN_EN,LCD_I2C_PIN_RW,LCD_I2C_PIN_RS,LCD_I2C_PIN_D4,LCD_I2C_PIN_D5,LCD_I2C_PIN_D6,LCD_I2C_PIN_D7);
++  
++#elif defined(LCD_I2C_TYPE_MCP23017)
++  //for the LED indicators (which maybe mapped to different things in lcd_implementation_update_indicators())
++  #define LED_A 0x04 //100
++  #define LED_B 0x02 //010
++  #define LED_C 0x01 //001
++
++  #define LCD_HAS_STATUS_INDICATORS
++
++  #include <Wire.h>
++  #include <LiquidTWI2.h>
++  #define LCD_CLASS LiquidTWI2
++  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  
++#elif defined(LCD_I2C_TYPE_MCP23008)
++  #include <Wire.h>
++  #include <LiquidTWI2.h>
++  #define LCD_CLASS LiquidTWI2
++  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++
++#elif defined(LCD_I2C_TYPE_PCA8574)
++    #include <LiquidCrystal_I2C.h>
++    #define LCD_CLASS LiquidCrystal_I2C
++    LCD_CLASS lcd(LCD_I2C_ADDRESS, LCD_WIDTH, LCD_HEIGHT);
++  
++#else
++  // Standard directly connected LCD implementations
++  #if LANGUAGE_CHOICE == 6
++    #include "LiquidCrystalRus.h"
++    #define LCD_CLASS LiquidCrystalRus
++  #else 
++    #include <LiquidCrystal.h>
++    #define LCD_CLASS LiquidCrystal
++  #endif  
++  LCD_CLASS lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7
++#endif
++
++/* Custom characters defined in the first 8 characters of the LCD */
++#define LCD_STR_BEDTEMP     "\x00"
++#define LCD_STR_DEGREE      "\x01"
++#define LCD_STR_THERMOMETER "\x02"
++#define LCD_STR_UPLEVEL     "\x03"
++#define LCD_STR_REFRESH     "\x04"
++#define LCD_STR_FOLDER      "\x05"
++#define LCD_STR_FEEDRATE    "\x06"
++#define LCD_STR_CLOCK       "\x07"
++#define LCD_STR_ARROW_RIGHT "\x7E"  /* from the default character set */
++
++static void lcd_implementation_init()
++{
++    byte bedTemp[8] =
++    {
++        B00000,
++        B11111,
++        B10101,
++        B10001,
++        B10101,
++        B11111,
++        B00000,
++        B00000
++    }; //thanks Sonny Mounicou
++    byte degree[8] =
++    {
++        B01100,
++        B10010,
++        B10010,
++        B01100,
++        B00000,
++        B00000,
++        B00000,
++        B00000
++    };
++    byte thermometer[8] =
++    {
++        B00100,
++        B01010,
++        B01010,
++        B01010,
++        B01010,
++        B10001,
++        B10001,
++        B01110
++    };
++    byte uplevel[8]={
++        B00100,
++        B01110,
++        B11111,
++        B00100,
++        B11100,
++        B00000,
++        B00000,
++        B00000
++    }; //thanks joris
++    byte refresh[8]={
++        B00000,
++        B00110,
++        B11001,
++        B11000,
++        B00011,
++        B10011,
++        B01100,
++        B00000,
++    }; //thanks joris
++    byte folder [8]={
++        B00000,
++        B11100,
++        B11111,
++        B10001,
++        B10001,
++        B11111,
++        B00000,
++        B00000
++    }; //thanks joris
++    byte feedrate [8]={
++        B11100,
++        B10000,
++        B11000,
++        B10111,
++        B00101,
++        B00110,
++        B00101,
++        B00000
++    }; //thanks Sonny Mounicou
++    byte clock [8]={
++        B00000,
++        B01110,
++        B10011,
++        B10101,
++        B10001,
++        B01110,
++        B00000,
++        B00000
++    }; //thanks Sonny Mounicou
++
++#if defined(LCDI2C_TYPE_PCF8575)
++    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
++  #ifdef LCD_I2C_PIN_BL
++    lcd.setBacklightPin(LCD_I2C_PIN_BL,POSITIVE);
++    lcd.setBacklight(HIGH);
++  #endif
++  
++#elif defined(LCD_I2C_TYPE_MCP23017)
++    lcd.setMCPType(LTI_TYPE_MCP23017);
++    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
++    lcd.setBacklight(0); //set all the LEDs off to begin with
++    
++#elif defined(LCD_I2C_TYPE_MCP23008)
++    lcd.setMCPType(LTI_TYPE_MCP23008);
++    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
++
++#elif defined(LCD_I2C_TYPE_PCA8574)
++      lcd.init();
++      lcd.backlight();
++    
++#else
++    lcd.begin(LCD_WIDTH, LCD_HEIGHT);
++#endif
++
++    lcd.createChar(LCD_STR_BEDTEMP[0], bedTemp);
++    lcd.createChar(LCD_STR_DEGREE[0], degree);
++    lcd.createChar(LCD_STR_THERMOMETER[0], thermometer);
++    lcd.createChar(LCD_STR_UPLEVEL[0], uplevel);
++    lcd.createChar(LCD_STR_REFRESH[0], refresh);
++    lcd.createChar(LCD_STR_FOLDER[0], folder);
++    lcd.createChar(LCD_STR_FEEDRATE[0], feedrate);
++    lcd.createChar(LCD_STR_CLOCK[0], clock);
++    lcd.clear();
++}
++static void lcd_implementation_clear()
++{
++    lcd.clear();
++}
++/* Arduino < 1.0.0 is missing a function to print PROGMEM strings, so we need to implement our own */
++static void lcd_printPGM(const char* str)
++{
++    char c;
++    while((c = pgm_read_byte(str++)) != '\0')
++    {
++        lcd.write(c);
++    }
++}
++/*
++Possible status screens:
++16x2   |0123456789012345|
++       |000/000 B000/000|
++       |Status line.....|
++
++16x4   |0123456789012345|
++       |000/000 B000/000|
++       |SD100%    Z000.0|
++       |F100%     T--:--|
++       |Status line.....|
++
++20x2   |01234567890123456789|
++       |T000/000D B000/000D |
++       |Status line.........|
++
++20x4   |01234567890123456789|
++       |T000/000D B000/000D |
++       |X+000.0 Y+000.0 Z+000.0|
++       |F100%  SD100% T--:--|
++       |Status line.........|
++
++20x4   |01234567890123456789|
++       |T000/000D B000/000D |
++       |T000/000D     Z000.0|
++       |F100%  SD100% T--:--|
++       |Status line.........|
++*/
++static void lcd_implementation_status_screen()
++{
++    int tHotend=int(degHotend(0) + 0.5);
++    int tTarget=int(degTargetHotend(0) + 0.5);
++
++#if LCD_WIDTH < 20
++    lcd.setCursor(0, 0);
++    lcd.print(itostr3(tHotend));
++    lcd.print('/');
++    lcd.print(itostr3left(tTarget));
++
++# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
++    //If we have an 2nd extruder or heated bed, show that in the top right corner
++    lcd.setCursor(8, 0);
++#  if EXTRUDERS > 1
++    tHotend = int(degHotend(1) + 0.5);
++    tTarget = int(degTargetHotend(1) + 0.5);
++    lcd.print(LCD_STR_THERMOMETER[0]);
++#  else//Heated bed
++    tHotend=int(degBed() + 0.5);
++    tTarget=int(degTargetBed() + 0.5);
++    lcd.print(LCD_STR_BEDTEMP[0]);
++#  endif
++    lcd.print(itostr3(tHotend));
++    lcd.print('/');
++    lcd.print(itostr3left(tTarget));
++# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
++
++#else//LCD_WIDTH > 19
++    lcd.setCursor(0, 0);
++    lcd.print(LCD_STR_THERMOMETER[0]);
++    lcd.print(itostr3(tHotend));
++    lcd.print('/');
++    lcd.print(itostr3left(tTarget));
++    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
++    if (tTarget < 10)
++        lcd.print(' ');
++
++# if EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
++    //If we have an 2nd extruder or heated bed, show that in the top right corner
++    lcd.setCursor(10, 0);
++#  if EXTRUDERS > 1
++    tHotend = int(degHotend(1) + 0.5);
++    tTarget = int(degTargetHotend(1) + 0.5);
++    lcd.print(LCD_STR_THERMOMETER[0]);
++#  else//Heated bed
++    tHotend=int(degBed() + 0.5);
++    tTarget=int(degTargetBed() + 0.5);
++    lcd.print(LCD_STR_BEDTEMP[0]);
++#  endif
++    lcd.print(itostr3(tHotend));
++    lcd.print('/');
++    lcd.print(itostr3left(tTarget));
++    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
++    if (tTarget < 10)
++        lcd.print(' ');
++# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
++#endif//LCD_WIDTH > 19
++
++#if LCD_HEIGHT > 2
++//Lines 2 for 4 line LCD
++# if LCD_WIDTH < 20
++#  ifdef SDSUPPORT
++    lcd.setCursor(0, 2);
++    lcd_printPGM(PSTR("SD"));
++    if (IS_SD_PRINTING)
++        lcd.print(itostr3(card.percentDone()));
++    else
++        lcd_printPGM(PSTR("---"));
++    lcd.print('%');
++#  endif//SDSUPPORT
++# else//LCD_WIDTH > 19
++#  if EXTRUDERS > 1 && TEMP_SENSOR_BED != 0
++    //If we both have a 2nd extruder and a heated bed, show the heated bed temp on the 2nd line on the left, as the first line is filled with extruder temps
++    tHotend=int(degBed() + 0.5);
++    tTarget=int(degTargetBed() + 0.5);
++
++    lcd.setCursor(0, 1);
++    lcd.print(LCD_STR_BEDTEMP[0]);
++    lcd.print(itostr3(tHotend));
++    lcd.print('/');
++    lcd.print(itostr3left(tTarget));
++    lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
++    if (tTarget < 10)
++        lcd.print(' ');
++#  else
++    lcd.setCursor(0,1);
++    lcd.print('X');
++    lcd.print(ftostr3(current_position[X_AXIS]));
++    lcd_printPGM(PSTR(" Y"));
++    lcd.print(ftostr3(current_position[Y_AXIS]));
++#  endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
++# endif//LCD_WIDTH > 19
++    lcd.setCursor(LCD_WIDTH - 8, 1);
++    lcd.print('Z');
++    lcd.print(ftostr32(current_position[Z_AXIS]));
++#endif//LCD_HEIGHT > 2
++
++#if LCD_HEIGHT > 3
++    lcd.setCursor(0, 2);
++    lcd.print(LCD_STR_FEEDRATE[0]);
++    lcd.print(itostr3(feedmultiply));
++    lcd.print('%');
++# if LCD_WIDTH > 19
++#  ifdef SDSUPPORT
++    lcd.setCursor(7, 2);
++    lcd_printPGM(PSTR("SD"));
++    if (IS_SD_PRINTING)
++        lcd.print(itostr3(card.percentDone()));
++    else
++        lcd_printPGM(PSTR("---"));
++    lcd.print('%');
++#  endif//SDSUPPORT
++# endif//LCD_WIDTH > 19
++    lcd.setCursor(LCD_WIDTH - 6, 2);
++    lcd.print(LCD_STR_CLOCK[0]);
++    if(starttime != 0)
++    {
++        uint16_t time = millis()/60000 - starttime/60000;
++        lcd.print(itostr2(time/60));
++        lcd.print(':');
++        lcd.print(itostr2(time%60));
++    }else{
++        lcd_printPGM(PSTR("--:--"));
++    }
++#endif
++
++    //Status message line on the last line
++    lcd.setCursor(0, LCD_HEIGHT - 1);
++    lcd.print(lcd_status_message);
++}
++static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, char pre_char, char post_char)
++{
++    char c;
++    //Use all characters in narrow LCDs
++  #if LCD_WIDTH < 20
++      uint8_t n = LCD_WIDTH - 1 - 1;
++    #else
++      uint8_t n = LCD_WIDTH - 1 - 2;
++  #endif
++    lcd.setCursor(0, row);
++    lcd.print(pre_char);
++    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        pstr++;
++        n--;
++    }
++    while(n--)
++        lcd.print(' ');
++    lcd.print(post_char);
++    lcd.print(' ');
++}
++static void lcd_implementation_drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char pre_char, char* data)
++{
++    char c;
++    //Use all characters in narrow LCDs
++  #if LCD_WIDTH < 20
++      uint8_t n = LCD_WIDTH - 1 - 1 - strlen(data);
++    #else
++      uint8_t n = LCD_WIDTH - 1 - 2 - strlen(data);
++  #endif
++    lcd.setCursor(0, row);
++    lcd.print(pre_char);
++    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        pstr++;
++        n--;
++    }
++    lcd.print(':');
++    while(n--)
++        lcd.print(' ');
++    lcd.print(data);
++}
++static void lcd_implementation_drawmenu_setting_edit_generic_P(uint8_t row, const char* pstr, char pre_char, const char* data)
++{
++    char c;
++    //Use all characters in narrow LCDs
++  #if LCD_WIDTH < 20
++      uint8_t n = LCD_WIDTH - 1 - 1 - strlen_P(data);
++    #else
++      uint8_t n = LCD_WIDTH - 1 - 2 - strlen_P(data);
++  #endif
++    lcd.setCursor(0, row);
++    lcd.print(pre_char);
++    while( ((c = pgm_read_byte(pstr)) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        pstr++;
++        n--;
++    }
++    lcd.print(':');
++    while(n--)
++        lcd.print(' ');
++    lcd_printPGM(data);
++}
++#define lcd_implementation_drawmenu_setting_edit_int3_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', itostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_int3(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', itostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float3_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float3(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float32_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr32(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float32(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr32(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float5_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float5(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float52_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr52(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float52(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr52(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float51_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr51(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_float51(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr51(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_long5_selected(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_long5(row, pstr, pstr2, data, minValue, maxValue) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_bool_selected(row, pstr, pstr2, data) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
++#define lcd_implementation_drawmenu_setting_edit_bool(row, pstr, pstr2, data) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, ' ', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
++
++//Add version for callback functions
++#define lcd_implementation_drawmenu_setting_edit_callback_int3_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', itostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_int3(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', itostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float3_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float3(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr3(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float32_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr32(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float32(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr32(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float5_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float5(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float52_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr52(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float52(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr52(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float51_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr51(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_float51(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr51(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_long5_selected(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, '>', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_long5(row, pstr, pstr2, data, minValue, maxValue, callback) lcd_implementation_drawmenu_setting_edit_generic(row, pstr, ' ', ftostr5(*(data)))
++#define lcd_implementation_drawmenu_setting_edit_callback_bool_selected(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, '>', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
++#define lcd_implementation_drawmenu_setting_edit_callback_bool(row, pstr, pstr2, data, callback) lcd_implementation_drawmenu_setting_edit_generic_P(row, pstr, ' ', (*(data))?PSTR(MSG_ON):PSTR(MSG_OFF))
++
++
++void lcd_implementation_drawedit(const char* pstr, char* value)
++{
++    lcd.setCursor(1, 1);
++    lcd_printPGM(pstr);
++    lcd.print(':');
++   #if LCD_WIDTH < 20
++      lcd.setCursor(LCD_WIDTH - strlen(value), 1);
++    #else
++      lcd.setCursor(LCD_WIDTH -1 - strlen(value), 1);
++   #endif
++    lcd.print(value);
++}
++static void lcd_implementation_drawmenu_sdfile_selected(uint8_t row, const char* pstr, const char* filename, char* longFilename)
++{
++    char c;
++    uint8_t n = LCD_WIDTH - 1;
++    lcd.setCursor(0, row);
++    lcd.print('>');
++    if (longFilename[0] != '\0')
++    {
++        filename = longFilename;
++        longFilename[LCD_WIDTH-1] = '\0';
++    }
++    while( ((c = *filename) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        filename++;
++        n--;
++    }
++    while(n--)
++        lcd.print(' ');
++}
++static void lcd_implementation_drawmenu_sdfile(uint8_t row, const char* pstr, const char* filename, char* longFilename)
++{
++    char c;
++    uint8_t n = LCD_WIDTH - 1;
++    lcd.setCursor(0, row);
++    lcd.print(' ');
++    if (longFilename[0] != '\0')
++    {
++        filename = longFilename;
++        longFilename[LCD_WIDTH-1] = '\0';
++    }
++    while( ((c = *filename) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        filename++;
++        n--;
++    }
++    while(n--)
++        lcd.print(' ');
++}
++static void lcd_implementation_drawmenu_sddirectory_selected(uint8_t row, const char* pstr, const char* filename, char* longFilename)
++{
++    char c;
++    uint8_t n = LCD_WIDTH - 2;
++    lcd.setCursor(0, row);
++    lcd.print('>');
++    lcd.print(LCD_STR_FOLDER[0]);
++    if (longFilename[0] != '\0')
++    {
++        filename = longFilename;
++        longFilename[LCD_WIDTH-2] = '\0';
++    }
++    while( ((c = *filename) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        filename++;
++        n--;
++    }
++    while(n--)
++        lcd.print(' ');
++}
++static void lcd_implementation_drawmenu_sddirectory(uint8_t row, const char* pstr, const char* filename, char* longFilename)
++{
++    char c;
++    uint8_t n = LCD_WIDTH - 2;
++    lcd.setCursor(0, row);
++    lcd.print(' ');
++    lcd.print(LCD_STR_FOLDER[0]);
++    if (longFilename[0] != '\0')
++    {
++        filename = longFilename;
++        longFilename[LCD_WIDTH-2] = '\0';
++    }
++    while( ((c = *filename) != '\0') && (n>0) )
++    {
++        lcd.print(c);
++        filename++;
++        n--;
++    }
++    while(n--)
++        lcd.print(' ');
++}
++#define lcd_implementation_drawmenu_back_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, LCD_STR_UPLEVEL[0], LCD_STR_UPLEVEL[0])
++#define lcd_implementation_drawmenu_back(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', LCD_STR_UPLEVEL[0])
++#define lcd_implementation_drawmenu_submenu_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, '>', LCD_STR_ARROW_RIGHT[0])
++#define lcd_implementation_drawmenu_submenu(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', LCD_STR_ARROW_RIGHT[0])
++#define lcd_implementation_drawmenu_gcode_selected(row, pstr, gcode) lcd_implementation_drawmenu_generic(row, pstr, '>', ' ')
++#define lcd_implementation_drawmenu_gcode(row, pstr, gcode) lcd_implementation_drawmenu_generic(row, pstr, ' ', ' ')
++#define lcd_implementation_drawmenu_function_selected(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, '>', ' ')
++#define lcd_implementation_drawmenu_function(row, pstr, data) lcd_implementation_drawmenu_generic(row, pstr, ' ', ' ')
++
++static void lcd_implementation_quick_feedback()
++{
++#ifdef LCD_USE_I2C_BUZZER
++    lcd.buzz(60,1000/6);
++#elif defined(BEEPER) && BEEPER > -1
++    SET_OUTPUT(BEEPER);
++    for(int8_t i=0;i<10;i++)
++    {
++      WRITE(BEEPER,HIGH);
++      delayMicroseconds(100);
++      WRITE(BEEPER,LOW);
++      delayMicroseconds(100);
++    }
++#endif
++}
++
++#ifdef LCD_HAS_STATUS_INDICATORS
++static void lcd_implementation_update_indicators()
++{
++  #if defined(LCD_I2C_PANELOLU2) || defined(LCD_I2C_VIKI)
++    //set the LEDS - referred to as backlights by the LiquidTWI2 library 
++    static uint8_t ledsprev = 0;
++    uint8_t leds = 0;
++    if (target_temperature_bed > 0) leds |= LED_A;
++    if (target_temperature[0] > 0) leds |= LED_B;
++    if (fanSpeed) leds |= LED_C;
++    #if EXTRUDERS > 1  
++      if (target_temperature[1] > 0) leds |= LED_C;
++    #endif
++    if (leds != ledsprev) {
++      lcd.setBacklight(leds);
++      ledsprev = leds;
++    }
++  #endif
++}
++#endif
++
++#ifdef LCD_HAS_SLOW_BUTTONS
++extern uint32_t blocking_enc;
++
++static uint8_t lcd_implementation_read_slow_buttons()
++{
++  #ifdef LCD_I2C_TYPE_MCP23017
++  uint8_t slow_buttons;
++    // Reading these buttons this is likely to be too slow to call inside interrupt context
++    // so they are called during normal lcd_update
++    slow_buttons = lcd.readButtons() << B_I2C_BTN_OFFSET; 
++    #if defined(LCD_I2C_VIKI)
++    if(slow_buttons & (B_MI|B_RI)) { //LCD clicked
++       if(blocking_enc > millis()) {
++         slow_buttons &= ~(B_MI|B_RI); // Disable LCD clicked buttons if screen is updated
++       }
++    }
++    #endif
++    return slow_buttons; 
++  #endif
++}
++#endif
++
++#endif//ULTRA_LCD_IMPLEMENTATION_HITACHI_HD44780_H
+
+commit 2fb2a0a1196577201e5365a82e8103d014e5b2e8 (from 8a08cca0f2c16d6863bacefa41966cee17ee5b26)
+Merge: 39d88bc 8a08cca
+Author: bkubicek <bkubicek@x201.(none)>
+Date:   Tue Oct 22 10:08:21 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e431ad6..698caa8 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -95,7 +95,10 @@
+ // M29  - Stop SD write
+ // M30  - Delete file from SD (M30 filename.g)
+ // M31  - Output time since last M109 or SD card start to serial
+-// M32  - Select file and start SD print (Can be used when printing from SD card)
++// M32  - Select file and start SD print (Can be used _while_ printing from SD card files): 
++//        syntax "M32 /path/filename#", or "M32 S<startpos bytes> !filename#"
++//        Call gcode file : "M32 P !filename#" and return to caller file after finishing (simiarl to #include).
++//        The '#' is necessary when calling from within sd files, as it stops buffer prereading
+ // M42  - Change pin status via gcode Use M42 Px Sy to set pin x to value y, when omitting Px the onboard led will be used.
+ // M80  - Turn on Power Supply
+ // M81  - Turn off Power Supply
+@@ -626,11 +629,20 @@ void get_command()
+   if(!card.sdprinting || serial_count!=0){
+     return;
+   }
+-  while( !card.eof()  && buflen < BUFSIZE) {
++  
++  //'#' stops reading from sd to the buffer prematurely, so procedural macro calls are possible
++  // if it occures, stop_buffering is triggered and the buffer is ran dry. 
++  // this character _can_ occure in serial com, due to checksums. however, no checksums are used in sd printing
++  
++  static bool stop_buffering=false;
++  if(buflen==0) stop_buffering=false;
++  
++  while( !card.eof()  && buflen < BUFSIZE && !stop_buffering) { 
+     int16_t n=card.get();
+-    serial_char = (char)n;
++    serial_char = (char)n; 
+     if(serial_char == '\n' ||
+        serial_char == '\r' ||
++       serial_char == '#' ||
+        (serial_char == ':' && comment_mode == false) ||
+        serial_count >= (MAX_CMD_SIZE - 1)||n==-1)
+     {
+@@ -650,6 +662,9 @@ void get_command()
+         card.checkautostart(true);
+ 
+       }
++      if(serial_char=='#')
++        stop_buffering=true;
++      
+       if(!serial_count)
+       {
+         comment_mode = false; //for new command
+@@ -1473,19 +1488,41 @@ void process_commands()
+         card.removeFile(strchr_pointer + 4);
+       }
+       break;
+-    case 32: //M32 - Select file and start SD print
++    case 32: //M32 - Select file and start SD print 
++    {
+       if(card.sdprinting) {
+         st_synchronize();
+-        card.closefile();
+-        card.sdprinting = false;
++
+       }
+-      starpos = (strchr(strchr_pointer + 4,'*'));
++      starpos = (strchr(strchr_pointer + 4,'*')); 
++      
++      char* namestartpos = (strchr(strchr_pointer + 4,'!'));   //find ! to indicate filename string start.
++      if(namestartpos==NULL)
++      {
++        namestartpos=strchr_pointer + 4; //default name position, 4 letters after the M
++      }
++      else
++        namestartpos++; //to skip the '!'
++        
+       if(starpos!=NULL)
+         *(starpos-1)='\0';
+-      card.openFile(strchr_pointer + 4,true);
+-      card.startFileprint();
+-      starttime=millis();
+-      break;
++            
++      bool call_procedure=(code_seen('P'));
++      
++      if(strchr_pointer>namestartpos) 
++        call_procedure=false;  //false alert, 'P' found within filename
++      
++      if( card.cardOK ) 
++      {
++        card.openFile(namestartpos,true,!call_procedure);
++        if(code_seen('S'))
++          if(strchr_pointer<namestartpos) //only if "S" is occuring _before_ the filename
++            card.setIndex(code_value_long());
++        card.startFileprint();
++        if(!call_procedure)
++          starttime=millis(); //procedure calls count as normal print time.
++      }
++    } break;
+     case 928: //M928 - Start SD write
+       starpos = (strchr(strchr_pointer + 5,'*'));
+       if(starpos != NULL){
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 1eeec91..e5c3108 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -19,6 +19,7 @@ CardReader::CardReader()
+    logging = false;
+    autostart_atmillis=0;
+    workDirDepth = 0;
++   file_subcall_ctr=0;
+    memset(workDirParents, 0, sizeof(workDirParents));
+ 
+    autostart_stilltocheck=true; //the sd start is delayed, because otherwise the serial cannot answer fast enought to make contact with the hostsoftware.
+@@ -224,14 +225,71 @@ void CardReader::openLogFile(char* name)
+   openFile(name, false);
+ }
+ 
+-void CardReader::openFile(char* name,bool read)
++void CardReader::getAbsFilename(char *t)
++{
++  uint8_t cnt=0;
++  *t='/';t++;cnt++;
++  for(uint8_t i=0;i<workDirDepth;i++)
++  {
++    workDirParents[i].getFilename(t); //SDBaseFile.getfilename!
++    while(*t!=0 && cnt< MAXPATHNAMELENGTH) 
++    {t++;cnt++;}  //crawl counter forward.
++  }
++  if(cnt<MAXPATHNAMELENGTH-13)
++    file.getFilename(t);
++  else
++    t[0]=0;
++}
++
++void CardReader::openFile(char* name,bool read, bool replace_current/*=true*/)
+ {
+   if(!cardOK)
+     return;
+-  file.close();
++  if(file.isOpen())  //replaceing current file by new file, or subfile call
++  {
++    if(!replace_current)
++    {
++     if((int)file_subcall_ctr>(int)SD_PROCEDURE_DEPTH-1)
++     {
++       SERIAL_ERROR_START;
++       SERIAL_ERRORPGM("trying to call sub-gcode files with too many levels. MAX level is:");
++       SERIAL_ERRORLN(SD_PROCEDURE_DEPTH);
++       kill();
++       return;
++     }
++     
++     SERIAL_ECHO_START;
++     SERIAL_ECHOPGM("SUBROUTINE CALL target:\"");
++     SERIAL_ECHO(name);
++     SERIAL_ECHOPGM("\" parent:\"");
++     
++     //store current filename and position
++     getAbsFilename(filenames[file_subcall_ctr]);
++     
++     SERIAL_ECHO(filenames[file_subcall_ctr]);
++     SERIAL_ECHOPGM("\" pos");
++     SERIAL_ECHOLN(sdpos);
++     filespos[file_subcall_ctr]=sdpos;
++     file_subcall_ctr++;
++    }
++    else
++    {
++     SERIAL_ECHO_START;
++     SERIAL_ECHOPGM("Now doing file: ");
++     SERIAL_ECHOLN(name);
++    }
++    file.close();
++  }
++  else //opening fresh file
++  {
++    file_subcall_ctr=0; //resetting procedure depth in case user cancels print while in procedure
++    SERIAL_ECHO_START;
++    SERIAL_ECHOPGM("Now fresh file: ");
++    SERIAL_ECHOLN(name);
++  }
+   sdprinting = false;
+   
+-  
++ 
+   SdFile myDir;
+   curDir=&root;
+   char *fname=name;
+@@ -477,12 +535,21 @@ void CardReader::checkautostart(bool force)
+     lastnr++;
+ }
+ 
+-void CardReader::closefile()
++void CardReader::closefile(bool store_location)
+ {
+   file.sync();
+   file.close();
+   saving = false; 
+   logging = false;
++  
++  if(store_location)
++  {
++    //future: store printer state, filename and position for continueing a stoped print
++    // so one can unplug the printer and continue printing the next day.
++    
++  }
++
++  
+ }
+ 
+ void CardReader::getfilename(const uint8_t nr)
+@@ -547,14 +614,25 @@ void CardReader::updir()
+ void CardReader::printingHasFinished()
+ {
+     st_synchronize();
+-    quickStop();
+-    file.close();
+-    sdprinting = false;
+-    if(SD_FINISHED_STEPPERRELEASE)
++    if(file_subcall_ctr>0) //heading up to a parent file that called current as a procedure.
++    {
++      file.close();
++      file_subcall_ctr--;
++      openFile(filenames[file_subcall_ctr],true,true);
++      setIndex(filespos[file_subcall_ctr]);
++      startFileprint();
++    }
++    else
+     {
+-        //finishAndDisableSteppers();
+-        enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++      quickStop();
++      file.close();
++      sdprinting = false;
++      if(SD_FINISHED_STEPPERRELEASE)
++      {
++          //finishAndDisableSteppers();
++          enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
++      }
++      autotempShutdown();
+     }
+-    autotempShutdown();
+ }
+ #endif //SDSUPPORT
+diff --git a/Marlin/cardreader.h b/Marlin/cardreader.h
+index 6e59645..78f7148 100644
+--- a/Marlin/cardreader.h
++++ b/Marlin/cardreader.h
+@@ -18,10 +18,10 @@ public:
+   //this is to delay autostart and hence the initialisaiton of the sd card to some seconds after the normal init, so the device is available quick after a reset
+ 
+   void checkautostart(bool x); 
+-  void openFile(char* name,bool read);
++  void openFile(char* name,bool read,bool replace_current=true);
+   void openLogFile(char* name);
+   void removeFile(char* name);
+-  void closefile();
++  void closefile(bool store_location=false);
+   void release();
+   void startFileprint();
+   void pauseSDPrint();
+@@ -31,6 +31,8 @@ public:
+   void getfilename(const uint8_t nr);
+   uint16_t getnrfilenames();
+   
++  void getAbsFilename(char *t);
++  
+ 
+   void ls();
+   void chdir(const char * relpath);
+@@ -60,6 +62,11 @@ private:
+   Sd2Card card;
+   SdVolume volume;
+   SdFile file;
++  #define SD_PROCEDURE_DEPTH 1
++  #define MAXPATHNAMELENGTH (13*MAX_DIR_DEPTH+MAX_DIR_DEPTH+1)
++  uint8_t file_subcall_ctr;
++  uint32_t filespos[SD_PROCEDURE_DEPTH];
++  char filenames[SD_PROCEDURE_DEPTH][MAXPATHNAMELENGTH];
+   uint32_t filesize;
+   //int16_t n;
+   unsigned long autostart_atmillis;
+

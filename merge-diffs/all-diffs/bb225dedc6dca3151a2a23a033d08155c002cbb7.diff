@@ -1,0 +1,761 @@
+commit bb225dedc6dca3151a2a23a033d08155c002cbb7 (from f1f1bac0e1fef8422db045c3c4d9f058623d9c9e)
+Merge: f1f1bac 0149fc1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 15:26:59 2016 -0700
+
+    Merge pull request #4354 from thinkyhead/rc_jbrazio_rework_g12
+    
+    NOZZLE_CLEAN_FEATURE with no dependency on HAS_BED_PROBE
+
+diff --git a/.travis.yml b/.travis.yml
+index 8d6f5fc..8d1b0ef 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -1,6 +1,9 @@
+ ---
+ language: c
+   #
++notifications:
++  email: false
++  #
+ before_install:
+   #
+   # Fetch the tag information for the current branch
+@@ -237,7 +240,7 @@ script:
+   # Test NOZZLE_CLEAN_FEATURE
+   #
+   - restore_configs
+-  - opt_enable AUTO_BED_LEVELING_FEATURE NOZZLE_CLEAN_FEATURE FIX_MOUNTED_PROBE
++  - opt_enable NOZZLE_CLEAN_FEATURE
+   - build_marlin
+   #
+   #
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index aa5c3be..8947af1 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 3b4cf83..3ad5512 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -404,4 +404,14 @@ void calculate_volumetric_multipliers();
+   #endif
+ #endif
+ 
++/**
++ * Blocking movement and shorthand functions
++ */
++static void do_blocking_move_to(float x, float y, float z, float fr_mm_m=0.0);
++static void do_blocking_move_to_axis_pos(AxisEnum axis, float where, float fr_mm_m=0.0);
++static void do_blocking_move_to_x(float x, float fr_mm_m=0.0);
++static void do_blocking_move_to_y(float y);
++static void do_blocking_move_to_z(float z, float fr_mm_m=0.0);
++static void do_blocking_move_to_xy(float x, float y, float fr_mm_m=0.0);
++
+ #endif //MARLIN_H
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1e324df..d6f3077 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -59,6 +59,7 @@
+ #include "language.h"
+ #include "pins_arduino.h"
+ #include "math.h"
++#include "nozzle.h"
+ 
+ #if ENABLED(USE_WATCHDOG)
+   #include "watchdog.h"
+@@ -1660,7 +1661,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+  *  Plan a move to (X, Y, Z) and set the current_position
+  *  The final current_position may not be the one that was requested
+  */
+-static void do_blocking_move_to(float x, float y, float z, float fr_mm_m = 0.0) {
++void do_blocking_move_to(float x, float y, float z, float fr_mm_m /*=0.0*/) {
+   float old_feedrate_mm_m = feedrate_mm_m;
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -1708,21 +1709,14 @@ static void do_blocking_move_to(float x, float y, float z, float fr_mm_m = 0.0)
+   feedrate_mm_m = old_feedrate_mm_m;
+ }
+ 
+-inline void do_blocking_move_to_x(float x, float fr_mm_m = 0.0) {
+-  do_blocking_move_to(x, current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+-}
+-
+-inline void do_blocking_move_to_y(float y) {
+-  do_blocking_move_to(current_position[X_AXIS], y, current_position[Z_AXIS]);
+-}
+-
+-inline void do_blocking_move_to_xy(float x, float y, float fr_mm_m = 0.0) {
+-  do_blocking_move_to(x, y, current_position[Z_AXIS], fr_mm_m);
+-}
+-
+-inline void do_blocking_move_to_z(float z, float fr_mm_m = 0.0) {
+-  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], z, fr_mm_m);
++void do_blocking_move_to_axis_pos(AxisEnum axis, float where, float fr_mm_m/*=0.0*/) {
++  current_position[axis] = where;
++  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+ }
++void do_blocking_move_to_x(float x, float fr_mm_m/*=0.0*/) { do_blocking_move_to_axis_pos(X_AXIS, x, fr_mm_m); }
++void do_blocking_move_to_y(float y) { do_blocking_move_to_axis_pos(Y_AXIS, y); }
++void do_blocking_move_to_z(float z, float fr_mm_m/*=0.0*/) { do_blocking_move_to_axis_pos(Z_AXIS, z, fr_mm_m); }
++void do_blocking_move_to_xy(float x, float y, float fr_mm_m/*=0.0*/) { do_blocking_move_to(x, y, current_position[Z_AXIS], fr_mm_m); }
+ 
+ //
+ // Prepare to do endstop or probe moves
+@@ -2784,9 +2778,7 @@ inline void gcode_G4() {
+ 
+ #endif //FWRETRACT
+ 
+-#if ENABLED(NOZZLE_CLEAN_FEATURE) && HAS_BED_PROBE
+-  #include "nozzle.h"
+-
++#if ENABLED(NOZZLE_CLEAN_FEATURE)
+   /**
+    * G12: Clean the nozzle
+    */
+@@ -2819,8 +2811,6 @@ inline void gcode_G4() {
+ #endif
+ 
+ #if ENABLED(NOZZLE_PARK_FEATURE)
+-  #include "nozzle.h"
+-
+   /**
+    * G27: Park the nozzle
+    */
+@@ -3301,7 +3291,7 @@ inline void gcode_G28() {
+         }
+         // For each G29 S2...
+         if (probe_point == 0) {
+-          // For the intial G29 S2 make Z a positive value (e.g., 4.0)
++          // For the initial G29 S2 make Z a positive value (e.g., 4.0)
+           current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
+             #if Z_HOME_DIR > 0
+               + Z_MAX_POS
+@@ -7084,7 +7074,7 @@ void process_next_command() {
+           break;
+       #endif // FWRETRACT
+ 
+-      #if ENABLED(NOZZLE_CLEAN_FEATURE) && HAS_BED_PROBE
++      #if ENABLED(NOZZLE_CLEAN_FEATURE)
+         case 12:
+           gcode_G12(); // G12: Nozzle Clean
+           break;
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index a8f2388..bd5f962 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -684,11 +684,4 @@
+   #error "ENDSTOPS_ONLY_FOR_HOMING is deprecated. Use (disable) ENDSTOPS_ALWAYS_ON_DEFAULT instead."
+ #endif
+ 
+-/**
+- * Nozzle cleaning
+- */
+-#if ENABLED(NOZZLE_CLEAN_FEATURE) && !HAS_BED_PROBE
+-  #error Due to internal dependencies you must have a bed probe for NOZZLE_CLEAN_FEATURE to work
+-#endif
+-
+ #endif //SANITYCHECK_H
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index cceaf1a..2aa864f 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index e55dc33..c3765b9 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -877,12 +877,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index d2edb9a..943b548 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -875,12 +875,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 72e65de..1834986 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -886,12 +886,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 18e9679..f082073 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -888,12 +888,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index efcd1f8..a46c98f 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -911,12 +911,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 8be33d7..2e822c6 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 158f6ad..1bf429e 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 3ac1fee..a48370e 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index b1ec736..bf8de78 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -892,12 +892,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index e538ff0..970ee80 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -902,12 +902,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 201dcad..b926432 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -915,12 +915,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index b5eba2c..8de68af 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -886,12 +886,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 707146f..6b5546e 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -894,12 +894,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 7b9e5e5..0e6ab7c 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -989,12 +989,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 8790185..7e27d29 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -983,12 +983,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index d677ea1..906a33e 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -986,12 +986,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 41d48fc..d36d824 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -986,12 +986,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 5ac9c8c..d164dc7 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -988,12 +988,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 421683f..6ba372f 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -897,12 +897,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 0499e02..2a723f2 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -888,12 +888,12 @@
+   // Number of pattern repetitions
+   #define NOZZLE_CLEAN_STROKES  12
+ 
+-  //                            {  X,  Y,               Z}
+-  #define NOZZLE_CLEAN_START_PT { 30, 30, (Z_MIN_POS + 5)}
+-  #define NOZZLE_CLEAN_END_PT   {100, 60, (Z_MIN_POS + 5)}
++  // Specify positions as { X, Y, Z }
++  #define NOZZLE_CLEAN_START_POINT { 30, 30, (Z_MIN_POS + 1)}
++  #define NOZZLE_CLEAN_END_POINT   {100, 60, (Z_MIN_POS + 1)}
+ 
+-  // Moves the nozzle to the parked position
+-  #define NOZZLE_CLEAN_PARK
++  // Moves the nozzle to the initial position
++  #define NOZZLE_CLEAN_GOBACK
+ #endif
+ 
+ //
+diff --git a/Marlin/nozzle.h b/Marlin/nozzle.h
+index 3e9ae87..cce22db 100644
+--- a/Marlin/nozzle.h
++++ b/Marlin/nozzle.h
+@@ -48,7 +48,7 @@ class Nozzle {
+     ) __attribute__((optimize ("Os"))) {
+       #if ENABLED(NOZZLE_CLEAN_FEATURE)
+ 
+-        #if ENABLED(NOZZLE_CLEAN_PARK)
++        #if ENABLED(NOZZLE_CLEAN_GOBACK)
+           // Store the current coords
+           point_t const initial = {
+             current_position[X_AXIS],
+@@ -56,7 +56,7 @@ class Nozzle {
+             current_position[Z_AXIS],
+             current_position[E_AXIS]
+           };
+-        #endif // NOZZLE_CLEAN_PARK
++        #endif // NOZZLE_CLEAN_GOBACK
+ 
+         // Move to the starting point
+         do_blocking_move_to_xy(start.x, start.y);
+@@ -68,11 +68,11 @@ class Nozzle {
+           do_blocking_move_to_xy(start.x, start.y);
+         }
+ 
+-        #if ENABLED(NOZZLE_CLEAN_PARK)
++        #if ENABLED(NOZZLE_CLEAN_GOBACK)
+           // Move the nozzle to the initial point
+           do_blocking_move_to_z(initial.z);
+           do_blocking_move_to_xy(initial.x, initial.y);
+-        #endif // NOZZLE_CLEAN_PARK
++        #endif // NOZZLE_CLEAN_GOBACK
+ 
+       #endif // NOZZLE_CLEAN_FEATURE
+     }
+@@ -99,7 +99,7 @@ class Nozzle {
+         // Don't allow impossible triangles
+         if (A <= 0.0f || P <= 0.0f ) return;
+ 
+-        #if ENABLED(NOZZLE_CLEAN_PARK)
++        #if ENABLED(NOZZLE_CLEAN_GOBACK)
+           // Store the current coords
+           point_t const initial = {
+             current_position[X_AXIS],
+@@ -107,7 +107,7 @@ class Nozzle {
+             current_position[Z_AXIS],
+             current_position[E_AXIS]
+           };
+-        #endif // NOZZLE_CLEAN_PARK
++        #endif // NOZZLE_CLEAN_GOBACK
+ 
+         for (uint8_t j = 0; j < strokes; j++) {
+           for (uint8_t i = 0; i < (objects << 1); i++) {
+@@ -126,11 +126,11 @@ class Nozzle {
+           }
+         }
+ 
+-        #if ENABLED(NOZZLE_CLEAN_PARK)
++        #if ENABLED(NOZZLE_CLEAN_GOBACK)
+           // Move the nozzle to the initial point
+           do_blocking_move_to_z(initial.z);
+           do_blocking_move_to_xy(initial.x, initial.y);
+-        #endif // NOZZLE_CLEAN_PARK
++        #endif // NOZZLE_CLEAN_GOBACK
+ 
+       #endif // NOZZLE_CLEAN_FEATURE
+     }
+@@ -152,14 +152,14 @@ class Nozzle {
+         switch (pattern) {
+           case 1:
+             Nozzle::zigzag(
+-              NOZZLE_CLEAN_START_PT,
+-              NOZZLE_CLEAN_END_PT, strokes, objects);
++              NOZZLE_CLEAN_START_POINT,
++              NOZZLE_CLEAN_END_POINT, strokes, objects);
+             break;
+ 
+           default:
+             Nozzle::stroke(
+-              NOZZLE_CLEAN_START_PT,
+-              NOZZLE_CLEAN_END_PT, strokes);
++              NOZZLE_CLEAN_START_POINT,
++              NOZZLE_CLEAN_END_POINT, strokes);
+         }
+       #endif // NOZZLE_CLEAN_FEATURE
+     }
+
+commit bb225dedc6dca3151a2a23a033d08155c002cbb7 (from 0149fc189a5d831c9a402912de27fda4b91c0123)
+Merge: f1f1bac 0149fc1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 15:26:59 2016 -0700
+
+    Merge pull request #4354 from thinkyhead/rc_jbrazio_rework_g12
+    
+    NOZZLE_CLEAN_FEATURE with no dependency on HAS_BED_PROBE
+
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 8dee6aa..c1244d6 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -100,6 +100,7 @@
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
++#define MSG_SELECT                          "\xbe\xdd\xc0\xb8"                                                 // "ｾﾝﾀｸ" ("Select")
+ #if LCD_WIDTH > 19
+   #define MSG_ACC                           "\xb6\xbf\xb8\xc4\xde mm/s2"                                       // "ｶｿｸﾄﾞ mm/s2" ("Accel")
+   #define MSG_VXY_JERK                      "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                          // "XYｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vxy-jerk")
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index dd2a8e5..f598f8a 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -100,6 +100,7 @@
+ #define MSG_PID_I                           "PID-I"
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
++#define MSG_SELECT                          "センタク"                     // "Select"
+ #define MSG_ACC                             "カソクド mm/s2"               // "Accel"
+ #define MSG_VXY_JERK                        "XYジク ヤクド mm/s"            // "Vxy-jerk"
+ #define MSG_VZ_JERK                         "Zジク ヤクド mm/s"             // "Vz-jerk"
+

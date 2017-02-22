@@ -1,0 +1,983 @@
+commit bbe8fbe13d91b521484b529c2ae5f0687b6a9924 (from af8be9013bbc5fc22a74e9cd56c369a17e45d67a)
+Merge: af8be90 51c6bd6
+Author: neildarlow <neil@darlow.co.uk>
+Date:   Fri Mar 21 18:27:14 2014 +0000
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index bca056f..f8be1eb 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -239,6 +239,11 @@
+ #define MANUAL_FEEDRATE {50*60, 50*60, 4*60, 60}  // set the speeds for manual moves (mm/min)
+ #endif
+ 
++//Comment to disable setting feedrate multiplier via encoder
++#ifdef ULTIPANEL
++    #define ULTIPANEL_FEEDMULTIPLY
++#endif
++
+ // minimum time in microseconds that a movement needs to take if the buffer is emptied.
+ #define DEFAULT_MINSEGMENTTIME        20000
+ 
+@@ -279,6 +284,9 @@
+ //=============================Additional Features===========================
+ //===========================================================================
+ 
++//#define CHDK 4        //Pin for triggering CHDK to take a picture see how to use it here http://captain-slow.dk/2014/03/09/3d-printing-timelapses/
++#define CHDK_DELAY 50 //How long in ms the pin should stay HIGH before going LOW again
++
+ #define SD_FINISHED_STEPPERRELEASE true  //if sd support and the file is finished: disable steppers?
+ #define SD_FINISHED_RELEASECOMMAND "M84 X Y Z E" // You might want to keep the z enabled so your bed stays in place.
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 97866c8..e728209 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -203,7 +203,8 @@ void setPwmFrequency(uint8_t pin, int val);
+ extern float homing_feedrate[];
+ extern bool axis_relative_modes[];
+ extern int feedmultiply;
+-extern int extrudemultiply; // Sets extrude multiply factor (in percent)
++extern int extrudemultiply; // Sets extrude multiply factor (in percent) for all extruders
++extern int extruder_multiply[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+ extern float current_position[NUM_AXIS] ;
+ extern float add_homeing[3];
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 20ee9ae..f7060fc 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -189,6 +189,14 @@ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+ int feedmultiply=100; //100->1 200->2
+ int saved_feedmultiply;
+ int extrudemultiply=100; //100->1 200->2
++int extruder_multiply[EXTRUDERS] = {100
++  #if EXTRUDERS > 1
++    , 100
++    #if EXTRUDERS > 2
++      , 100
++    #endif
++  #endif
++};
+ float volumetric_multiplier[EXTRUDERS] = {1.0
+   #if EXTRUDERS > 1
+     , 1.0
+@@ -314,6 +322,12 @@ bool Stopped=false;
+ bool CooldownNoWait = true;
+ bool target_direction;
+ 
++//Insert variables if CHDK is defined
++#ifdef CHDK
++unsigned long chdkHigh = 0;
++boolean chdkActive = false;
++#endif
++
+ //===========================================================================
+ //=============================Routines======================================
+ //===========================================================================
+@@ -2422,7 +2436,18 @@ void process_commands()
+     {
+       if(code_seen('S'))
+       {
+-        extrudemultiply = code_value() ;
++        int tmp_code = code_value();
++        if (code_seen('T'))
++        {
++          if(setTargetedHotend(221)){
++            break;
++          }
++          extruder_multiply[tmp_extruder] = tmp_code;
++        }
++        else
++        {
++          extrudemultiply = tmp_code ;
++        }
+       }
+     }
+     break;
+@@ -2590,23 +2615,33 @@ void process_commands()
+     #endif //PIDTEMP
+     case 240: // M240  Triggers a camera by emulating a Canon RC-1 : http://www.doc-diy.net/photo/rc-1_hacked/
+      {
+-      #if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
+-        const uint8_t NUM_PULSES=16;
+-        const float PULSE_LENGTH=0.01524;
+-        for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++     	#ifdef CHDK
++       
++         SET_OUTPUT(CHDK);
++         WRITE(CHDK, HIGH);
++         chdkHigh = millis();
++         chdkActive = true;
++       
++       #else
++     	
++      	#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
++	const uint8_t NUM_PULSES=16;
++	const float PULSE_LENGTH=0.01524;
++	for(int i=0; i < NUM_PULSES; i++) {
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+         delay(7.33);
+         for(int i=0; i < NUM_PULSES; i++) {
+-          WRITE(PHOTOGRAPH_PIN, HIGH);
+-          _delay_ms(PULSE_LENGTH);
+-          WRITE(PHOTOGRAPH_PIN, LOW);
+-          _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, HIGH);
++        _delay_ms(PULSE_LENGTH);
++        WRITE(PHOTOGRAPH_PIN, LOW);
++        _delay_ms(PULSE_LENGTH);
+         }
+-      #endif
++      	#endif
++      #endif //chdk end if
+      }
+     break;
+ #ifdef DOGLCD
+@@ -3355,6 +3390,16 @@ void manage_inactivity()
+       }
+     }
+   }
++  
++  #ifdef CHDK //Check if pin should be set to LOW after M240 set it to HIGH
++    if (chdkActive)
++    {
++      chdkActive = false;
++      if (millis()-chdkHigh < CHDK_DELAY) return;
++      WRITE(CHDK, LOW);
++    }
++  #endif
++  
+   #if defined(KILL_PIN) && KILL_PIN > -1
+     if( 0 == READ(KILL_PIN) )
+       kill();
+@@ -3522,6 +3567,9 @@ bool setTargetedHotend(int code){
+         case 218:
+           SERIAL_ECHO(MSG_M218_INVALID_EXTRUDER);
+           break;
++        case 221:
++          SERIAL_ECHO(MSG_M221_INVALID_EXTRUDER);
++          break;
+       }
+       SERIAL_ECHOLN(tmp_extruder);
+       return true;
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 0782763..ed94cc3 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -77,8 +77,18 @@
+ 	#define MSG_AUTO_HOME "Auto home"
+ 	#define MSG_SET_ORIGIN "Set origin"
+ 	#define MSG_PREHEAT_PLA "Preheat PLA"
++	#define MSG_PREHEAT_PLA0 "Preheat PLA 1"
++	#define MSG_PREHEAT_PLA1 "Preheat PLA 2"
++	#define MSG_PREHEAT_PLA2 "Preheat PLA 3"
++	#define MSG_PREHEAT_PLA012 "Preheat PLA All"
++	#define MSG_PREHEAT_PLA_BEDONLY "Preheat PLA Bed"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Preheat PLA conf"
+ 	#define MSG_PREHEAT_ABS "Preheat ABS"
++	#define MSG_PREHEAT_ABS0 "Preheat ABS 1"
++	#define MSG_PREHEAT_ABS1 "Preheat ABS 2"
++	#define MSG_PREHEAT_ABS2 "Preheat ABS 3"
++	#define MSG_PREHEAT_ABS012 "Preheat ABS All"
++	#define MSG_PREHEAT_ABS_BEDONLY "Preheat ABS Bed"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Preheat ABS conf"
+ 	#define MSG_COOLDOWN "Cooldown"
+ 	#define MSG_SWITCH_PS_ON "Switch power on"
+@@ -100,6 +110,9 @@
+ 	#define MSG_BED "Bed"
+ 	#define MSG_FAN_SPEED "Fan speed"
+ 	#define MSG_FLOW "Flow"
++	#define MSG_FLOW0 "Flow 0"
++	#define MSG_FLOW1 "Flow 1"
++	#define MSG_FLOW2 "Flow 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -192,6 +205,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Invalid extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Invalid extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Invalid extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Invalid extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "No thermistors - no temperature"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Invalid extruder "
+ 	#define MSG_HEATING "Heating..."
+@@ -247,7 +261,6 @@
+ 
+ #if LANGUAGE_CHOICE == 2
+ 
+-
+ // LCD Menu Messages
+ // Please note these are limited to 17 characters!
+ 
+@@ -260,8 +273,18 @@
+ 	#define MSG_AUTO_HOME "Auto. poz. zerowa"
+ 	#define MSG_SET_ORIGIN "Ustaw punkt zero"
+ 	#define MSG_PREHEAT_PLA "Rozgrzej PLA"
++	#define MSG_PREHEAT_PLA0 "Rozgrzej PLA 1"
++	#define MSG_PREHEAT_PLA1 "Rozgrzej PLA 2"
++	#define MSG_PREHEAT_PLA2 "Rozgrzej PLA 3"
++	#define MSG_PREHEAT_PLA012 "Roz. PLA Wszystko"
++	#define MSG_PREHEAT_PLA_BEDONLY "Rozgrzej PLA Loze"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Ustaw. rozg. PLA"
+ 	#define MSG_PREHEAT_ABS "Rozgrzej ABS"
++	#define MSG_PREHEAT_ABS0 "Rozgrzej ABS 1"
++	#define MSG_PREHEAT_ABS1 "Rozgrzej ABS 2"
++	#define MSG_PREHEAT_ABS2 "Rozgrzej ABS 3"
++	#define MSG_PREHEAT_ABS012 "Roz. ABS Wszystko"
++	#define MSG_PREHEAT_ABS_BEDONLY "Rozgrzej ABS Loze"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ustaw. rozg. ABS"
+ 	#define MSG_COOLDOWN "Chlodzenie"
+ 	#define MSG_SWITCH_PS_ON "Wlacz zasilacz"
+@@ -283,6 +306,9 @@
+ 	#define MSG_BED "Loze"
+ 	#define MSG_FAN_SPEED "Obroty wiatraka"
+ 	#define MSG_FLOW "Przeplyw"
++	#define MSG_FLOW0 "Przeplyw 0"
++	#define MSG_FLOW1 "Przeplyw 1"
++	#define MSG_FLOW2 "Przeplyw 2"
+ 	#define MSG_CONTROL "Kontrola"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -378,6 +404,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Niepoprawny ekstruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Niepoprawny ekstruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Niepoprawny ekstruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Niepoprawny ekstruder "
+ 	#define MSG_ERR_NO_THERMISTORS "Brak termistorow - brak temperatury :("
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Niepoprawny ekstruder "
+ 	#define MSG_HEATING "Nagrzewanie ekstrudera..."
+@@ -445,8 +472,18 @@
+ 	#define MSG_AUTO_HOME "Home auto."
+ 	#define MSG_SET_ORIGIN "Regler origine"
+ 	#define MSG_PREHEAT_PLA " Prechauffage PLA"
+-	#define MSG_PREHEAT_PLA_SETTINGS " Regl. prech. PLA"
++	#define MSG_PREHEAT_PLA0 "Prechauff. PLA 1"
++        #define MSG_PREHEAT_PLA1 "Prechauff. PLA 2"
++	#define MSG_PREHEAT_PLA2 "Prechauff. PLA 3"
++	#define MSG_PREHEAT_PLA012 "Prech. PLA Tout"
++	#define MSG_PREHEAT_PLA_BEDONLY "Prech. PLA Plateau"
++	#define MSG_PREHEAT_PLA_SETTINGS "Regl. prech. PLA"
+ 	#define MSG_PREHEAT_ABS "Prechauffage ABS"
++	#define MSG_PREHEAT_ABS0 "Prechauff. ABS 1"
++	#define MSG_PREHEAT_ABS1 "Prechauff. ABS 2"
++	#define MSG_PREHEAT_ABS2 "Prechauff. ABS 3"
++	#define MSG_PREHEAT_ABS012 "Prech. ABS Tout"
++	#define MSG_PREHEAT_ABS_BEDONLY "Prech. ABS Plateau"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Regl. prech. ABS"
+ 	#define MSG_COOLDOWN "Refroidir"
+ 	#define MSG_SWITCH_PS_ON "Allumer alim."
+@@ -470,6 +507,9 @@
+ 	#define MSG_BED "Plateau"
+ 	#define MSG_FAN_SPEED "Vite. ventilateur"
+ 	#define MSG_FLOW "Flux"
++	#define MSG_FLOW0 "Flux 0"
++	#define MSG_FLOW1 "Flux 1"
++	#define MSG_FLOW2 "Flux 2"
+ 	#define MSG_CONTROL "Controler"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -563,6 +603,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extruder invalide"
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extruder invalide"
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extruder invalide"
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extruder invalide"
+ 	#define MSG_ERR_NO_THERMISTORS "Pas de thermistor, pas de temperature"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extruder invalide "
+ 	#define MSG_HEATING "En chauffe..."
+@@ -631,8 +672,18 @@
+ 	#define MSG_AUTO_HOME        "Auto Nullpunkt"
+ 	#define MSG_SET_ORIGIN       "Setze Nullpunkt"
+ 	#define MSG_PREHEAT_PLA      "Vorwärmen PLA"
++	#define MSG_PREHEAT_PLA0     "Vorwärmen PLA 1"
++	#define MSG_PREHEAT_PLA1     "Vorwärmen PLA 2"
++	#define MSG_PREHEAT_PLA2     "Vorwärmen PLA 3"
++	#define MSG_PREHEAT_PLA012   "Vorw. PLA Alle"
++	#define MSG_PREHEAT_PLA_BEDONLY "Vorw. PLA Bett"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Vorwärm. PLA Ein."
+ 	#define MSG_PREHEAT_ABS      "Vorwärmen ABS"
++	#define MSG_PREHEAT_ABS0     "Vorwärmen ABS 1"
++	#define MSG_PREHEAT_ABS1     "Vorwärmen ABS 2"
++	#define MSG_PREHEAT_ABS2     "Vorwärmen ABS 3"
++	#define MSG_PREHEAT_ABS012   "Vorw. ABS Alle"
++	#define MSG_PREHEAT_ABS_BEDONLY "Vorw. ABS Bett"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Vorwärm. ABS Ein."
+ 	#define MSG_COOLDOWN         "Abkühlen"
+ 	#define MSG_SWITCH_PS_ON     "Switch Power On"
+@@ -654,6 +705,9 @@
+ 	#define MSG_BED              "Bett"
+ 	#define MSG_FAN_SPEED        "Lüftergeschw."
+ 	#define MSG_FLOW             "Fluss"
++	#define MSG_FLOW0            "Fluss 0"
++	#define MSG_FLOW1            "Fluss 1"
++	#define MSG_FLOW2            "Fluss 2"
+ 	#define MSG_CONTROL          "Einstellungen"
+ 	#define MSG_MIN              "\002 Min"
+ 	#define MSG_MAX              "\002 Max"
+@@ -749,6 +803,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Invalid extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Invalid extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Invalid extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Invalid extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "No thermistors - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Invalid extruder "
+ 	#define MSG_HEATING "Heating..."
+@@ -816,8 +871,18 @@
+ 	#define MSG_AUTO_HOME "Llevar al origen"
+ 	#define MSG_SET_ORIGIN "Establecer cero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
++	#define MSG_PREHEAT_PLA0 "Precalentar PLA 1"
++	#define MSG_PREHEAT_PLA1 "Precalentar PLA 2"
++	#define MSG_PREHEAT_PLA2 "Precalentar PLA 3"
++	#define MSG_PREHEAT_PLA012 "Precal. PLA Todo"
++	#define MSG_PREHEAT_PLA_BEDONLY "Precal. PLA Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Ajustar temp. PLA"
+ 	#define MSG_PREHEAT_ABS "Precalentar ABS"
++	#define MSG_PREHEAT_ABS0 "Precalentar ABS 1"
++	#define MSG_PREHEAT_ABS1 "Precalentar ABS 2"
++	#define MSG_PREHEAT_ABS2 "Precalentar ABS 3"
++	#define MSG_PREHEAT_ABS012 "Precal. ABS Todo"
++	#define MSG_PREHEAT_ABS_BEDONLY "Precal. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+ 	#define MSG_SWITCH_PS_ON "Switch Power On"
+@@ -839,6 +904,9 @@
+ 	#define MSG_BED "Base"
+ 	#define MSG_FAN_SPEED "Ventilador"
+ 	#define MSG_FLOW "Flujo"
++	#define MSG_FLOW0 "Flujo 0"
++	#define MSG_FLOW1 "Flujo 1"
++	#define MSG_FLOW2 "Flujo 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN "\002 Min"
+ 	#define MSG_MAX "\002 Max"
+@@ -940,6 +1008,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor Invalido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor Invalido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor Invalido "
+ 	#define MSG_ERR_NO_THERMISTORS "No hay termistores - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalido "
+ 	#define MSG_HEATING "Calentando..."
+@@ -997,17 +1066,27 @@
+ // LCD Menu Messages
+ // Please note these are limited to 17 characters!
+ 
+-	#define WELCOME_MSG MACHINE_NAME			" Готов."
++	#define WELCOME_MSG MACHINE_NAME			        "Готов."
+ 	#define MSG_SD_INSERTED						"Карта вставлена"
+ 	#define MSG_SD_REMOVED						"Карта извлечена"
+-	#define MSG_MAIN							"Меню            \003"
++	#define MSG_MAIN							"Меню \003"
+ 	#define MSG_AUTOSTART						"Автостарт"
+ 	#define MSG_DISABLE_STEPPERS 				"Выкл. двигатели"
+ 	#define MSG_AUTO_HOME						"Парковка"
+ 	#define MSG_SET_ORIGIN						"Запомнить ноль"
+ 	#define MSG_PREHEAT_PLA 					"Преднагрев PLA"
++	#define MSG_PREHEAT_PLA0					"Преднагрев PLA0"
++	#define MSG_PREHEAT_PLA1					"Преднагрев PLA1"
++	#define MSG_PREHEAT_PLA2					"Преднагрев PLA2"
++	#define MSG_PREHEAT_PLA012 					"Преднаг. PLA все"
++	#define MSG_PREHEAT_PLA_BEDONLY 			"Пред. PLA Кровать"
+ 	#define MSG_PREHEAT_PLA_SETTINGS  			"Настройки PLA"
+ 	#define MSG_PREHEAT_ABS						"Преднагрев ABS"
++	#define MSG_PREHEAT_ABS0					"Преднагрев ABS0"
++	#define MSG_PREHEAT_ABS1					"Преднагрев ABS1"
++	#define MSG_PREHEAT_ABS2					"Преднагрев ABS2"
++	#define MSG_PREHEAT_ABS012 					"Преднаг. ABS все "
++	#define MSG_PREHEAT_ABS_BEDONLY 			"Пред. ABS Кровать"
+ 	#define MSG_PREHEAT_ABS_SETTINGS  			"Настройки ABS"
+ 	#define MSG_COOLDOWN						"Охлаждение"
+ 	#define MSG_SWITCH_PS_ON					"Switch Power On"
+@@ -1029,6 +1108,9 @@
+ 	#define MSG_BED								"\002 Кровать:"
+ 	#define MSG_FAN_SPEED						"Куллер:"
+ 	#define MSG_FLOW							"Поток:"
++	#define MSG_FLOW0 " Поток0:"
++	#define MSG_FLOW1 " Поток1:"
++	#define MSG_FLOW2 " Поток2:"
+ 	#define MSG_CONTROL							"Настройки \003"
+ 	#define MSG_MIN								"\002 Минимум:"
+ 	#define MSG_MAX								"\002 Максимум:"
+@@ -1068,8 +1150,8 @@
+ 	#define MSG_WATCH							"Обзор           \003"
+ 	#define MSG_PREPARE							"Действия        \x7E"
+ 	#define MSG_TUNE							"Настройки       \x7E"
+-	#define MSG_RESUME_PRINT  					"Продолжить печать"
+-	#define MSG_RESUME_PRINT					"Продолжить печать"
++	#define MSG_PAUSE_PRINT  					"Продолжить печать"
++	#define MSG_RESUME_PRINT					"возобн. печать"
+ 	#define MSG_STOP_PRINT 						"Остановить печать"
+ 	#define MSG_CARD_MENU						"Меню карты      \x7E"
+ 	#define MSG_NO_CARD							"Нет карты"
+@@ -1122,6 +1204,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER			"M105 ошибка экструдера "
+ 	#define MSG_M200_INVALID_EXTRUDER			"M200 ошибка экструдера "
+ 	#define MSG_M218_INVALID_EXTRUDER			"M218 ошибка экструдера "
++	#define MSG_M221_INVALID_EXTRUDER			"M221 ошибка экструдера "
+ 	#define MSG_ERR_NO_THERMISTORS				"Нет термистра - нет температуры"
+ 	#define MSG_M109_INVALID_EXTRUDER			"M109 ошибка экструдера "
+ 	#define MSG_HEATING							"Нагрев...  "
+@@ -1187,8 +1270,18 @@
+ 	#define MSG_AUTO_HOME            "Auto Home"
+ 	#define MSG_SET_ORIGIN           "Imposta Origine"
+ 	#define MSG_PREHEAT_PLA          "Preriscalda PLA"
++	#define MSG_PREHEAT_PLA0         "Preriscalda PLA 1"
++	#define MSG_PREHEAT_PLA1         "Preriscalda PLA 2"
++	#define MSG_PREHEAT_PLA2         "Preriscalda PLA 3"
++	#define MSG_PREHEAT_PLA012       "Preris. PLA Tutto"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Preri. PLA Piatto"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Preris. PLA Conf"
+ 	#define MSG_PREHEAT_ABS          "Preriscalda ABS"
++	#define MSG_PREHEAT_ABS0         "Preriscalda ABS 1"
++	#define MSG_PREHEAT_ABS1         "Preriscalda ABS 2"
++	#define MSG_PREHEAT_ABS2         "Preriscalda ABS 3"
++	#define MSG_PREHEAT_ABS012       "Preris. ABS Tutto"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Preri. ABS Piatto"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Preris. ABS Conf"
+ 	#define MSG_COOLDOWN             "Raffredda"
+ 	#define MSG_SWITCH_PS_ON         "Switch Power On"
+@@ -1210,6 +1303,9 @@
+ 	#define MSG_BED                  "Piatto"
+ 	#define MSG_FAN_SPEED            "Ventola"
+ 	#define MSG_FLOW                 "Flusso"
++	#define MSG_FLOW0                "Flusso 0"
++	#define MSG_FLOW1                "Flusso 1"
++	#define MSG_FLOW2                "Flusso 2"
+ 	#define MSG_CONTROL              "Controllo"
+ 	#define MSG_MIN                  " \002 Min:"
+ 	#define MSG_MAX                  " \002 Max:"
+@@ -1303,6 +1399,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Estrusore non valido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Estrusore non valido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Estrusore non valido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Estrusore non valido "
+ 	#define MSG_ERR_NO_THERMISTORS   "Nessun Termistore - nessuna temperatura"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Estrusore non valido "
+ 	#define MSG_HEATING              "Riscaldamento..."
+@@ -1370,8 +1467,18 @@
+ 	#define MSG_AUTO_HOME "Ir para origen"
+ 	#define MSG_SET_ORIGIN "Estabelecer orig."
+ 	#define MSG_PREHEAT_PLA "Pre-aquecer PLA"
++	#define MSG_PREHEAT_PLA0 " pre-aquecer PLA 1"
++	#define MSG_PREHEAT_PLA1 " pre-aquecer PLA 2"
++	#define MSG_PREHEAT_PLA2 " pre-aquecer PLA 3"
++	#define MSG_PREHEAT_PLA012 " pre-aq. PLA Tudo"
++	#define MSG_PREHEAT_PLA_BEDONLY  " pre-aq. PLA \002Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "PLA setting"
+ 	#define MSG_PREHEAT_ABS "Pre-aquecer ABS"
++	#define MSG_PREHEAT_ABS0 " pre-aquecer ABS 1"
++	#define MSG_PREHEAT_ABS1 " pre-aquecer ABS 2"
++	#define MSG_PREHEAT_ABS2 " pre-aquecer ABS 3"
++	#define MSG_PREHEAT_ABS012 " pre-aq. ABS Tudo"
++	#define MSG_PREHEAT_ABS_BEDONLY  " pre-aq. ABS \002Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "ABS setting"
+ 	#define MSG_COOLDOWN "Esfriar"
+ 	#define MSG_SWITCH_PS_ON "Switch Power On"
+@@ -1395,6 +1502,9 @@
+ 	#define MSG_BED "\002Base:"
+ 	#define MSG_FAN_SPEED "Velocidade vento."
+ 	#define MSG_FLOW "Fluxo:"
++	#define MSG_FLOW0 "Fluxo0:"
++	#define MSG_FLOW1 "Fluxo1:"
++	#define MSG_FLOW2 "Fluxo2:"
+ 	#define MSG_CONTROL "Controle \003"
+ 	#define MSG_MIN "\002 Min:"
+ 	#define MSG_MAX "\002 Max:"
+@@ -1492,6 +1602,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor inválido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor inválido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor inválido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor inválido "
+ 	#define MSG_ERR_NO_THERMISTORS "Nao ha termistor - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor inválido "
+ 	#define MSG_HEATING "Aquecendo..."
+@@ -1560,8 +1671,18 @@
+ 	#define MSG_AUTO_HOME "Aja referenssiin"
+ 	#define MSG_SET_ORIGIN "Aseta origo"
+ 	#define MSG_PREHEAT_PLA "Esilammita PLA"
++	#define MSG_PREHEAT_PLA0 "Esilammita PLA 1"
++	#define MSG_PREHEAT_PLA1 "Esilammita PLA 2"
++	#define MSG_PREHEAT_PLA2 "Esilammita PLA 3"
++	#define MSG_PREHEAT_PLA012 "Esila. PLA Kaikki"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Esila. PLA Alusta"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Esilamm. PLA konf"
+ 	#define MSG_PREHEAT_ABS "Esilammita ABS"
++	#define MSG_PREHEAT_ABS0 "Esilammita ABS 1"
++	#define MSG_PREHEAT_ABS1 "Esilammita ABS 2"
++	#define MSG_PREHEAT_ABS2 "Esilammita ABS 3"
++	#define MSG_PREHEAT_ABS012 "Esila. ABS Kaikki"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Esila. ABS Alusta"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Esilamm. ABS konf"
+ 	#define MSG_COOLDOWN "Jaahdyta"
+ 	#define MSG_SWITCH_PS_ON "Virta paalle"
+@@ -1583,6 +1704,9 @@
+ 	#define MSG_BED "Alusta"
+ 	#define MSG_FAN_SPEED "Tuul. nopeus"
+ 	#define MSG_FLOW "Virtaus"
++	#define MSG_FLOW0 "Virtaus 0"
++	#define MSG_FLOW1 "Virtaus 1"
++	#define MSG_FLOW2 "Virtaus 2"
+ 	#define MSG_CONTROL "Kontrolli"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -1675,6 +1799,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Virheellinen suutin "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Virheellinen suutin "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Virheellinen suutin "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Virheellinen suutin "
+ 	#define MSG_ERR_NO_THERMISTORS "Ei termistoreja - ei lampotiloja"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Virheellinen suutin "
+ 	#define MSG_HEATING "Lammitan..."
+@@ -1743,8 +1868,18 @@
+ 	#define MSG_AUTO_HOME "Levar a l'orichen"
+ 	#define MSG_SET_ORIGIN "Establir zero"
+ 	#define MSG_PREHEAT_PLA "Precalentar PLA"
++	#define MSG_PREHEAT_PLA0 "Precalentar PLA0"
++	#define MSG_PREHEAT_PLA1 "Precalentar PLA1"
++	#define MSG_PREHEAT_PLA2 "Precalentar PLA2"
++	#define MSG_PREHEAT_PLA012 "Precalentar PLA a"
++	#define MSG_PREHEAT_PLA_BEDONLY  "Prec. PLA Base"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "Achustar tem. PLA"
+ 	#define MSG_PREHEAT_ABS "Precalentar ABS"
++	#define MSG_PREHEAT_ABS0 "Precalentar ABS0"
++	#define MSG_PREHEAT_ABS1 "Precalentar ABS1"
++	#define MSG_PREHEAT_ABS2 "Precalentar ABS2"
++	#define MSG_PREHEAT_ABS012 "Precalentar ABS a"
++	#define MSG_PREHEAT_ABS_BEDONLY  "Prec. ABS Base"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "Achustar tem. ABS"
+ 	#define MSG_COOLDOWN "Enfriar"
+ 	#define MSG_SWITCH_PS_ON "Enchegar Fuent"
+@@ -1766,6 +1901,9 @@
+ 	#define MSG_BED "Base"
+ 	#define MSG_FAN_SPEED "Ixoriador"
+ 	#define MSG_FLOW "Fluxo"
++	#define MSG_FLOW0 "Fluxo 0"
++	#define MSG_FLOW1 "Fluxo 1"
++	#define MSG_FLOW2 "Fluxo 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN "\002 Min"
+ 	#define MSG_MAX "\002 Max"
+@@ -1867,6 +2005,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Extrusor Invalido "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Extrusor Invalido "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Extrusor Invalido "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Extrusor Invalido "
+ 	#define MSG_ERR_NO_THERMISTORS "No i hai termistores - no temp"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Extrusor Invalido "
+ 	#define MSG_HEATING "Calentando..."
+@@ -1932,8 +2071,18 @@
+ 	#define MSG_AUTO_HOME "Auto home"
+ 	#define MSG_SET_ORIGIN "Nulpunt instellen"
+ 	#define MSG_PREHEAT_PLA "PLA voorverwarmen"
++	#define MSG_PREHEAT_PLA0 "PLA voorverw. 0"
++	#define MSG_PREHEAT_PLA1 "PLA voorverw. 1"
++	#define MSG_PREHEAT_PLA2 "PLA voorverw. 2"
++	#define MSG_PREHEAT_PLA012 "PLA voorverw. aan"
++	#define MSG_PREHEAT_PLA_BEDONLY  "PLA voorverw. Bed"
+ 	#define MSG_PREHEAT_PLA_SETTINGS "PLA verw. conf"
+ 	#define MSG_PREHEAT_ABS "ABS voorverwarmen"
++	#define MSG_PREHEAT_ABS0 "ABS voorverw. 0"
++	#define MSG_PREHEAT_ABS1 "ABS voorverw. 1"
++	#define MSG_PREHEAT_ABS2 "ABS voorverw. 2"
++	#define MSG_PREHEAT_ABS012 "ABS voorverw. aan"
++	#define MSG_PREHEAT_ABS_BEDONLY  "ABS voorverw. Bed"
+ 	#define MSG_PREHEAT_ABS_SETTINGS "ABS verw. conf"
+ 	#define MSG_COOLDOWN "Afkoelen"
+ 	#define MSG_SWITCH_PS_ON "Stroom aan"
+@@ -1955,6 +2104,9 @@
+ 	#define MSG_BED "Bed"
+ 	#define MSG_FAN_SPEED "Fan snelheid"
+ 	#define MSG_FLOW "Flow"
++	#define MSG_FLOW0 "Flow 0"
++	#define MSG_FLOW1 "Flow 1"
++	#define MSG_FLOW2 "Flow 2"
+ 	#define MSG_CONTROL "Control"
+ 	#define MSG_MIN " \002 Min"
+ 	#define MSG_MAX " \002 Max"
+@@ -2047,6 +2199,7 @@
+ 	#define MSG_M105_INVALID_EXTRUDER "M105 Ongeldige extruder "
+ 	#define MSG_M200_INVALID_EXTRUDER "M200 Ongeldige extruder "
+ 	#define MSG_M218_INVALID_EXTRUDER "M218 Ongeldige extruder "
++	#define MSG_M221_INVALID_EXTRUDER "M221 Ongeldige extruder "
+ 	#define MSG_ERR_NO_THERMISTORS "Geen thermistors - geen temperatuur"
+ 	#define MSG_M109_INVALID_EXTRUDER "M109 Ongeldige extruder "
+ 	#define MSG_HEATING "Opwarmen..."
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4e07ac3..0a66b77 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -196,6 +196,7 @@ static void lcd_status_screen()
+         lcd_quick_feedback();
+     }
+ 
++#ifdef ULTIPANEL_FEEDMULTIPLY
+     // Dead zone at 100% feedrate
+     if ((feedmultiply < 100 && (feedmultiply + int(encoderPosition)) > 100) ||
+             (feedmultiply > 100 && (feedmultiply + int(encoderPosition)) < 100))
+@@ -219,6 +220,7 @@ static void lcd_status_screen()
+         feedmultiply += int(encoderPosition);
+         encoderPosition = 0;
+     }
++#endif//ULTIPANEL_FEEDMULTIPLY
+ 
+     if (feedmultiply < 10)
+         feedmultiply = 10;
+@@ -302,37 +304,6 @@ static void lcd_autostart_sd()
+ }
+ #endif
+ 
+-void lcd_preheat_pla()
+-{
+-    setTargetHotend0(plaPreheatHotendTemp);
+-    setTargetHotend1(plaPreheatHotendTemp);
+-    setTargetHotend2(plaPreheatHotendTemp);
+-    setTargetBed(plaPreheatHPBTemp);
+-    fanSpeed = plaPreheatFanSpeed;
+-    lcd_return_to_status();
+-    setWatch(); // heater sanity check timer
+-}
+-
+-void lcd_preheat_abs()
+-{
+-    setTargetHotend0(absPreheatHotendTemp);
+-    setTargetHotend1(absPreheatHotendTemp);
+-    setTargetHotend2(absPreheatHotendTemp);
+-    setTargetBed(absPreheatHPBTemp);
+-    fanSpeed = absPreheatFanSpeed;
+-    lcd_return_to_status();
+-    setWatch(); // heater sanity check timer
+-}
+-
+-static void lcd_cooldown()
+-{
+-    setTargetHotend0(0);
+-    setTargetHotend1(0);
+-    setTargetHotend2(0);
+-    setTargetBed(0);
+-    lcd_return_to_status();
+-}
+-
+ #ifdef BABYSTEPPING
+ static void lcd_babystep_x()
+ {
+@@ -412,6 +383,13 @@ static void lcd_tune_menu()
+ #endif
+     MENU_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
+     MENU_ITEM_EDIT(int3, MSG_FLOW, &extrudemultiply, 10, 999);
++    MENU_ITEM_EDIT(int3, MSG_FLOW0, &extruder_multiply[0], 10, 999);
++#if TEMP_SENSOR_1 != 0
++    MENU_ITEM_EDIT(int3, MSG_FLOW1, &extruder_multiply[1], 10, 999);
++#endif
++#if TEMP_SENSOR_2 != 0
++    MENU_ITEM_EDIT(int3, MSG_FLOW2, &extruder_multiply[2], 10, 999);
++#endif
+ 
+ #ifdef BABYSTEPPING
+     #ifdef BABYSTEP_XY
+@@ -426,6 +404,154 @@ static void lcd_tune_menu()
+     END_MENU();
+ }
+ 
++void lcd_preheat_pla0()
++{
++    setTargetHotend0(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs0()
++{
++    setTargetHotend0(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++#if TEMP_SENSOR_1 != 0 //2nd extruder preheat
++void lcd_preheat_pla1()
++{
++    setTargetHotend1(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs1()
++{
++    setTargetHotend1(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //2nd extruder preheat
++
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++void lcd_preheat_pla2()
++{
++    setTargetHotend2(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs2()
++{
++    setTargetHotend2(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //3 extruder preheat
++
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //more than one extruder present
++void lcd_preheat_pla012()
++{
++    setTargetHotend0(plaPreheatHotendTemp);
++    setTargetHotend1(plaPreheatHotendTemp);
++    setTargetHotend2(plaPreheatHotendTemp);
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs012()
++{
++    setTargetHotend0(absPreheatHotendTemp);
++    setTargetHotend1(absPreheatHotendTemp);
++    setTargetHotend2(absPreheatHotendTemp);
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++#endif //more than one extruder present
++
++void lcd_preheat_pla_bedonly()
++{
++    setTargetBed(plaPreheatHPBTemp);
++    fanSpeed = plaPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++void lcd_preheat_abs_bedonly()
++{
++    setTargetBed(absPreheatHPBTemp);
++    fanSpeed = absPreheatFanSpeed;
++    lcd_return_to_status();
++    setWatch(); // heater sanity check timer
++}
++
++static void lcd_preheat_pla_menu()
++{
++    START_MENU();
++    MENU_ITEM(back, MSG_PREPARE, lcd_prepare_menu);
++    MENU_ITEM(function, MSG_PREHEAT_PLA0, lcd_preheat_pla0);
++#if TEMP_SENSOR_1 != 0 //2 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA1, lcd_preheat_pla1);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA2, lcd_preheat_pla2);
++#endif //3 extruder preheat
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //all extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_PLA012, lcd_preheat_pla012);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_BED != 0
++    MENU_ITEM(function, MSG_PREHEAT_PLA_BEDONLY, lcd_preheat_pla_bedonly);
++#endif
++    END_MENU();
++}
++
++static void lcd_preheat_abs_menu()
++{
++    START_MENU();
++    MENU_ITEM(back, MSG_PREPARE, lcd_prepare_menu);
++    MENU_ITEM(function, MSG_PREHEAT_ABS0, lcd_preheat_abs0);
++#if TEMP_SENSOR_1 != 0 //2 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS1, lcd_preheat_abs1);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_2 != 0 //3 extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS2, lcd_preheat_abs2);
++#endif //3 extruder preheat
++#if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 //all extruder preheat
++    MENU_ITEM(function, MSG_PREHEAT_ABS012, lcd_preheat_abs012);
++#endif //2 extruder preheat
++#if TEMP_SENSOR_BED != 0
++    MENU_ITEM(function, MSG_PREHEAT_ABS_BEDONLY, lcd_preheat_abs_bedonly);
++#endif
++    END_MENU();
++}
++
++void lcd_cooldown()
++{
++    setTargetHotend0(0);
++    setTargetHotend1(0);
++    setTargetHotend2(0);
++    setTargetBed(0);
++    fanSpeed = 0;
++    lcd_return_to_status();
++}
++
+ static void lcd_prepare_menu()
+ {
+     START_MENU();
+@@ -438,8 +564,15 @@ static void lcd_prepare_menu()
+     MENU_ITEM(gcode, MSG_DISABLE_STEPPERS, PSTR("M84"));
+     MENU_ITEM(gcode, MSG_AUTO_HOME, PSTR("G28"));
+     //MENU_ITEM(gcode, MSG_SET_ORIGIN, PSTR("G92 X0 Y0 Z0"));
+-    MENU_ITEM(function, MSG_PREHEAT_PLA, lcd_preheat_pla);
+-    MENU_ITEM(function, MSG_PREHEAT_ABS, lcd_preheat_abs);
++#if TEMP_SENSOR_0 != 0
++  #if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 || TEMP_SENSOR_BED != 0
++    MENU_ITEM(submenu, MSG_PREHEAT_PLA, lcd_preheat_pla_menu);
++    MENU_ITEM(submenu, MSG_PREHEAT_ABS, lcd_preheat_abs_menu);
++  #else
++    MENU_ITEM(function, MSG_PREHEAT_PLA, lcd_preheat_pla0);
++    MENU_ITEM(function, MSG_PREHEAT_ABS, lcd_preheat_abs0);
++  #endif
++#endif
+     MENU_ITEM(function, MSG_COOLDOWN, lcd_cooldown);
+ #if PS_ON_PIN > -1
+     if (powersupply)
+
+commit bbe8fbe13d91b521484b529c2ae5f0687b6a9924 (from 51c6bd6b72aec22dc16dbbd6a9f37b81850d6fad)
+Merge: af8be90 51c6bd6
+Author: neildarlow <neil@darlow.co.uk>
+Date:   Fri Mar 21 18:27:14 2014 +0000
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d7397ac..f7060fc 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1641,6 +1641,8 @@ void process_commands()
+           lcd_update();
+         }
+       }else{
++          if (!lcd_detected())
++            break;
+         while(!lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 8ae977d..0a66b77 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1184,7 +1184,7 @@ void lcd_update()
+     lcd_buttons_update();
+ 
+     #if (SDCARDDETECT > 0)
+-    if((IS_SD_INSERTED != lcd_oldcardstatus))
++    if((IS_SD_INSERTED != lcd_oldcardstatus && lcd_detected()))
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+@@ -1281,6 +1281,11 @@ void lcd_setstatus(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setstatuspgm(const char* message)
+@@ -1288,6 +1293,11 @@ void lcd_setstatuspgm(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setalertstatuspgm(const char* message)
+@@ -1396,6 +1406,15 @@ void lcd_buttons_update()
+     lastEncoderBits = enc;
+ }
+ 
++bool lcd_detected(void)
++{
++#if (defined(LCD_I2C_TYPE_MCP23017) || defined(LCD_I2C_TYPE_MCP23008)) && defined(DETECT_DEVICE)
++  return lcd.LcdDetected() == 1;
++#else
++  return true;
++#endif
++}
++
+ void lcd_buzz(long duration, uint16_t freq)
+ {
+ #ifdef LCD_USE_I2C_BUZZER
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index f4570f6..fce23ba 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,6 +11,7 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
++  bool lcd_detected(void);
+ 
+ #ifdef DOGLCD
+   extern int lcd_contrast;
+@@ -92,6 +93,7 @@
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+   FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) 
+   #define LCD_ALERTMESSAGEPGM(x) 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 932895b..fd33744 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -166,13 +166,21 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+   
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+

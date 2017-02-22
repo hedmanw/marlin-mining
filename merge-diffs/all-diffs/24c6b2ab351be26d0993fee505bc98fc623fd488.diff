@@ -1,0 +1,248 @@
+commit 24c6b2ab351be26d0993fee505bc98fc623fd488 (from 457d8a0acb16bd88c77ba99ee9917628b0597760)
+Merge: 457d8a0 6a803ba
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Oct 20 09:51:58 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/BlinkM.cpp b/Marlin/BlinkM.cpp
+new file mode 100644
+index 0000000..7b8a786
+--- /dev/null
++++ b/Marlin/BlinkM.cpp
+@@ -0,0 +1,24 @@
++/*
++  BlinkM.cpp - Library for controlling a BlinkM over i2c
++  Created by Tim Koster, August 21 2013.
++*/
++#if (ARDUINO >= 100)
++  # include "Arduino.h"
++#else
++  # include "WProgram.h"
++#endif
++
++#include "BlinkM.h"
++
++void SendColors(byte red, byte grn, byte blu)
++{
++  Wire.begin(); 
++  Wire.beginTransmission(0x09);
++  Wire.write('o');                    //to disable ongoing script, only needs to be used once
++  Wire.write('n');
++  Wire.write(red);
++  Wire.write(grn);
++  Wire.write(blu);
++  Wire.endTransmission();
++}
++
+diff --git a/Marlin/BlinkM.h b/Marlin/BlinkM.h
+new file mode 100644
+index 0000000..5136828
+--- /dev/null
++++ b/Marlin/BlinkM.h
+@@ -0,0 +1,14 @@
++/*
++  BlinkM.h
++  Library header file for BlinkM library
++ */
++#if (ARDUINO >= 100)
++  # include "Arduino.h"
++#else
++  # include "WProgram.h"
++#endif
++
++#include "Wire.h"
++
++void SendColors(byte red, byte grn, byte blu);
++
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 459640f..974709f 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -561,6 +561,9 @@ const bool Z_MAX_ENDSTOP_INVERTING = true; // set to true to invert the logic of
+ // Support for the BariCUDA Paste Extruder.
+ //#define BARICUDA
+ 
++//define BlinkM/CyzRgb Support
++//#define BLINKM
++
+ /*********************************************************************\
+ * R/C SERVO support
+ * Sponsored by TrinityLabs, Reworked by codexmas
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 2a35342..d62c2f6 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -44,6 +44,9 @@
+ #include "language.h"
+ #include "pins_arduino.h"
+ 
++#include "BlinkM.h"
++#include "Wire.h" 
++
+ #if NUM_SERVOS > 0
+ #include "Servo.h"
+ #endif
+@@ -115,6 +118,7 @@
+ // M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
+ // M140 - Set bed target temp
++// M150 - Set BlinkM Colour Output R: Red<0-255> U(!): Green<0-255> B: Blue<0-255> over i2c, G for green does not work.
+ // M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
+ //        Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+ // M200 - Set filament diameter
+@@ -1935,6 +1939,21 @@ void process_commands()
+       #endif
+       break;
+       //TODO: update for all axis, use for loop
++    #ifdef BLINKM  
++    case 150: // M150
++      {
++        byte red;
++        byte grn;
++        byte blu;
++        
++        if(code_seen('R')) red = code_value();
++        if(code_seen('U')) grn = code_value();
++        if(code_seen('B')) blu = code_value();
++        
++        SendColors(red,grn,blu);        
++      }
++      break;
++    #endif //BLINKM
+     case 201: // M201
+       for(int8_t i=0; i < NUM_AXIS; i++)
+       {
+
+commit 24c6b2ab351be26d0993fee505bc98fc623fd488 (from 6a803ba9c5377152cd5b4162bed09ab1240c9bdc)
+Merge: 457d8a0 6a803ba
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Oct 20 09:51:58 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 220458d..06101f0 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -150,6 +150,21 @@
+   #define EXTRUDERS 1
+ #endif
+ 
++// Same again but for Y Axis.
++//#define Y_DUAL_STEPPER_DRIVERS
++
++// Define if the two Y drives need to rotate in opposite directions
++#define INVERT_Y2_VS_Y_DIR true
++
++#ifdef Y_DUAL_STEPPER_DRIVERS
++  #undef EXTRUDERS
++  #define EXTRUDERS 1
++#endif
++
++#ifdef Z_DUAL_STEPPER_DRIVERS && Y_DUAL_STEPPER_DRIVERS
++  #error "You cannot have dual drivers for both Y and Z"
++#endif 
++
+ // Enable this for dual x-carriage printers. 
+ // A dual x-carriage design has the advantage that the inactive extruder can be parked which
+ // prevents hot-end ooze contaminating the print. It also reduces the weight of each x-carriage
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 6da0a83..fe1e751 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -109,8 +109,13 @@ void manage_inactivity();
+ #endif
+ 
+ #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
+-  #define  enable_y() WRITE(Y_ENABLE_PIN, Y_ENABLE_ON)
+-  #define disable_y() WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON)
++  #ifdef Y_DUAL_STEPPER_DRIVERS
++    #define  enable_y() { WRITE(Y_ENABLE_PIN, Y_ENABLE_ON); WRITE(Y2_ENABLE_PIN,  Y_ENABLE_ON); }
++    #define disable_y() { WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON); WRITE(Y2_ENABLE_PIN, !Y_ENABLE_ON); }
++  #else
++    #define  enable_y() WRITE(Y_ENABLE_PIN, Y_ENABLE_ON)
++    #define disable_y() WRITE(Y_ENABLE_PIN,!Y_ENABLE_ON)
++  #endif
+ #else
+   #define enable_y() ;
+   #define disable_y() ;
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4f11ae9..f45ef7d 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -383,10 +383,20 @@ ISR(TIMER1_COMPA_vect)
+     }
+     if((out_bits & (1<<Y_AXIS))!=0){
+       WRITE(Y_DIR_PIN, INVERT_Y_DIR);
++	  
++	  #ifdef Y_DUAL_STEPPER_DRIVERS
++	    WRITE(Y2_DIR_PIN, !(INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
++	  #endif
++	  
+       count_direction[Y_AXIS]=-1;
+     }
+     else{
+       WRITE(Y_DIR_PIN, !INVERT_Y_DIR);
++	  
++	  #ifdef Y_DUAL_STEPPER_DRIVERS
++	    WRITE(Y2_DIR_PIN, (INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
++	  #endif
++	  
+       count_direction[Y_AXIS]=1;
+     }
+ 
+@@ -582,9 +592,18 @@ ISR(TIMER1_COMPA_vect)
+         counter_y += current_block->steps_y;
+         if (counter_y > 0) {
+           WRITE(Y_STEP_PIN, !INVERT_Y_STEP_PIN);
++		  
++		  #ifdef Y_DUAL_STEPPER_DRIVERS
++			WRITE(Y2_STEP_PIN, !INVERT_Y_STEP_PIN);
++		  #endif
++		  
+           counter_y -= current_block->step_event_count;
+           count_position[Y_AXIS]+=count_direction[Y_AXIS];
+           WRITE(Y_STEP_PIN, INVERT_Y_STEP_PIN);
++		  
++		  #ifdef Y_DUAL_STEPPER_DRIVERS
++			WRITE(Y2_STEP_PIN, INVERT_Y_STEP_PIN);
++		  #endif
+         }
+ 
+       counter_z += current_block->steps_z;
+@@ -756,6 +775,10 @@ void st_init()
+   #endif
+   #if defined(Y_DIR_PIN) && Y_DIR_PIN > -1
+     SET_OUTPUT(Y_DIR_PIN);
++		
++	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_DIR_PIN) && (Y2_DIR_PIN > -1)
++	  SET_OUTPUT(Y2_DIR_PIN);
++	#endif
+   #endif
+   #if defined(Z_DIR_PIN) && Z_DIR_PIN > -1
+     SET_OUTPUT(Z_DIR_PIN);
+@@ -787,6 +810,11 @@ void st_init()
+   #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
+     SET_OUTPUT(Y_ENABLE_PIN);
+     if(!Y_ENABLE_ON) WRITE(Y_ENABLE_PIN,HIGH);
++	
++	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_ENABLE_PIN) && (Y2_ENABLE_PIN > -1)
++	  SET_OUTPUT(Y2_ENABLE_PIN);
++	  if(!Y_ENABLE_ON) WRITE(Y2_ENABLE_PIN,HIGH);
++	#endif
+   #endif
+   #if defined(Z_ENABLE_PIN) && Z_ENABLE_PIN > -1
+     SET_OUTPUT(Z_ENABLE_PIN);
+@@ -869,6 +897,10 @@ void st_init()
+   #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1)
+     SET_OUTPUT(Y_STEP_PIN);
+     WRITE(Y_STEP_PIN,INVERT_Y_STEP_PIN);
++    #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && (Y2_STEP_PIN > -1)
++      SET_OUTPUT(Y2_STEP_PIN);
++      WRITE(Y2_STEP_PIN,INVERT_Y_STEP_PIN);
++    #endif
+     disable_y();
+   #endif
+   #if defined(Z_STEP_PIN) && (Z_STEP_PIN > -1)
+

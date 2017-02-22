@@ -1,0 +1,850 @@
+commit 4d4c00d69cf012731bf15791046c07d907d89cb7 (from f3a54316e658faa43cbf5af44f257e4e0f2270c0)
+Merge: f3a5431 12d7236
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 19 15:45:49 2016 -0500
+
+    Merge pull request #4651 from thinkyhead/rc_homing_vs_leveling_z
+    
+    Improvements to homing / leveling
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 9d384c5..9d87aec 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 697acf6..e5bbdb7 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -379,6 +379,7 @@ extern uint8_t active_extruder;
+   extern float mixing_factor[MIXING_STEPPERS];
+ #endif
+ 
++void update_software_endstops(AxisEnum axis);
+ void calculate_volumetric_multipliers();
+ 
+ // Buzzer
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 870a162..e026042 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1470,7 +1470,7 @@ XYZ_CONSTS_FROM_CONFIG(signed char, home_dir, HOME_DIR);
+  * the software endstop positions must be refreshed to remain
+  * at the same positions relative to the machine.
+  */
+-static void update_software_endstops(AxisEnum axis) {
++void update_software_endstops(AxisEnum axis) {
+   float offs = LOGICAL_POSITION(0, axis);
+ 
+   #if ENABLED(DUAL_X_CARRIAGE)
+@@ -1530,7 +1530,7 @@ static void set_home_offset(AxisEnum axis, float v) {
+ static void set_axis_is_at_home(AxisEnum axis) {
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+-      SERIAL_ECHOPAIR(">>> set_axis_is_at_home(", axis);
++      SERIAL_ECHOPAIR(">>> set_axis_is_at_home(", axis_codes[axis]);
+       SERIAL_ECHOLNPGM(")");
+     }
+   #endif
+@@ -1606,7 +1606,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+   }
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+-      SERIAL_ECHOPAIR("<<< set_axis_is_at_home(", axis);
++      SERIAL_ECHOPAIR("<<< set_axis_is_at_home(", axis_codes[axis]);
+       SERIAL_ECHOLNPGM(")");
+     }
+   #endif
+@@ -1638,15 +1638,6 @@ inline void line_to_z(float zPosition) {
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], zPosition, current_position[E_AXIS], feedrate_mm_s, active_extruder);
+ }
+ 
+-inline void line_to_axis_pos(AxisEnum axis, float where, float fr_mm_s = 0.0) {
+-  float old_feedrate_mm_s = feedrate_mm_s;
+-  current_position[axis] = where;
+-  feedrate_mm_s = (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis];
+-  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], feedrate_mm_s, active_extruder);
+-  stepper.synchronize();
+-  feedrate_mm_s = old_feedrate_mm_s;
+-}
+-
+ //
+ // line_to_destination
+ // Move the planner, not necessarily synced with current_position
+@@ -2127,10 +2118,36 @@ static void clean_up_after_endstop_or_probe_move() {
+     return false;
+   }
+ 
++  static void do_probe_move(float z, float fr_mm_m) {
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS(">>> do_probe_move", current_position);
++    #endif
++
++    // Move down until probe triggered
++    do_blocking_move_to_z(LOGICAL_Z_POSITION(z), MMM_TO_MMS(fr_mm_m));
++
++    // Clear endstop flags
++    endstops.hit_on_purpose();
++
++    // Get Z where the steppers were interrupted
++    set_current_from_steppers_for_axis(Z_AXIS);
++
++    // Tell the planner where we actually are
++    SYNC_PLAN_POSITION_KINEMATIC();
++
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS("<<< do_probe_move", current_position);
++    #endif
++  }
++
+   // Do a single Z probe and return with current_position[Z_AXIS]
+   // at the height where the probe triggered.
+   static float run_z_probe() {
+ 
++    #if ENABLED(DEBUG_LEVELING_FEATURE)
++      if (DEBUGGING(LEVELING)) DEBUG_POS(">>> run_z_probe", current_position);
++    #endif
++
+     // Prevent stepper_inactive_time from running out and EXTRUDER_RUNOUT_PREVENT from extruding
+     refresh_cmd_timeout();
+ 
+@@ -2139,26 +2156,27 @@ static void clean_up_after_endstop_or_probe_move() {
+     #endif
+ 
+     #if ENABLED(PROBE_DOUBLE_TOUCH)
+-      do_blocking_move_to_z(-(Z_MAX_LENGTH + 10), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+-      endstops.hit_on_purpose();
+-      set_current_from_steppers_for_axis(Z_AXIS);
+-      SYNC_PLAN_POSITION_KINEMATIC();
+ 
+-      // move up the retract distance
++      // Do a first probe at the fast speed
++      do_probe_move(-(Z_MAX_LENGTH) - 10, Z_PROBE_SPEED_FAST);
++
++      // move up by the bump distance
+       do_blocking_move_to_z(current_position[Z_AXIS] + home_bump_mm(Z_AXIS), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
++
+     #else
++
+       // move fast, close to the bed
+-      do_blocking_move_to_z(home_bump_mm(Z_AXIS), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
++      float z = LOGICAL_Z_POSITION(home_bump_mm(Z_AXIS));
++      if (zprobe_zoffset < 0) z -= zprobe_zoffset;
++      do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
++
+     #endif
+ 
+     // move down slowly to find bed
+-    do_blocking_move_to_z(current_position[Z_AXIS] -2.0*home_bump_mm(Z_AXIS), MMM_TO_MMS(Z_PROBE_SPEED_SLOW));
+-    endstops.hit_on_purpose();
+-    set_current_from_steppers_for_axis(Z_AXIS);
+-    SYNC_PLAN_POSITION_KINEMATIC();
++    do_probe_move(-10, Z_PROBE_SPEED_SLOW);
+ 
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+-      if (DEBUGGING(LEVELING)) DEBUG_POS("run_z_probe", current_position);
++      if (DEBUGGING(LEVELING)) DEBUG_POS("<<< run_z_probe", current_position);
+     #endif
+ 
+     return current_position[Z_AXIS];
+@@ -2393,6 +2411,15 @@ static void clean_up_after_endstop_or_probe_move() {
+  * Home an individual axis
+  */
+ 
++static void do_homing_move(AxisEnum axis, float where, float fr_mm_s = 0.0) {
++  float old_feedrate_mm_s = feedrate_mm_s;
++  current_position[axis] = where;
++  feedrate_mm_s = (fr_mm_s != 0.0) ? fr_mm_s : homing_feedrate_mm_s[axis];
++  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], feedrate_mm_s, active_extruder);
++  stepper.synchronize();
++  feedrate_mm_s = old_feedrate_mm_s;
++}
++
+ #define HOMEAXIS(LETTER) homeaxis(LETTER##_AXIS)
+ 
+ static void homeaxis(AxisEnum axis) {
+@@ -2403,7 +2430,7 @@ static void homeaxis(AxisEnum axis) {
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+-      SERIAL_ECHOPAIR(">>> homeaxis(", axis);
++      SERIAL_ECHOPAIR(">>> homeaxis(", axis_codes[axis]);
+       SERIAL_ECHOLNPGM(")");
+     }
+   #endif
+@@ -2415,8 +2442,8 @@ static void homeaxis(AxisEnum axis) {
+     home_dir(axis);
+ 
+   // Homing Z towards the bed? Deploy the Z probe or endstop.
+-  #if HAS_BED_PROBE && DISABLED(Z_MIN_PROBE_ENDSTOP)
+-    if (axis == Z_AXIS && axis_home_dir < 0) {
++  #if HAS_BED_PROBE && Z_HOME_DIR < 0 && DISABLED(Z_MIN_PROBE_ENDSTOP)
++    if (axis == Z_AXIS) {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+       #endif
+@@ -2434,17 +2461,17 @@ static void homeaxis(AxisEnum axis) {
+   #endif
+ 
+   // Move towards the endstop until an endstop is triggered
+-  line_to_axis_pos(axis, 1.5 * max_length(axis) * axis_home_dir);
++  do_homing_move(axis, 1.5 * max_length(axis) * axis_home_dir);
+ 
+   // Set the axis position as setup for the move
+   current_position[axis] = 0;
+   sync_plan_position();
+ 
+   // Move away from the endstop by the axis HOME_BUMP_MM
+-  line_to_axis_pos(axis, -home_bump_mm(axis) * axis_home_dir);
++  do_homing_move(axis, -home_bump_mm(axis) * axis_home_dir);
+ 
+   // Move slowly towards the endstop until triggered
+-  line_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, get_homing_bump_feedrate(axis));
++  do_homing_move(axis, 2 * home_bump_mm(axis) * axis_home_dir, get_homing_bump_feedrate(axis));
+ 
+   // reset current_position to 0 to reflect hitting endpoint
+   current_position[axis] = 0;
+@@ -2468,7 +2495,7 @@ static void homeaxis(AxisEnum axis) {
+       if (lockZ1) stepper.set_z_lock(true); else stepper.set_z2_lock(true);
+ 
+       // Move to the adjusted endstop height
+-      line_to_axis_pos(axis, adj);
++      do_homing_move(axis, adj);
+ 
+       if (lockZ1) stepper.set_z_lock(false); else stepper.set_z2_lock(false);
+       stepper.set_homing_flag(false);
+@@ -2477,14 +2504,14 @@ static void homeaxis(AxisEnum axis) {
+ 
+   #if ENABLED(DELTA)
+     // retrace by the amount specified in endstop_adj
+-    if (endstop_adj[axis] * axis_home_dir < 0) {
++    if (endstop_adj[axis] * Z_HOME_DIR < 0) {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) {
+           SERIAL_ECHOPAIR("> endstop_adj = ", endstop_adj[axis]);
+           DEBUG_POS("", current_position);
+         }
+       #endif
+-      line_to_axis_pos(axis, endstop_adj[axis]);
++      do_homing_move(axis, endstop_adj[axis]);
+     }
+   #endif
+ 
+@@ -2503,8 +2530,8 @@ static void homeaxis(AxisEnum axis) {
+   axis_homed[axis] = true;
+ 
+   // Put away the Z probe
+-  #if HAS_BED_PROBE && DISABLED(Z_MIN_PROBE_ENDSTOP)
+-    if (axis == Z_AXIS && axis_home_dir < 0) {
++  #if HAS_BED_PROBE && Z_HOME_DIR < 0 && DISABLED(Z_MIN_PROBE_ENDSTOP)
++    if (axis == Z_AXIS) {
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) SERIAL_ECHOPGM("> ");
+       #endif
+@@ -2514,11 +2541,11 @@ static void homeaxis(AxisEnum axis) {
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) {
+-      SERIAL_ECHOPAIR("<<< homeaxis(", axis);
++      SERIAL_ECHOPAIR("<<< homeaxis(", axis_codes[axis]);
+       SERIAL_ECHOLNPGM(")");
+     }
+   #endif
+-}
++} // homeaxis()
+ 
+ #if ENABLED(FWRETRACT)
+ 
+@@ -3475,7 +3502,7 @@ inline void gcode_G28() {
+ 
+     int verbose_level = code_seen('V') ? code_value_int() : 1;
+     if (verbose_level < 0 || verbose_level > 4) {
+-      SERIAL_ECHOLNPGM("?(V)erbose Level is implausible (0-4).");
++      SERIAL_PROTOCOLLNPGM("?(V)erbose Level is implausible (0-4).");
+       return;
+     }
+ 
+@@ -3587,12 +3614,12 @@ inline void gcode_G28() {
+     #if ENABLED(AUTO_BED_LEVELING_GRID)
+ 
+       // probe at the points of a lattice grid
+-      const int xGridSpacing = (right_probe_bed_position - left_probe_bed_position) / (auto_bed_leveling_grid_points - 1),
+-                yGridSpacing = (back_probe_bed_position - front_probe_bed_position) / (auto_bed_leveling_grid_points - 1);
++      const float xGridSpacing = (right_probe_bed_position - left_probe_bed_position) / (auto_bed_leveling_grid_points - 1),
++                  yGridSpacing = (back_probe_bed_position - front_probe_bed_position) / (auto_bed_leveling_grid_points - 1);
+ 
+       #if ENABLED(DELTA)
+-        delta_grid_spacing[0] = xGridSpacing;
+-        delta_grid_spacing[1] = yGridSpacing;
++        delta_grid_spacing[X_AXIS] = xGridSpacing;
++        delta_grid_spacing[Y_AXIS] = yGridSpacing;
+         float zoffset = zprobe_zoffset;
+         if (code_seen('Z')) zoffset += code_value_axis_units(Z_AXIS);
+       #else // !DELTA
+@@ -3614,10 +3641,11 @@ inline void gcode_G28() {
+       #endif // !DELTA
+ 
+       int probePointCounter = 0;
+-      bool zig = (auto_bed_leveling_grid_points & 1) ? true : false; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
++      bool zig = auto_bed_leveling_grid_points & 1; //always end at [RIGHT_PROBE_BED_POSITION, BACK_PROBE_BED_POSITION]
+ 
+       for (int yCount = 0; yCount < auto_bed_leveling_grid_points; yCount++) {
+-        double yProbe = front_probe_bed_position + yGridSpacing * yCount;
++        float yBase = front_probe_bed_position + yGridSpacing * yCount,
++              yProbe = floor(yProbe + (yProbe < 0 ? 0 : 0.5));
+         int xStart, xStop, xInc;
+ 
+         if (zig) {
+@@ -3634,13 +3662,13 @@ inline void gcode_G28() {
+         zig = !zig;
+ 
+         for (int xCount = xStart; xCount != xStop; xCount += xInc) {
+-          double xProbe = left_probe_bed_position + xGridSpacing * xCount;
++          float xBase = left_probe_bed_position + xGridSpacing * xCount,
++                xProbe = floor(xProbe + (xProbe < 0 ? 0 : 0.5));
+ 
+           #if ENABLED(DELTA)
+-            // Avoid probing the corners (outside the round or hexagon print surface) on a delta printer.
+-            float distance_from_center = HYPOT(xProbe, yProbe);
+-            if (distance_from_center > DELTA_PROBEABLE_RADIUS) continue;
+-          #endif //DELTA
++            // Avoid probing outside the round or hexagonal area of a delta printer
++            if (sq(xProbe) + sq(yProbe) > sq(DELTA_PROBEABLE_RADIUS)) continue;
++          #endif
+ 
+           float measured_z = probe_pt(xProbe, yProbe, stow_probe_after_each, verbose_level);
+ 
+@@ -7875,12 +7903,12 @@ void clamp_to_software_endstops(float target[3]) {
+ 
+     // Adjust print surface height by linear interpolation over the bed_level array.
+     void adjust_delta(float cartesian[3]) {
+-      if (delta_grid_spacing[0] == 0 || delta_grid_spacing[1] == 0) return; // G29 not done!
++      if (delta_grid_spacing[X_AXIS] == 0 || delta_grid_spacing[Y_AXIS] == 0) return; // G29 not done!
+ 
+       int half = (AUTO_BED_LEVELING_GRID_POINTS - 1) / 2;
+       float h1 = 0.001 - half, h2 = half - 0.001,
+-            grid_x = max(h1, min(h2, RAW_X_POSITION(cartesian[X_AXIS]) / delta_grid_spacing[0])),
+-            grid_y = max(h1, min(h2, RAW_Y_POSITION(cartesian[Y_AXIS]) / delta_grid_spacing[1]));
++            grid_x = max(h1, min(h2, RAW_X_POSITION(cartesian[X_AXIS]) / delta_grid_spacing[X_AXIS])),
++            grid_y = max(h1, min(h2, RAW_Y_POSITION(cartesian[Y_AXIS]) / delta_grid_spacing[Y_AXIS]));
+       int floor_x = floor(grid_x), floor_y = floor(grid_y);
+       float ratio_x = grid_x - floor_x, ratio_y = grid_y - floor_y,
+             z1 = bed_level[floor_x + half][floor_y + half],
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index fc866b1..228486e 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -191,6 +191,13 @@
+   #if DISABLED(USE_XMAX_PLUG) && DISABLED(USE_YMAX_PLUG) && DISABLED(USE_ZMAX_PLUG)
+     #error "You probably want to use Max Endstops for DELTA!"
+   #endif
++  #if ENABLED(AUTO_BED_LEVELING_GRID)
++    #if (AUTO_BED_LEVELING_GRID_POINTS & 1) == 0
++      #error "DELTA requires an odd value for AUTO_BED_LEVELING_GRID_POINTS."
++    #elif AUTO_BED_LEVELING_GRID_POINTS < 3
++      #error "DELTA requires at least 3 AUTO_BED_LEVELING_GRID_POINTS."
++    #endif
++  #endif
+ #endif
+ 
+ /**
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index db10bba..f54cd88 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -186,6 +186,9 @@ void Config_Postprocess() {
+   #endif
+ 
+   calculate_volumetric_multipliers();
++
++  // Software endstops depend on home_offset
++  LOOP_XYZ(i) update_software_endstops((AxisEnum)i);
+ }
+ 
+ #if ENABLED(EEPROM_SETTINGS)
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index d96335b..cf042af 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 21a9b90..5cc35ad 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -671,7 +671,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 86af23b..bc1f778 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -669,7 +669,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 54d2367..74b9159 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -681,7 +681,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index a0a4c28..440316a 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -683,7 +683,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index d900176..3268a52 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -706,7 +706,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 5add4d9..70dbcc0 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 817401f..8985296 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 2d9961c..684eba9 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 6ba06b4..1ff1626 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -686,7 +686,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 7e55ee2..148c508 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -697,7 +697,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 6d4e159..bd940ba 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -710,7 +710,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 5df007c..61c96d3 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -681,7 +681,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index be2b415..2c5ca20 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -689,7 +689,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index cefe40d..c6f7cf3 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -692,7 +692,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 5d8948d..714474a 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -679,7 +679,7 @@
+ 
+     // Set the number of grid points per dimension.
+     // You probably don't need more than 3 (squared=9).
+-    #define AUTO_BED_LEVELING_GRID_POINTS 2
++    #define AUTO_BED_LEVELING_GRID_POINTS 3
+ 
+   #else  // !AUTO_BED_LEVELING_GRID
+ 
+
+commit 4d4c00d69cf012731bf15791046c07d907d89cb7 (from 12d72363cb58d3afed33bb33d690c6aa6c4bc015)
+Merge: f3a5431 12d7236
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 19 15:45:49 2016 -0500
+
+    Merge pull request #4651 from thinkyhead/rc_homing_vs_leveling_z
+    
+    Improvements to homing / leveling
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 2faeb9f..e5bbdb7 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -265,7 +265,7 @@ extern int feedrate_percentage;
+ 
+ extern bool axis_relative_modes[];
+ extern bool volumetric_enabled;
+-extern int extruder_multiplier[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
++extern int flow_percentage[EXTRUDERS]; // Extrusion factor for each extruder
+ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in millimeters), typically around 1.75 or 2.85, 0 disables the volumetric calculations for the extruder.
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+ extern bool axis_known_position[3]; // axis[n].is_known
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 3fa9725..e026042 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -320,7 +320,7 @@ static float feedrate_mm_s = MMM_TO_MMS(1500.0), saved_feedrate_mm_s;
+ int feedrate_percentage = 100, saved_feedrate_percentage;
+ 
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+-int extruder_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
++int flow_percentage[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DIA);
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(1.0);
+@@ -5622,7 +5622,7 @@ inline void gcode_M220() {
+ inline void gcode_M221() {
+   if (get_target_extruder_from_command(221)) return;
+   if (code_seen('S'))
+-    extruder_multiplier[target_extruder] = code_value_int();
++    flow_percentage[target_extruder] = code_value_int();
+ }
+ 
+ /**
+@@ -6087,7 +6087,7 @@ inline void gcode_M400() { stepper.synchronize(); }
+     //SERIAL_PROTOCOLPGM("Filament dia (measured mm):");
+     //SERIAL_PROTOCOL(filament_width_meas);
+     //SERIAL_PROTOCOLPGM("Extrusion ratio(%):");
+-    //SERIAL_PROTOCOL(extruder_multiplier[active_extruder]);
++    //SERIAL_PROTOCOL(flow_percentage[active_extruder]);
+   }
+ 
+   /**
+@@ -8459,15 +8459,18 @@ void prepare_move_to_destination() {
+   static millis_t next_status_led_update_ms = 0;
+ 
+   void handle_status_leds(void) {
+-    float max_temp = 0.0;
+     if (ELAPSED(millis(), next_status_led_update_ms)) {
+       next_status_led_update_ms += 500; // Update every 0.5s
++      float max_temp =
++        #if HAS_TEMP_BED
++          MAX3(max_temp, thermalManager.degTargetBed(), thermalManager.degBed())
++        #else
++          0.0
++        #endif
++      ;
+       HOTEND_LOOP() {
+-        max_temp = max(max(max_temp, thermalManager.degHotend(e)), thermalManager.degTargetHotend(e));
++        max_temp = MAX3(max_temp, thermalManager.degHotend(e), thermalManager.degTargetHotend(e));
+       }
+-      #if HAS_TEMP_BED
+-        max_temp = max(max(max_temp, thermalManager.degTargetBed()), thermalManager.degBed());
+-      #endif
+       bool new_led = (max_temp > 55.0) ? true : (max_temp < 54.0) ? false : red_led;
+       if (new_led != red_led) {
+         red_led = new_led;
+diff --git a/Marlin/language_ru.h b/Marlin/language_ru.h
+index e953b0b..7fb0e10 100644
+--- a/Marlin/language_ru.h
++++ b/Marlin/language_ru.h
+@@ -37,15 +37,17 @@
+ #define MSG_SD_INSERTED                     "Карта вставлена"
+ #define MSG_SD_REMOVED                      "Карта извлечена"
+ #define MSG_MAIN                            "Меню"
++#define MSG_LCD_ENDSTOPS                    "концевик"
+ #define MSG_AUTOSTART                       "Автостарт"
+ #define MSG_DISABLE_STEPPERS                "Выкл. двигатели"
+ #define MSG_AUTO_HOME                       "Парковка"
+-#define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "Click to Begin"
+-#define MSG_LEVEL_BED_DONE                  "Leveling Done!"
+-#define MSG_LEVEL_BED_CANCEL                "Cancel"
++#define MSG_LEVEL_BED_HOMING                "Нулевое полож"
++#define MSG_LEVEL_BED_WAITING               "Нажмите начать"
++#define MSG_LEVEL_BED_NEXT_POINT            "Следующая точка"
++#define MSG_LEVEL_BED_DONE                  "Уровень!"
++#define MSG_LEVEL_BED_CANCEL                "Отменить"
+ #define MSG_SET_HOME_OFFSETS                "Запомнить парковку"
+-#define MSG_HOME_OFFSETS_APPLIED            "Offsets applied"
++#define MSG_HOME_OFFSETS_APPLIED            "Коррекции примен"
+ #define MSG_SET_ORIGIN                      "Запомнить ноль"
+ #define MSG_PREHEAT_1                       "Преднагрев PLA"
+ #define MSG_PREHEAT_1_N                     "Греть PLA Сопло "
+@@ -63,6 +65,7 @@
+ #define MSG_EXTRUDE                         "Экструзия"
+ #define MSG_RETRACT                         "Втягивание"
+ #define MSG_MOVE_AXIS                       "Движение по осям"
++#define MSG_LEVEL_BED                       "Калибровать стол"
+ #define MSG_MOVE_X                          "Движение по X"
+ #define MSG_MOVE_Y                          "Движение по Y"
+ #define MSG_MOVE_Z                          "Движение по Z"
+@@ -70,8 +73,8 @@
+ #define MSG_MOVE_01MM                       "Движение XYZ 0.1mm"
+ #define MSG_MOVE_1MM                        "Движение XYZ 1mm"
+ #define MSG_MOVE_10MM                       "Движение XY 10mm"
+-#define MSG_LEVEL_BED                       "Калибровать стол"
+ #define MSG_SPEED                           "Скорость"
++#define MSG_BED_Z                           "Z стола"
+ #define MSG_NOZZLE                          LCD_STR_THERMOMETER " Сопло"
+ #define MSG_BED                             LCD_STR_THERMOMETER " Стол"
+ #define MSG_FAN_SPEED                       "Кулер"
+@@ -88,14 +91,15 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
+-#define MSG_VMAX                            "Vmax "
+-#define MSG_VMIN                            "Vmin"
+-#define MSG_VTRAV_MIN                       "VTrav min"
+-#define MSG_AMAX                            "Amax"
++#define MSG_VXY_JERK                        "Vxy-рывок"
++#define MSG_VZ_JERK                         "Vz-рывок"
++#define MSG_VE_JERK                         "Ve-рывок"
++#define MSG_VMAX                            "Vмакс "
++#define MSG_VMIN                            "Vмин"
++#define MSG_VTRAV_MIN                       "Vпутеш. мин"
++#define MSG_AMAX                            "Aмакс"
+ #define MSG_A_RETRACT                       "A-втягивание"
++#define MSG_A_TRAVEL                        "A-путеш."
+ #define MSG_XSTEPS                          "X шаг/мм"
+ #define MSG_YSTEPS                          "Y шаг/мм"
+ #define MSG_ZSTEPS                          "Z шаг/мм"
+@@ -137,15 +141,16 @@
+ #define MSG_INIT_SDCARD                     "Иниц. карту"
+ #define MSG_CNG_SDCARD                      "Сменить карту"
+ #define MSG_ZPROBE_OUT                      "Z датчик вне стола"
+-#define MSG_YX_UNHOMED                      "Паркуй X/Y перед Z"
++#define MSG_HOME                            "Паркуй X/Y перед Z"
++#define MSG_FIRST                           "первый"
+ #define MSG_ZPROBE_ZOFFSET                  "Смещение Z"
+-#define MSG_BABYSTEP_X                      "Babystep X"
+-#define MSG_BABYSTEP_Y                      "Babystep Y"
+-#define MSG_BABYSTEP_Z                      "Babystep Z"
++#define MSG_BABYSTEP_X                      "Микрошаг X"
++#define MSG_BABYSTEP_Y                      "Микрошаг Y"
++#define MSG_BABYSTEP_Z                      "Микрошаг Z"
+ #define MSG_ENDSTOP_ABORT                   "Сработал концевик"
+ #define MSG_HEATING_FAILED_LCD              "Разогрев не удался"
+ #define MSG_ERR_REDUNDANT_TEMP              "Ошибка:Слишком горячо"
+-#define MSG_THERMAL_RUNAWAY                 "THERMAL RUNAWAY"
++#define MSG_THERMAL_RUNAWAY                 "ТЕПЛО УБЕГАНИЯ!"
+ #define MSG_ERR_MAXTEMP                     "Ошибка: Т макс."
+ #define MSG_ERR_MINTEMP                     "Ошибка: Т мин."
+ #define MSG_ERR_MAXTEMP_BED                 "Ошибка:Т макс.стол"
+@@ -158,6 +163,6 @@
+ #define MSG_DELTA_CALIBRATE_X               "Калибровать X"
+ #define MSG_DELTA_CALIBRATE_Y               "Калибровать Y"
+ #define MSG_DELTA_CALIBRATE_Z               "Калибровать Z"
+-#define MSG_DELTA_CALIBRATE_CENTER          "Калибровать Center"
++#define MSG_DELTA_CALIBRATE_CENTER          "Калибровать центр"
+ 
+ #endif // LANGUAGE_RU_H
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index 5eec73e..c070569 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -118,4 +118,7 @@
+ 
+ #define CEILING(x,y) (((x) + (y) - 1) / (y))
+ 
++#define MAX3(a, b, c)    max(max(a, b), c)
++#define MAX4(a, b, c, d) max(max(max(a, b), c), d)
++
+ #endif //__MACROS_H
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4e4d4a1..7b0f099 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -622,11 +622,8 @@ void Planner::check_axes_activity() {
+     block->steps[Z_AXIS] = labs(dz);
+   #endif
+ 
+-  block->steps[E_AXIS] = labs(de);
+-  block->steps[E_AXIS] *= volumetric_multiplier[extruder];
+-  block->steps[E_AXIS] *= extruder_multiplier[extruder];
+-  block->steps[E_AXIS] /= 100;
+-  block->step_event_count = max(block->steps[X_AXIS], max(block->steps[Y_AXIS], max(block->steps[Z_AXIS], block->steps[E_AXIS])));
++  block->steps[E_AXIS] = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
++  block->step_event_count = MAX4(block->steps[X_AXIS], block->steps[Y_AXIS], block->steps[Z_AXIS], block->steps[E_AXIS]);
+ 
+   // Bail if this is a zero-length block
+   if (block->step_event_count <= dropsegments) return;
+@@ -809,7 +806,7 @@ void Planner::check_axes_activity() {
+     delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
+     delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
+   #endif
+-  delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * extruder_multiplier[extruder];
++  delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * flow_percentage[extruder];
+ 
+   if (block->steps[X_AXIS] <= dropsegments && block->steps[Y_AXIS] <= dropsegments && block->steps[Z_AXIS] <= dropsegments) {
+     block->millimeters = fabs(delta_mm[E_AXIS]);
+@@ -930,8 +927,8 @@ void Planner::check_axes_activity() {
+     }
+     ys0 = axis_segment_time[Y_AXIS][0] = ys0 + segment_time;
+ 
+-    long max_x_segment_time = max(xs0, max(xs1, xs2)),
+-         max_y_segment_time = max(ys0, max(ys1, ys2)),
++    long max_x_segment_time = MAX3(xs0, xs1, xs2),
++         max_y_segment_time = MAX3(ys0, ys1, ys2),
+          min_xy_segment_time = min(max_x_segment_time, max_y_segment_time);
+     if (min_xy_segment_time < MAX_FREQ_TIME) {
+       float low_sf = speed_factor * min_xy_segment_time / (MAX_FREQ_TIME);
+diff --git a/Marlin/platformio.ini b/Marlin/platformio.ini
+old mode 100644
+new mode 100755
+index fb549db..8e66bd3
+--- a/Marlin/platformio.ini
++++ b/Marlin/platformio.ini
+@@ -42,3 +42,10 @@ platform = teensy
+ framework = arduino
+ board = teensy20pp
+ build_flags = -I $BUILDSRC_DIR -D MOTHERBOARD=BOARD_BRAINWAVE_PRO -D AT90USBxx_TEENSYPP_ASSIGNMENTS
++
++[env:rambo]
++platform = atmelavr
++framework = arduino
++board = reprap_rambo
++build_flags = -I $BUILDSRC_DIR
++board_f_cpu = 16000000L
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2398ee7..f6ff6eb 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -799,15 +799,15 @@ void kill_screen(const char* lcd_msg) {
+     // Flow 4:
+     //
+     #if EXTRUDERS == 1
+-      MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[0], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW, &flow_percentage[0], 10, 999);
+     #else // EXTRUDERS > 1
+-      MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[active_extruder], 10, 999);
+-      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N1, &extruder_multiplier[0], 10, 999);
+-      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N2, &extruder_multiplier[1], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW, &flow_percentage[active_extruder], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N1, &flow_percentage[0], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N2, &flow_percentage[1], 10, 999);
+       #if EXTRUDERS > 2
+-        MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N3, &extruder_multiplier[2], 10, 999);
++        MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N3, &flow_percentage[2], 10, 999);
+         #if EXTRUDERS > 3
+-          MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N4, &extruder_multiplier[3], 10, 999);
++          MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N4, &flow_percentage[3], 10, 999);
+         #endif //EXTRUDERS > 3
+       #endif //EXTRUDERS > 2
+     #endif //EXTRUDERS > 1
+

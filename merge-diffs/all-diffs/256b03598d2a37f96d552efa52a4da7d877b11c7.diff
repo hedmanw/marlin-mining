@@ -1,0 +1,1101 @@
+commit 256b03598d2a37f96d552efa52a4da7d877b11c7 (from ae1c7bca1b05493f02cf9d36f9d47ae3d510a034)
+Merge: ae1c7bc 753283e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jul 28 16:50:04 2016 -0700
+
+    Merge pull request #4450 from thinkyhead/rc_fix_delta_optimization
+    
+    Fix DELTA speed calculation
+
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 3ffa00f..7ced932 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -804,15 +804,9 @@ void Planner::check_axes_activity() {
+     #endif
+   #else
+     float delta_mm[4];
+-    #if ENABLED(DELTA)
+-      // On delta all axes (should!) have the same steps-per-mm
+-      // so calculate distance in steps first, then do one division
+-      // at the end to get millimeters
+-    #else
+-      delta_mm[X_AXIS] = dx * steps_to_mm[X_AXIS];
+-      delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
+-      delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
+-    #endif
++    delta_mm[X_AXIS] = dx * steps_to_mm[X_AXIS];
++    delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
++    delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
+   #endif
+   delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * extruder_multiplier[extruder];
+ 
+@@ -827,21 +821,15 @@ void Planner::check_axes_activity() {
+         sq(delta_mm[X_HEAD]) + sq(delta_mm[Y_AXIS]) + sq(delta_mm[Z_HEAD])
+       #elif ENABLED(COREYZ)
+         sq(delta_mm[X_AXIS]) + sq(delta_mm[Y_HEAD]) + sq(delta_mm[Z_HEAD])
+-      #elif ENABLED(DELTA)
+-        sq(dx) + sq(dy) + sq(dz)
+       #else
+         sq(delta_mm[X_AXIS]) + sq(delta_mm[Y_AXIS]) + sq(delta_mm[Z_AXIS])
+       #endif
+-    )
+-      #if ENABLED(DELTA)
+-        * steps_to_mm[X_AXIS]
+-      #endif
+-    ;
++    );
+   }
+   float inverse_millimeters = 1.0 / block->millimeters;  // Inverse millimeters to remove multiple divides
+ 
+   // Calculate moves/second for this move. No divide by zero due to previous checks.
+-  float inverse_second = fr_mm_s * inverse_millimeters;
++  float inverse_mm_s = fr_mm_s * inverse_millimeters;
+ 
+   int moves_queued = movesplanned();
+ 
+@@ -853,21 +841,21 @@ void Planner::check_axes_activity() {
+     #endif
+     #if ENABLED(SLOWDOWN)
+       //  segment time im micro seconds
+-      unsigned long segment_time = lround(1000000.0/inverse_second);
++      unsigned long segment_time = lround(1000000.0/inverse_mm_s);
+       if (mq) {
+         if (segment_time < min_segment_time) {
+           // buffer is draining, add extra time.  The amount of time added increases if the buffer is still emptied more.
+-          inverse_second = 1000000.0 / (segment_time + lround(2 * (min_segment_time - segment_time) / moves_queued));
++          inverse_mm_s = 1000000.0 / (segment_time + lround(2 * (min_segment_time - segment_time) / moves_queued));
+           #ifdef XY_FREQUENCY_LIMIT
+-            segment_time = lround(1000000.0 / inverse_second);
++            segment_time = lround(1000000.0 / inverse_mm_s);
+           #endif
+         }
+       }
+     #endif
+   #endif
+ 
+-  block->nominal_speed = block->millimeters * inverse_second; // (mm/sec) Always > 0
+-  block->nominal_rate = ceil(block->step_event_count * inverse_second); // (step/sec) Always > 0
++  block->nominal_speed = block->millimeters * inverse_mm_s; // (mm/sec) Always > 0
++  block->nominal_rate = ceil(block->step_event_count * inverse_mm_s); // (step/sec) Always > 0
+ 
+   #if ENABLED(FILAMENT_WIDTH_SENSOR)
+     static float filwidth_e_count = 0, filwidth_delay_dist = 0;
+@@ -907,7 +895,7 @@ void Planner::check_axes_activity() {
+   float current_speed[NUM_AXIS];
+   float speed_factor = 1.0; //factor <=1 do decrease speed
+   LOOP_XYZE(i) {
+-    current_speed[i] = delta_mm[i] * inverse_second;
++    current_speed[i] = delta_mm[i] * inverse_mm_s;
+     float cs = fabs(current_speed[i]), mf = max_feedrate_mm_s[i];
+     if (cs > mf) speed_factor = min(speed_factor, mf / cs);
+   }
+
+commit 256b03598d2a37f96d552efa52a4da7d877b11c7 (from 753283e02091ba0391e674dc01471d31a5dfe247)
+Merge: ae1c7bc 753283e
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Jul 28 16:50:04 2016 -0700
+
+    Merge pull request #4450 from thinkyhead/rc_fix_delta_optimization
+    
+    Fix DELTA speed calculation
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 3ff131d..46d986c 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -147,6 +147,13 @@
+   #endif
+ 
+   /**
++   * DELTA should ignore Z_SAFE_HOMING
++   */
++  #if ENABLED(DELTA)
++    #undef Z_SAFE_HOMING
++  #endif
++
++  /**
+    * Safe Homing Options
+    */
+   #if ENABLED(Z_SAFE_HOMING)
+@@ -566,15 +573,6 @@
+    * Bed Probe dependencies
+    */
+   #if HAS_BED_PROBE
+-    #ifndef X_PROBE_OFFSET_FROM_EXTRUDER
+-      #define X_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+-    #ifndef Y_PROBE_OFFSET_FROM_EXTRUDER
+-      #define Y_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+-    #ifndef Z_PROBE_OFFSET_FROM_EXTRUDER
+-      #define Z_PROBE_OFFSET_FROM_EXTRUDER 0
+-    #endif
+     #ifndef Z_PROBE_OFFSET_RANGE_MIN
+       #define Z_PROBE_OFFSET_RANGE_MIN -20
+     #endif
+@@ -593,6 +591,13 @@
+     #else
+       #define _Z_RAISE_PROBE_DEPLOY_STOW Z_RAISE_PROBE_DEPLOY_STOW
+     #endif
++  #else
++    #undef X_PROBE_OFFSET_FROM_EXTRUDER
++    #undef Y_PROBE_OFFSET_FROM_EXTRUDER
++    #undef Z_PROBE_OFFSET_FROM_EXTRUDER
++    #define X_PROBE_OFFSET_FROM_EXTRUDER 0
++    #define Y_PROBE_OFFSET_FROM_EXTRUDER 0
++    #define Z_PROBE_OFFSET_FROM_EXTRUDER 0
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 8b5e339..53ff211 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -735,7 +735,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0c7dddd..1a3830a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -3049,12 +3049,11 @@ inline void gcode_G28() {
+             SYNC_PLAN_POSITION_KINEMATIC();
+ 
+             /**
+-             * Set the Z probe (or just the nozzle) destination to the safe
+-             *  homing point
++             * Move the Z probe (or just the nozzle) to the safe homing point
+              */
+             destination[X_AXIS] = round(Z_SAFE_HOMING_X_POINT - (X_PROBE_OFFSET_FROM_EXTRUDER));
+             destination[Y_AXIS] = round(Z_SAFE_HOMING_Y_POINT - (Y_PROBE_OFFSET_FROM_EXTRUDER));
+-            destination[Z_AXIS] = current_position[Z_AXIS]; //z is already at the right height
++            destination[Z_AXIS] = current_position[Z_AXIS]; // Z is already at the right height
+ 
+             #if ENABLED(DEBUG_LEVELING_FEATURE)
+               if (DEBUGGING(LEVELING)) {
+diff --git a/Marlin/SanityCheck.cpp b/Marlin/SanityCheck.cpp
+index 269c59e..f3ef238 100644
+--- a/Marlin/SanityCheck.cpp
++++ b/Marlin/SanityCheck.cpp
+@@ -340,8 +340,8 @@
+     #error "You must set Z_RAISE_BETWEEN_PROBINGS in your configuration."
+   #elif Z_RAISE_PROBE_DEPLOY_STOW < 0
+     #error "Probes need Z_RAISE_PROBE_DEPLOY_STOW >= 0."
+-  #elif Z_RAISE_BETWEEN_PROBINGS < 1
+-    #error "Probes need Z_RAISE_BETWEEN_PROBINGS >= 1."
++  #elif Z_RAISE_BETWEEN_PROBINGS < 0
++    #error "Probes need Z_RAISE_BETWEEN_PROBINGS >= 0."
+   #endif
+ 
+ #else
+@@ -353,8 +353,6 @@
+     #error "AUTO_BED_LEVELING_FEATURE requires a probe! Define a Z Servo, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+   #elif ENABLED(Z_MIN_PROBE_REPEATABILITY_TEST)
+     #error "Z_MIN_PROBE_REPEATABILITY_TEST requires a probe! Define a Z Servo, Z_PROBE_ALLEN_KEY, Z_PROBE_SLED, or FIX_MOUNTED_PROBE."
+-  #elif ENABLED(Z_SAFE_HOMING)
+-    #error "Z_SAFE_HOMING currently requires a probe."
+   #endif
+ 
+ #endif
+@@ -364,9 +362,17 @@
+  */
+ #if ENABLED(Z_SAFE_HOMING)
+   #if Z_SAFE_HOMING_X_POINT < MIN_PROBE_X || Z_SAFE_HOMING_X_POINT > MAX_PROBE_X
+-    #error "The given Z_SAFE_HOMING_X_POINT can't be reached by the Z probe."
++    #if HAS_BED_PROBE
++      #error "Z_SAFE_HOMING_X_POINT can't be reached by the Z probe."
++    #else
++      #error "Z_SAFE_HOMING_X_POINT can't be reached by the nozzle."
++    #endif
+   #elif Z_SAFE_HOMING_Y_POINT < MIN_PROBE_Y || Z_SAFE_HOMING_Y_POINT > MAX_PROBE_Y
+-    #error "The given Z_SAFE_HOMING_Y_POINT can't be reached by the Z probe."
++    #if HAS_BED_PROBE
++      #error "Z_SAFE_HOMING_Y_POINT can't be reached by the Z probe."
++    #else
++      #error "Z_SAFE_HOMING_Y_POINT can't be reached by the nozzle."
++    #endif
+   #endif
+ #endif // Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 2ac06d1..751417e 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -736,7 +736,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 7bd240e..ac526d9 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -718,7 +718,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 09a97f1..9729be6 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -716,7 +716,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 47b72e4..6883b4f 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -728,7 +728,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index a4eb3a3..23d7136 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -729,7 +729,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ #define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 933b229..a9d9a1e 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -753,7 +753,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 4cbf03c..a51cf5e 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -736,7 +736,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 390b07e..51d932c 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -736,7 +736,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 7fe8a6a..c4b5350 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -736,7 +736,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index ac2411b..b346537 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -733,7 +733,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 52a5693..5fe1620 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -744,7 +744,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index b3ac585..bf990ac 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -757,7 +757,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index ad08e0e..9a90ad9 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -727,7 +727,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index b733bd6..a1fd9aa 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -736,7 +736,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 673e167..6db0f40 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -828,7 +828,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index f321eaf..fabcba8 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -822,7 +822,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index 50e4293..c5fda7d 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -825,7 +825,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index 2726e9a..7509fd6 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -819,7 +819,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ #define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 7a0ff37..9e25b02 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -820,7 +820,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 7990787..d77fe64 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -739,7 +739,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 36f6d3c..3c1f399 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -725,7 +725,7 @@
+ //
+ // - Allow Z homing only after X and Y homing AND stepper drivers still enabled.
+ // - If stepper drivers time out, it will need X and Y homing again before Z homing.
+-// - Position the Z probe in a defined XY point before Z Homing when homing all axes (G28).
++// - Move the Z probe (or nozzle) to a defined XY point before Z Homing when homing all axes (G28).
+ // - Prevent Z homing when the Z probe is outside bed area.
+ //#define Z_SAFE_HOMING
+ 
+diff --git a/Marlin/pins_3DRAG.h b/Marlin/pins_3DRAG.h
+index 6f253ac..db19e5d 100644
+--- a/Marlin/pins_3DRAG.h
++++ b/Marlin/pins_3DRAG.h
+@@ -86,7 +86,7 @@
+   #undef BTN_ENC
+   #define BTN_EN1 16
+   #define BTN_EN2 17
+-  #define BTN_ENC 23 //the click
++  #define BTN_ENC 23
+ 
+ #else
+ 
+diff --git a/Marlin/pins_CHEAPTRONIC.h b/Marlin/pins_CHEAPTRONIC.h
+index 41e3dac..2fbb4e8 100644
+--- a/Marlin/pins_CHEAPTRONIC.h
++++ b/Marlin/pins_CHEAPTRONIC.h
+@@ -84,8 +84,4 @@
+ #define BTN_EN2 -1
+ #define BTN_ENC -1
+ 
+-#define BLEN_C 2
+-#define BLEN_B 1
+-#define BLEN_A 0
+-
+ // Cheaptronic v1.0 doesn't use this
+diff --git a/Marlin/pins_ELEFU_3.h b/Marlin/pins_ELEFU_3.h
+index 546b5a8..2b8e64d 100644
+--- a/Marlin/pins_ELEFU_3.h
++++ b/Marlin/pins_ELEFU_3.h
+@@ -87,11 +87,7 @@
+ 
+   #define BTN_EN1          14
+   #define BTN_EN2          39
+-  #define BTN_ENC          15  //the click
+-
+-  #define BLEN_C            2
+-  #define BLEN_B            1
+-  #define BLEN_A            0
++  #define BTN_ENC          15
+ 
+ #endif // RA_CONTROL_PANEL
+ 
+diff --git a/Marlin/pins_FELIX2.h b/Marlin/pins_FELIX2.h
+index dfea483..7bb724b 100644
+--- a/Marlin/pins_FELIX2.h
++++ b/Marlin/pins_FELIX2.h
+@@ -38,9 +38,6 @@
+ 
+ #if ENABLED(ULTRA_LCD) && ENABLED(NEWPANEL)
+ 
+-  #define BLEN_C 2
+-  #define BLEN_B 1
+-  #define BLEN_A 0
+   #define SD_DETECT_PIN 6
+ 
+ #endif // NEWPANEL && ULTRA_LCD
+diff --git a/Marlin/pins_GEN7_CUSTOM.h b/Marlin/pins_GEN7_CUSTOM.h
+index f740e4a..06aaebd 100644
+--- a/Marlin/pins_GEN7_CUSTOM.h
++++ b/Marlin/pins_GEN7_CUSTOM.h
+@@ -86,5 +86,5 @@
+ //buttons are directly attached
+ #define BTN_EN1 11
+ #define BTN_EN2 10
+-#define BTN_ENC 12  //the click
++#define BTN_ENC 12
+ 
+diff --git a/Marlin/pins_MEGACONTROLLER.h b/Marlin/pins_MEGACONTROLLER.h
+index f21a805..7ea4ee3 100644
+--- a/Marlin/pins_MEGACONTROLLER.h
++++ b/Marlin/pins_MEGACONTROLLER.h
+@@ -113,11 +113,11 @@
+   //#define LCD_SCREEN_ROT_90
+   //#define LCD_SCREEN_ROT_180
+   //#define LCD_SCREEN_ROT_270
+-  //The encoder and click button
++
+   #define BTN_EN1 48
+   #define BTN_EN2 11
+-  #define BTN_ENC 10  //the click switch
+-  //not connected to a pin
++  #define BTN_ENC 10
++
+   #define SD_DETECT_PIN 49
+-#endif //Minipanel
++#endif // MINIPANEL
+ 
+diff --git a/Marlin/pins_MEGATRONICS.h b/Marlin/pins_MEGATRONICS.h
+index 4e766d8..1b95f52 100644
+--- a/Marlin/pins_MEGATRONICS.h
++++ b/Marlin/pins_MEGATRONICS.h
+@@ -92,10 +92,6 @@
+   #define BTN_EN2         64
+   #define BTN_ENC         43
+ 
+-  #define BLEN_C           2
+-  #define BLEN_B           1
+-  #define BLEN_A           0
+-
+   #define SD_DETECT_PIN   -1   // RAMPS doesn't use this
+ 
+ #endif // ULTRA_LCD && NEWPANEL
+diff --git a/Marlin/pins_MEGATRONICS_2.h b/Marlin/pins_MEGATRONICS_2.h
+index 90e9b1f..991ab4a 100644
+--- a/Marlin/pins_MEGATRONICS_2.h
++++ b/Marlin/pins_MEGATRONICS_2.h
+@@ -101,9 +101,4 @@
+ // Buttons are directly attached using keypad
+ #define BTN_EN1 61
+ #define BTN_EN2 59
+-#define BTN_ENC 43 //the click
+-
+-#define BLEN_C 2
+-#define BLEN_B 1
+-#define BLEN_A 0
+-
++#define BTN_ENC 43
+diff --git a/Marlin/pins_MEGATRONICS_3.h b/Marlin/pins_MEGATRONICS_3.h
+index 9359978..a983ee2 100644
+--- a/Marlin/pins_MEGATRONICS_3.h
++++ b/Marlin/pins_MEGATRONICS_3.h
+@@ -28,7 +28,14 @@
+   #error "Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu."
+ #endif
+ 
+-#define BOARD_NAME         "Megatronics v3.0"
++#define MEGATRONICS_31
++
++#if ENABLED(MEGATRONICS_31)
++  #define BOARD_NAME       "Megatronics v3.1"
++#else
++  #define BOARD_NAME       "Megatronics v3.0"
++#endif
++
+ #define LARGE_FLASH        true
+ 
+ #if ENABLED(Z_PROBE_SLED)
+@@ -36,28 +43,28 @@
+ #endif
+ 
+ // Servo support
+-#define SERVO0_PIN         46 //AUX3-6
+-#define SERVO1_PIN         47 //AUX3-5
+-#define SERVO2_PIN         48 //AUX3-4
+-#define SERVO3_PIN         49 //AUX3-3
++#define SERVO0_PIN         46 // AUX3-6
++#define SERVO1_PIN         47 // AUX3-5
++#define SERVO2_PIN         48 // AUX3-4
++#define SERVO3_PIN         49 // AUX3-3
+ 
+ #define X_STEP_PIN         58
+ #define X_DIR_PIN          57
+ #define X_ENABLE_PIN       59
+ #define X_MIN_PIN          37
+-#define X_MAX_PIN          40 // put to -1 to disable
++#define X_MAX_PIN          40
+ 
+ #define Y_STEP_PIN         5
+ #define Y_DIR_PIN          17
+ #define Y_ENABLE_PIN       4
+ #define Y_MIN_PIN          41
+-#define Y_MAX_PIN          38 // put to -1 to disable
++#define Y_MAX_PIN          38
+ 
+ #define Z_STEP_PIN         16
+ #define Z_DIR_PIN          11
+ #define Z_ENABLE_PIN       3
+ #define Z_MIN_PIN          18
+-#define Z_MAX_PIN          19 // put to -1 to disable
++#define Z_MAX_PIN          19
+ 
+ #define E0_STEP_PIN        28
+ #define E0_DIR_PIN         27
+@@ -104,40 +111,37 @@
+   #define TEMP_BED_PIN 14 // ANALOG NUMBERING
+ #endif
+ 
++/**
++ * Controllers and LCDs
++ */
+ #define BEEPER_PIN 61
+ 
+-#if ENABLED(DOGLCD)
+-
+-  #if ENABLED(U8GLIB_ST7920)
+-    #define LCD_PINS_RS     56 //CS chip select /SS chip slave select
+-    #define LCD_PINS_ENABLE 51 //SID (MOSI)
+-    #define LCD_PINS_D4     52 //SCK (CLK) clock
+-    #define SD_DETECT_PIN 35
+-  #endif
++#define BTN_EN1 44
++#define BTN_EN2 45
++#define BTN_ENC 33
+ 
++#if ENABLED(REPRAPWORLD_GRAPHICAL_LCD)
++  #define LCD_PINS_RS     56 // CS chip select / SS chip slave select
++  #define LCD_PINS_ENABLE 51 // SID (MOSI)
++  #define LCD_PINS_D4     52 // SCK (CLK) clock
++  #define SD_DETECT_PIN   35
+ #else
+-
+-  #define LCD_PINS_RS 32
++  #define LCD_PINS_RS     32
+   #define LCD_PINS_ENABLE 31
+-  #define LCD_PINS_D4 14
+-  #define LCD_PINS_D5 30
+-  #define LCD_PINS_D6 39
+-  #define LCD_PINS_D7 15
++  #define LCD_PINS_D4     14
++  #define LCD_PINS_D5     30
++  #define LCD_PINS_D6     39
++  #define LCD_PINS_D7     15
+   
+-  #define SHIFT_CLK 43
+-  #define SHIFT_LD 35
+-  #define SHIFT_OUT 34
+-  #define SHIFT_EN 44
+-
+-  #define SD_DETECT_PIN 56 // Megatronics v3.1 only
++  #define SHIFT_CLK       43
++  #define SHIFT_LD        35
++  #define SHIFT_OUT       34
++  #define SHIFT_EN        44
++
++  #if ENABLED(MEGATRONICS_31)
++    #define SD_DETECT_PIN 56
++  #else
++    #define SD_DETECT_PIN -1
++  #endif
+ 
+ #endif
+-
+-// Buttons are directly attached using keypad
+-#define BTN_EN1 44
+-#define BTN_EN2 45
+-#define BTN_ENC 33
+-
+-#define BLEN_C 2
+-#define BLEN_B 1
+-#define BLEN_A 0
+diff --git a/Marlin/pins_MINITRONICS.h b/Marlin/pins_MINITRONICS.h
+index db68c97..34faa9a 100644
+--- a/Marlin/pins_MINITRONICS.h
++++ b/Marlin/pins_MINITRONICS.h
+@@ -74,40 +74,36 @@
+ #define HEATER_1_PIN   8 // EXTRUDER 2
+ #define HEATER_BED_PIN 3 // BED
+ 
++/**
++ * Controllers and LCDs
++ */
+ #define BEEPER_PIN -1
+ 
+-#if ENABLED(DOGLCD)
++#if ENABLED(REPRAPWORLD_GRAPHICAL_LCD)
+ 
+-  #if ENABLED(U8GLIB_ST7920)
+-    #define LCD_PINS_RS     15 //CS chip select /SS chip slave select
+-    #define LCD_PINS_ENABLE 11 //SID (MOSI)
+-    #define LCD_PINS_D4     10 //SCK (CLK) clock     
++  #define LCD_PINS_RS     15 // CS chip select /SS chip slave select
++  #define LCD_PINS_ENABLE 11 // SID (MOSI)
++  #define LCD_PINS_D4     10 // SCK (CLK) clock
+ 
+-    #define BTN_EN1 18
+-    #define BTN_EN2 17
+-    #define BTN_ENC 25
++  #define BTN_EN1         18
++  #define BTN_EN2         17
++  #define BTN_ENC         25
+ 
+-    #define SD_DETECT_PIN 30
+-  #endif
++  #define SD_DETECT_PIN   30
+ 
+ #else
+ 
+-  #define LCD_PINS_RS -1
++  #define LCD_PINS_RS     -1
+   #define LCD_PINS_ENABLE -1
+-  #define LCD_PINS_D4 -1
+-  #define LCD_PINS_D5 -1
+-  #define LCD_PINS_D6 -1
+-  #define LCD_PINS_D7 -1
++  #define LCD_PINS_D4     -1
++  #define LCD_PINS_D5     -1
++  #define LCD_PINS_D6     -1
++  #define LCD_PINS_D7     -1
+ 
+   // Buttons are directly attached using keypad
+-  #define BTN_EN1 -1
+-  #define BTN_EN2 -1
+-  #define BTN_ENC -1
+-
+-  #define BLEN_C 2
+-  #define BLEN_B 1
+-  #define BLEN_A 0
++  #define BTN_EN1         -1
++  #define BTN_EN2         -1
++  #define BTN_ENC         -1
+ 
+   #define SD_DETECT_PIN -1  // Minitronics doesn't use this
+-
+ #endif
+diff --git a/Marlin/pins_PRINTRBOARD.h b/Marlin/pins_PRINTRBOARD.h
+index eaccabe..301548c 100644
+--- a/Marlin/pins_PRINTRBOARD.h
++++ b/Marlin/pins_PRINTRBOARD.h
+@@ -132,7 +132,7 @@
+   //The encoder and click button (FastIO Pins)
+   #define BTN_EN1 26
+   #define BTN_EN2 27
+-  #define BTN_ENC 47  //the click switch
++  #define BTN_ENC 47
+ 
+   #define SDSS 45
+   #define SD_DETECT_PIN -1 // FastIO (Manual says 72 I'm not certain cause I can't test)
+diff --git a/Marlin/pins_PRINTRBOARD_REVF.h b/Marlin/pins_PRINTRBOARD_REVF.h
+index d2a4562..a289a5c 100644
+--- a/Marlin/pins_PRINTRBOARD_REVF.h
++++ b/Marlin/pins_PRINTRBOARD_REVF.h
+@@ -113,10 +113,6 @@
+   #define BTN_EN2   17
+   #define BTN_ENC   18//the click
+ 
+-  #define BLEN_C 2
+-  #define BLEN_B 1
+-  #define BLEN_A 0
+-
+   #define SD_DETECT_PIN -1
+ 
+   //encoder rotation values
+@@ -136,7 +132,7 @@
+   //The encoder and click button (FastIO Pins)
+   #define BTN_EN1 26
+   #define BTN_EN2 27
+-  #define BTN_ENC 47  //the click switch
++  #define BTN_ENC 47
+ 
+   #define SDSS 45
+   #define SD_DETECT_PIN -1 // FastIO (Manual says 72 I'm not certain cause I can't test)
+diff --git a/Marlin/pins_RAMBO.h b/Marlin/pins_RAMBO.h
+index 68c627b..e04fbc5 100644
+--- a/Marlin/pins_RAMBO.h
++++ b/Marlin/pins_RAMBO.h
+@@ -127,11 +127,7 @@
+     //buttons are directly attached using AUX-2
+     #define BTN_EN1 76
+     #define BTN_EN2 77
+-    #define BTN_ENC 78  //the click
+-
+-    #define BLEN_C 2
+-    #define BLEN_B 1
+-    #define BLEN_A 0
++    #define BTN_ENC 78
+ 
+     #define SD_DETECT_PIN 81 // Ramps doesn't use this
+ 
+@@ -154,17 +150,6 @@
+     #define LCD_PINS_D6 27
+     #define LCD_PINS_D7 29
+ 
+-    //bits in the shift register that carry the buttons for:
+-    // left up center down right red
+-    #define BL_LE 7
+-    #define BL_UP 6
+-    #define BL_MI 5
+-    #define BL_DW 4
+-    #define BL_RI 3
+-    #define BL_ST 2
+-    #define BLEN_B 1
+-    #define BLEN_A 0
+-
+   #endif // !NEWPANEL
+ 
+ #endif // ULTRA_LCD
+@@ -179,7 +164,7 @@
+   //The encoder and click button
+   #define BTN_EN1 85
+   #define BTN_EN2 84
+-  #define BTN_ENC 83  //the click switch
++  #define BTN_ENC 83
+ 
+   #define SD_DETECT_PIN -1 // Pin 72 if using easy adapter board
+ 
+diff --git a/Marlin/pins_RAMPS_14.h b/Marlin/pins_RAMPS_14.h
+index ef96f59..b1c5b19 100644
+--- a/Marlin/pins_RAMPS_14.h
++++ b/Marlin/pins_RAMPS_14.h
+@@ -256,7 +256,7 @@
+       //The encoder and click button
+       #define BTN_EN1 40
+       #define BTN_EN2 63
+-      #define BTN_ENC 59  //the click switch
++      #define BTN_ENC 59
+       //not connected to a pin
+       #define SD_DETECT_PIN 49
+ 
+diff --git a/Marlin/pins_ULTIMAIN_2.h b/Marlin/pins_ULTIMAIN_2.h
+index c348ebb..c2de0a4 100644
+--- a/Marlin/pins_ULTIMAIN_2.h
++++ b/Marlin/pins_ULTIMAIN_2.h
+@@ -89,10 +89,6 @@
+ //buttons are directly attached
+ #define BTN_EN1 40
+ #define BTN_EN2 41
+-#define BTN_ENC 19  //the click
+-
+-#define BLEN_C 2
+-#define BLEN_B 1
+-#define BLEN_A 0
++#define BTN_ENC 19
+ 
+ #define SD_DETECT_PIN 39
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 457a70f..b1d4300 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -58,7 +58,6 @@
+     void bootscreen();
+   #endif
+ 
+-
+   #define LCD_MESSAGEPGM(x) lcd_setstatuspgm(PSTR(x))
+   #define LCD_ALERTMESSAGEPGM(x) lcd_setalertstatuspgm(PSTR(x))
+ 
+@@ -93,7 +92,20 @@
+ 
+   bool lcd_blink();
+ 
+-  #if ENABLED(REPRAPWORLD_KEYPAD)
++  #if ENABLED(ULTIPANEL)
++    #define BLEN_A 0
++    #define BLEN_B 1
++    // Encoder click is directly connected
++    #if BUTTON_EXISTS(ENC)
++      #define BLEN_C 2
++      #define EN_C (_BV(BLEN_C))
++    #endif
++    #define EN_A (_BV(BLEN_A))
++    #define EN_B (_BV(BLEN_B))
++    #define EN_C (_BV(BLEN_C))
++  #endif
++
++  #if ENABLED(REPRAPWORLD_KEYPAD) // is also ULTIPANEL and NEWPANEL
+ 
+     #define REPRAPWORLD_BTN_OFFSET 0 // bit offset into buttons for shift register values
+ 
+@@ -135,35 +147,10 @@
+                                               EN_REPRAPWORLD_KEYPAD_LEFT) \
+                                             )
+ 
+-  #endif // REPRAPWORLD_KEYPAD
+-
+-  #if ENABLED(NEWPANEL)
+-
+-    #define EN_C (_BV(BLEN_C))
+-    #define EN_B (_BV(BLEN_B))
+-    #define EN_A (_BV(BLEN_A))
+-
+-    #if ENABLED(REPRAPWORLD_KEYPAD)
+-      #define LCD_CLICKED ((buttons&EN_C) || (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F1))
+-    #else
+-      #define LCD_CLICKED (buttons&EN_C)
+-    #endif
+-
+-  #else //!NEWPANEL
+-
+-    //atomic, do not change
+-    #define B_LE (_BV(BL_LE))
+-    #define B_UP (_BV(BL_UP))
+-    #define B_MI (_BV(BL_MI))
+-    #define B_DW (_BV(BL_DW))
+-    #define B_RI (_BV(BL_RI))
+-    #define B_ST (_BV(BL_ST))
+-    #define EN_B (_BV(BLEN_B))
+-    #define EN_A (_BV(BLEN_A))
+-
+-    #define LCD_CLICKED ((buttons&B_MI)||(buttons&B_ST))
+-
+-  #endif //!NEWPANEL
++    #define LCD_CLICKED ((buttons & EN_C) || (buttons_reprapworld_keypad & EN_REPRAPWORLD_KEYPAD_F1))
++  #elif ENABLED(NEWPANEL)
++    #define LCD_CLICKED (buttons & EN_C)
++  #endif
+ 
+ #else //no LCD
+   FORCE_INLINE void lcd_update() {}
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index 43b76a9..f8ffd4d 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -42,20 +42,9 @@
+  * Implementation of the LCD display routines for a DOGM128 graphic display.
+  * These are common LCD 128x64 pixel graphic displays.
+  */
+-
+-#if ENABLED(ULTIPANEL)
+-  #define BLEN_A 0
+-  #define BLEN_B 1
+-  #define BLEN_C 2
+-  #define EN_A (_BV(BLEN_A))
+-  #define EN_B (_BV(BLEN_B))
+-  #define EN_C (_BV(BLEN_C))
+-  #define LCD_CLICKED (buttons&EN_C)
+-#endif
+-
+-#include "dogm_bitmaps.h"
+ #include "ultralcd.h"
+ #include "ultralcd_st7920_u8glib_rrd.h"
++#include "dogm_bitmaps.h"
+ #include "duration_t.h"
+ 
+ #include <U8glib.h>
+diff --git a/Marlin/ultralcd_impl_HD44780.h b/Marlin/ultralcd_impl_HD44780.h
+index fa942d8..ab120c2 100644
+--- a/Marlin/ultralcd_impl_HD44780.h
++++ b/Marlin/ultralcd_impl_HD44780.h
+@@ -39,18 +39,6 @@ extern volatile uint8_t buttons;  //an extended version of the last checked butt
+ // via a shift/i2c register.
+ 
+ #if ENABLED(ULTIPANEL)
+-  // All UltiPanels might have an encoder - so this is always be mapped onto first two bits
+-  #define BLEN_B 1
+-  #define BLEN_A 0
+-
+-  #define EN_B (_BV(BLEN_B)) // The two encoder pins are connected through BTN_EN1 and BTN_EN2
+-  #define EN_A (_BV(BLEN_A))
+-
+-  #if BUTTON_EXISTS(ENC)
+-    // encoder click is directly connected
+-    #define BLEN_C 2
+-    #define EN_C (_BV(BLEN_C))
+-  #endif
+ 
+   //
+   // Setup other button mappings of each panel
+@@ -80,51 +68,35 @@ extern volatile uint8_t buttons;  //an extended version of the last checked butt
+ 
+   #elif ENABLED(LCD_I2C_PANELOLU2)
+ 
+-    #if BUTTON_EXISTS(ENC)
+-
+-      #undef LCD_CLICKED
+-      #define LCD_CLICKED (buttons&EN_C)
+-
+-    #else // Read through I2C if not directly connected to a pin
++    #if !BUTTON_EXISTS(ENC) // Use I2C if not directly connected to a pin
+ 
+       #define B_I2C_BTN_OFFSET 3 // (the first three bit positions reserved for EN_A, EN_B, EN_C)
+ 
+       #define B_MI (PANELOLU2_ENCODER_C<<B_I2C_BTN_OFFSET) // requires LiquidTWI2 library v1.2.3 or later
+ 
+       #undef LCD_CLICKED
+-      #define LCD_CLICKED (buttons&B_MI)
++      #define LCD_CLICKED (buttons & B_MI)
+ 
+       // I2C buttons take too long to read inside an interrupt context and so we read them during lcd_update
+       #define LCD_HAS_SLOW_BUTTONS
+ 
+     #endif
+ 
+-  #elif ENABLED(REPRAPWORLD_KEYPAD)
+-
+-    // REPRAPWORLD_KEYPAD defined in ultralcd.h
+-
+-  #elif ENABLED(NEWPANEL)
+-    #define LCD_CLICKED (buttons&EN_C)
+-
+-  #else // old style ULTIPANEL
+-    //bits in the shift register that carry the buttons for:
+-    // left up center down right red(stop)
+-    #define BL_LE 7
+-    #define BL_UP 6
+-    #define BL_MI 5
+-    #define BL_DW 4
+-    #define BL_RI 3
+-    #define BL_ST 2
+-
+-    //automatic, do not change
++  #elif DISABLED(NEWPANEL) // old style ULTIPANEL
++    // Shift register bits correspond to buttons:
++    #define BL_LE 7   // Left
++    #define BL_UP 6   // Up
++    #define BL_MI 5   // Middle
++    #define BL_DW 4   // Down
++    #define BL_RI 3   // Right
++    #define BL_ST 2   // Red Button
+     #define B_LE (_BV(BL_LE))
+     #define B_UP (_BV(BL_UP))
+     #define B_MI (_BV(BL_MI))
+     #define B_DW (_BV(BL_DW))
+     #define B_RI (_BV(BL_RI))
+     #define B_ST (_BV(BL_ST))
+-
+-    #define LCD_CLICKED (buttons&(B_MI|B_ST))
++    #define LCD_CLICKED ((buttons & B_MI) || (buttons & B_ST))
+   #endif
+ 
+ #endif //ULTIPANEL
+

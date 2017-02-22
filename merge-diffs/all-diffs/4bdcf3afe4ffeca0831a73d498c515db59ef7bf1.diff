@@ -1,0 +1,322 @@
+commit 4bdcf3afe4ffeca0831a73d498c515db59ef7bf1 (from 32f8300cc68f182272f67e985f1a1893df4a30df)
+Merge: 32f8300 c2362c1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Jun 3 21:56:12 2016 -0700
+
+    Merge pull request #3956 from thinkyhead/rc_mbl_single_axis_fix
+    
+    MBL: Keep active when homing single axes (#3750)
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index d109055..c90fa0a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2644,8 +2644,16 @@ inline void gcode_G28() {
+    * on again when homing all axis
+    */
+   #if ENABLED(MESH_BED_LEVELING)
+-    uint8_t mbl_was_active = mbl.active;
+-    mbl.active = false;
++    float pre_home_z = MESH_HOME_SEARCH_Z;
++    if (mbl.active()) {
++      // Save known Z position if already homed
++      if (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS]) {
++        pre_home_z = current_position[Z_AXIS];
++        pre_home_z += mbl.get_z(current_position[X_AXIS] - home_offset[X_AXIS],
++                                current_position[Y_AXIS] - home_offset[Y_AXIS]);
++      }
++      mbl.set_active(false);
++    }
+   #endif
+ 
+   setup_for_endstop_move();
+@@ -2945,20 +2953,31 @@ inline void gcode_G28() {
+ 
+   // Enable mesh leveling again
+   #if ENABLED(MESH_BED_LEVELING)
+-    if (mbl_was_active && home_all_axis) {
+-      current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
+-      sync_plan_position();
+-      mbl.active = 1;
+-      #if ENABLED(MESH_G28_REST_ORIGIN)
+-        current_position[Z_AXIS] = 0.0;
+-        set_destination_to_current();
+-        feedrate = homing_feedrate[Z_AXIS];
+-        line_to_destination();
+-        stepper.synchronize();
+-      #endif
+-      #if ENABLED(DEBUG_LEVELING_FEATURE)
+-        if (DEBUGGING(LEVELING)) DEBUG_POS("mbl_was_active", current_position);
+-      #endif
++    if (mbl.has_mesh()) {
++      if (home_all_axis || (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && homeZ)) {
++        current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++        sync_plan_position();
++        mbl.set_active(true);
++        #if ENABLED(MESH_G28_REST_ORIGIN)
++          current_position[Z_AXIS] = 0.0;
++          set_destination_to_current();
++          feedrate = homing_feedrate[Z_AXIS];
++          line_to_destination();
++          stepper.synchronize();
++        #else
++          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z -
++            mbl.get_z(current_position[X_AXIS] - home_offset[X_AXIS],
++                      current_position[Y_AXIS] - home_offset[Y_AXIS]);
++        #endif
++      }
++      else if ((axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS]) && (homeX || homeY)) {
++        current_position[Z_AXIS] = pre_home_z;
++        sync_plan_position();
++        mbl.set_active(true);
++        current_position[Z_AXIS] = pre_home_z -
++          mbl.get_z(current_position[X_AXIS] - home_offset[X_AXIS],
++                    current_position[Y_AXIS] - home_offset[Y_AXIS]);
++      }
+     }
+   #endif
+ 
+@@ -2978,7 +2997,7 @@ inline void gcode_G28() {
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+ 
+-  enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet, MeshSetZOffset };
++  enum MeshLevelingState { MeshReport, MeshStart, MeshNext, MeshSet, MeshSetZOffset, MeshReset };
+ 
+   inline void _mbl_goto_xy(float x, float y) {
+     saved_feedrate = feedrate;
+@@ -3015,6 +3034,7 @@ inline void gcode_G28() {
+    *  S2              Probe the next mesh point
+    *  S3 Xn Yn Zn.nn  Manually modify a single point
+    *  S4 Zn.nn        Set z offset. Positive away from bed, negative closer to bed.
++   *  S5              Reset and disable mesh
+    *
+    * The S0 report the points as below
+    *
+@@ -3028,8 +3048,8 @@ inline void gcode_G28() {
+ 
+     static int probe_point = -1;
+     MeshLevelingState state = code_seen('S') ? (MeshLevelingState)code_value_short() : MeshReport;
+-    if (state < 0 || state > 4) {
+-      SERIAL_PROTOCOLLNPGM("S out of range (0-4).");
++    if (state < 0 || state > 5) {
++      SERIAL_PROTOCOLLNPGM("S out of range (0-5).");
+       return;
+     }
+ 
+@@ -3038,8 +3058,13 @@ inline void gcode_G28() {
+ 
+     switch (state) {
+       case MeshReport:
+-        if (mbl.active) {
+-          SERIAL_PROTOCOLPGM("Num X,Y: ");
++        if (mbl.has_mesh()) {
++          SERIAL_PROTOCOLPGM("State: ");
++          if (mbl.active())
++            SERIAL_PROTOCOLPGM("On");
++          else
++            SERIAL_PROTOCOLPGM("Off");
++          SERIAL_PROTOCOLPGM("\nNum X,Y: ");
+           SERIAL_PROTOCOL(MESH_NUM_X_POINTS);
+           SERIAL_PROTOCOLCHAR(',');
+           SERIAL_PROTOCOL(MESH_NUM_Y_POINTS);
+@@ -3100,7 +3125,7 @@ inline void gcode_G28() {
+           // After recording the last point, activate the mbl and home
+           SERIAL_PROTOCOLLNPGM("Mesh probing done.");
+           probe_point = -1;
+-          mbl.active = true;
++          mbl.set_has_mesh(true);
+           enqueue_and_echo_commands_P(PSTR("G28"));
+         }
+         break;
+@@ -3147,6 +3172,19 @@ inline void gcode_G28() {
+           return;
+         }
+         mbl.z_offset = z;
++        break;
++
++      case MeshReset:
++        if (mbl.active()) {
++          current_position[Z_AXIS] +=
++            mbl.get_z(current_position[X_AXIS] - home_offset[X_AXIS],
++                      current_position[Y_AXIS] - home_offset[Y_AXIS]) - MESH_HOME_SEARCH_Z;
++          mbl.reset();
++          sync_plan_position();
++        }
++        else
++          mbl.reset();
++
+     } // switch(state)
+ 
+     report_current_position();
+@@ -5944,7 +5982,7 @@ inline void gcode_M410() {
+   /**
+    * M420: Enable/Disable Mesh Bed Leveling
+    */
+-  inline void gcode_M420() { if (code_seen('S') && code_has_value()) mbl.active = !!code_value_short(); }
++  inline void gcode_M420() { if (code_seen('S') && code_has_value()) mbl.set_has_mesh(!!code_value_short()); }
+ 
+   /**
+    * M421: Set a single Mesh Bed Leveling Z coordinate
+@@ -7335,7 +7373,7 @@ void clamp_to_software_endstops(float target[3]) {
+ 
+ // This function is used to split lines on mesh borders so each segment is only part of one mesh area
+ void mesh_buffer_line(float x, float y, float z, const float e, float feed_rate, const uint8_t& extruder, uint8_t x_splits = 0xff, uint8_t y_splits = 0xff) {
+-  if (!mbl.active) {
++  if (!mbl.active()) {
+     planner.buffer_line(x, y, z, e, feed_rate, extruder);
+     set_current_to_destination();
+     return;
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index 001955f..d3dbe2a 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -58,8 +58,8 @@
+  *  188  M206 XYZ  home_offset (float x3)
+  *
+  * Mesh bed leveling:
+- *  200  M420 S    active (bool)
+- *  201            z_offset (float) (added in V23)
++ *  200  M420 S    status (uint8)
++ *  201            z_offset (float)
+  *  205            mesh_num_x (uint8 as set in firmware)
+  *  206            mesh_num_y (uint8 as set in firmware)
+  *  207 G29 S3 XYZ z_values[][] (float x9, by default)
+@@ -187,20 +187,21 @@ void Config_StoreSettings()  {
+   EEPROM_WRITE_VAR(i, planner.max_e_jerk);
+   EEPROM_WRITE_VAR(i, home_offset);
+ 
+-  uint8_t mesh_num_x = 3;
+-  uint8_t mesh_num_y = 3;
+   #if ENABLED(MESH_BED_LEVELING)
+     // Compile time test that sizeof(mbl.z_values) is as expected
+     typedef char c_assert[(sizeof(mbl.z_values) == (MESH_NUM_X_POINTS) * (MESH_NUM_Y_POINTS) * sizeof(dummy)) ? 1 : -1];
+-    mesh_num_x = MESH_NUM_X_POINTS;
+-    mesh_num_y = MESH_NUM_Y_POINTS;
+-    EEPROM_WRITE_VAR(i, mbl.active);
++    uint8_t mesh_num_x = MESH_NUM_X_POINTS,
++            mesh_num_y = MESH_NUM_Y_POINTS,
++            dummy_uint8 = mbl.status & _BV(MBL_STATUS_HAS_MESH_BIT);
++    EEPROM_WRITE_VAR(i, dummy_uint8);
+     EEPROM_WRITE_VAR(i, mbl.z_offset);
+     EEPROM_WRITE_VAR(i, mesh_num_x);
+     EEPROM_WRITE_VAR(i, mesh_num_y);
+     EEPROM_WRITE_VAR(i, mbl.z_values);
+   #else
+-    uint8_t dummy_uint8 = 0;
++    uint8_t mesh_num_x = 3,
++            mesh_num_y = 3,
++            dummy_uint8 = 0;
+     dummy = 0.0f;
+     EEPROM_WRITE_VAR(i, dummy_uint8);
+     EEPROM_WRITE_VAR(i, dummy);
+@@ -376,7 +377,7 @@ void Config_RetrieveSettings() {
+     EEPROM_READ_VAR(i, mesh_num_x);
+     EEPROM_READ_VAR(i, mesh_num_y);
+     #if ENABLED(MESH_BED_LEVELING)
+-      mbl.active = dummy_uint8;
++      mbl.status = dummy_uint8;
+       mbl.z_offset = dummy;
+       if (mesh_num_x == MESH_NUM_X_POINTS && mesh_num_y == MESH_NUM_Y_POINTS) {
+         EEPROM_READ_VAR(i, mbl.z_values);
+@@ -550,7 +551,7 @@ void Config_ResetDefault() {
+   home_offset[X_AXIS] = home_offset[Y_AXIS] = home_offset[Z_AXIS] = 0;
+ 
+   #if ENABLED(MESH_BED_LEVELING)
+-    mbl.active = false;
++    mbl.reset();
+   #endif
+ 
+   #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+@@ -729,7 +730,7 @@ void Config_PrintSettings(bool forReplay) {
+       SERIAL_ECHOLNPGM("Mesh bed leveling:");
+       CONFIG_ECHO_START;
+     }
+-    SERIAL_ECHOPAIR("  M420 S", mbl.active);
++    SERIAL_ECHOPAIR("  M420 S", mbl.has_mesh() ? 1 : 0);
+     SERIAL_ECHOPAIR(" X", MESH_NUM_X_POINTS);
+     SERIAL_ECHOPAIR(" Y", MESH_NUM_Y_POINTS);
+     SERIAL_EOL;
+diff --git a/Marlin/mesh_bed_leveling.cpp b/Marlin/mesh_bed_leveling.cpp
+index ee70068..82d9fed 100644
+--- a/Marlin/mesh_bed_leveling.cpp
++++ b/Marlin/mesh_bed_leveling.cpp
+@@ -29,7 +29,7 @@
+   mesh_bed_leveling::mesh_bed_leveling() { reset(); }
+ 
+   void mesh_bed_leveling::reset() {
+-    active = 0;
++    status = MBL_STATUS_NONE;
+     z_offset = 0;
+     for (int8_t y = MESH_NUM_Y_POINTS; y--;)
+       for (int8_t x = MESH_NUM_X_POINTS; x--;)
+diff --git a/Marlin/mesh_bed_leveling.h b/Marlin/mesh_bed_leveling.h
+index 7b2201f..69b0b0d 100644
+--- a/Marlin/mesh_bed_leveling.h
++++ b/Marlin/mesh_bed_leveling.h
+@@ -24,12 +24,14 @@
+ 
+ #if ENABLED(MESH_BED_LEVELING)
+ 
++  enum MBLStatus { MBL_STATUS_NONE = 0, MBL_STATUS_HAS_MESH_BIT = 0, MBL_STATUS_ACTIVE_BIT = 1 };
++
+   #define MESH_X_DIST ((MESH_MAX_X - (MESH_MIN_X))/(MESH_NUM_X_POINTS - 1))
+   #define MESH_Y_DIST ((MESH_MAX_Y - (MESH_MIN_Y))/(MESH_NUM_Y_POINTS - 1))
+ 
+   class mesh_bed_leveling {
+   public:
+-    bool active;
++    uint8_t status; // Has Mesh and Is Active bits
+     float z_offset;
+     float z_values[MESH_NUM_Y_POINTS][MESH_NUM_X_POINTS];
+ 
+@@ -41,6 +43,11 @@
+     static FORCE_INLINE float get_probe_y(int8_t i) { return MESH_MIN_Y + (MESH_Y_DIST) * i; }
+     void set_z(const int8_t px, const int8_t py, const float z) { z_values[py][px] = z; }
+ 
++    bool active()                 { return TEST(status, MBL_STATUS_ACTIVE_BIT); }
++    void set_active(bool onOff)   { if (onOff) SBI(status, MBL_STATUS_ACTIVE_BIT); else CBI(status, MBL_STATUS_ACTIVE_BIT); }
++    bool has_mesh()               { return TEST(status, MBL_STATUS_HAS_MESH_BIT); }
++    void set_has_mesh(bool onOff) { if (onOff) SBI(status, MBL_STATUS_HAS_MESH_BIT); else CBI(status, MBL_STATUS_HAS_MESH_BIT); }
++
+     inline void zigzag(int8_t index, int8_t &px, int8_t &py) {
+       px = index % (MESH_NUM_X_POINTS);
+       py = index / (MESH_NUM_X_POINTS);
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index d38f2d3..85d7f34 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -539,7 +539,8 @@ void Planner::check_axes_activity() {
+   while (block_buffer_tail == next_buffer_head) idle();
+ 
+   #if ENABLED(MESH_BED_LEVELING)
+-    if (mbl.active) z += mbl.get_z(x - home_offset[X_AXIS], y - home_offset[Y_AXIS]);
++    if (mbl.active()) 
++      z += mbl.get_z(x - home_offset[X_AXIS], y - home_offset[Y_AXIS]);
+   #elif ENABLED(AUTO_BED_LEVELING_FEATURE)
+     apply_rotation_xyz(bed_level_matrix, x, y, z);
+   #endif
+@@ -1120,7 +1121,8 @@ void Planner::check_axes_activity() {
+ #endif // AUTO_BED_LEVELING_FEATURE || MESH_BED_LEVELING
+   {
+     #if ENABLED(MESH_BED_LEVELING)
+-      if (mbl.active) z += mbl.get_z(x - home_offset[X_AXIS], y - home_offset[Y_AXIS]);
++      if (mbl.active())
++        z += mbl.get_z(x - home_offset[X_AXIS], y - home_offset[Y_AXIS]);
+     #elif ENABLED(AUTO_BED_LEVELING_FEATURE)
+       apply_rotation_xyz(bed_level_matrix, x, y, z);
+     #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 94a1e3f..fdd1545 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -970,7 +970,7 @@ void lcd_cooldown() {
+           line_to_current(Z_AXIS);
+           stepper.synchronize();
+ 
+-          mbl.active = true;
++          mbl.set_has_mesh(true);
+           enqueue_and_echo_commands_P(PSTR("G28"));
+           lcd_return_to_status();
+           //LCD_MESSAGEPGM(MSG_LEVEL_BED_DONE);
+

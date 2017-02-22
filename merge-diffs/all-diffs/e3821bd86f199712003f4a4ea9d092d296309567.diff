@@ -1,0 +1,499 @@
+commit e3821bd86f199712003f4a4ea9d092d296309567 (from 02af69911ec48898c5590025badd20cc2a1748e1)
+Merge: 02af699 e203b8c
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Mon Apr 30 13:36:27 2012 +0200
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 512f017..cd1490a 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -197,7 +197,16 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define ULTRA_LCD  //general lcd support, also 16x2
+ //#define SDSUPPORT // Enable SD Card Support in Hardware Console
+ 
+-#define ULTIPANEL
++//#define ULTIMAKERCONTROLLER //as available from the ultimaker online store.
++//#define ULTIPANEL  //the ultipanel as on thingiverse
++
++
++#ifdef ULTIMAKERCONTROLLER    //automatic expansion
++ #define ULTIPANEL
++ #define NEWPANEL
++#endif 
++ 
++
+ #ifdef ULTIPANEL
+ //  #define NEWPANEL  //enable this if you have a click-encoder panel
+   #define SDSUPPORT
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 88fb349..8be47f8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -609,7 +609,7 @@ void process_commands()
+       feedrate = 0.0;
+       home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+       #ifdef QUICK_HOME
+-      if( code_seen(axis_codes[X_AXIS]) && code_seen(axis_codes[Y_AXIS]) )  //first diagonal move
++      if((home_all_axis)||( code_seen(axis_codes[X_AXIS]) && code_seen(axis_codes[Y_AXIS])) )  //first diagonal move
+       {
+         current_position[X_AXIS] = 0;current_position[Y_AXIS] = 0;  
+ 
+@@ -1100,6 +1100,12 @@ void process_commands()
+       
+       SERIAL_PROTOCOLLN("");
+       break;
++    case 120: // M120
++      enable_endstops(false) ;
++      break;
++    case 121: // M121
++      enable_endstops(true) ;
++      break;
+     case 119: // M119
+       #if (X_MIN_PIN > -1)
+         SERIAL_PROTOCOLPGM(MSG_X_MIN);
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 0178e21..4747ce6 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -29,6 +29,8 @@
+ 	#define MSG_MOVE_AXIS " Move Axis      \x7E"
+ 	#define MSG_SPEED " Speed:"
+ 	#define MSG_NOZZLE " \002Nozzle:"
++	#define MSG_NOZZLE1 " \002Nozzle2:"
++	#define MSG_NOZZLE2 " \002Nozzle3:"
+ 	#define MSG_BED " \002Bed:"
+ 	#define MSG_FAN_SPEED " Fan speed:"
+ 	#define MSG_FLOW " Flow:"
+@@ -174,6 +176,8 @@
+         #define MSG_MOVE_AXIS " Achsen verfahren   \x7E"
+ 	#define MSG_SPEED " Geschw:"
+ 	#define MSG_NOZZLE " \002Duese:"
++	#define MSG_NOZZLE1 " \002Duese2:"
++	#define MSG_NOZZLE2 " \002Duese3:"
+ 	#define MSG_BED " \002Bett:"
+ 	#define MSG_FAN_SPEED " Luefter geschw.:"
+ 	#define MSG_FLOW " Fluss:"
+@@ -296,4 +300,4 @@
+ 	#define MSG_ERR_LONG_EXTRUDE_STOP " too long extrusion prevented"
+ 
+ #endif
+-#endif // ifndef LANGUAGE_H
++#endif // ifndef LANGUAGE_H
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index ced9b35..0d6b602 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -729,10 +729,18 @@
+     #define LCD_PINS_D7 19
+     
+     //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
++    #ifndef ULTIMAKERCONTROLLER
++     #define encrot0 0
++     #define encrot1 2
++     #define encrot2 3
++     #define encrot3 1
++    #else
++     #define encrot0 0
++     #define encrot1 1
++     #define encrot2 3
++     #define encrot3 2
++
++    #endif
+ 
+     #define SDCARDDETECT -1
+     //bits in the shift register that carry the buttons for:
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 29be5c6..85e9bbb 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -85,7 +85,7 @@ volatile char count_direction[NUM_AXIS] = { 1, 1, 1, 1};
+ #ifdef ENDSTOPS_ONLY_FOR_HOMING
+   #define CHECK_ENDSTOPS  if(check_endstops)
+ #else
+-  #define CHECK_ENDSTOPS
++  #define CHECK_ENDSTOPS  if(check_endstops)
+ #endif
+ 
+ // intRes = intIn1 * intIn2 >> 16
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index a8ec619..783aa23 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -710,7 +710,7 @@ void max_temp_error(uint8_t e) {
+   disable_heater();
+   if(IsStopped() == false) {
+     SERIAL_ERROR_START;
+-    SERIAL_ERRORLN(e);
++    SERIAL_ERRORLN((int)e);
+     SERIAL_ERRORLNPGM(": Extruder switched off. MAXTEMP triggered !");
+   }
+ }
+@@ -719,13 +719,15 @@ void min_temp_error(uint8_t e) {
+   disable_heater();
+   if(IsStopped() == false) {
+     SERIAL_ERROR_START;
+-    SERIAL_ERRORLN(e);
++    SERIAL_ERRORLN((int)e);
+     SERIAL_ERRORLNPGM(": Extruder switched off. MINTEMP triggered !");
+   }
+ }
+ 
+ void bed_max_temp_error(void) {
++#if HEATER_BED_PIN > -1
+   WRITE(HEATER_BED_PIN, 0);
++#endif
+   if(IsStopped() == false) {
+     SERIAL_ERROR_START;
+     SERIAL_ERRORLNPGM("Temperature heated bed switched off. MAXTEMP triggered !!");
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index e122a31..1848c70 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -129,6 +129,8 @@ FORCE_INLINE bool isCoolingBed() {
+ #define setTargetHotend1(_celsius) setTargetHotend((_celsius), 1)
+ #define isHeatingHotend1() isHeatingHotend(1)
+ #define isCoolingHotend1() isCoolingHotend(1)
++#else
++#define setTargetHotend1(_celsius) do{}while(0)
+ #endif
+ #if EXTRUDERS > 2
+ #define degHotend2() degHotend(2)
+@@ -136,6 +138,8 @@ FORCE_INLINE bool isCoolingBed() {
+ #define setTargetHotend2(_celsius) setTargetHotend((_celsius), 2)
+ #define isHeatingHotend2() isHeatingHotend(2)
+ #define isCoolingHotend2() isCoolingHotend(2)
++#else
++#define setTargetHotend2(_celsius) do{}while(0)
+ #endif
+ #if EXTRUDERS > 3
+ #error Invalid number of extruders
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index e388890..c6cd15b 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -95,6 +95,7 @@ FORCE_INLINE void clear()
+ void lcd_init()
+ {
+   //beep();
++  
+   byte Degree[8] =
+   {
+     B01100,
+@@ -322,6 +323,8 @@ void MainMenu::showStatus()
+     lcd.setCursor(0,0);lcdprintPGM("\002---/---\001 ");
+     #if defined BED_USES_THERMISTOR || defined BED_USES_AD595 
+       lcd.setCursor(10,0);lcdprintPGM("B---/---\001 ");
++    #elif EXTRUDERS > 1
++      lcd.setCursor(10,0);lcdprintPGM("\002---/---\001 ");
+     #endif
+   }
+     
+@@ -356,6 +359,23 @@ void MainMenu::showStatus()
+       lcd.print(ftostr3(targetBed));
+       oldtargetBed=targetBed;
+     }
++  #elif EXTRUDERS > 1
++    static int olddegHotEnd1=-1;
++    static int oldtargetHotEnd1=-1;
++    int tHotEnd1=intround(degHotend1());
++    if((tHotEnd1!=olddegHotEnd1)||force_lcd_update)
++    {
++      lcd.setCursor(11,0);
++      lcd.print(ftostr3(tHotEnd1));
++      olddegHotEnd1=tHotEnd1;
++    }
++    int ttHotEnd1=intround(degTargetHotend1());
++    if((ttHotEnd1!=oldtargetHotEnd1)||force_lcd_update)
++    {
++      lcd.setCursor(15,0);
++      lcd.print(ftostr3(ttHotEnd1));
++      oldtargetHotEnd1=ttHotEnd1;
++    }
+   #endif
+   //starttime=2;
+   static uint16_t oldtime=0;
+@@ -430,10 +450,7 @@ void MainMenu::showStatus()
+   if(force_lcd_update)  //initial display of content
+   {
+     encoderpos=feedmultiply;
+-    lcd.setCursor(0,0);lcdprintPGM("\002123/567\001 ");
+-    #if defined BED_USES_THERMISTOR || defined BED_USES_AD595 
+-    lcd.setCursor(10,0);lcdprintPGM("B123/567\001 ");
+-    #endif
++    lcd.setCursor(0,0);lcdprintPGM("\002---/---\001 ");
+   }
+     
+   int tHotEnd0=intround(degHotend0());
+@@ -520,7 +537,7 @@ void MainMenu::showPrepare()
+       beepshort(); );
+       break;
+     case ItemP_cooldown:
+-      MENUITEM(  lcdprintPGM(MSG_COOLDOWN)  ,  BLOCK;setTargetHotend0(0);setTargetBed(0);beepshort(); ) ;
++      MENUITEM(  lcdprintPGM(MSG_COOLDOWN)  ,  BLOCK;setTargetHotend0(0);setTargetHotend1(0);setTargetHotend2(0);setTargetBed(0);beepshort(); ) ;
+       break;
+ //    case ItemP_extrude:
+   //    MENUITEM(  lcdprintPGM(" Extrude")  ,  BLOCK;enquecommand("G92 E0");enquecommand("G1 F700 E50");beepshort(); ) ;
+@@ -923,12 +940,18 @@ void MainMenu::showTune()
+ //   
+ 
+ enum {
+-  ItemCT_exit,ItemCT_nozzle,
++  ItemCT_exit,ItemCT_nozzle0,
+ #ifdef AUTOTEMP
+   ItemCT_autotempactive,
+   ItemCT_autotempmin,ItemCT_autotempmax,ItemCT_autotempfact,
+ #endif
+-#if (HEATER_BED_PIN > -1)
++#if EXTRUDERS > 1
++  ItemCT_nozzle1,
++#endif
++#if EXTRUDERS > 2
++  ItemCT_nozzle2,
++#endif
++#if defined BED_USES_THERMISTOR || BED_USES_AD595
+ ItemCT_bed,
+ #endif  
+   ItemCT_fan,
+@@ -946,7 +969,7 @@ void MainMenu::showControlTemp()
+     case ItemCT_exit:
+       MENUITEM(  lcdprintPGM(MSG_CONTROL)  ,  BLOCK;status=Main_Control;beepshort(); ) ;
+       break;
+-    case ItemCT_nozzle:
++    case ItemCT_nozzle0:
+       {
+         if(force_lcd_update)
+         {
+@@ -980,8 +1003,80 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;
+-      #ifdef AUTOTEMP
+-      case ItemCT_autotempmin:
++    #if EXTRUDERS > 1
++    case ItemCT_nozzle1:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_NOZZLE1);
++          lcd.setCursor(13,line);lcd.print(ftostr3(intround(degTargetHotend1())));
++        }
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=intround(degTargetHotend1());
++          }
++          else
++          {
++            setTargetHotend1(encoderpos);
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
++      }break;
++    #endif
++    #if EXTRUDERS > 2
++    case ItemCT_nozzle2:
++      {
++        if(force_lcd_update)
++        {
++          lcd.setCursor(0,line);lcdprintPGM(MSG_NOZZLE2);
++          lcd.setCursor(13,line);lcd.print(ftostr3(intround(degTargetHotend2())));
++        }
++        
++        if((activeline!=line) )
++          break;
++        
++        if(CLICKED)
++        {
++          linechanging=!linechanging;
++          if(linechanging)
++          {
++              encoderpos=intround(degTargetHotend2());
++          }
++          else
++          {
++            setTargetHotend1(encoderpos);
++            encoderpos=activeline*lcdslow;
++            beepshort();
++          }
++          BLOCK;
++        }
++        if(linechanging)
++        {
++          if(encoderpos<0) encoderpos=0;
++          if(encoderpos>260) encoderpos=260;
++          lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
++        }
++        
++      }break;
++    #endif
++    #ifdef AUTOTEMP
++    case ItemCT_autotempmin:
+       {
+         if(force_lcd_update)
+         {
+@@ -1015,7 +1110,7 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;  
+-      case ItemCT_autotempmax:
++    case ItemCT_autotempmax:
+       {
+         if(force_lcd_update)
+         {
+@@ -1049,7 +1144,7 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;  
+-      case ItemCT_autotempfact:
++    case ItemCT_autotempfact:
+       {
+         if(force_lcd_update)
+         {
+@@ -1083,7 +1178,7 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;
+-      case ItemCT_autotempactive:
++    case ItemCT_autotempactive:
+       {
+         if(force_lcd_update)
+         {
+@@ -1110,9 +1205,9 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;  
+-      #endif //autotemp
+-      #if (HEATER_BED_PIN > -1)
+-      case ItemCT_bed:
++    #endif //autotemp
++    #if defined BED_USES_THERMISTOR || BED_USES_AD595
++    case ItemCT_bed:
+       {
+         if(force_lcd_update)
+         {
+@@ -1145,8 +1240,8 @@ void MainMenu::showControlTemp()
+           lcd.setCursor(13,line);lcd.print(itostr3(encoderpos));
+         }
+       }break;
+-      #endif
+-      case ItemCT_fan:
++    #endif
++    case ItemCT_fan:
+       {
+         if(force_lcd_update)
+         {
+@@ -1181,8 +1276,8 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;
+-      	#ifdef PIDTEMP
+-      case ItemCT_PID_P: 
++    #ifdef PIDTEMP
++    case ItemCT_PID_P: 
+       {
+       if(force_lcd_update)
+         {
+@@ -1252,7 +1347,7 @@ void MainMenu::showControlTemp()
+         }
+         
+       }break;
+-      case ItemCT_PID_D: 
++    case ItemCT_PID_D: 
+       {
+       if(force_lcd_update)
+         {
+@@ -1324,8 +1419,8 @@ void MainMenu::showControlTemp()
+         }
+         
+       }
+-      	#endif
+       #endif
++    #endif
+       break;
+     default:   
+       break;
+@@ -2080,6 +2175,7 @@ void MainMenu::update()
+     {
+       force_lcd_update=true;
+       oldcardstatus=CARDINSERTED;
++      lcd_init(); // to maybe revive the lcd if static electricty killed it.
+       //Serial.println("echo: SD CHANGE");
+       if(CARDINSERTED)
+       {
+@@ -2282,4 +2378,4 @@ char *ftostr52(const float &x)
+ 
+ #endif //ULTRA_LCD
+ 
+-
++
+
+commit e3821bd86f199712003f4a4ea9d092d296309567 (from e203b8c754aa0273be9c1238b85cd4c9ce97c44e)
+Merge: 02af699 e203b8c
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Mon Apr 30 13:36:27 2012 +0200
+
+    Merge branch 'Marlin_v1' of github.com:ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 67a32a6..cd1490a 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -58,6 +58,7 @@
+ // Actual temperature must be close to target for this long before M109 returns success
+ #define TEMP_RESIDENCY_TIME 10	// (seconds)
+ #define TEMP_HYSTERESIS 3       // (degC) range of +/- temperatures considered "close" to the target one
++#define TEMP_WINDOW     1       // (degC) Window around target to start the recidency timer x degC early.
+ 
+ // The minimal temperature defines the temperature below which the heater will not be enabled It is used
+ // to check that the wiring to the thermistor is not broken. 
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index d91e355..8be47f8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -104,12 +104,12 @@
+ // M240 - Trigger a camera to take a photograph
+ // M301 - Set PID parameters P I and D
+ // M302 - Allow cold extrudes
++// M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+ // M400 - Finish all moves
+ // M500 - stores paramters in EEPROM
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).  
+ // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+ // M503 - print the current settings (from memory not from eeprom)
+-// M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
+ // M999 - Restart after being stopped by error
+ 
+ //Stepper Movement Variables
+@@ -940,8 +940,8 @@ void process_commands()
+         #ifdef TEMP_RESIDENCY_TIME
+             /* start/restart the TEMP_RESIDENCY_TIME timer whenever we reach target temp for the first time
+               or when current temp falls outside the hysteresis after target temp was reached */
+-          if ((residencyStart == -1 &&  target_direction && !isHeatingHotend(tmp_extruder)) ||
+-              (residencyStart == -1 && !target_direction && !isCoolingHotend(tmp_extruder)) ||
++          if ((residencyStart == -1 &&  target_direction && (degHotend(tmp_extruder) >= (degTargetHotend(tmp_extruder)-TEMP_WINDOW))) ||
++              (residencyStart == -1 && !target_direction && (degHotend(tmp_extruder) <= (degTargetHotend(tmp_extruder)+TEMP_WINDOW))) ||
+               (residencyStart > -1 && labs(degHotend(tmp_extruder) - degTargetHotend(tmp_extruder)) > TEMP_HYSTERESIS) ) 
+           {
+             residencyStart = millis();
+

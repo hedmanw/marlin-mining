@@ -1,0 +1,473 @@
+commit 73b380d8d2472699ec3bc69db9e275728579b223 (from 89f78b0b80522fd63330d2cb31befa79c7a63576)
+Merge: 89f78b0 fe49302
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Sun Apr 6 19:15:29 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index e18c98a..714bb3e 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -116,7 +116,7 @@
+ // 9 is 100k GE Sensing AL03006-58.2K-97-G1 (4.7k pullup)
+ // 10 is 100k RS thermistor 198-961 (4.7k pullup)
+ // 20 is the PT100 circuit found in the Ultimainboard V2.x
+-// 60 is 100k Maker's Tool Works Kapton Bed Thermistor
++// 60 is 100k Maker's Tool Works Kapton Bed Thermistor beta=3950
+ //
+ //    1k ohm pullup tables - This is not normal, you would have to have changed out your 4.7k for 1k
+ //                          (but gives greater accuracy and more stable PID)
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index f8be1eb..323f908 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -410,10 +410,10 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #ifdef FWRETRACT
+   #define MIN_RETRACT 0.1                //minimum extruded mm to accept a automatic gcode retraction attempt
+   #define RETRACT_LENGTH 3               //default retract length (positive mm)
+-  #define RETRACT_FEEDRATE 80*60         //default feedrate for retracting
++  #define RETRACT_FEEDRATE 45            //default feedrate for retracting (mm/s)
+   #define RETRACT_ZLIFT 0                //default retract Z-lift
+   #define RETRACT_RECOVER_LENGTH 0       //default additional recover length (mm, added to retract length when recovering)
+-  #define RETRACT_RECOVER_FEEDRATE 8*60  //default feedrate for recovering from retraction
++  #define RETRACT_RECOVER_FEEDRATE 8     //default feedrate for recovering from retraction (mm/s)
+ #endif
+ 
+ //adds support for experimental filament exchange support M600; requires display
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index f7060fc..a572d6d 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1119,7 +1119,7 @@ void refresh_cmd_timeout(void)
+       current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+-      feedrate=retract_feedrate;
++      feedrate=retract_feedrate*60;
+       retracted=true;
+       prepare_move();
+       current_position[Z_AXIS]-=retract_zlift;
+@@ -1137,7 +1137,7 @@ void refresh_cmd_timeout(void)
+       current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+-      feedrate=retract_recover_feedrate;
++      feedrate=retract_recover_feedrate*60;
+       retracted=false;
+       prepare_move();
+       feedrate = oldFeedrate;
+@@ -2270,8 +2270,6 @@ void process_commands()
+             SERIAL_ECHO_START;
+             SERIAL_ECHO(MSG_M200_INVALID_EXTRUDER);
+           }
+-          SERIAL_ECHOLN(tmp_extruder);
+-          break;
+         }
+         volumetric_multiplier[tmp_extruder] = 1 / area;
+       }
+@@ -2343,7 +2341,7 @@ void process_commands()
+       break;
+     #endif
+     #ifdef FWRETRACT
+-    case 207: //M207 - set retract length S[positive mm] F[feedrate mm/sec] Z[additional zlift/hop]
++    case 207: //M207 - set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop]
+     {
+       if(code_seen('S'))
+       {
+@@ -2351,14 +2349,14 @@ void process_commands()
+       }
+       if(code_seen('F'))
+       {
+-        retract_feedrate = code_value() ;
++        retract_feedrate = code_value()/60 ;
+       }
+       if(code_seen('Z'))
+       {
+         retract_zlift = code_value() ;
+       }
+     }break;
+-    case 208: // M208 - set retract recover length S[positive mm surplus to the M207 S*] F[feedrate mm/sec]
++    case 208: // M208 - set retract recover length S[positive mm surplus to the M207 S*] F[feedrate mm/min]
+     {
+       if(code_seen('S'))
+       {
+@@ -2366,7 +2364,7 @@ void process_commands()
+       }
+       if(code_seen('F'))
+       {
+-        retract_recover_feedrate = code_value() ;
++        retract_recover_feedrate = code_value()/60 ;
+       }
+     }break;
+     case 209: // M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
+@@ -3053,7 +3051,16 @@ void process_commands()
+         // Set the new active extruder and position
+         active_extruder = tmp_extruder;
+       #endif //else DUAL_X_CARRIAGE
++#ifdef DELTA 
++
++  calculate_delta(current_position); // change cartesian kinematic  to  delta kinematic;
++   //sent position to plan_set_position();
++  plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS],current_position[E_AXIS]);
++            
++#else
+         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
++
++#endif
+         // Move to the old position if 'F' was in the parameters
+         if(make_move && Stopped == false) {
+            prepare_move();
+diff --git a/Marlin/language.h b/Marlin/language.h
+index ed94cc3..13324ba 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -164,10 +164,10 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
+-	#define MSG_CONTROL_RETRACTF "Retract  F"
++	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD card"
+@@ -362,10 +362,10 @@
+ 	#define MSG_STOPPED "Zatrzymany. "
+ 	#define MSG_STEPPER_RELEASED "Zwolniony."
+ 	#define MSG_CONTROL_RETRACT  "Wycofaj mm"
+-	#define MSG_CONTROL_RETRACTF "Wycofaj  F"
++	#define MSG_CONTROL_RETRACTF "Wycofaj  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Skok Z mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Cof. wycof. +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  V"
+ 	#define MSG_AUTORETRACT "Auto. wycofanie"
+ 	#define MSG_FILAMENTCHANGE "Zmien filament"
+ 	#define MSG_INIT_SDCARD "Inicjal. karty SD"
+@@ -561,10 +561,10 @@
+ 	#define MSG_STOPPED "STOPPE."
+ 	#define MSG_STEPPER_RELEASED "RELACHE."
+ 	#define MSG_CONTROL_RETRACT "Retraction mm"
+-	#define MSG_CONTROL_RETRACTF "Retraction F"
++	#define MSG_CONTROL_RETRACTF "Retraction V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet V"
+ 	#define MSG_AUTORETRACT "Retract. Auto."
+ 	#define MSG_FILAMENTCHANGE "Changer filament"
+ 	#define MSG_INIT_SDCARD "Init. la carte SD"
+@@ -761,10 +761,10 @@
+ 	#define MSG_STOPPED          "GESTOPPT"
+ 	#define MSG_STEPPER_RELEASED "Stepper frei"
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
+-	#define MSG_CONTROL_RETRACTF "Retract  F"
++	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT      "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Filament wechseln"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+@@ -957,10 +957,10 @@
+ 	#define MSG_KILLED "PARADA DE EMERG."
+ 	#define MSG_STOPPED "PARADA"
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
+-	#define MSG_CONTROL_RETRACTF "Retraer  F"
++	#define MSG_CONTROL_RETRACTF "Retraer  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Iniciando tarjeta"
+@@ -1162,10 +1162,10 @@
+ 	#define MSG_KILLED							"УБИТО."
+ 	#define MSG_STOPPED							"ОСТАНОВЛЕНО."
+ 	#define MSG_CONTROL_RETRACT					"Откат mm:"
+-	#define MSG_CONTROL_RETRACTF				"Откат  F:"
++	#define MSG_CONTROL_RETRACTF				"Откат  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT			"Прыжок mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER			"Возврат +mm:"
+-	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  F:"
++	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  V:"
+ 	#define MSG_AUTORETRACT						"АвтоОткат:"
+ 	#define MSG_FILAMENTCHANGE 					"Change filament"
+ 	#define MSG_INIT_SDCARD 					"Init. SD-Card"
+@@ -1357,10 +1357,10 @@
+ 	#define MSG_KILLED               "UCCISO. "
+ 	#define MSG_STOPPED              "ARRESTATO. "
+ 	#define MSG_CONTROL_RETRACT      "Ritrai mm"
+-	#define MSG_CONTROL_RETRACTF     "Ritrai  F"
++	#define MSG_CONTROL_RETRACTF     "Ritrai  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Salta mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT          "AutoArretramento"
+ 	#define MSG_FILAMENTCHANGE       "Cambia filamento"
+ 	#define MSG_INIT_SDCARD          "Iniz. SD-Card"
+@@ -1560,10 +1560,10 @@
+ 	#define MSG_STOPPED "PARADA. "
+ 	#define MSG_STEPPER_RELEASED "Lancado."
+ 	#define MSG_CONTROL_RETRACT  " Retrair mm:"
+-	#define MSG_CONTROL_RETRACTF " Retrair  F:"
++	#define MSG_CONTROL_RETRACTF " Retrair  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+-	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  F:"
++	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  V:"
+ 	#define MSG_AUTORETRACT " AutoRetr.:"
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+@@ -1758,10 +1758,10 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Veda mm"
+-	#define MSG_CONTROL_RETRACTF "Veda F"
++	#define MSG_CONTROL_RETRACTF "Veda V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Z mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
+-	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
++	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoVeto."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+ 	#define MSG_INIT_SDCARD "Init. SD-Card"
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index d276621..3e5dd0b 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -502,7 +502,7 @@
+   #endif
+ 
+   #if MOTHERBOARD == 35
+-    #define CONTROLLERFAN_PIN  10 //Pin used for the fan to cool controller
++    #define CONTROLLERFAN_PIN  -1 //Pin used for the fan to cool controller
+   #endif
+ 
+   #define PS_ON_PIN          12
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index 1d2b3ca..6120923 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -781,6 +781,14 @@ const short temptable_55[][2] PROGMEM = {
+ #endif
+ 
+ #if (THERMISTORHEATER_0 == 60) || (THERMISTORHEATER_1 == 60) || (THERMISTORHEATER_2 == 60) || (THERMISTORBED == 60) // Maker's Tool Works Kapton Bed Thermister
++// ./createTemperatureLookup.py --r0=100000 --t0=25 --r1=0 --r2=4700 --beta=3950 
++// r0: 100000
++// t0: 25
++// r1: 0 (parallel with rTherm)
++// r2: 4700 (series with rTherm)
++// beta: 3950
++// min adc: 1 at 0.0048828125 V
++// max adc: 1023 at 4.9951171875 V
+ const short temptable_60[][2] PROGMEM = {
+    {51*OVERSAMPLENR, 272},
+    {61*OVERSAMPLENR, 258},
+diff --git a/README.md b/README.md
+index 236c312..9455268 100644
+--- a/README.md
++++ b/README.md
+@@ -204,15 +204,15 @@ M Codes
+ *  M140 - Set bed target temp
+ *  M190 - Sxxx Wait for bed current temp to reach target temp. Waits only when heating
+ *         Rxxx Wait for bed current temp to reach target temp. Waits when heating and cooling
+-*  M200 - Set filament diameter
++*  M200 D<millimeters>- set filament diameter and set E axis units to cubic millimeters (use S0 to set back to millimeters).
+ *  M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+ *  M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000) Unused in Marlin!!
+ *  M203 - Set maximum feedrate that your machine can sustain (M203 X200 Y200 Z300 E10000) in mm/sec
+ *  M204 - Set default acceleration: S normal moves T filament only moves (M204 S3000 T7000) im mm/sec^2  also sets minimum segment time in ms (B20000) to prevent buffer underruns and M20 minimum feedrate
+ *  M205 -  advanced settings:  minimum travel speed S=while printing T=travel only,  B=minimum segment time X= maximum xy jerk, Z=maximum Z jerk, E=maximum E jerk
+ *  M206 - set additional homeing offset
+-*  M207 - set retract length S[positive mm] F[feedrate mm/sec] Z[additional zlift/hop]
+-*  M208 - set recover=unretract length S[positive mm surplus to the M207 S*] F[feedrate mm/sec]
++*  M207 - set retract length S[positive mm] F[feedrate mm/min] Z[additional zlift/hop], stays in mm regardless of M200 setting
++*  M208 - set recover=unretract length S[positive mm surplus to the M207 S*] F[feedrate mm/min]
+ *  M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
+ *  M218 - set hotend offset (in mm): T<extruder_number> X<offset_on_X> Y<offset_on_Y>
+ *  M220 S<factor in percent>- set speed factor override percentage
+
+commit 73b380d8d2472699ec3bc69db9e275728579b223 (from fe4930212cdde3859452e43d33c9797c657e1a9d)
+Merge: 89f78b0 fe49302
+Author: Neil Darlow <neil@darlow.co.uk>
+Date:   Sun Apr 6 19:15:29 2014 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b45ca1a..a572d6d 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1641,6 +1641,8 @@ void process_commands()
+           lcd_update();
+         }
+       }else{
++          if (!lcd_detected())
++            break;
+         while(!lcd_clicked()){
+           manage_heater();
+           manage_inactivity();
+diff --git a/Marlin/cardreader.cpp b/Marlin/cardreader.cpp
+index 5fb8dcc..036a34e 100644
+--- a/Marlin/cardreader.cpp
++++ b/Marlin/cardreader.cpp
+@@ -150,9 +150,17 @@ void CardReader::initsd()
+   if(root.isOpen())
+     root.close();
+ #ifdef SDSLOW
+-  if (!card.init(SPI_HALF_SPEED,SDSS))
++  if (!card.init(SPI_HALF_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_HALF_SPEED,LCD_SDSS)
++  #endif
++    )
+ #else
+-  if (!card.init(SPI_FULL_SPEED,SDSS))
++  if (!card.init(SPI_FULL_SPEED,SDSS)
++  #if defined(LCD_SDSS) && (LCD_SDSS != SDSS)
++    && !card.init(SPI_FULL_SPEED,LCD_SDSS)
++  #endif
++    )
+ #endif
+   {
+     //if (!card.init(SPI_HALF_SPEED,SDSS))
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 0811179..3e5dd0b 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -614,14 +614,14 @@
+         #define BTN_EN1 47  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 43
+         #define BTN_ENC 32
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT -1
+         #define KILL_PIN 41
+       #elif defined(LCD_I2C_VIKI)
+         #define BTN_EN1 22  //reverse if the encoder turns the wrong way.
+         #define BTN_EN2 7
+         #define BTN_ENC -1
+-        #define SDSS 53
++        #define LCD_SDSS 53
+         #define SDCARDDETECT 49
+       #else
+         //arduino pin which triggers an piezzo beeper
+@@ -1123,7 +1123,7 @@
+      #ifdef LCD_I2C_PANELOLU2
+        #ifdef MELZI
+          #define BTN_ENC 29 //the click switch
+-         #define SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
++         #define LCD_SDSS 30 //to use the SD card reader on the Panelolu2 rather than the melzi board
+        #else
+          #define BTN_ENC 30 //the click switch
+        #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 8ae977d..0a66b77 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1184,7 +1184,7 @@ void lcd_update()
+     lcd_buttons_update();
+ 
+     #if (SDCARDDETECT > 0)
+-    if((IS_SD_INSERTED != lcd_oldcardstatus))
++    if((IS_SD_INSERTED != lcd_oldcardstatus && lcd_detected()))
+     {
+         lcdDrawUpdate = 2;
+         lcd_oldcardstatus = IS_SD_INSERTED;
+@@ -1281,6 +1281,11 @@ void lcd_setstatus(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setstatuspgm(const char* message)
+@@ -1288,6 +1293,11 @@ void lcd_setstatuspgm(const char* message)
+     if (lcd_status_message_level > 0)
+         return;
+     strncpy_P(lcd_status_message, message, LCD_WIDTH);
++
++    size_t i = strlen(lcd_status_message);
++    memset(lcd_status_message + i, ' ', LCD_WIDTH - i);
++    lcd_status_message[LCD_WIDTH] = '\0';
++
+     lcdDrawUpdate = 2;
+ }
+ void lcd_setalertstatuspgm(const char* message)
+@@ -1396,6 +1406,15 @@ void lcd_buttons_update()
+     lastEncoderBits = enc;
+ }
+ 
++bool lcd_detected(void)
++{
++#if (defined(LCD_I2C_TYPE_MCP23017) || defined(LCD_I2C_TYPE_MCP23008)) && defined(DETECT_DEVICE)
++  return lcd.LcdDetected() == 1;
++#else
++  return true;
++#endif
++}
++
+ void lcd_buzz(long duration, uint16_t freq)
+ {
+ #ifdef LCD_USE_I2C_BUZZER
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index f4570f6..fce23ba 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,6 +11,7 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
++  bool lcd_detected(void);
+ 
+ #ifdef DOGLCD
+   extern int lcd_contrast;
+@@ -92,6 +93,7 @@
+   FORCE_INLINE void lcd_buttons_update() {}
+   FORCE_INLINE void lcd_reset_alert_level() {}
+   FORCE_INLINE void lcd_buzz(long duration,uint16_t freq) {}
++  FORCE_INLINE bool lcd_detected(void) { return true; }
+ 
+   #define LCD_MESSAGEPGM(x) 
+   #define LCD_ALERTMESSAGEPGM(x) 
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 932895b..fd33744 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -166,13 +166,21 @@ extern volatile uint16_t buttons;  //an extended version of the last checked but
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+   
+ #elif defined(LCD_I2C_TYPE_MCP23008)
+   #include <Wire.h>
+   #include <LiquidTWI2.h>
+   #define LCD_CLASS LiquidTWI2
+-  LCD_CLASS lcd(LCD_I2C_ADDRESS);  
++  #if defined(DETECT_DEVICE)
++     LCD_CLASS lcd(LCD_I2C_ADDRESS, 1);
++  #else
++     LCD_CLASS lcd(LCD_I2C_ADDRESS);
++  #endif
+ 
+ #elif defined(LCD_I2C_TYPE_PCA8574)
+     #include <LiquidCrystal_I2C.h>
+

@@ -1,0 +1,158 @@
+commit 692a01b1c70d8baa62e7946ecb3e6cd949efb57a (from 878b5557a1364d018563803048225c9115122f50)
+Merge: 878b555 2ec2bf1
+Author: Bo Herrmannsen <bo.herrmannsen@gmail.com>
+Date:   Tue Dec 30 16:49:08 2014 +0100
+
+    Merge pull request #1277 from thinkyhead/fix_regressions
+    
+    Fix regressions affecting compilation
+
+diff --git a/Marlin/SdFatUtil.cpp b/Marlin/SdFatUtil.cpp
+index 1187ec5..32cd198 100644
+--- a/Marlin/SdFatUtil.cpp
++++ b/Marlin/SdFatUtil.cpp
+@@ -26,21 +26,24 @@
+ /** Amount of free RAM
+  * \return The number of free bytes.
+  */
++#ifdef __arm__
++extern "C" char* sbrk(int incr);
+ int SdFatUtil::FreeRam() {
+-  extern int  __bss_end;
+-  extern int* __brkval;
+-  int free_memory;
+-  if (reinterpret_cast<int>(__brkval) == 0) {
+-    // if no heap use from end of bss section
+-    free_memory = reinterpret_cast<int>(&free_memory)
+-                  - reinterpret_cast<int>(&__bss_end);
+-  } else {
+-    // use from top of stack to heap
+-    free_memory = reinterpret_cast<int>(&free_memory)
+-                  - reinterpret_cast<int>(__brkval);
+-  }
+-  return free_memory;
++  char top;
++  return &top - reinterpret_cast<char*>(sbrk(0));
+ }
++#else  // __arm__
++extern char *__brkval;
++extern char __bss_end;
++/** Amount of free RAM
++ * \return The number of free bytes.
++ */
++int SdFatUtil::FreeRam() {
++  char top;
++  return __brkval ? &top - __brkval : &top - &__bss_end;
++}
++#endif  // __arm
++
+ //------------------------------------------------------------------------------
+ /** %Print a string in flash memory.
+  *
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 898dc19..9c0a544 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -337,7 +337,7 @@ static void lcd_implementation_drawmenu_generic(uint8_t row, const char* pstr, c
+ 		u8g.setColorIndex(1);		// restore settings to black on white
+ }
+ 
+-static void _drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char pre_char, char* data, bool pgm) {
++static void _drawmenu_setting_edit_generic(uint8_t row, const char* pstr, char pre_char, const char* data, bool pgm) {
+   char c;
+   uint8_t n = LCD_WIDTH - 1 - 2 - (pgm ? strlen_P(data) : strlen(data));
+ 		
+
+commit 692a01b1c70d8baa62e7946ecb3e6cd949efb57a (from 2ec2bf1564b9fcb451d5be043b751f8966954c3b)
+Merge: 878b555 2ec2bf1
+Author: Bo Herrmannsen <bo.herrmannsen@gmail.com>
+Date:   Tue Dec 30 16:49:08 2014 +0100
+
+    Merge pull request #1277 from thinkyhead/fix_regressions
+    
+    Fix regressions affecting compilation
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index d3060dc..83895e2 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1496,7 +1496,52 @@ char *ftostr12ns(const float &x)
+   return conv;
+ }
+ 
+-// Convert int to lj string with +123.0 format
++//  convert float to space-padded string with -_23.4_ format
++char *ftostr32sp(const float &x) {
++  long xx = abs(x * 100);
++  uint8_t dig;
++
++  if (x < 0) { // negative val = -_0
++    conv[0] = '-';
++    dig = (xx / 1000) % 10;
++    conv[1] = dig ? '0' + dig : ' ';
++  }
++  else { // positive val = __0
++    dig = (xx / 10000) % 10;
++    if (dig) {
++      conv[0] = '0' + dig;
++      conv[1] = '0' + (xx / 1000) % 10;
++    }
++    else {
++      conv[0] = ' ';
++      dig = (xx / 1000) % 10;
++      conv[1] = dig ? '0' + dig : ' ';
++    }
++  }
++
++  conv[2] = '0' + (xx / 100) % 10; // lsd always
++
++  dig = xx % 10;
++  if (dig) { // 2 decimal places
++    conv[5] = '0' + dig;
++    conv[4] = '0' + (xx / 10) % 10;
++    conv[3] = '.';
++  }
++  else { // 1 or 0 decimal place
++    dig = (xx / 10) % 10;
++    if (dig) {
++      conv[4] = '0' + dig;
++      conv[3] = '.';
++    }
++    else {
++      conv[3] = conv[4] = ' ';
++    }
++    conv[5] = ' ';
++  }
++  conv[6] = '\0';
++  return conv;
++}
++
+ char *itostr31(const int &xx)
+ {
+   conv[0]=(xx>=0)?'+':'-';
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 339955e..351a265 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -119,6 +119,7 @@ char *ftostr31ns(const float &x); // float to string without sign character
+ char *ftostr31(const float &x);
+ char *ftostr32(const float &x);
+ char *ftostr12ns(const float &x); 
++char *ftostr32sp(const float &x); // remove zero-padding from ftostr32
+ char *ftostr5(const float &x);
+ char *ftostr51(const float &x);
+ char *ftostr52(const float &x);
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 29deabb..1a93fe3 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -548,7 +548,7 @@ static void lcd_implementation_status_screen()
+ # endif//LCD_WIDTH > 19
+     lcd.setCursor(LCD_WIDTH - 8, 1);
+     lcd.print('Z');
+-    lcd.print(ftostr32(current_position[Z_AXIS] + 0.00001));
++    lcd.print(ftostr32sp(current_position[Z_AXIS] + 0.00001));
+ #endif//LCD_HEIGHT > 2
+ 
+ #if LCD_HEIGHT > 3
+

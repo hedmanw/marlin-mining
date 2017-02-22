@@ -1,0 +1,207 @@
+commit 6cf0952bf9a5842e88ad99ee290ed3a5c8bf1323 (from 8061f1fac929817c0ea26ef5c2a5d3106ca4f32f)
+Merge: 8061f1f eabff30
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Sep 24 03:23:42 2016 -0500
+
+    Merge pull request #4887 from thinkyhead/rc_autumn_fixups
+    
+    Improve MINIMUM_STEPPER_PULSE
+
+diff --git a/Marlin/Conditionals_post.h b/Marlin/Conditionals_post.h
+index 89b8afb..1b5e418 100644
+--- a/Marlin/Conditionals_post.h
++++ b/Marlin/Conditionals_post.h
+@@ -708,4 +708,7 @@
+     #define MAX_PROBE_Y (min(Y_MAX_POS, Y_MAX_POS + Y_PROBE_OFFSET_FROM_EXTRUDER))
+   #endif
+ 
++  // Stepper pulse duration, in cycles
++  #define STEP_PULSE_CYCLES ((MINIMUM_STEPPER_PULSE) * CYCLES_PER_MICROSECOND)
++
+ #endif // CONDITIONALS_POST_H
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index b098597..56b5c8b 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -36,6 +36,9 @@
+   #define CRITICAL_SECTION_END    SREG = _sreg;
+ #endif
+ 
++// Clock speed factor
++#define CYCLES_PER_MICROSECOND (F_CPU / 1000000UL) // 16 or 20
++
+ // Remove compiler warning on an unused variable
+ #define UNUSED(x) (void) (x)
+ 
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 9eef09c..00595e1 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -460,8 +460,10 @@ void Stepper::isr() {
+         _APPLY_STEP(AXIS)(_INVERT_STEP_PIN(AXIS),0); \
+       }
+ 
++    #define CYCLES_EATEN_BY_CODE 240
++
+     // If a minimum pulse time was specified get the CPU clock
+-    #if MINIMUM_STEPPER_PULSE > 0
++    #if STEP_PULSE_CYCLES > CYCLES_EATEN_BY_CODE
+       static uint32_t pulse_start;
+       pulse_start = TCNT0;
+     #endif
+@@ -494,9 +496,8 @@ void Stepper::isr() {
+     #endif // !ADVANCE && !LIN_ADVANCE
+ 
+     // For a minimum pulse time wait before stopping pulses
+-    #if MINIMUM_STEPPER_PULSE > 0
+-      #define CYCLES_EATEN_BY_CODE 10
+-      while ((uint32_t)(TCNT0 - pulse_start) < (MINIMUM_STEPPER_PULSE * (F_CPU / 1000000UL)) - CYCLES_EATEN_BY_CODE) { /* nada */ }
++    #if STEP_PULSE_CYCLES > CYCLES_EATEN_BY_CODE
++      while ((uint32_t)(TCNT0 - pulse_start) < STEP_PULSE_CYCLES - CYCLES_EATEN_BY_CODE) { /* nada */ }
+     #endif
+ 
+     #if HAS_X_STEP
+@@ -688,10 +689,12 @@ void Stepper::isr() {
+         E## INDEX ##_STEP_WRITE(INVERT_E_STEP_PIN); \
+       }
+ 
++    #define CYCLES_EATEN_BY_E 60
++
+     // Step all E steppers that have steps
+     for (uint8_t i = 0; i < step_loops; i++) {
+ 
+-      #if MINIMUM_STEPPER_PULSE > 0
++      #if STEP_PULSE_CYCLES > CYCLES_EATEN_BY_E
+         static uint32_t pulse_start;
+         pulse_start = TCNT0;
+       #endif
+@@ -708,9 +711,8 @@ void Stepper::isr() {
+       #endif
+ 
+       // For a minimum pulse time wait before stopping pulses
+-      #if MINIMUM_STEPPER_PULSE > 0
+-        #define CYCLES_EATEN_BY_E 10
+-        while ((uint32_t)(TCNT0 - pulse_start) < (MINIMUM_STEPPER_PULSE * (F_CPU / 1000000UL)) - CYCLES_EATEN_BY_E) { /* nada */ }
++      #if STEP_PULSE_CYCLES > CYCLES_EATEN_BY_E
++        while ((uint32_t)(TCNT0 - pulse_start) < STEP_PULSE_CYCLES - CYCLES_EATEN_BY_E) { /* nada */ }
+       #endif
+ 
+       STOP_E_PULSE(0);
+
+commit 6cf0952bf9a5842e88ad99ee290ed3a5c8bf1323 (from eabff30e75429fe1db715c46c123fde678e689e6)
+Merge: 8061f1f eabff30
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Sep 24 03:23:42 2016 -0500
+
+    Merge pull request #4887 from thinkyhead/rc_autumn_fixups
+    
+    Improve MINIMUM_STEPPER_PULSE
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index e20368c..de089f0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1671,7 +1671,7 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+ #endif //HAS_BED_PROBE
+ 
+-#if ENABLED(Z_PROBE_ALLEN_KEY) || ENABLED(Z_PROBE_SLED) || ENABLED(Z_SAFE_HOMING) || HAS_PROBING_PROCEDURE || HOTENDS > 1 || ENABLED(NOZZLE_CLEAN_FEATURE) || ENABLED(NOZZLE_PARK_FEATURE)
++#if ENABLED(Z_PROBE_ALLEN_KEY) || ENABLED(Z_PROBE_SLED) || HAS_PROBING_PROCEDURE || HOTENDS > 1 || ENABLED(NOZZLE_CLEAN_FEATURE) || ENABLED(NOZZLE_PARK_FEATURE)
+   static bool axis_unhomed_error(const bool x, const bool y, const bool z) {
+     const bool xx = x && !axis_homed[X_AXIS],
+                yy = y && !axis_homed[Y_AXIS],
+@@ -2520,8 +2520,7 @@ bool position_is_reachable(float target[XYZ]
+   #endif
+ ) {
+   float dx = RAW_X_POSITION(target[X_AXIS]),
+-        dy = RAW_Y_POSITION(target[Y_AXIS]),
+-        dz = RAW_Z_POSITION(target[Z_AXIS]);
++        dy = RAW_Y_POSITION(target[Y_AXIS]);
+ 
+   #if HAS_BED_PROBE
+     if (by_probe) {
+@@ -2540,6 +2539,7 @@ bool position_is_reachable(float target[XYZ]
+   #elif ENABLED(DELTA)
+     return HYPOT2(dx, dy) <= sq(DELTA_PRINTABLE_RADIUS);
+   #else
++    const float dz = RAW_Z_POSITION(target[Z_AXIS]);
+     return dx >= X_MIN_POS - 0.0001 && dx <= X_MAX_POS + 0.0001
+         && dy >= Y_MIN_POS - 0.0001 && dy <= Y_MAX_POS + 0.0001
+         && dz >= Z_MIN_POS - 0.0001 && dz <= Z_MAX_POS + 0.0001;
+@@ -7785,7 +7785,6 @@ void ok_to_send() {
+ 
+   // Get the Z adjustment for non-linear bed leveling
+   float nonlinear_z_offset(float cartesian[XYZ]) {
+-    if (planner.abl_enabled) return;
+ 
+     int half_x = (ABL_GRID_POINTS_X - 1) / 2,
+         half_y = (ABL_GRID_POINTS_Y - 1) / 2;
+diff --git a/Marlin/language_kana.h b/Marlin/language_kana.h
+index 6abe0eb..f4e1458 100644
+--- a/Marlin/language_kana.h
++++ b/Marlin/language_kana.h
+@@ -107,18 +107,15 @@
+   #define MSG_VZ_JERK                       "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde mm/s"                           // "Zｼﾞｸ ﾔｸﾄﾞ mm/s" ("Vz-jerk")
+   #define MSG_VE_JERK                       "\xb4\xb8\xbd\xc4\xd9\xb0\xc0\xde\xb0\x20\xd4\xb8\xc4\xde"         // "ｴｸｽﾄﾙｰﾀﾞｰ ﾔｸﾄﾞ" ("Ve-jerk")
+   #define MSG_VMAX                          "\xbb\xb2\xc0\xde\xb2\xb5\xb8\xd8\xbf\xb8\xc4\xde "                // "ｻｲﾀﾞｲｵｸﾘｿｸﾄﾞ " ("Vmax ")
++  #define MSG_VMIN                          "\xbb\xb2\xbc\xae\xb3\xb5\xb8\xd8\xbf\xb8\xc4\xde"                 // "ｻｲｼｮｳｵｸﾘｿｸﾄﾞ" ("Vmin")
++  #define MSG_VTRAV_MIN                     "\xbb\xb2\xbc\xae\xb3\xb2\xc4\xde\xb3\xbf\xb8\xc4\xde"             // "ｻｲｼｮｳｲﾄﾞｳｿｸﾄﾞ" ("VTrav min")
++  #define MSG_AMAX                          "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                        // "ｻｲﾀﾞｲｶｿｸﾄﾞ " ("Amax ")
+ #else
+   #define MSG_ACC                           "\xb6\xbf\xb8\xc4\xde"                                             // "ｶｿｸﾄﾞ" ("Accel")
+   #define MSG_VXY_JERK                      "XY\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                               // "XYｼﾞｸ ﾔｸﾄﾞ" ("Vxy-jerk")
+   #define MSG_VZ_JERK                       "Z\xbc\xde\xb8\x20\xd4\xb8\xc4\xde"                                // "Zｼﾞｸ ﾔｸﾄﾞ" ("Vz-jerk")
+   #define MSG_VE_JERK                       "E\x20\xd4\xb8\xc4\xde"                                            // "E ﾔｸﾄﾞ" ("Ve-jerk")
+   #define MSG_VMAX                          "max\xb5\xb8\xd8\xbf\xb8\xc4\xde "                                 // "maxｵｸﾘｿｸﾄﾞ" ("Vmax ")
+-#endif
+-#if LCD_WIDTH > 19
+-  #define MSG_VMIN                          "\xbb\xb2\xbc\xae\xb3\xb5\xb8\xd8\xbf\xb8\xc4\xde"                 // "ｻｲｼｮｳｵｸﾘｿｸﾄﾞ" ("Vmin")
+-  #define MSG_VTRAV_MIN                     "\xbb\xb2\xbc\xae\xb3\xb2\xc4\xde\xb3\xbf\xb8\xc4\xde"             // "ｻｲｼｮｳｲﾄﾞｳｿｸﾄﾞ" ("VTrav min")
+-  #define MSG_AMAX                          "\xbb\xb2\xc0\xde\xb2\xb6\xbf\xb8\xc4\xde "                        // "ｻｲﾀﾞｲｶｿｸﾄﾞ " ("Amax ")
+-#else
+   #define MSG_VMIN                          "min\xb5\xb8\xd8\xbf\xb8\xc4\xde"                                  // "minｵｸﾘｿｸﾄﾞ" ("Vmin")
+   #define MSG_VTRAV_MIN                     "min\xb2\xc4\xde\xb3\xbf\xb8\xc4\xde"                              // "minｲﾄﾞｳｿｸﾄﾞ" ("VTrav min")
+   #define MSG_AMAX                          "max\xb6\xbf\xb8 "                                                 // "maxｶｿｸ " ("Amax ")
+@@ -180,6 +177,12 @@
+ #define MSG_INIT_SDCARD                     "SD\xb6\xb0\xc4\xde\xbb\xb2\xd6\xd0\xba\xd0"                       // "SDｶｰﾄﾞｻｲﾖﾐｺﾐ" ("Init. SD card")
+ #define MSG_CNG_SDCARD                      "SD\xb6\xb0\xc4\xde\xba\xb3\xb6\xdd"                               // "SDｶｰﾄﾞｺｳｶﾝ" ("Change SD card")
+ #define MSG_ZPROBE_OUT                      "Z\xcc\xdf\xdb\xb0\xcc\xde\x20\xcd\xde\xaf\xc4\xde\xb6\xde\xb2"    // "Zﾌﾟﾛｰﾌﾞ ﾍﾞｯﾄﾞｶﾞｲ" ("Z probe out. bed")
++#if LCD_WIDTH > 19
++  #define MSG_BLTOUCH_SELFTEST              "BLTouch \xbc\xde\xba\xbc\xdd\xc0\xde\xdd"                         // "BLTouch ｼﾞｺｼﾝﾀﾞﾝ" ("BLTouch Self-Test")
++#else
++  #define MSG_BLTOUCH_SELFTEST              "BLTouch \xbe\xd9\xcc\xc3\xbd\xc4"                                 // "BLTouch ｾﾙﾌﾃｽﾄ" ("BLTouch Self-Test")
++#endif
++#define MSG_BLTOUCH_RESET                   "BLTouch \xd8\xbe\xaf\xc4"                                         // "BLTouch ﾘｾｯﾄ" ("Reset BLTouch")
+ #define MSG_HOME                            "\xbb\xb7\xc6"                                                     // "ｻｷﾆ" ("Home") // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+ #if LCD_WIDTH > 19
+   #define MSG_FIRST                         "\xa6\xcc\xaf\xb7\xbb\xbe\xc3\xb8\xc0\xde\xbb\xb2"                 // "ｦﾌｯｷｻｾﾃｸﾀﾞｻｲ" ("first")
+@@ -211,6 +214,7 @@
+   #define MSG_ERR_MAXTEMP_BED               "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xba\xb3\xb5\xdd"                 // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲｺｳｵﾝ" ("Err: MAXTEMP BED")
+   #define MSG_ERR_MINTEMP_BED               "\xb4\xd7\xb0:\xcd\xde\xaf\xc4\xde\x20\xbb\xb2\xc3\xb2\xb5\xdd"                 // "ｴﾗｰ:ﾍﾞｯﾄﾞ ｻｲﾃｲｵﾝ" ("Err: MINTEMP BED")
+ #endif
++#define MSG_ERR_Z_HOMING                    MSG_HOME " " MSG_X MSG_Y " " MSG_FIRST                             // "ｻｷﾆ XY ｦﾌｯｷｻｾﾃｸﾀﾞｻｲ" or "ｻｷﾆ XY ｦﾌｯｷｻｾﾖ" ("G28 Z Forbidden")
+ #define MSG_HALTED                          "\xcc\xdf\xd8\xdd\xc0\xb0\xca\xc3\xb2\xbc\xbc\xcf\xbc\xc0"         // "ﾌﾟﾘﾝﾀｰﾊﾃｲｼｼﾏｼﾀ" ("PRINTER HALTED")
+ #define MSG_PLEASE_RESET                    "\xd8\xbe\xaf\xc4\xbc\xc3\xb8\xc0\xde\xbb\xb2"                     // "ﾘｾｯﾄｼﾃｸﾀﾞｻｲ" ("Please reset")
+ #define MSG_SHORT_DAY                       "d"                                                                // One character only
+diff --git a/Marlin/language_kana_utf8.h b/Marlin/language_kana_utf8.h
+index b483995..905df71 100644
+--- a/Marlin/language_kana_utf8.h
++++ b/Marlin/language_kana_utf8.h
+@@ -150,6 +150,8 @@
+ #define MSG_INIT_SDCARD                     "SDカードサイヨミコミ"             // "Init. SD card"
+ #define MSG_CNG_SDCARD                      "SDカードコウカン"               // "Change SD card"
+ #define MSG_ZPROBE_OUT                      "Zプローブ ベッドガイ"            // "Z probe out. bed"
++#define MSG_BLTOUCH_SELFTEST                "BLTouch ジコシンダン"          // "BLTouch Self-Test"
++#define MSG_BLTOUCH_RESET                   "BLTouch リセット"             // "Reset BLTouch"
+ #define MSG_HOME                            "サキニ"                      // "Home" // Used as MSG_HOME " " MSG_X MSG_Y MSG_Z " " MSG_FIRST
+ #define MSG_FIRST                           "ヲフッキサセテクダサイ"           // "first"
+ #define MSG_ZPROBE_ZOFFSET                  "Zオフセット"                   // "Z Offset"
+@@ -164,6 +166,7 @@
+ #define MSG_ERR_MINTEMP                     "エラー:サイテイオンミマン"          // "Err: MINTEMP"
+ #define MSG_ERR_MAXTEMP_BED                 "エラー:ベッド サイコウオンチョウカ"    // "Err: MAXTEMP BED"
+ #define MSG_ERR_MINTEMP_BED                 "エラー:ベッド サイテイオンミマン"     // "Err: MINTEMP BED"
++#define MSG_ERR_Z_HOMING                    MSG_HOME " " MSG_X MSG_Y " " MSG_FIRST // "G28 Z Forbidden"
+ #define MSG_HALTED                          "プリンターハテイシシマシタ"         // "PRINTER HALTED"
+ #define MSG_PLEASE_RESET                    "リセットシテクダサイ"              // "Please reset"
+ #define MSG_SHORT_DAY                       "d"                          // One character only
+

@@ -1,0 +1,610 @@
+commit 4ae03df5c2e211983372225a5ee2232bafea9dc3 (from 861391d530d58ad552e6bb42596fbb863533252f)
+Merge: 861391d 963a92c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Mar 18 23:22:29 2016 -0700
+
+    Merge pull request #3109 from thinkyhead/rc_host_keepalive
+    
+    Provide feedback to hosts when busy
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index bb17924..36ba391 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -315,6 +315,13 @@
+   #endif
+ 
+   /**
++   * Avoid double-negatives for enabling features
++   */
++  #if DISABLED(DISABLE_HOST_KEEPALIVE)
++    #define HOST_KEEPALIVE_FEATURE
++  #endif
++
++  /**
+    * MAX_STEP_FREQUENCY differs for TOSHIBA
+    */
+   #if ENABLED(CONFIG_STEPPERS_TOSHIBA)
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index c7f9ae0..bb8b8ba 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 42f8af2..9917608 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -103,7 +103,11 @@ FORCE_INLINE void serialprintPGM(const char* str) {
+ 
+ void get_command();
+ 
+-void idle(); // the standard idle routine calls manage_inactivity(false)
++void idle(
++  #if ENABLED(FILAMENTCHANGEENABLE)
++    bool no_stepper_sleep=false  // pass true to keep steppers from disabling on timeout
++  #endif
++);
+ 
+ void manage_inactivity(bool ignore_stepper_queue = false);
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 7fe9786..2f2c557 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -426,6 +426,26 @@ static uint8_t target_extruder;
+   int lpq_len = 20;
+ #endif
+ 
++#if ENABLED(HOST_KEEPALIVE_FEATURE)
++
++  // States for managing Marlin and host communication
++  // Marlin sends messages if blocked or busy
++  enum MarlinBusyState {
++    NOT_BUSY,           // Not in a handler
++    IN_HANDLER,         // Processing a GCode
++    IN_PROCESS,         // Known to be blocking command input (as in G29)
++    PAUSED_FOR_USER,    // Blocking pending any input
++    PAUSED_FOR_INPUT    // Blocking pending text input (concept)
++  };
++
++  static MarlinBusyState busy_state = NOT_BUSY;
++  static millis_t next_busy_signal_ms = -1;
++  #define KEEPALIVE_STATE(n) do{ busy_state = n; }while(0)
++#else
++  #define host_keepalive() ;
++  #define KEEPALIVE_STATE(n) ;
++#endif // HOST_KEEPALIVE_FEATURE
++
+ //===========================================================================
+ //================================ Functions ================================
+ //===========================================================================
+@@ -2130,6 +2150,35 @@ void unknown_command_error() {
+   SERIAL_ECHOPGM("\"\n");
+ }
+ 
++#if ENABLED(HOST_KEEPALIVE_FEATURE)
++
++  void host_keepalive() {
++    millis_t ms = millis();
++    if (busy_state != NOT_BUSY) {
++      if (ms < next_busy_signal_ms) return;
++      switch (busy_state) {
++        case NOT_BUSY:
++          break;
++        case IN_HANDLER:
++        case IN_PROCESS:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PROCESSING);
++          break;
++        case PAUSED_FOR_USER:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PAUSED_FOR_USER);
++          break;
++        case PAUSED_FOR_INPUT:
++          SERIAL_ECHO_START;
++          SERIAL_ECHOLNPGM(MSG_BUSY_PAUSED_FOR_INPUT);
++          break;
++      }
++    }
++    next_busy_signal_ms = ms + 2000UL;
++  }
++
++#endif //HOST_KEEPALIVE_FEATURE
++
+ /**
+  * G0, G1: Coordinated movement of X Y Z E axes
+  */
+@@ -3219,6 +3268,8 @@ inline void gcode_G28() {
+       st_synchronize();
+     #endif
+ 
++    KEEPALIVE_STATE(IN_HANDLER);
++
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (marlin_debug_flags & DEBUG_LEVELING) {
+         SERIAL_ECHOLNPGM("<<< gcode_G29");
+@@ -3325,12 +3376,16 @@ inline void gcode_G92() {
+     refresh_cmd_timeout();
+     if (codenum > 0) {
+       codenum += previous_cmd_ms;  // wait until this time for a click
++      KEEPALIVE_STATE(PAUSED_FOR_USER);
+       while (millis() < codenum && !lcd_clicked()) idle();
++      KEEPALIVE_STATE(IN_HANDLER);
+       lcd_ignore_click(false);
+     }
+     else {
+       if (!lcd_detected()) return;
++      KEEPALIVE_STATE(PAUSED_FOR_USER);
+       while (!lcd_clicked()) idle();
++      KEEPALIVE_STATE(IN_HANDLER);
+     }
+     if (IS_SD_PRINTING)
+       LCD_MESSAGEPGM(MSG_RESUMING);
+@@ -4963,6 +5018,8 @@ inline void gcode_M303() {
+ 
+   if (e >=0 && e < EXTRUDERS)
+     target_extruder = e;
++
++  KEEPALIVE_STATE(NOT_BUSY);
+   PID_autotune(temp, e, c);
+ }
+ 
+@@ -5412,6 +5469,7 @@ inline void gcode_M503() {
+     delay(100);
+     LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+     millis_t next_tick = 0;
++    KEEPALIVE_STATE(WAIT_FOR_USER);
+     while (!lcd_clicked()) {
+       #if DISABLED(AUTO_FILAMENT_CHANGE)
+         millis_t ms = millis();
+@@ -5419,9 +5477,7 @@ inline void gcode_M503() {
+           lcd_quick_feedback();
+           next_tick = ms + 2500; // feedback every 2.5s while waiting
+         }
+-        manage_heater();
+-        manage_inactivity(true);
+-        lcd_update();
++        idle(true);
+       #else
+         current_position[E_AXIS] += AUTO_FILAMENT_CHANGE_LENGTH;
+         destination[E_AXIS] = current_position[E_AXIS];
+@@ -5429,6 +5485,7 @@ inline void gcode_M503() {
+         st_synchronize();
+       #endif
+     } // while(!lcd_clicked)
++    KEEPALIVE_STATE(IN_HANDLER);
+     lcd_quick_feedback(); // click sound feedback
+ 
+     #if ENABLED(AUTO_FILAMENT_CHANGE)
+@@ -5765,6 +5822,8 @@ void process_next_command() {
+   seen_pointer = current_command;
+   codenum = code_value_short();
+ 
++  KEEPALIVE_STATE(IN_HANDLER);
++
+   // Handle a known G, M, or T
+   switch (command_code) {
+     case 'G': switch (codenum) {
+@@ -6286,6 +6345,8 @@ void process_next_command() {
+     default: code_is_good = false;
+   }
+ 
++  KEEPALIVE_STATE(NOT_BUSY);
++
+ ExitUnknownCommand:
+ 
+   // Still unknown command? Throw an error
+@@ -6972,9 +7033,18 @@ void disable_all_steppers() {
+ /**
+  * Standard idle routine keeps the machine alive
+  */
+-void idle() {
++void idle(
++  #if ENABLED(FILAMENTCHANGEENABLE)
++    bool no_stepper_sleep/*=false*/
++  #endif
++) {
+   manage_heater();
+-  manage_inactivity();
++  manage_inactivity(
++    #if ENABLED(FILAMENTCHANGEENABLE)
++      no_stepper_sleep
++    #endif
++  );
++  host_keepalive();
+   lcd_update();
+ }
+ 
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 6c39772..c9d7e97 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -630,6 +630,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Felix/Configuration_DUAL.h b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+index 674025b..6f2cffa 100644
+--- a/Marlin/example_configurations/Felix/Configuration_DUAL.h
++++ b/Marlin/example_configurations/Felix/Configuration_DUAL.h
+@@ -627,6 +627,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 8f69858..7fdec04 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -639,6 +639,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 201a286..b8a920b 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -642,6 +642,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 6c67ad4..45c104e 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -662,6 +662,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index 9687dea..8c5a608 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 61d1df7..ce55421 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -642,6 +642,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index ebaf29c..2e56626 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -655,6 +655,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 7067155..b6671fa 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -667,6 +667,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index f320e6c..7ca638c 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -639,6 +639,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index 2fb0e1e..705b9c3 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -647,6 +647,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index 65e4285..4b15caa 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -769,6 +769,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index 11e7e63..84dc90a 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -769,6 +769,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index c65f5be..e43de5a 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -773,6 +773,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index b3dfc27..b0755f5 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -764,6 +764,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 987e353..ccda7a3 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -683,6 +683,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 21229b2..43536fe 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -650,6 +650,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 229ff16..a8026d7 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -641,6 +641,14 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ #endif
+ 
+ //
++// Host Keepalive
++//
++// By default Marlin will send a busy status message to the host
++// every 2 seconds when it can't accept commands.
++//
++//#define DISABLE_HOST_KEEPALIVE // Enable this option if your host doesn't like keepalive messages.
++
++//
+ // M100 Free Memory Watcher
+ //
+ //#define M100_FREE_MEMORY_WATCHER // uncomment to add the M100 Free Memory Watcher for debug purpose
+diff --git a/Marlin/language.h b/Marlin/language.h
+index e0fb3d9..3637bab 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -124,6 +124,9 @@
+ #define MSG_COUNT_A                         " Count A: "
+ #define MSG_ERR_KILLED                      "Printer halted. kill() called!"
+ #define MSG_ERR_STOPPED                     "Printer stopped due to errors. Fix the error and use M999 to restart. (Temperature is reset. Set it after restarting)"
++#define MSG_BUSY_PROCESSING                 "busy: processing"
++#define MSG_BUSY_PAUSED_FOR_USER            "busy: paused for user"
++#define MSG_BUSY_PAUSED_FOR_INPUT           "busy: paused for input"
+ #define MSG_RESEND                          "Resend: "
+ #define MSG_UNKNOWN_COMMAND                 "Unknown command: \""
+ #define MSG_ACTIVE_EXTRUDER                 "Active Extruder: "
+
+commit 4ae03df5c2e211983372225a5ee2232bafea9dc3 (from 963a92ceda9492e47bd7ec92d55ab623926dfc46)
+Merge: 861391d 963a92c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Mar 18 23:22:29 2016 -0700
+
+    Merge pull request #3109 from thinkyhead/rc_host_keepalive
+    
+    Provide feedback to hosts when busy
+
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 39aa599..45c104e 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -709,6 +709,7 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define SD_CHECK_AND_RETRY // Use CRC checks and retries on the SD communication
+ //#define ENCODER_PULSES_PER_STEP 1 // Increase if you have a high resolution encoder
+ //#define ENCODER_STEPS_PER_MENU_ITEM 5 // Set according to ENCODER_PULSES_PER_STEP or your liking
++//#define REVERSE_MENU_DIRECTION // When enabled CLOCKWISE moves UP in the LCD menu
+ #define ULTIMAKERCONTROLLER // K8200: for Display VM8201 // as available from the Ultimaker online store.
+ //#define ULTIPANEL  //the UltiPanel as on Thingiverse
+ //#define SPEAKER // The sound device is a speaker - not a buzzer. A buzzer resonates with his own frequency.
+

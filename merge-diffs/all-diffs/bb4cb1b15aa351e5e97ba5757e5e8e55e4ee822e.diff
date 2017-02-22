@@ -1,0 +1,2803 @@
+commit bb4cb1b15aa351e5e97ba5757e5e8e55e4ee822e (from 63f41f56f88be2e133a912506c383c4dc56c2f98)
+Merge: 63f41f5 4eabd80
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 15 06:05:08 2015 -0700
+
+    Merge pull request #1606 from thinkyhead/cleanup_stepper
+    
+    Cleanup of stepper.cpp
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 750f82c..286a8d5 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -32,6 +32,9 @@
+   #include "WProgram.h"
+ #endif
+ 
++#define BIT(b) (1<<(b))
++#define TEST(n,b) ((n)&BIT(b)!=0)
++
+ // Arduino < 1.0.0 does not define this, so we need to do it ourselves
+ #ifndef analogInputToDigitalPin
+   #define analogInputToDigitalPin(p) ((p) + 0xA0)
+diff --git a/Marlin/Marlin.ino b/Marlin/Marlin.ino
+index 7b0c790..402edcd 100644
+--- a/Marlin/Marlin.ino
++++ b/Marlin/Marlin.ino
+@@ -47,8 +47,8 @@
+   #endif
+ #endif
+ 
+-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
+-#include <SPI.h>
++#if HAS_DIGIPOTSS
++  #include <SPI.h>
+ #endif
+ 
+ #if defined(DIGIPOT_I2C)
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 79c934b..9eae6d4 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -47,8 +47,8 @@
+   #endif
+ #endif
+ 
+-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
+-#include <SPI.h>
++#if HAS_DIGIPOTSS
++  #include <SPI.h>
+ #endif
+ 
+ #if defined(DIGIPOT_I2C)
+diff --git a/Marlin/MarlinSerial.cpp b/Marlin/MarlinSerial.cpp
+index 7aef229..d8477b6 100644
+--- a/Marlin/MarlinSerial.cpp
++++ b/Marlin/MarlinSerial.cpp
+@@ -76,7 +76,7 @@ void MarlinSerial::begin(long baud) {
+   #endif
+   
+   if (useU2X) {
+-    M_UCSRxA = 1 << M_U2Xx;
++    M_UCSRxA = BIT(M_U2Xx);
+     baud_setting = (F_CPU / 4 / baud - 1) / 2;
+   } else {
+     M_UCSRxA = 0;
+diff --git a/Marlin/MarlinSerial.h b/Marlin/MarlinSerial.h
+index f836872..b56880c 100644
+--- a/Marlin/MarlinSerial.h
++++ b/Marlin/MarlinSerial.h
+@@ -97,14 +97,14 @@ class MarlinSerial { //: public Stream
+     }
+ 
+     FORCE_INLINE void write(uint8_t c) {
+-      while (!((M_UCSRxA) & (1 << M_UDREx)))
++      while (!TEST(M_UCSRxA, M_UDREx))
+         ;
+ 
+       M_UDRx = c;
+     }
+ 
+     FORCE_INLINE void checkRx(void) {
+-      if ((M_UCSRxA & (1<<M_RXCx)) != 0) {
++      if (TEST(M_UCSRxA, M_RXCx)) {
+         unsigned char c  =  M_UDRx;
+         int i = (unsigned int)(rx_buffer.head + 1) % RX_BUFFER_SIZE;
+ 
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 986b820..45208b0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -62,7 +62,7 @@
+   #include "Servo.h"
+ #endif
+ 
+-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++#if HAS_DIGIPOTSS
+   #include <SPI.h>
+ #endif
+ 
+@@ -4210,7 +4210,7 @@ inline void gcode_M503() {
+  * M907: Set digital trimpot motor current using axis codes X, Y, Z, E, B, S
+  */
+ inline void gcode_M907() {
+-  #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++  #if HAS_DIGIPOTSS
+     for (int i=0;i<NUM_AXIS;i++)
+       if (code_seen(axis_codes[i])) digipot_current(i, code_value());
+     if (code_seen('B')) digipot_current(4, code_value());
+@@ -4233,7 +4233,7 @@ inline void gcode_M907() {
+   #endif
+ }
+ 
+-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++#if HAS_DIGIPOTSS
+ 
+   /**
+    * M908: Control digital trimpot directly (M908 P<pin> S<current>)
+@@ -4245,7 +4245,7 @@ inline void gcode_M907() {
+       );
+   }
+ 
+-#endif // DIGIPOTSS_PIN
++#endif // HAS_DIGIPOTSS
+ 
+ // M350 Set microstepping mode. Warning: Steps per unit remains unchanged. S code sets stepping mode for all drivers.
+ inline void gcode_M350() {
+@@ -4832,11 +4832,11 @@ void process_commands() {
+         gcode_M907();
+         break;
+ 
+-      #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++      #if HAS_DIGIPOTSS
+         case 908: // M908 Control digital trimpot directly.
+           gcode_M908();
+           break;
+-      #endif // DIGIPOTSS_PIN
++      #endif // HAS_DIGIPOTSS
+ 
+       case 350: // M350 Set microstepping mode. Warning: Steps per unit remains unchanged. S code sets stepping mode for all drivers.
+         gcode_M350();
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 69ae777..1182c99 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -35,14 +35,14 @@
+  */
+ static void spiInit(uint8_t spiRate) {
+   // See avr processor documentation
+-  SPCR = (1 << SPE) | (1 << MSTR) | (spiRate >> 1);
+-  SPSR = spiRate & 1 || spiRate == 6 ? 0 : 1 << SPI2X;
++  SPCR = BIT(SPE) | BIT(MSTR) | (spiRate >> 1);
++  SPSR = spiRate & 1 || spiRate == 6 ? 0 : BIT(SPI2X);
+ }
+ //------------------------------------------------------------------------------
+ /** SPI receive a byte */
+ static uint8_t spiRec() {
+   SPDR = 0XFF;
+-  while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++  while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+   return SPDR;
+ }
+ //------------------------------------------------------------------------------
+@@ -52,18 +52,18 @@ void spiRead(uint8_t* buf, uint16_t nbyte) {
+   if (nbyte-- == 0) return;
+   SPDR = 0XFF;
+   for (uint16_t i = 0; i < nbyte; i++) {
+-    while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++    while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+     buf[i] = SPDR;
+     SPDR = 0XFF;
+   }
+-  while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++  while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+   buf[nbyte] = SPDR;
+ }
+ //------------------------------------------------------------------------------
+ /** SPI send a byte */
+ static void spiSend(uint8_t b) {
+   SPDR = b;
+-  while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++  while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+ }
+ //------------------------------------------------------------------------------
+ /** SPI send block - only one call so force inline */
+@@ -71,12 +71,12 @@ static inline __attribute__((always_inline))
+   void spiSendBlock(uint8_t token, const uint8_t* buf) {
+   SPDR = token;
+   for (uint16_t i = 0; i < 512; i += 2) {
+-    while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++    while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+     SPDR = buf[i];
+-    while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++    while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+     SPDR = buf[i + 1];
+   }
+-  while (!(SPSR & (1 << SPIF))) { /* Intentionally left empty */ }
++  while (!TEST(SPSR, SPIF)) { /* Intentionally left empty */ }
+ }
+ //------------------------------------------------------------------------------
+ #else  // SOFTWARE_SPI
+diff --git a/Marlin/Sd2PinMap.h b/Marlin/Sd2PinMap.h
+index 93ab943..0556bd3 100644
+--- a/Marlin/Sd2PinMap.h
++++ b/Marlin/Sd2PinMap.h
+@@ -334,9 +334,9 @@ static inline __attribute__((always_inline))
+   void setPinMode(uint8_t pin, uint8_t mode) {
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     if (mode) {
+-      *digitalPinMap[pin].ddr |= 1 << digitalPinMap[pin].bit;
++      *digitalPinMap[pin].ddr |= BIT(digitalPinMap[pin].bit);
+     } else {
+-      *digitalPinMap[pin].ddr &= ~(1 << digitalPinMap[pin].bit);
++      *digitalPinMap[pin].ddr &= ~BIT(digitalPinMap[pin].bit);
+     }
+   } else {
+     badPinNumber();
+@@ -354,9 +354,9 @@ static inline __attribute__((always_inline))
+   void fastDigitalWrite(uint8_t pin, uint8_t value) {
+   if (__builtin_constant_p(pin) && pin < digitalPinCount) {
+     if (value) {
+-      *digitalPinMap[pin].port |= 1 << digitalPinMap[pin].bit;
++      *digitalPinMap[pin].port |= BIT(digitalPinMap[pin].bit);
+     } else {
+-      *digitalPinMap[pin].port &= ~(1 << digitalPinMap[pin].bit);
++      *digitalPinMap[pin].port &= ~BIT(digitalPinMap[pin].bit);
+     }
+   } else {
+     badPinNumber();
+diff --git a/Marlin/SdBaseFile.h b/Marlin/SdBaseFile.h
+index dea299a..b0e77ec 100644
+--- a/Marlin/SdBaseFile.h
++++ b/Marlin/SdBaseFile.h
+@@ -171,9 +171,9 @@ static inline uint8_t FAT_SECOND(uint16_t fatTime) {
+   return 2*(fatTime & 0X1F);
+ }
+ /** Default date for file timestamps is 1 Jan 2000 */
+-uint16_t const FAT_DEFAULT_DATE = ((2000 - 1980) << 9) | (1 << 5) | 1;
++uint16_t const FAT_DEFAULT_DATE = ((2000 - 1980) << 9) | BIT(5) | 1;
+ /** Default time for file timestamp is 1 am */
+-uint16_t const FAT_DEFAULT_TIME = (1 << 11);
++uint16_t const FAT_DEFAULT_TIME = BIT(11);
+ //------------------------------------------------------------------------------
+ /**
+  * \class SdBaseFile
+diff --git a/Marlin/SdVolume.cpp b/Marlin/SdVolume.cpp
+index f14d7bc..6297e2a 100644
+--- a/Marlin/SdVolume.cpp
++++ b/Marlin/SdVolume.cpp
+@@ -360,7 +360,7 @@ bool SdVolume::init(Sd2Card* dev, uint8_t part) {
+   blocksPerCluster_ = fbs->sectorsPerCluster;
+   // determine shift that is same as multiply by blocksPerCluster_
+   clusterSizeShift_ = 0;
+-  while (blocksPerCluster_ != (1 << clusterSizeShift_)) {
++  while (blocksPerCluster_ != BIT(clusterSizeShift_)) {
+     // error if not power of 2
+     if (clusterSizeShift_++ > 7) goto fail;
+   }
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 4e2a567..c1b5d2b 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -24,9 +24,9 @@
+   #define BLEN_A 0
+   #define BLEN_B 1
+   #define BLEN_C 2
+-  #define EN_A (1<<BLEN_A)
+-  #define EN_B (1<<BLEN_B)
+-  #define EN_C (1<<BLEN_C)
++  #define EN_A BIT(BLEN_A)
++  #define EN_B BIT(BLEN_B)
++  #define EN_C BIT(BLEN_C)
+   #define LCD_CLICKED (buttons&EN_C)
+ #endif
+ 
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index d7198f3..3087e87 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -13,8 +13,7 @@
+ */
+ 
+ #ifndef MASK
+-/// MASKING- returns \f$2^PIN\f$
+-#define MASK(PIN)  (1 << PIN)
++  #define MASK(PIN)  (1 << PIN)
+ #endif
+ 
+ /*
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index c33fa24..5222919 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -184,4 +184,6 @@
+                         analogInputToDigitalPin(TEMP_BED_PIN) \
+                        }
+ 
++#define HAS_DIGIPOTSS (DIGIPOTSS_PIN >= 0)
++
+ #endif //__PINS_H
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 9997166..9bcad56 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -59,7 +59,7 @@
+ #include "language.h"
+ 
+ //===========================================================================
+-//=============================public variables ============================
++//============================= public variables ============================
+ //===========================================================================
+ 
+ unsigned long minsegmenttime;
+@@ -623,37 +623,37 @@ block->steps_y = labs((target[X_AXIS]-position[X_AXIS]) - (target[Y_AXIS]-positi
+ #ifndef COREXY
+   if (target[X_AXIS] < position[X_AXIS])
+   {
+-    block->direction_bits |= (1<<X_AXIS); 
++    block->direction_bits |= BIT(X_AXIS); 
+   }
+   if (target[Y_AXIS] < position[Y_AXIS])
+   {
+-    block->direction_bits |= (1<<Y_AXIS); 
++    block->direction_bits |= BIT(Y_AXIS); 
+   }
+ #else
+   if (target[X_AXIS] < position[X_AXIS])
+   {
+-    block->direction_bits |= (1<<X_HEAD); //AlexBorro: Save the real Extruder (head) direction in X Axis
++    block->direction_bits |= BIT(X_HEAD); //AlexBorro: Save the real Extruder (head) direction in X Axis
+   }
+   if (target[Y_AXIS] < position[Y_AXIS])
+   {
+-    block->direction_bits |= (1<<Y_HEAD); //AlexBorro: Save the real Extruder (head) direction in Y Axis
++    block->direction_bits |= BIT(Y_HEAD); //AlexBorro: Save the real Extruder (head) direction in Y Axis
+   }
+   if ((target[X_AXIS]-position[X_AXIS]) + (target[Y_AXIS]-position[Y_AXIS]) < 0)
+   {
+-    block->direction_bits |= (1<<X_AXIS); //AlexBorro: Motor A direction (Incorrectly implemented as X_AXIS)
++    block->direction_bits |= BIT(X_AXIS); //AlexBorro: Motor A direction (Incorrectly implemented as X_AXIS)
+   }
+   if ((target[X_AXIS]-position[X_AXIS]) - (target[Y_AXIS]-position[Y_AXIS]) < 0)
+   {
+-    block->direction_bits |= (1<<Y_AXIS); //AlexBorro: Motor B direction (Incorrectly implemented as Y_AXIS)
++    block->direction_bits |= BIT(Y_AXIS); //AlexBorro: Motor B direction (Incorrectly implemented as Y_AXIS)
+   }
+ #endif
+   if (target[Z_AXIS] < position[Z_AXIS])
+   {
+-    block->direction_bits |= (1<<Z_AXIS); 
++    block->direction_bits |= BIT(Z_AXIS); 
+   }
+   if (target[E_AXIS] < position[E_AXIS])
+   {
+-    block->direction_bits |= (1<<E_AXIS); 
++    block->direction_bits |= BIT(E_AXIS); 
+   }
+ 
+   block->active_extruder = extruder;
+@@ -864,7 +864,7 @@ Having the real displacement of the head, we can calculate the total movement le
+   old_direction_bits = block->direction_bits;
+   segment_time = lround((float)segment_time / speed_factor);
+   
+-  if((direction_change & (1<<X_AXIS)) == 0)
++  if((direction_change & BIT(X_AXIS)) == 0)
+   {
+     x_segment_time[0] += segment_time;
+   }
+@@ -874,7 +874,7 @@ Having the real displacement of the head, we can calculate the total movement le
+     x_segment_time[1] = x_segment_time[0];
+     x_segment_time[0] = segment_time;
+   }
+-  if((direction_change & (1<<Y_AXIS)) == 0)
++  if((direction_change & BIT(Y_AXIS)) == 0)
+   {
+     y_segment_time[0] += segment_time;
+   }
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 4288dfb..eb904bb 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -29,33 +29,34 @@
+ #include "language.h"
+ #include "cardreader.h"
+ #include "speed_lookuptable.h"
+-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
+-#include <SPI.h>
++#if HAS_DIGIPOTSS
++  #include <SPI.h>
+ #endif
+ 
+ //===========================================================================
+-//=============================public variables  ============================
++//============================= public variables ============================
+ //===========================================================================
+ block_t *current_block;  // A pointer to the block currently being traced
+ 
+ 
+ //===========================================================================
+-//=============================private variables ============================
++//============================= private variables ===========================
+ //===========================================================================
+ //static makes it impossible to be called from outside of this file by extern.!
+ 
+ // Variables used by The Stepper Driver Interrupt
+ static unsigned char out_bits;        // The next stepping-bits to be output
+-static long counter_x,       // Counter variables for the bresenham line tracer
+-            counter_y,
+-            counter_z,
+-            counter_e;
++
++// Counter variables for the bresenham line tracer
++static long counter_x, counter_y, counter_z, counter_e;
+ volatile static unsigned long step_events_completed; // The number of step events executed in the current block
++
+ #ifdef ADVANCE
+   static long advance_rate, advance, final_advance = 0;
+   static long old_advance = 0;
+   static long e_steps[4];
+ #endif
++
+ static long acceleration_time, deceleration_time;
+ //static unsigned long accelerate_until, decelerate_after, acceleration_rate, initial_rate, final_rate, nominal_rate;
+ static unsigned short acc_step_rate; // needed for deccelaration start point
+@@ -63,162 +64,199 @@ static char step_loops;
+ static unsigned short OCR1A_nominal;
+ static unsigned short step_loops_nominal;
+ 
+-volatile long endstops_trigsteps[3]={0,0,0};
+-volatile long endstops_stepsTotal,endstops_stepsDone;
+-static volatile bool endstop_x_hit=false;
+-static volatile bool endstop_y_hit=false;
+-static volatile bool endstop_z_hit=false;
++volatile long endstops_trigsteps[3] = { 0 };
++volatile long endstops_stepsTotal, endstops_stepsDone;
++static volatile bool endstop_x_hit = false;
++static volatile bool endstop_y_hit = false;
++static volatile bool endstop_z_hit = false;
++
+ #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
+-bool abort_on_endstop_hit = false;
++  bool abort_on_endstop_hit = false;
+ #endif
++
+ #ifdef MOTOR_CURRENT_PWM_XY_PIN
+   int motor_current_setting[3] = DEFAULT_PWM_MOTOR_CURRENT;
+ #endif
+ 
+-static bool old_x_min_endstop=false;
+-static bool old_x_max_endstop=false;
+-static bool old_y_min_endstop=false;
+-static bool old_y_max_endstop=false;
+-static bool old_z_min_endstop=false;
+-static bool old_z_max_endstop=false;
++static bool old_x_min_endstop = false,
++            old_x_max_endstop = false,
++            old_y_min_endstop = false,
++            old_y_max_endstop = false,
++            old_z_min_endstop = false,
++            old_z_max_endstop = false;
+ 
+ static bool check_endstops = true;
+ 
+-volatile long count_position[NUM_AXIS] = { 0, 0, 0, 0};
+-volatile signed char count_direction[NUM_AXIS] = { 1, 1, 1, 1};
++volatile long count_position[NUM_AXIS] = { 0 };
++volatile signed char count_direction[NUM_AXIS] = { 1 };
+ 
+ 
+ //===========================================================================
+-//=============================functions         ============================
++//================================ functions ================================
+ //===========================================================================
+ 
+-#define CHECK_ENDSTOPS  if(check_endstops)
++#ifdef DUAL_X_CARRIAGE
++  #define X_APPLY_DIR(v,ALWAYS) \
++    if (extruder_duplication_enabled || ALWAYS) { \
++      X_DIR_WRITE(v); \
++      X2_DIR_WRITE(v); \
++    } \
++    else{ \
++      if (current_block->active_extruder) \
++        X2_DIR_WRITE(v); \
++      else \
++        X_DIR_WRITE(v); \
++    }
++  #define X_APPLY_STEP(v,ALWAYS) \
++    if (extruder_duplication_enabled || ALWAYS) { \
++      X_STEP_WRITE(v); \
++      X2_STEP_WRITE(v); \
++    } \
++    else { \
++      if (current_block->active_extruder != 0) \
++        X2_STEP_WRITE(v); \
++      else \
++        X_STEP_WRITE(v); \
++    }
++#else
++  #define X_APPLY_DIR(v,Q) X_DIR_WRITE(v)
++  #define X_APPLY_STEP(v,Q) X_STEP_WRITE(v)
++#endif
++
++#ifdef Y_DUAL_STEPPER_DRIVERS
++  #define Y_APPLY_DIR(v,Q) Y_DIR_WRITE(v), Y2_DIR_WRITE((v) != INVERT_Y2_VS_Y_DIR)
++  #define Y_APPLY_STEP(v,Q) Y_STEP_WRITE(v), Y2_STEP_WRITE(v)
++#else
++  #define Y_APPLY_DIR(v,Q) Y_DIR_WRITE(v)
++  #define Y_APPLY_STEP(v,Q) Y_STEP_WRITE(v)
++#endif
++
++#ifdef Z_DUAL_STEPPER_DRIVERS
++  #define Z_APPLY_DIR(v,Q) Z_DIR_WRITE(v), Z2_DIR_WRITE(v)
++  #define Z_APPLY_STEP(v,Q) Z_STEP_WRITE(v), Z2_STEP_WRITE(v)
++#else
++  #define Z_APPLY_DIR(v,Q) Z_DIR_WRITE(v)
++  #define Z_APPLY_STEP(v,Q) Z_STEP_WRITE(v)
++#endif
++
++#define E_APPLY_STEP(v,Q) E_STEP_WRITE(v)
+ 
+ // intRes = intIn1 * intIn2 >> 16
+ // uses:
+ // r26 to store 0
+ // r27 to store the byte 1 of the 24 bit result
+ #define MultiU16X8toH16(intRes, charIn1, intIn2) \
+-asm volatile ( \
+-"clr r26 \n\t" \
+-"mul %A1, %B2 \n\t" \
+-"movw %A0, r0 \n\t" \
+-"mul %A1, %A2 \n\t" \
+-"add %A0, r1 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"lsr r0 \n\t" \
+-"adc %A0, r26 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"clr r1 \n\t" \
+-: \
+-"=&r" (intRes) \
+-: \
+-"d" (charIn1), \
+-"d" (intIn2) \
+-: \
+-"r26" \
+-)
++  asm volatile ( \
++    "clr r26 \n\t" \
++    "mul %A1, %B2 \n\t" \
++    "movw %A0, r0 \n\t" \
++    "mul %A1, %A2 \n\t" \
++    "add %A0, r1 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "lsr r0 \n\t" \
++    "adc %A0, r26 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "clr r1 \n\t" \
++    : \
++    "=&r" (intRes) \
++    : \
++    "d" (charIn1), \
++    "d" (intIn2) \
++    : \
++    "r26" \
++  )
+ 
+ // intRes = longIn1 * longIn2 >> 24
+ // uses:
+ // r26 to store 0
+ // r27 to store the byte 1 of the 48bit result
+ #define MultiU24X24toH16(intRes, longIn1, longIn2) \
+-asm volatile ( \
+-"clr r26 \n\t" \
+-"mul %A1, %B2 \n\t" \
+-"mov r27, r1 \n\t" \
+-"mul %B1, %C2 \n\t" \
+-"movw %A0, r0 \n\t" \
+-"mul %C1, %C2 \n\t" \
+-"add %B0, r0 \n\t" \
+-"mul %C1, %B2 \n\t" \
+-"add %A0, r0 \n\t" \
+-"adc %B0, r1 \n\t" \
+-"mul %A1, %C2 \n\t" \
+-"add r27, r0 \n\t" \
+-"adc %A0, r1 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"mul %B1, %B2 \n\t" \
+-"add r27, r0 \n\t" \
+-"adc %A0, r1 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"mul %C1, %A2 \n\t" \
+-"add r27, r0 \n\t" \
+-"adc %A0, r1 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"mul %B1, %A2 \n\t" \
+-"add r27, r1 \n\t" \
+-"adc %A0, r26 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"lsr r27 \n\t" \
+-"adc %A0, r26 \n\t" \
+-"adc %B0, r26 \n\t" \
+-"clr r1 \n\t" \
+-: \
+-"=&r" (intRes) \
+-: \
+-"d" (longIn1), \
+-"d" (longIn2) \
+-: \
+-"r26" , "r27" \
+-)
++  asm volatile ( \
++    "clr r26 \n\t" \
++    "mul %A1, %B2 \n\t" \
++    "mov r27, r1 \n\t" \
++    "mul %B1, %C2 \n\t" \
++    "movw %A0, r0 \n\t" \
++    "mul %C1, %C2 \n\t" \
++    "add %B0, r0 \n\t" \
++    "mul %C1, %B2 \n\t" \
++    "add %A0, r0 \n\t" \
++    "adc %B0, r1 \n\t" \
++    "mul %A1, %C2 \n\t" \
++    "add r27, r0 \n\t" \
++    "adc %A0, r1 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "mul %B1, %B2 \n\t" \
++    "add r27, r0 \n\t" \
++    "adc %A0, r1 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "mul %C1, %A2 \n\t" \
++    "add r27, r0 \n\t" \
++    "adc %A0, r1 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "mul %B1, %A2 \n\t" \
++    "add r27, r1 \n\t" \
++    "adc %A0, r26 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "lsr r27 \n\t" \
++    "adc %A0, r26 \n\t" \
++    "adc %B0, r26 \n\t" \
++    "clr r1 \n\t" \
++    : \
++    "=&r" (intRes) \
++    : \
++    "d" (longIn1), \
++    "d" (longIn2) \
++    : \
++    "r26" , "r27" \
++  )
+ 
+ // Some useful constants
+ 
+-#define ENABLE_STEPPER_DRIVER_INTERRUPT()  TIMSK1 |= (1<<OCIE1A)
+-#define DISABLE_STEPPER_DRIVER_INTERRUPT() TIMSK1 &= ~(1<<OCIE1A)
+-
+-
+-void checkHitEndstops()
+-{
+- if( endstop_x_hit || endstop_y_hit || endstop_z_hit) {
+-   SERIAL_ECHO_START;
+-   SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
+-   if(endstop_x_hit) {
+-     SERIAL_ECHOPAIR(" X:",(float)endstops_trigsteps[X_AXIS]/axis_steps_per_unit[X_AXIS]);
+-     LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "X");
+-   }
+-   if(endstop_y_hit) {
+-     SERIAL_ECHOPAIR(" Y:",(float)endstops_trigsteps[Y_AXIS]/axis_steps_per_unit[Y_AXIS]);
+-     LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Y");
+-   }
+-   if(endstop_z_hit) {
+-     SERIAL_ECHOPAIR(" Z:",(float)endstops_trigsteps[Z_AXIS]/axis_steps_per_unit[Z_AXIS]);
+-     LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
+-   }
+-   SERIAL_EOL;
+-   endstop_x_hit=false;
+-   endstop_y_hit=false;
+-   endstop_z_hit=false;
+-#if defined(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED) && defined(SDSUPPORT)
+-   if (abort_on_endstop_hit)
+-   {
+-     card.sdprinting = false;
+-     card.closefile();
+-     quickStop();
+-     setTargetHotend0(0);
+-     setTargetHotend1(0);
+-     setTargetHotend2(0);
+-     setTargetHotend3(0);
+-     setTargetBed(0);
+-   }
+-#endif
+- }
+-}
++#define ENABLE_STEPPER_DRIVER_INTERRUPT()  TIMSK1 |= BIT(OCIE1A)
++#define DISABLE_STEPPER_DRIVER_INTERRUPT() TIMSK1 &= ~BIT(OCIE1A)
+ 
+-void endstops_hit_on_purpose()
+-{
+-  endstop_x_hit=false;
+-  endstop_y_hit=false;
+-  endstop_z_hit=false;
++void endstops_hit_on_purpose() {
++  endstop_x_hit = endstop_y_hit = endstop_z_hit = false;
+ }
+ 
+-void enable_endstops(bool check)
+-{
+-  check_endstops = check;
++void checkHitEndstops() {
++  if (endstop_x_hit || endstop_y_hit || endstop_z_hit) {
++    SERIAL_ECHO_START;
++    SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
++    if (endstop_x_hit) {
++      SERIAL_ECHOPAIR(" X:", (float)endstops_trigsteps[X_AXIS] / axis_steps_per_unit[X_AXIS]);
++      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "X");
++    }
++    if (endstop_y_hit) {
++      SERIAL_ECHOPAIR(" Y:", (float)endstops_trigsteps[Y_AXIS] / axis_steps_per_unit[Y_AXIS]);
++      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Y");
++    }
++    if (endstop_z_hit) {
++      SERIAL_ECHOPAIR(" Z:", (float)endstops_trigsteps[Z_AXIS] / axis_steps_per_unit[Z_AXIS]);
++      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
++    }
++    SERIAL_EOL;
++
++    endstops_hit_on_purpose();
++
++    #if defined(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED) && defined(SDSUPPORT)
++      if (abort_on_endstop_hit) {
++        card.sdprinting = false;
++        card.closefile();
++        quickStop();
++        setTargetHotend0(0);
++        setTargetHotend1(0);
++        setTargetHotend2(0);
++        setTargetHotend3(0);
++        setTargetBed(0);
++      }
++    #endif
++  }
+ }
+ 
++void enable_endstops(bool check) { check_endstops = check; }
++
+ //         __________________________
+ //        /|                        |\     _________________         ^
+ //       / |                        | \   /|               |\        |
+@@ -242,23 +280,23 @@ void st_wake_up() {
+ 
+ FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+   unsigned short timer;
+-  if(step_rate > MAX_STEP_FREQUENCY) step_rate = MAX_STEP_FREQUENCY;
++  if (step_rate > MAX_STEP_FREQUENCY) step_rate = MAX_STEP_FREQUENCY;
+ 
+-  if(step_rate > 20000) { // If steprate > 20kHz >> step 4 times
+-    step_rate = (step_rate >> 2)&0x3fff;
++  if (step_rate > 20000) { // If steprate > 20kHz >> step 4 times
++    step_rate = (step_rate >> 2) & 0x3fff;
+     step_loops = 4;
+   }
+-  else if(step_rate > 10000) { // If steprate > 10kHz >> step 2 times
+-    step_rate = (step_rate >> 1)&0x7fff;
++  else if (step_rate > 10000) { // If steprate > 10kHz >> step 2 times
++    step_rate = (step_rate >> 1) & 0x7fff;
+     step_loops = 2;
+   }
+   else {
+     step_loops = 1;
+   }
+ 
+-  if(step_rate < (F_CPU/500000)) step_rate = (F_CPU/500000);
+-  step_rate -= (F_CPU/500000); // Correct for minimal speed
+-  if(step_rate >= (8*256)){ // higher step rate
++  if (step_rate < (F_CPU / 500000)) step_rate = (F_CPU / 500000);
++  step_rate -= (F_CPU / 500000); // Correct for minimal speed
++  if (step_rate >= (8 * 256)) { // higher step rate
+     unsigned short table_address = (unsigned short)&speed_lookuptable_fast[(unsigned char)(step_rate>>8)][0];
+     unsigned char tmp_step_rate = (step_rate & 0x00ff);
+     unsigned short gain = (unsigned short)pgm_read_word_near(table_address+2);
+@@ -271,7 +309,7 @@ FORCE_INLINE unsigned short calc_timer(unsigned short step_rate) {
+     timer = (unsigned short)pgm_read_word_near(table_address);
+     timer -= (((unsigned short)pgm_read_word_near(table_address+2) * (unsigned char)(step_rate & 0x0007))>>3);
+   }
+-  if(timer < 100) { timer = 100; MYSERIAL.print(MSG_STEPPER_TOO_HIGH); MYSERIAL.println(step_rate); }//(20kHz this should never happen)
++  if (timer < 100) { timer = 100; MYSERIAL.print(MSG_STEPPER_TOO_HIGH); MYSERIAL.println(step_rate); }//(20kHz this should never happen)
+   return timer;
+ }
+ 
+@@ -294,49 +332,45 @@ FORCE_INLINE void trapezoid_generator_reset() {
+   acceleration_time = calc_timer(acc_step_rate);
+   OCR1A = acceleration_time;
+ 
+-//    SERIAL_ECHO_START;
+-//    SERIAL_ECHOPGM("advance :");
+-//    SERIAL_ECHO(current_block->advance/256.0);
+-//    SERIAL_ECHOPGM("advance rate :");
+-//    SERIAL_ECHO(current_block->advance_rate/256.0);
+-//    SERIAL_ECHOPGM("initial advance :");
+-//    SERIAL_ECHO(current_block->initial_advance/256.0);
+-//    SERIAL_ECHOPGM("final advance :");
+-//    SERIAL_ECHOLN(current_block->final_advance/256.0);
+-
++  // SERIAL_ECHO_START;
++  // SERIAL_ECHOPGM("advance :");
++  // SERIAL_ECHO(current_block->advance/256.0);
++  // SERIAL_ECHOPGM("advance rate :");
++  // SERIAL_ECHO(current_block->advance_rate/256.0);
++  // SERIAL_ECHOPGM("initial advance :");
++  // SERIAL_ECHO(current_block->initial_advance/256.0);
++  // SERIAL_ECHOPGM("final advance :");
++  // SERIAL_ECHOLN(current_block->final_advance/256.0);
+ }
+ 
+ // "The Stepper Driver Interrupt" - This timer interrupt is the workhorse.
+ // It pops blocks from the block_buffer and executes them by pulsing the stepper pins appropriately.
+-ISR(TIMER1_COMPA_vect)
+-{
++ISR(TIMER1_COMPA_vect) {
+   // If there is no current block, attempt to pop one from the buffer
+-  if (current_block == NULL) {
++  if (!current_block) {
+     // Anything in the buffer?
+     current_block = plan_get_current_block();
+-    if (current_block != NULL) {
++    if (current_block) {
+       current_block->busy = true;
+       trapezoid_generator_reset();
+       counter_x = -(current_block->step_event_count >> 1);
+-      counter_y = counter_x;
+-      counter_z = counter_x;
+-      counter_e = counter_x;
++      counter_y = counter_z = counter_e = counter_x;
+       step_events_completed = 0;
+ 
+       #ifdef Z_LATE_ENABLE
+-        if(current_block->steps_z > 0) {
++        if (current_block->steps_z > 0) {
+           enable_z();
+           OCR1A = 2000; //1ms wait
+           return;
+         }
+       #endif
+ 
+-//      #ifdef ADVANCE
+-//      e_steps[current_block->active_extruder] = 0;
+-//      #endif
++      // #ifdef ADVANCE
++      //   e_steps[current_block->active_extruder] = 0;
++      // #endif
+     }
+     else {
+-        OCR1A=2000; // 1kHz.
++      OCR1A = 2000; // 1kHz.
+     }
+   }
+ 
+@@ -344,186 +378,114 @@ ISR(TIMER1_COMPA_vect)
+     // Set directions TO DO This should be done once during init of trapezoid. Endstops -> interrupt
+     out_bits = current_block->direction_bits;
+ 
+-
+     // Set the direction bits (X_AXIS=A_AXIS and Y_AXIS=B_AXIS for COREXY)
+-    if((out_bits & (1<<X_AXIS))!=0){
+-      #ifdef DUAL_X_CARRIAGE
+-        if (extruder_duplication_enabled){
+-          X_DIR_WRITE(INVERT_X_DIR);
+-          X2_DIR_WRITE(INVERT_X_DIR);
+-        }
+-        else{
+-          if (current_block->active_extruder != 0)
+-            X2_DIR_WRITE(INVERT_X_DIR);
+-          else
+-            X_DIR_WRITE(INVERT_X_DIR);
+-        }
+-      #else
+-        X_DIR_WRITE(INVERT_X_DIR);
+-      #endif        
+-      count_direction[X_AXIS]=-1;
++    if (TEST(out_bits, X_AXIS)) {
++      X_APPLY_DIR(INVERT_X_DIR,0);
++      count_direction[X_AXIS] = -1;
+     }
+-    else{
+-      #ifdef DUAL_X_CARRIAGE
+-        if (extruder_duplication_enabled){
+-          X_DIR_WRITE(!INVERT_X_DIR);
+-          X2_DIR_WRITE( !INVERT_X_DIR);
+-        }
+-        else{
+-          if (current_block->active_extruder != 0)
+-            X2_DIR_WRITE(!INVERT_X_DIR);
+-          else
+-            X_DIR_WRITE(!INVERT_X_DIR);
+-        }
+-      #else
+-        X_DIR_WRITE(!INVERT_X_DIR);
+-      #endif        
+-      count_direction[X_AXIS]=1;
++    else {
++      X_APPLY_DIR(!INVERT_X_DIR,0);
++      count_direction[X_AXIS] = 1;
+     }
+-    if((out_bits & (1<<Y_AXIS))!=0){
+-      Y_DIR_WRITE(INVERT_Y_DIR);
+-	  
+-	  #ifdef Y_DUAL_STEPPER_DRIVERS
+-	    Y2_DIR_WRITE(!(INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
+-	  #endif
+-	  
+-      count_direction[Y_AXIS]=-1;
++
++    if (TEST(out_bits, Y_AXIS)) {
++      Y_APPLY_DIR(INVERT_Y_DIR,0);
++      count_direction[Y_AXIS] = -1;
+     }
+-    else{
+-      Y_DIR_WRITE(!INVERT_Y_DIR);
+-	  
+-	  #ifdef Y_DUAL_STEPPER_DRIVERS
+-	    Y2_DIR_WRITE((INVERT_Y_DIR == INVERT_Y2_VS_Y_DIR));
+-	  #endif
+-	  
+-      count_direction[Y_AXIS]=1;
++    else {
++      Y_APPLY_DIR(!INVERT_Y_DIR,0);
++      count_direction[Y_AXIS] = 1;
+     }
+ 
+-    if(check_endstops) // check X and Y Endstops
+-    {
+-        #ifndef COREXY
+-        if ((out_bits & (1<<X_AXIS)) != 0)   // stepping along -X axis (regular cartesians bot)
+-        #else
+-        if (!((current_block->steps_x == current_block->steps_y) && ((out_bits & (1<<X_AXIS))>>X_AXIS != (out_bits & (1<<Y_AXIS))>>Y_AXIS))) // AlexBorro: If DeltaX == -DeltaY, the movement is only in Y axis
+-        if ((out_bits & (1<<X_HEAD)) != 0) //AlexBorro: Head direction in -X axis for CoreXY bots.
+-        #endif
++    #define UPDATE_ENDSTOP(axis,AXIS,minmax,MINMAX) \
++      bool axis ##_## minmax ##_endstop = (READ(AXIS ##_## MINMAX ##_PIN) != AXIS ##_## MINMAX ##_ENDSTOP_INVERTING); \
++      if (axis ##_## minmax ##_endstop && old_## axis ##_## minmax ##_endstop && (current_block->steps_## axis > 0)) { \
++        endstops_trigsteps[AXIS ##_AXIS] = count_position[AXIS ##_AXIS]; \
++        endstop_## axis ##_hit = true; \
++        step_events_completed = current_block->step_event_count; \
++      } \
++      old_## axis ##_## minmax ##_endstop = axis ##_## minmax ##_endstop;
++
++    // Check X and Y endstops
++    if (check_endstops) {
++      #ifndef COREXY
++        if (TEST(out_bits, X_AXIS))   // stepping along -X axis (regular cartesians bot)
++      #else
++        // Head direction in -X axis for CoreXY bots.
++        // If DeltaX == -DeltaY, the movement is only in Y axis
++        if (TEST(out_bits, X_HEAD) && (current_block->steps_x != current_block->steps_y || (TEST(out_bits, X_AXIS) == TEST(out_bits, Y_AXIS))))
++      #endif
+         { // -direction
+-            #ifdef DUAL_X_CARRIAGE
++          #ifdef DUAL_X_CARRIAGE
+             // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
+             if ((current_block->active_extruder == 0 && X_HOME_DIR == -1) || (current_block->active_extruder != 0 && X2_HOME_DIR == -1))
+-            #endif          
++          #endif          
+             {
+-                #if defined(X_MIN_PIN) && X_MIN_PIN > -1
+-                bool x_min_endstop=(READ(X_MIN_PIN) != X_MIN_ENDSTOP_INVERTING);
+-                if(x_min_endstop && old_x_min_endstop && (current_block->steps_x > 0))
+-                {
+-                    endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-                    endstop_x_hit=true;
+-                    step_events_completed = current_block->step_event_count;
+-                }
+-                old_x_min_endstop = x_min_endstop;
+-                #endif
++              #if defined(X_MIN_PIN) && X_MIN_PIN >= 0
++                UPDATE_ENDSTOP(x, X, min, MIN);
++              #endif
+             }
+         }
+-        else 
+-        { // +direction
+-            #ifdef DUAL_X_CARRIAGE
++        else { // +direction
++          #ifdef DUAL_X_CARRIAGE
+             // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
+             if ((current_block->active_extruder == 0 && X_HOME_DIR == 1) || (current_block->active_extruder != 0 && X2_HOME_DIR == 1))
+-            #endif          
++          #endif
+             {
+-                #if defined(X_MAX_PIN) && X_MAX_PIN > -1
+-                bool x_max_endstop=(READ(X_MAX_PIN) != X_MAX_ENDSTOP_INVERTING);
+-                if(x_max_endstop && old_x_max_endstop && (current_block->steps_x > 0))
+-                {
+-                    endstops_trigsteps[X_AXIS] = count_position[X_AXIS];
+-                    endstop_x_hit=true;
+-                    step_events_completed = current_block->step_event_count;
+-                }
+-                old_x_max_endstop = x_max_endstop;
+-                #endif
++              #if defined(X_MAX_PIN) && X_MAX_PIN >= 0
++                UPDATE_ENDSTOP(x, X, max, MAX);
++              #endif
+             }
+         }
+ 
+         #ifndef COREXY
+-        if ((out_bits & (1<<Y_AXIS)) != 0)   // -direction
++          if (TEST(out_bits, Y_AXIS))   // -direction
+         #else
+-        if (!((current_block->steps_x == current_block->steps_y) && ((out_bits & (1<<X_AXIS))>>X_AXIS == (out_bits & (1<<Y_AXIS))>>Y_AXIS))) // AlexBorro: If DeltaX == DeltaY, the movement is only in X axis
+-        if ((out_bits & (1<<Y_HEAD)) != 0)  //AlexBorro: Head direction in -Y axis for CoreXY bots.
++          // Head direction in -Y axis for CoreXY bots.
++          // If DeltaX == DeltaY, the movement is only in X axis
++          if (TEST(out_bits, Y_HEAD) && (current_block->steps_x != current_block->steps_y || (TEST(out_bits, X_AXIS) != TEST(out_bits, Y_AXIS))))
+         #endif
+         { // -direction
+-            #if defined(Y_MIN_PIN) && Y_MIN_PIN > -1
+-            bool y_min_endstop=(READ(Y_MIN_PIN) != Y_MIN_ENDSTOP_INVERTING);
+-            if(y_min_endstop && old_y_min_endstop && (current_block->steps_y > 0))
+-            {
+-                endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-                endstop_y_hit=true;
+-                step_events_completed = current_block->step_event_count;
+-            }
+-            old_y_min_endstop = y_min_endstop;
+-            #endif
++          #if defined(Y_MIN_PIN) && Y_MIN_PIN >= 0
++            UPDATE_ENDSTOP(y, Y, min, MIN);
++          #endif
+         }
+-        else 
+-        { // +direction
+-            #if defined(Y_MAX_PIN) && Y_MAX_PIN > -1
+-            bool y_max_endstop=(READ(Y_MAX_PIN) != Y_MAX_ENDSTOP_INVERTING);
+-            if(y_max_endstop && old_y_max_endstop && (current_block->steps_y > 0))
+-            {
+-                endstops_trigsteps[Y_AXIS] = count_position[Y_AXIS];
+-                endstop_y_hit=true;
+-                step_events_completed = current_block->step_event_count;
+-            }
+-            old_y_max_endstop = y_max_endstop;
+-            #endif
+-
++        else { // +direction
++          #if defined(Y_MAX_PIN) && Y_MAX_PIN >= 0
++            UPDATE_ENDSTOP(y, Y, max, MAX);
++          #endif
+         }
+     }
+ 
+-    if ((out_bits & (1<<Z_AXIS)) != 0) {   // -direction
++    if (TEST(out_bits, Z_AXIS)) {   // -direction
+       Z_DIR_WRITE(INVERT_Z_DIR);
+-      
+       #ifdef Z_DUAL_STEPPER_DRIVERS
+         Z2_DIR_WRITE(INVERT_Z_DIR);
+       #endif
+ 
+-      count_direction[Z_AXIS]=-1;
+-      CHECK_ENDSTOPS
+-      {
+-        #if defined(Z_MIN_PIN) && Z_MIN_PIN > -1
+-          bool z_min_endstop=(READ(Z_MIN_PIN) != Z_MIN_ENDSTOP_INVERTING);
+-          if(z_min_endstop && old_z_min_endstop && (current_block->steps_z > 0)) {
+-            endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_z_min_endstop = z_min_endstop;
++      count_direction[Z_AXIS] = -1;
++      if (check_endstops) {
++        #if defined(Z_MIN_PIN) && Z_MIN_PIN >= 0
++          UPDATE_ENDSTOP(z, Z, min, MIN);
+         #endif
+       }
+     }
+     else { // +direction
+       Z_DIR_WRITE(!INVERT_Z_DIR);
+-
+       #ifdef Z_DUAL_STEPPER_DRIVERS
+         Z2_DIR_WRITE(!INVERT_Z_DIR);
+       #endif
+ 
+-      count_direction[Z_AXIS]=1;
+-      CHECK_ENDSTOPS
+-      {
+-        #if defined(Z_MAX_PIN) && Z_MAX_PIN > -1
+-          bool z_max_endstop=(READ(Z_MAX_PIN) != Z_MAX_ENDSTOP_INVERTING);
+-          if(z_max_endstop && old_z_max_endstop && (current_block->steps_z > 0)) {
+-            endstops_trigsteps[Z_AXIS] = count_position[Z_AXIS];
+-            endstop_z_hit=true;
+-            step_events_completed = current_block->step_event_count;
+-          }
+-          old_z_max_endstop = z_max_endstop;
++      count_direction[Z_AXIS] = 1;
++      if (check_endstops) {
++        #if defined(Z_MAX_PIN) && Z_MAX_PIN >= 0
++          UPDATE_ENDSTOP(z, Z, max, MAX);
+         #endif
+       }
+     }
+ 
+     #ifndef ADVANCE
+-      if ((out_bits & (1<<E_AXIS)) != 0) {  // -direction
++      if (TEST(out_bits, E_AXIS)) {  // -direction
+         REV_E_DIR();
+         count_direction[E_AXIS]=-1;
+       }
+@@ -533,151 +495,73 @@ ISR(TIMER1_COMPA_vect)
+       }
+     #endif //!ADVANCE
+ 
+-
+-
+-    for(int8_t i=0; i < step_loops; i++) { // Take multiple steps per interrupt (For high speed moves)
++    // Take multiple steps per interrupt (For high speed moves)
++    for (int8_t i=0; i < step_loops; i++) {
+       #ifndef AT90USB
+-      MSerial.checkRx(); // Check for serial chars.
++        MSerial.checkRx(); // Check for serial chars.
+       #endif
+ 
+       #ifdef ADVANCE
+-      counter_e += current_block->steps_e;
+-      if (counter_e > 0) {
+-        counter_e -= current_block->step_event_count;
+-        if ((out_bits & (1<<E_AXIS)) != 0) { // - direction
+-          e_steps[current_block->active_extruder]--;
+-        }
+-        else {
+-          e_steps[current_block->active_extruder]++;
+-        }
+-      }
+-      #endif //ADVANCE
+-
+-      counter_x += current_block->steps_x;
+-
+-#ifdef CONFIG_STEPPERS_TOSHIBA
+-    /* The Toshiba stepper controller require much longer pulses.
+-     * So we 'stage' decompose the pulses between high and low
+-     * instead of doing each in turn. The extra tests add enough
+-     * lag to allow it work with without needing NOPs
+-     */
+-      if (counter_x > 0) X_STEP_WRITE(HIGH);
+-
+-      counter_y += current_block->steps_y;
+-      if (counter_y > 0) Y_STEP_WRITE(HIGH);
+-
+-      counter_z += current_block->steps_z;
+-      if (counter_z > 0) Z_STEP_WRITE(HIGH);
+-
+-      #ifndef ADVANCE
+         counter_e += current_block->steps_e;
+-        if (counter_e > 0) WRITE_E_STEP(HIGH);
+-      #endif //!ADVANCE
+-
+-      if (counter_x > 0) {
+-        counter_x -= current_block->step_event_count;
+-        count_position[X_AXIS] += count_direction[X_AXIS];   
+-        X_STEP_WRITE(LOW);
+-      }
+-
+-      if (counter_y > 0) {
+-        counter_y -= current_block->step_event_count;
+-        count_position[Y_AXIS] += count_direction[Y_AXIS];
+-        Y_STEP_WRITE( LOW);
+-      }
+-
+-      if (counter_z > 0) {
+-        counter_z -= current_block->step_event_count;
+-        count_position[Z_AXIS] += count_direction[Z_AXIS];
+-        Z_STEP_WRITE(LOW);
+-      }
+-
+-      #ifndef ADVANCE
+         if (counter_e > 0) {
+           counter_e -= current_block->step_event_count;
+-          count_position[E_AXIS] += count_direction[E_AXIS];
+-          WRITE_E_STEP(LOW);
+-        }
+-      #endif //!ADVANCE
+-#else
+-        if (counter_x > 0) {
+-        #ifdef DUAL_X_CARRIAGE
+-          if (extruder_duplication_enabled){
+-            X_STEP_WRITE(!INVERT_X_STEP_PIN);
+-            X2_STEP_WRITE( !INVERT_X_STEP_PIN);
+-          }
+-          else {
+-            if (current_block->active_extruder != 0)
+-              X2_STEP_WRITE( !INVERT_X_STEP_PIN);
+-            else
+-              X_STEP_WRITE(!INVERT_X_STEP_PIN);
+-          }
+-        #else
+-          X_STEP_WRITE(!INVERT_X_STEP_PIN);
+-        #endif        
+-          counter_x -= current_block->step_event_count;
+-          count_position[X_AXIS] += count_direction[X_AXIS];   
+-        #ifdef DUAL_X_CARRIAGE
+-          if (extruder_duplication_enabled){
+-            X_STEP_WRITE(INVERT_X_STEP_PIN);
+-            X2_STEP_WRITE(INVERT_X_STEP_PIN);
+-          }
+-          else {
+-            if (current_block->active_extruder != 0)
+-              X2_STEP_WRITE(INVERT_X_STEP_PIN);
+-            else
+-              X_STEP_WRITE(INVERT_X_STEP_PIN);
+-          }
+-        #else
+-          X_STEP_WRITE(INVERT_X_STEP_PIN);
+-        #endif
++          e_steps[current_block->active_extruder] += TEST(out_bits, E_AXIS) ? -1 : 1;
+         }
++      #endif //ADVANCE
+ 
++      #ifdef CONFIG_STEPPERS_TOSHIBA
++        /**
++         * The Toshiba stepper controller require much longer pulses.
++         * So we 'stage' decompose the pulses between high and low
++         * instead of doing each in turn. The extra tests add enough
++         * lag to allow it work with without needing NOPs
++         */
++        counter_x += current_block->steps_x;
++        if (counter_x > 0) X_STEP_WRITE(HIGH);
+         counter_y += current_block->steps_y;
+-        if (counter_y > 0) {
+-          Y_STEP_WRITE(!INVERT_Y_STEP_PIN);
+-		  
+-		  #ifdef Y_DUAL_STEPPER_DRIVERS
+-			Y2_STEP_WRITE( !INVERT_Y_STEP_PIN);
+-		  #endif
+-		  
+-          counter_y -= current_block->step_event_count;
+-          count_position[Y_AXIS] += count_direction[Y_AXIS];
+-          Y_STEP_WRITE(INVERT_Y_STEP_PIN);
+-		  
+-		  #ifdef Y_DUAL_STEPPER_DRIVERS
+-			Y2_STEP_WRITE( INVERT_Y_STEP_PIN);
+-		  #endif
+-        }
++        if (counter_y > 0) Y_STEP_WRITE(HIGH);
++        counter_z += current_block->steps_z;
++        if (counter_z > 0) Z_STEP_WRITE(HIGH);
++        #ifndef ADVANCE
++          counter_e += current_block->steps_e;
++          if (counter_e > 0) E_STEP_WRITE(HIGH);
++        #endif
++
++        #define STEP_IF_COUNTER(axis, AXIS) \
++          if (counter_## axis > 0) {
++            counter_## axis -= current_block->step_event_count; \
++            count_position[AXIS ##_AXIS] += count_direction[AXIS ##_AXIS]; \
++            AXIS ##_STEP_WRITE(LOW);
++          }
+ 
+-      counter_z += current_block->steps_z;
+-      if (counter_z > 0) {
+-        Z_STEP_WRITE( !INVERT_Z_STEP_PIN);
+-        #ifdef Z_DUAL_STEPPER_DRIVERS
+-          Z2_STEP_WRITE(!INVERT_Z_STEP_PIN);
++        STEP_IF_COUNTER(x, X);
++        STEP_IF_COUNTER(y, Y);
++        STEP_IF_COUNTER(z, Z);
++        #ifndef ADVANCE
++          STEP_IF_COUNTER(e, E);
+         #endif
+ 
+-        counter_z -= current_block->step_event_count;
+-        count_position[Z_AXIS] += count_direction[Z_AXIS];
+-        Z_STEP_WRITE( INVERT_Z_STEP_PIN);
++      #else // !CONFIG_STEPPERS_TOSHIBA
++
++        #define APPLY_MOVEMENT(axis, AXIS) \
++          counter_## axis += current_block->steps_## axis; \
++          if (counter_## axis > 0) { \
++            AXIS ##_APPLY_STEP(!INVERT_## AXIS ##_STEP_PIN,0); \
++            counter_## axis -= current_block->step_event_count; \
++            count_position[AXIS ##_AXIS] += count_direction[AXIS ##_AXIS]; \
++            AXIS ##_APPLY_STEP(INVERT_## AXIS ##_STEP_PIN,0); \
++          }
+ 
+-        #ifdef Z_DUAL_STEPPER_DRIVERS
+-          Z2_STEP_WRITE(INVERT_Z_STEP_PIN);
++        APPLY_MOVEMENT(x, X);
++        APPLY_MOVEMENT(y, Y);
++        APPLY_MOVEMENT(z, Z);
++        #ifndef ADVANCE
++          APPLY_MOVEMENT(e, E);
+         #endif
+-      }
+ 
+-      #ifndef ADVANCE
+-        counter_e += current_block->steps_e;
+-        if (counter_e > 0) {
+-          WRITE_E_STEP(!INVERT_E_STEP_PIN);
+-          counter_e -= current_block->step_event_count;
+-          count_position[E_AXIS] += count_direction[E_AXIS];
+-          WRITE_E_STEP(INVERT_E_STEP_PIN);
+-        }
+-      #endif //!ADVANCE
+-#endif // CONFIG_STEPPERS_TOSHIBA
+-      step_events_completed += 1;
+-      if(step_events_completed >= current_block->step_event_count) break;
++      #endif // CONFIG_STEPPERS_TOSHIBA
++      step_events_completed++;
++      if (step_events_completed >= current_block->step_event_count) break;
+     }
+     // Calculare new timer value
+     unsigned short timer;
+@@ -688,7 +572,7 @@ ISR(TIMER1_COMPA_vect)
+       acc_step_rate += current_block->initial_rate;
+ 
+       // upper limit
+-      if(acc_step_rate > current_block->nominal_rate)
++      if (acc_step_rate > current_block->nominal_rate)
+         acc_step_rate = current_block->nominal_rate;
+ 
+       // step_rate to timer interval
+@@ -699,7 +583,7 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance += advance_rate;
+         }
+-        //if(advance > current_block->advance) advance = current_block->advance;
++        //if (advance > current_block->advance) advance = current_block->advance;
+         // Do E steps + advance steps
+         e_steps[current_block->active_extruder] += ((advance >>8) - old_advance);
+         old_advance = advance >>8;
+@@ -709,7 +593,7 @@ ISR(TIMER1_COMPA_vect)
+     else if (step_events_completed > (unsigned long int)current_block->decelerate_after) {
+       MultiU24X24toH16(step_rate, deceleration_time, current_block->acceleration_rate);
+ 
+-      if(step_rate > acc_step_rate) { // Check step_rate stays positive
++      if (step_rate > acc_step_rate) { // Check step_rate stays positive
+         step_rate = current_block->final_rate;
+       }
+       else {
+@@ -717,7 +601,7 @@ ISR(TIMER1_COMPA_vect)
+       }
+ 
+       // lower limit
+-      if(step_rate < current_block->final_rate)
++      if (step_rate < current_block->final_rate)
+         step_rate = current_block->final_rate;
+ 
+       // step_rate to timer interval
+@@ -728,7 +612,7 @@ ISR(TIMER1_COMPA_vect)
+         for(int8_t i=0; i < step_loops; i++) {
+           advance -= advance_rate;
+         }
+-        if(advance < final_advance) advance = final_advance;
++        if (advance < final_advance) advance = final_advance;
+         // Do E steps + advance steps
+         e_steps[current_block->active_extruder] += ((advance >>8) - old_advance);
+         old_advance = advance >>8;
+@@ -759,7 +643,7 @@ ISR(TIMER1_COMPA_vect)
+     // Set E direction (Depends on E direction + advance)
+     for(unsigned char i=0; i<4;i++) {
+       if (e_steps[0] != 0) {
+-        E0_STEP_WRITE( INVERT_E_STEP_PIN);
++        E0_STEP_WRITE(INVERT_E_STEP_PIN);
+         if (e_steps[0] < 0) {
+           E0_DIR_WRITE(INVERT_E0_DIR);
+           e_steps[0]++;
+@@ -821,200 +705,186 @@ ISR(TIMER1_COMPA_vect)
+   }
+ #endif // ADVANCE
+ 
+-void st_init()
+-{
++void st_init() {
+   digipot_init(); //Initialize Digipot Motor Current
+   microstep_init(); //Initialize Microstepping Pins
+ 
+   // initialise TMC Steppers
+   #ifdef HAVE_TMCDRIVER
+-     tmc_init();
++    tmc_init();
+   #endif
+     // initialise L6470 Steppers
+   #ifdef HAVE_L6470DRIVER
+-     L6470_init();
++    L6470_init();
+   #endif
+   
+-  
+-  //Initialize Dir Pins
+-  #if defined(X_DIR_PIN) && X_DIR_PIN > -1
++  // Initialize Dir Pins
++  #if defined(X_DIR_PIN) && X_DIR_PIN >= 0
+     X_DIR_INIT;
+   #endif
+-  #if defined(X2_DIR_PIN) && X2_DIR_PIN > -1
++  #if defined(X2_DIR_PIN) && X2_DIR_PIN >= 0
+     X2_DIR_INIT;
+   #endif
+-  #if defined(Y_DIR_PIN) && Y_DIR_PIN > -1
++  #if defined(Y_DIR_PIN) && Y_DIR_PIN >= 0
+     Y_DIR_INIT;
+-		
+-	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_DIR_PIN) && (Y2_DIR_PIN > -1)
+-	  Y2_DIR_INIT;
+-	#endif
++    #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_DIR_PIN) && Y2_DIR_PIN >= 0
++      Y2_DIR_INIT;
++    #endif
+   #endif
+-  #if defined(Z_DIR_PIN) && Z_DIR_PIN > -1
++  #if defined(Z_DIR_PIN) && Z_DIR_PIN >= 0
+     Z_DIR_INIT;
+-
+-    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_DIR_PIN) && (Z2_DIR_PIN > -1)
++    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_DIR_PIN) && Z2_DIR_PIN >= 0
+       Z2_DIR_INIT;
+     #endif
+   #endif
+-  #if defined(E0_DIR_PIN) && E0_DIR_PIN > -1
++  #if defined(E0_DIR_PIN) && E0_DIR_PIN >= 0
+     E0_DIR_INIT;
+   #endif
+-  #if defined(E1_DIR_PIN) && (E1_DIR_PIN > -1)
++  #if defined(E1_DIR_PIN) && E1_DIR_PIN >= 0
+     E1_DIR_INIT;
+   #endif
+-  #if defined(E2_DIR_PIN) && (E2_DIR_PIN > -1)
++  #if defined(E2_DIR_PIN) && E2_DIR_PIN >= 0
+     E2_DIR_INIT;
+   #endif
+-  #if defined(E3_DIR_PIN) && (E3_DIR_PIN > -1)
++  #if defined(E3_DIR_PIN) && E3_DIR_PIN >= 0
+     E3_DIR_INIT;
+   #endif
+ 
+   //Initialize Enable Pins - steppers default to disabled.
+ 
+-  #if defined(X_ENABLE_PIN) && X_ENABLE_PIN > -1
++  #if defined(X_ENABLE_PIN) && X_ENABLE_PIN >= 0
+     X_ENABLE_INIT;
+-    if(!X_ENABLE_ON) X_ENABLE_WRITE(HIGH);
++    if (!X_ENABLE_ON) X_ENABLE_WRITE(HIGH);
+   #endif
+-  #if defined(X2_ENABLE_PIN) && X2_ENABLE_PIN > -1
++  #if defined(X2_ENABLE_PIN) && X2_ENABLE_PIN >= 0
+     X2_ENABLE_INIT;
+-    if(!X_ENABLE_ON) X2_ENABLE_WRITE(HIGH);
++    if (!X_ENABLE_ON) X2_ENABLE_WRITE(HIGH);
+   #endif
+-  #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN > -1
++  #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN >= 0
+     Y_ENABLE_INIT;
+-    if(!Y_ENABLE_ON) Y_ENABLE_WRITE(HIGH);
++    if (!Y_ENABLE_ON) Y_ENABLE_WRITE(HIGH);
+ 	
+-	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_ENABLE_PIN) && (Y2_ENABLE_PIN > -1)
++	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_ENABLE_PIN) && Y2_ENABLE_PIN >= 0
+ 	  Y2_ENABLE_INIT;
+-	  if(!Y_ENABLE_ON) Y2_ENABLE_WRITE(HIGH);
++	  if (!Y_ENABLE_ON) Y2_ENABLE_WRITE(HIGH);
+ 	#endif
+   #endif
+-  #if defined(Z_ENABLE_PIN) && Z_ENABLE_PIN > -1
++  #if defined(Z_ENABLE_PIN) && Z_ENABLE_PIN >= 0
+     Z_ENABLE_INIT;
+-    if(!Z_ENABLE_ON) Z_ENABLE_WRITE(HIGH);
++    if (!Z_ENABLE_ON) Z_ENABLE_WRITE(HIGH);
+ 
+-    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_ENABLE_PIN) && (Z2_ENABLE_PIN > -1)
++    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_ENABLE_PIN) && Z2_ENABLE_PIN >= 0
+       Z2_ENABLE_INIT;
+-      if(!Z_ENABLE_ON) Z2_ENABLE_WRITE(HIGH);
++      if (!Z_ENABLE_ON) Z2_ENABLE_WRITE(HIGH);
+     #endif
+   #endif
+-  #if defined(E0_ENABLE_PIN) && (E0_ENABLE_PIN > -1)
++  #if defined(E0_ENABLE_PIN) && E0_ENABLE_PIN >= 0
+     E0_ENABLE_INIT;
+-    if(!E_ENABLE_ON) E0_ENABLE_WRITE(HIGH);
++    if (!E_ENABLE_ON) E0_ENABLE_WRITE(HIGH);
+   #endif
+-  #if defined(E1_ENABLE_PIN) && (E1_ENABLE_PIN > -1)
++  #if defined(E1_ENABLE_PIN) && E1_ENABLE_PIN >= 0
+     E1_ENABLE_INIT;
+-    if(!E_ENABLE_ON) E1_ENABLE_WRITE(HIGH);
++    if (!E_ENABLE_ON) E1_ENABLE_WRITE(HIGH);
+   #endif
+-  #if defined(E2_ENABLE_PIN) && (E2_ENABLE_PIN > -1)
++  #if defined(E2_ENABLE_PIN) && E2_ENABLE_PIN >= 0
+     E2_ENABLE_INIT;
+-    if(!E_ENABLE_ON) E2_ENABLE_WRITE(HIGH);
++    if (!E_ENABLE_ON) E2_ENABLE_WRITE(HIGH);
+   #endif
+-  #if defined(E3_ENABLE_PIN) && (E3_ENABLE_PIN > -1)
++  #if defined(E3_ENABLE_PIN) && E3_ENABLE_PIN >= 0
+     E3_ENABLE_INIT;
+-    if(!E_ENABLE_ON) E3_ENABLE_WRITE(HIGH);
++    if (!E_ENABLE_ON) E3_ENABLE_WRITE(HIGH);
+   #endif
+ 
+   //endstops and pullups
+ 
+-  #if defined(X_MIN_PIN) && X_MIN_PIN > -1
++  #if defined(X_MIN_PIN) && X_MIN_PIN >= 0
+     SET_INPUT(X_MIN_PIN);
+     #ifdef ENDSTOPPULLUP_XMIN
+       WRITE(X_MIN_PIN,HIGH);
+     #endif
+   #endif
+ 
+-  #if defined(Y_MIN_PIN) && Y_MIN_PIN > -1
++  #if defined(Y_MIN_PIN) && Y_MIN_PIN >= 0
+     SET_INPUT(Y_MIN_PIN);
+     #ifdef ENDSTOPPULLUP_YMIN
+       WRITE(Y_MIN_PIN,HIGH);
+     #endif
+   #endif
+ 
+-  #if defined(Z_MIN_PIN) && Z_MIN_PIN > -1
++  #if defined(Z_MIN_PIN) && Z_MIN_PIN >= 0
+     SET_INPUT(Z_MIN_PIN);
+     #ifdef ENDSTOPPULLUP_ZMIN
+       WRITE(Z_MIN_PIN,HIGH);
+     #endif
+   #endif
+ 
+-  #if defined(X_MAX_PIN) && X_MAX_PIN > -1
++  #if defined(X_MAX_PIN) && X_MAX_PIN >= 0
+     SET_INPUT(X_MAX_PIN);
+     #ifdef ENDSTOPPULLUP_XMAX
+       WRITE(X_MAX_PIN,HIGH);
+     #endif
+   #endif
+ 
+-  #if defined(Y_MAX_PIN) && Y_MAX_PIN > -1
++  #if defined(Y_MAX_PIN) && Y_MAX_PIN >= 0
+     SET_INPUT(Y_MAX_PIN);
+     #ifdef ENDSTOPPULLUP_YMAX
+       WRITE(Y_MAX_PIN,HIGH);
+     #endif
+   #endif
+ 
+-  #if defined(Z_MAX_PIN) && Z_MAX_PIN > -1
++  #if defined(Z_MAX_PIN) && Z_MAX_PIN >= 0
+     SET_INPUT(Z_MAX_PIN);
+     #ifdef ENDSTOPPULLUP_ZMAX
+       WRITE(Z_MAX_PIN,HIGH);
+     #endif
+   #endif
+ 
++  #define AXIS_INIT(axis, AXIS, PIN) \
++    AXIS ##_STEP_INIT; \
++    AXIS ##_STEP_WRITE(INVERT_## PIN ##_STEP_PIN); \
++    disable_## axis()
+ 
+-  //Initialize Step Pins
+-  #if defined(X_STEP_PIN) && (X_STEP_PIN > -1)
+-    X_STEP_INIT;
+-    X_STEP_WRITE(INVERT_X_STEP_PIN);
+-    disable_x();
++  #define E_AXIS_INIT(NUM) AXIS_INIT(e## NUM, E## NUM, E)
++
++  // Initialize Step Pins
++  #if defined(X_STEP_PIN) && X_STEP_PIN >= 0
++    AXIS_INIT(x, X, X);
+   #endif
+-  #if defined(X2_STEP_PIN) && (X2_STEP_PIN > -1)
+-    X2_STEP_INIT;
+-    X2_STEP_WRITE(INVERT_X_STEP_PIN);
+-    disable_x();
++  #if defined(X2_STEP_PIN) && X2_STEP_PIN >= 0
++    AXIS_INIT(x, X2, X);
+   #endif
+-  #if defined(Y_STEP_PIN) && (Y_STEP_PIN > -1)
+-    Y_STEP_INIT;
+-    Y_STEP_WRITE(INVERT_Y_STEP_PIN);
+-    #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && (Y2_STEP_PIN > -1)
++  #if defined(Y_STEP_PIN) && Y_STEP_PIN >= 0
++    #if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_STEP_PIN) && Y2_STEP_PIN >= 0
+       Y2_STEP_INIT;
+       Y2_STEP_WRITE(INVERT_Y_STEP_PIN);
+     #endif
+-    disable_y();
++    AXIS_INIT(y, Y, Y);
+   #endif
+-  #if defined(Z_STEP_PIN) && (Z_STEP_PIN > -1)
+-    Z_STEP_INIT;
+-    Z_STEP_WRITE(INVERT_Z_STEP_PIN);
+-    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_STEP_PIN) && (Z2_STEP_PIN > -1)
++  #if defined(Z_STEP_PIN) && Z_STEP_PIN >= 0
++    #if defined(Z_DUAL_STEPPER_DRIVERS) && defined(Z2_STEP_PIN) && Z2_STEP_PIN >= 0
+       Z2_STEP_INIT;
+       Z2_STEP_WRITE(INVERT_Z_STEP_PIN);
+     #endif
+-    disable_z();
++    AXIS_INIT(z, Z, Z);
+   #endif
+-  #if defined(E0_STEP_PIN) && (E0_STEP_PIN > -1)
+-    E0_STEP_INIT;
+-    E0_STEP_WRITE(INVERT_E_STEP_PIN);
+-    disable_e0();
++  #if defined(E0_STEP_PIN) && E0_STEP_PIN >= 0
++    E_AXIS_INIT(0);
+   #endif
+-  #if defined(E1_STEP_PIN) && (E1_STEP_PIN > -1)
+-    E1_STEP_INIT;
+-    E1_STEP_WRITE(INVERT_E_STEP_PIN);
+-    disable_e1();
++  #if defined(E1_STEP_PIN) && E1_STEP_PIN >= 0
++    E_AXIS_INIT(1);
+   #endif
+-  #if defined(E2_STEP_PIN) && (E2_STEP_PIN > -1)
+-    E2_STEP_INIT;
+-    E2_STEP_WRITE(INVERT_E_STEP_PIN);
+-    disable_e2();
++  #if defined(E2_STEP_PIN) && E2_STEP_PIN >= 0
++    E_AXIS_INIT(2);
+   #endif
+-  #if defined(E3_STEP_PIN) && (E3_STEP_PIN > -1)
+-    E3_STEP_INIT;
+-    E3_STEP_WRITE(INVERT_E_STEP_PIN);
+-    disable_e3();
++  #if defined(E3_STEP_PIN) && E3_STEP_PIN >= 0
++    E_AXIS_INIT(3);
+   #endif
+ 
+   // waveform generation = 0100 = CTC
+-  TCCR1B &= ~(1<<WGM13);
+-  TCCR1B |=  (1<<WGM12);
+-  TCCR1A &= ~(1<<WGM11);
+-  TCCR1A &= ~(1<<WGM10);
++  TCCR1B &= ~BIT(WGM13);
++  TCCR1B |=  BIT(WGM12);
++  TCCR1A &= ~BIT(WGM11);
++  TCCR1A &= ~BIT(WGM10);
+ 
+   // output mode = 00 (disconnected)
+   TCCR1A &= ~(3<<COM1A0);
+@@ -1032,15 +902,15 @@ void st_init()
+   ENABLE_STEPPER_DRIVER_INTERRUPT();
+ 
+   #ifdef ADVANCE
+-  #if defined(TCCR0A) && defined(WGM01)
+-    TCCR0A &= ~(1<<WGM01);
+-    TCCR0A &= ~(1<<WGM00);
+-  #endif
++    #if defined(TCCR0A) && defined(WGM01)
++      TCCR0A &= ~BIT(WGM01);
++      TCCR0A &= ~BIT(WGM00);
++    #endif
+     e_steps[0] = 0;
+     e_steps[1] = 0;
+     e_steps[2] = 0;
+     e_steps[3] = 0;
+-    TIMSK0 |= (1<<OCIE0A);
++    TIMSK0 |= BIT(OCIE0A);
+   #endif //ADVANCE
+ 
+   enable_endstops(true); // Start with endstops active. After homing they can be disabled
+@@ -1049,17 +919,15 @@ void st_init()
+ 
+ 
+ // Block until all buffered steps are executed
+-void st_synchronize()
+-{
+-    while( blocks_queued()) {
++void st_synchronize() {
++  while (blocks_queued()) {
+     manage_heater();
+     manage_inactivity();
+     lcd_update();
+   }
+ }
+ 
+-void st_set_position(const long &x, const long &y, const long &z, const long &e)
+-{
++void st_set_position(const long &x, const long &y, const long &z, const long &e) {
+   CRITICAL_SECTION_START;
+   count_position[X_AXIS] = x;
+   count_position[Y_AXIS] = y;
+@@ -1068,15 +936,13 @@ void st_set_position(const long &x, const long &y, const long &z, const long &e)
+   CRITICAL_SECTION_END;
+ }
+ 
+-void st_set_e_position(const long &e)
+-{
++void st_set_e_position(const long &e) {
+   CRITICAL_SECTION_START;
+   count_position[E_AXIS] = e;
+   CRITICAL_SECTION_END;
+ }
+ 
+-long st_get_position(uint8_t axis)
+-{
++long st_get_position(uint8_t axis) {
+   long count_pos;
+   CRITICAL_SECTION_START;
+   count_pos = count_position[axis];
+@@ -1085,15 +951,15 @@ long st_get_position(uint8_t axis)
+ }
+ 
+ #ifdef ENABLE_AUTO_BED_LEVELING
+-float st_get_position_mm(uint8_t axis)
+-{
+-  float steper_position_in_steps = st_get_position(axis);
+-  return steper_position_in_steps / axis_steps_per_unit[axis];
+-}
++
++  float st_get_position_mm(uint8_t axis) {
++    float steper_position_in_steps = st_get_position(axis);
++    return steper_position_in_steps / axis_steps_per_unit[axis];
++  }
++
+ #endif  // ENABLE_AUTO_BED_LEVELING
+ 
+-void finishAndDisableSteppers()
+-{
++void finishAndDisableSteppers() {
+   st_synchronize();
+   disable_x();
+   disable_y();
+@@ -1104,162 +970,85 @@ void finishAndDisableSteppers()
+   disable_e3();
+ }
+ 
+-void quickStop()
+-{
++void quickStop() {
+   DISABLE_STEPPER_DRIVER_INTERRUPT();
+-  while(blocks_queued())
+-    plan_discard_current_block();
++  while (blocks_queued()) plan_discard_current_block();
+   current_block = NULL;
+   ENABLE_STEPPER_DRIVER_INTERRUPT();
+ }
+ 
+ #ifdef BABYSTEPPING
+ 
++  // MUST ONLY BE CALLED BY AN ISR,
++  // No other ISR should ever interrupt this!
++  void babystep(const uint8_t axis, const bool direction) {
++
++    #define BABYSTEP_AXIS(axis, AXIS, INVERT) { \
++        enable_## axis(); \
++        uint8_t old_pin = AXIS ##_DIR_READ; \
++        AXIS ##_APPLY_DIR(INVERT_## AXIS ##_DIR^direction^INVERT, true); \
++        AXIS ##_APPLY_STEP(!INVERT_## AXIS ##_STEP_PIN, true); \
++        _delay_us(1U); \
++        AXIS ##_APPLY_STEP(INVERT_## AXIS ##_STEP_PIN, true); \
++        AXIS ##_APPLY_DIR(old_pin, true); \
++      }
+ 
+-void babystep(const uint8_t axis,const bool direction)
+-{
+-  //MUST ONLY BE CALLED BY A ISR, it depends on that no other ISR interrupts this
+-    //store initial pin states
+-  switch(axis)
+-  {
+-  case X_AXIS:
+-  {
+-    enable_x();   
+-    uint8_t old_x_dir_pin= X_DIR_READ;  //if dualzstepper, both point to same direction.
+-   
+-    //setup new step
+-    X_DIR_WRITE((INVERT_X_DIR)^direction);
+-    #ifdef DUAL_X_CARRIAGE
+-      X2_DIR_WRITE((INVERT_X_DIR)^direction);
+-    #endif
+-    
+-    //perform step 
+-    X_STEP_WRITE(!INVERT_X_STEP_PIN); 
+-    #ifdef DUAL_X_CARRIAGE
+-      X2_STEP_WRITE(!INVERT_X_STEP_PIN);
+-    #endif
+-
+-    _delay_us(1U); // wait 1 microsecond
+-
+-    X_STEP_WRITE(INVERT_X_STEP_PIN);
+-    #ifdef DUAL_X_CARRIAGE
+-      X2_STEP_WRITE(INVERT_X_STEP_PIN);
+-    #endif
++    switch(axis) {
+ 
+-    //get old pin state back.
+-    X_DIR_WRITE(old_x_dir_pin);
+-    #ifdef DUAL_X_CARRIAGE
+-      X2_DIR_WRITE(old_x_dir_pin);
+-    #endif
++      case X_AXIS:
++        BABYSTEP_AXIS(x, X, false);
++        break;
+ 
+-  }
+-  break;
+-  case Y_AXIS:
+-  {
+-    enable_y();   
+-    uint8_t old_y_dir_pin= Y_DIR_READ;  //if dualzstepper, both point to same direction.
+-   
+-    //setup new step
+-    Y_DIR_WRITE((INVERT_Y_DIR)^direction);
+-    #ifdef DUAL_Y_CARRIAGE
+-      Y2_DIR_WRITE((INVERT_Y_DIR)^direction);
+-    #endif
+-    
+-    //perform step 
+-    Y_STEP_WRITE(!INVERT_Y_STEP_PIN); 
+-    #ifdef DUAL_Y_CARRIAGE
+-      Y2_STEP_WRITE( !INVERT_Y_STEP_PIN);
+-    #endif
++      case Y_AXIS:
++        BABYSTEP_AXIS(y, Y, false);
++        break;
++     
++      case Z_AXIS: {
+ 
+-    _delay_us(1U); // wait 1 microsecond
+-
+-    Y_STEP_WRITE(INVERT_Y_STEP_PIN);
+-    #ifdef DUAL_Y_CARRIAGE
+-      Y2_STEP_WRITE(INVERT_Y_STEP_PIN);
+-    #endif
++        #ifndef DELTA
+ 
+-    //get old pin state back.
+-    Y_DIR_WRITE(old_y_dir_pin);
+-    #ifdef DUAL_Y_CARRIAGE
+-      Y2_DIR_WRITE(old_y_dir_pin);
+-    #endif
++          BABYSTEP_AXIS(z, Z, BABYSTEP_INVERT_Z);
+ 
+-  }
+-  break;
+- 
+-#ifndef DELTA
+-  case Z_AXIS:
+-  {
+-    enable_z();
+-    uint8_t old_z_dir_pin= Z_DIR_READ;  //if dualzstepper, both point to same direction.
+-    //setup new step
+-    Z_DIR_WRITE((INVERT_Z_DIR)^direction^BABYSTEP_INVERT_Z);
+-    #ifdef Z_DUAL_STEPPER_DRIVERS
+-      Z2_DIR_WRITE((INVERT_Z_DIR)^direction^BABYSTEP_INVERT_Z);
+-    #endif
+-    //perform step 
+-    Z_STEP_WRITE(!INVERT_Z_STEP_PIN); 
+-    #ifdef Z_DUAL_STEPPER_DRIVERS
+-      Z2_STEP_WRITE( !INVERT_Z_STEP_PIN);
+-    #endif
++        #else // DELTA
+ 
+-    _delay_us(1U); // wait 1 microsecond
++          bool z_direction = direction ^ BABYSTEP_INVERT_Z;
+ 
+-    Z_STEP_WRITE( INVERT_Z_STEP_PIN);
+-    #ifdef Z_DUAL_STEPPER_DRIVERS
+-      Z2_STEP_WRITE(INVERT_Z_STEP_PIN);
+-    #endif
++          enable_x();
++          enable_y();
++          enable_z();
++          uint8_t old_x_dir_pin = X_DIR_READ,
++                  old_y_dir_pin = Y_DIR_READ,
++                  old_z_dir_pin = Z_DIR_READ;
++          //setup new step
++          X_DIR_WRITE(INVERT_X_DIR^z_direction);
++          Y_DIR_WRITE(INVERT_Y_DIR^z_direction);
++          Z_DIR_WRITE(INVERT_Z_DIR^z_direction);
++          //perform step 
++          X_STEP_WRITE(!INVERT_X_STEP_PIN);
++          Y_STEP_WRITE(!INVERT_Y_STEP_PIN);
++          Z_STEP_WRITE(!INVERT_Z_STEP_PIN);
++          _delay_us(1U);
++          X_STEP_WRITE(INVERT_X_STEP_PIN); 
++          Y_STEP_WRITE(INVERT_Y_STEP_PIN); 
++          Z_STEP_WRITE(INVERT_Z_STEP_PIN);
++          //get old pin state back.
++          X_DIR_WRITE(old_x_dir_pin);
++          Y_DIR_WRITE(old_y_dir_pin);
++          Z_DIR_WRITE(old_z_dir_pin);
+ 
+-    //get old pin state back.
+-    Z_DIR_WRITE(old_z_dir_pin);
+-    #ifdef Z_DUAL_STEPPER_DRIVERS
+-      Z2_DIR_WRITE(old_z_dir_pin);
+-    #endif
++        #endif
+ 
++      } break;
++     
++      default: break;
++    }
+   }
+-  break;
+-#else //DELTA
+-  case Z_AXIS:
+-  {
+-    enable_x();
+-    enable_y();
+-    enable_z();
+-    uint8_t old_x_dir_pin= X_DIR_READ;  
+-    uint8_t old_y_dir_pin= Y_DIR_READ;
+-    uint8_t old_z_dir_pin= Z_DIR_READ;
+-    //setup new step
+-    X_DIR_WRITE((INVERT_X_DIR)^direction^BABYSTEP_INVERT_Z);
+-    Y_DIR_WRITE((INVERT_Y_DIR)^direction^BABYSTEP_INVERT_Z);
+-    Z_DIR_WRITE((INVERT_Z_DIR)^direction^BABYSTEP_INVERT_Z);
+-    
+-    //perform step 
+-    X_STEP_WRITE( !INVERT_X_STEP_PIN); 
+-    Y_STEP_WRITE(!INVERT_Y_STEP_PIN); 
+-    Z_STEP_WRITE(!INVERT_Z_STEP_PIN); 
+-    
+-    _delay_us(1U); // wait 1 microsecond
+-
+-    X_STEP_WRITE(INVERT_X_STEP_PIN); 
+-    Y_STEP_WRITE(INVERT_Y_STEP_PIN); 
+-    Z_STEP_WRITE(INVERT_Z_STEP_PIN);
+-
+-    //get old pin state back.
+-    X_DIR_WRITE(old_x_dir_pin);
+-    Y_DIR_WRITE(old_y_dir_pin);
+-    Z_DIR_WRITE(old_z_dir_pin);
+ 
+-  }
+-  break;
+-#endif
+- 
+-  default:    break;
+-  }
+-}
+ #endif //BABYSTEPPING
+ 
+-void digitalPotWrite(int address, int value) // From Arduino DigitalPotControl example
+-{
+-  #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++// From Arduino DigitalPotControl example
++void digitalPotWrite(int address, int value) {
++  #if HAS_DIGIPOTSS
+     digitalWrite(DIGIPOTSS_PIN,LOW); // take the SS pin low to select the chip
+     SPI.transfer(address); //  send in the address and value via SPI:
+     SPI.transfer(value);
+@@ -1268,16 +1057,17 @@ void digitalPotWrite(int address, int value) // From Arduino DigitalPotControl e
+   #endif
+ }
+ 
+-void digipot_init() //Initialize Digipot Motor Current
+-{
+-  #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++// Initialize Digipot Motor Current
++void digipot_init() {
++  #if HAS_DIGIPOTSS
+     const uint8_t digipot_motor_current[] = DIGIPOT_MOTOR_CURRENT;
+ 
+     SPI.begin();
+     pinMode(DIGIPOTSS_PIN, OUTPUT);
+-    for(int i=0;i<=4;i++)
++    for (int i = 0; i <= 4; i++) {
+       //digitalPotWrite(digipot_ch[i], digipot_motor_current[i]);
+       digipot_current(i,digipot_motor_current[i]);
++    }
+   #endif
+   #ifdef MOTOR_CURRENT_PWM_XY_PIN
+     pinMode(MOTOR_CURRENT_PWM_XY_PIN, OUTPUT);
+@@ -1291,69 +1081,64 @@ void digipot_init() //Initialize Digipot Motor Current
+   #endif
+ }
+ 
+-void digipot_current(uint8_t driver, int current)
+-{
+-  #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
++void digipot_current(uint8_t driver, int current) {
++  #if HAS_DIGIPOTSS
+     const uint8_t digipot_ch[] = DIGIPOT_CHANNELS;
+     digitalPotWrite(digipot_ch[driver], current);
+   #endif
+   #ifdef MOTOR_CURRENT_PWM_XY_PIN
+-  if (driver == 0) analogWrite(MOTOR_CURRENT_PWM_XY_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
+-  if (driver == 1) analogWrite(MOTOR_CURRENT_PWM_Z_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
+-  if (driver == 2) analogWrite(MOTOR_CURRENT_PWM_E_PIN, (long)current * 255L / (long)MOTOR_CURRENT_PWM_RANGE);
++    switch(driver) {
++      case 0: analogWrite(MOTOR_CURRENT_PWM_XY_PIN, 255L * current / MOTOR_CURRENT_PWM_RANGE); break;
++      case 1: analogWrite(MOTOR_CURRENT_PWM_Z_PIN, 255L * current / MOTOR_CURRENT_PWM_RANGE); break;
++      case 2: analogWrite(MOTOR_CURRENT_PWM_E_PIN, 255L * current / MOTOR_CURRENT_PWM_RANGE); break;
++    }
+   #endif
+ }
+ 
+-void microstep_init()
+-{
++void microstep_init() {
+   const uint8_t microstep_modes[] = MICROSTEP_MODES;
+ 
+-  #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
+-  pinMode(E1_MS1_PIN,OUTPUT);
+-  pinMode(E1_MS2_PIN,OUTPUT); 
++  #if defined(E1_MS1_PIN) && E1_MS1_PIN >= 0
++    pinMode(E1_MS1_PIN,OUTPUT);
++    pinMode(E1_MS2_PIN,OUTPUT); 
+   #endif
+ 
+-  #if defined(X_MS1_PIN) && X_MS1_PIN > -1
+-  pinMode(X_MS1_PIN,OUTPUT);
+-  pinMode(X_MS2_PIN,OUTPUT);  
+-  pinMode(Y_MS1_PIN,OUTPUT);
+-  pinMode(Y_MS2_PIN,OUTPUT);
+-  pinMode(Z_MS1_PIN,OUTPUT);
+-  pinMode(Z_MS2_PIN,OUTPUT);
+-  pinMode(E0_MS1_PIN,OUTPUT);
+-  pinMode(E0_MS2_PIN,OUTPUT);
+-  for(int i=0;i<=4;i++) microstep_mode(i,microstep_modes[i]);
++  #if defined(X_MS1_PIN) && X_MS1_PIN >= 0
++    pinMode(X_MS1_PIN,OUTPUT);
++    pinMode(X_MS2_PIN,OUTPUT);  
++    pinMode(Y_MS1_PIN,OUTPUT);
++    pinMode(Y_MS2_PIN,OUTPUT);
++    pinMode(Z_MS1_PIN,OUTPUT);
++    pinMode(Z_MS2_PIN,OUTPUT);
++    pinMode(E0_MS1_PIN,OUTPUT);
++    pinMode(E0_MS2_PIN,OUTPUT);
++    for (int i = 0; i <= 4; i++) microstep_mode(i, microstep_modes[i]);
+   #endif
+ }
+ 
+-void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2)
+-{
+-  if(ms1 > -1) switch(driver)
+-  {
+-    case 0: digitalWrite( X_MS1_PIN,ms1); break;
+-    case 1: digitalWrite( Y_MS1_PIN,ms1); break;
+-    case 2: digitalWrite( Z_MS1_PIN,ms1); break;
+-    case 3: digitalWrite(E0_MS1_PIN,ms1); break;
+-    #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
+-    case 4: digitalWrite(E1_MS1_PIN,ms1); break;
++void microstep_ms(uint8_t driver, int8_t ms1, int8_t ms2) {
++  if (ms1 >= 0) switch(driver) {
++    case 0: digitalWrite(X_MS1_PIN, ms1); break;
++    case 1: digitalWrite(Y_MS1_PIN, ms1); break;
++    case 2: digitalWrite(Z_MS1_PIN, ms1); break;
++    case 3: digitalWrite(E0_MS1_PIN, ms1); break;
++    #if defined(E1_MS1_PIN) && E1_MS1_PIN >= 0
++      case 4: digitalWrite(E1_MS1_PIN, ms1); break;
+     #endif
+   }
+-  if(ms2 > -1) switch(driver)
+-  {
+-    case 0: digitalWrite( X_MS2_PIN,ms2); break;
+-    case 1: digitalWrite( Y_MS2_PIN,ms2); break;
+-    case 2: digitalWrite( Z_MS2_PIN,ms2); break;
+-    case 3: digitalWrite(E0_MS2_PIN,ms2); break;
+-    #if defined(E1_MS2_PIN) && E1_MS2_PIN > -1
+-    case 4: digitalWrite(E1_MS2_PIN,ms2); break;
++  if (ms2 >= 0) switch(driver) {
++    case 0: digitalWrite(X_MS2_PIN, ms2); break;
++    case 1: digitalWrite(Y_MS2_PIN, ms2); break;
++    case 2: digitalWrite(Z_MS2_PIN, ms2); break;
++    case 3: digitalWrite(E0_MS2_PIN, ms2); break;
++    #if defined(E1_MS2_PIN) && E1_MS2_PIN >= 0
++      case 4: digitalWrite(E1_MS2_PIN, ms2); break;
+     #endif
+   }
+ }
+ 
+-void microstep_mode(uint8_t driver, uint8_t stepping_mode)
+-{
+-  switch(stepping_mode)
+-  {
++void microstep_mode(uint8_t driver, uint8_t stepping_mode) {
++  switch(stepping_mode) {
+     case 1: microstep_ms(driver,MICROSTEP1); break;
+     case 2: microstep_ms(driver,MICROSTEP2); break;
+     case 4: microstep_ms(driver,MICROSTEP4); break;
+@@ -1362,24 +1147,23 @@ void microstep_mode(uint8_t driver, uint8_t stepping_mode)
+   }
+ }
+ 
+-void microstep_readings()
+-{
+-      SERIAL_PROTOCOLPGM("MS1,MS2 Pins\n");
+-      SERIAL_PROTOCOLPGM("X: ");
+-      SERIAL_PROTOCOL(   digitalRead(X_MS1_PIN));
+-      SERIAL_PROTOCOLLN( digitalRead(X_MS2_PIN));
+-      SERIAL_PROTOCOLPGM("Y: ");
+-      SERIAL_PROTOCOL(   digitalRead(Y_MS1_PIN));
+-      SERIAL_PROTOCOLLN( digitalRead(Y_MS2_PIN));
+-      SERIAL_PROTOCOLPGM("Z: ");
+-      SERIAL_PROTOCOL(   digitalRead(Z_MS1_PIN));
+-      SERIAL_PROTOCOLLN( digitalRead(Z_MS2_PIN));
+-      SERIAL_PROTOCOLPGM("E0: ");
+-      SERIAL_PROTOCOL(   digitalRead(E0_MS1_PIN));
+-      SERIAL_PROTOCOLLN( digitalRead(E0_MS2_PIN));
+-      #if defined(E1_MS1_PIN) && E1_MS1_PIN > -1
+-      SERIAL_PROTOCOLPGM("E1: ");
+-      SERIAL_PROTOCOL(   digitalRead(E1_MS1_PIN));
+-      SERIAL_PROTOCOLLN( digitalRead(E1_MS2_PIN));
+-      #endif
++void microstep_readings() {
++  SERIAL_PROTOCOLPGM("MS1,MS2 Pins\n");
++  SERIAL_PROTOCOLPGM("X: ");
++  SERIAL_PROTOCOL(digitalRead(X_MS1_PIN));
++  SERIAL_PROTOCOLLN(digitalRead(X_MS2_PIN));
++  SERIAL_PROTOCOLPGM("Y: ");
++  SERIAL_PROTOCOL(digitalRead(Y_MS1_PIN));
++  SERIAL_PROTOCOLLN(digitalRead(Y_MS2_PIN));
++  SERIAL_PROTOCOLPGM("Z: ");
++  SERIAL_PROTOCOL(digitalRead(Z_MS1_PIN));
++  SERIAL_PROTOCOLLN(digitalRead(Z_MS2_PIN));
++  SERIAL_PROTOCOLPGM("E0: ");
++  SERIAL_PROTOCOL(digitalRead(E0_MS1_PIN));
++  SERIAL_PROTOCOLLN(digitalRead(E0_MS2_PIN));
++  #if defined(E1_MS1_PIN) && E1_MS1_PIN >= 0
++    SERIAL_PROTOCOLPGM("E1: ");
++    SERIAL_PROTOCOL(digitalRead(E1_MS1_PIN));
++    SERIAL_PROTOCOLLN(digitalRead(E1_MS2_PIN));
++  #endif
+ }
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index 2d31622..a1f2916 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -25,26 +25,26 @@
+ #include "stepper_indirection.h"
+ 
+ #if EXTRUDERS > 3
+-  #define WRITE_E_STEP(v) { if(current_block->active_extruder == 3) { E3_STEP_WRITE(v); } else { if(current_block->active_extruder == 2) { E2_STEP_WRITE(v); } else { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}}}
++  #define E_STEP_WRITE(v) { if(current_block->active_extruder == 3) { E3_STEP_WRITE(v); } else { if(current_block->active_extruder == 2) { E2_STEP_WRITE(v); } else { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}}}
+   #define NORM_E_DIR() { if(current_block->active_extruder == 3) { E3_DIR_WRITE( !INVERT_E3_DIR); } else { if(current_block->active_extruder == 2) { E2_DIR_WRITE(!INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { E1_DIR_WRITE(!INVERT_E1_DIR); } else { E0_DIR_WRITE(!INVERT_E0_DIR); }}}}
+   #define REV_E_DIR() { if(current_block->active_extruder == 3) { E3_DIR_WRITE(INVERT_E3_DIR); } else { if(current_block->active_extruder == 2) { E2_DIR_WRITE(INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { E1_DIR_WRITE(INVERT_E1_DIR); } else { E0_DIR_WRITE(INVERT_E0_DIR); }}}}
+ #elif EXTRUDERS > 2
+-  #define WRITE_E_STEP(v) { if(current_block->active_extruder == 2) { E2_STEP_WRITE(v); } else { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}}
++  #define E_STEP_WRITE(v) { if(current_block->active_extruder == 2) { E2_STEP_WRITE(v); } else { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}}
+   #define NORM_E_DIR() { if(current_block->active_extruder == 2) { E2_DIR_WRITE(!INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { E1_DIR_WRITE(!INVERT_E1_DIR); } else { E0_DIR_WRITE(!INVERT_E0_DIR); }}}
+   #define REV_E_DIR() { if(current_block->active_extruder == 2) { E2_DIR_WRITE(INVERT_E2_DIR); } else { if(current_block->active_extruder == 1) { E1_DIR_WRITE(INVERT_E1_DIR); } else { E0_DIR_WRITE(INVERT_E0_DIR); }}}
+ #elif EXTRUDERS > 1
+   #ifndef DUAL_X_CARRIAGE
+-    #define WRITE_E_STEP(v) { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}
++    #define E_STEP_WRITE(v) { if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}
+     #define NORM_E_DIR() { if(current_block->active_extruder == 1) { E1_DIR_WRITE(!INVERT_E1_DIR); } else { E0_DIR_WRITE(!INVERT_E0_DIR); }}
+     #define REV_E_DIR() { if(current_block->active_extruder == 1) { E1_DIR_WRITE(INVERT_E1_DIR); } else { E0_DIR_WRITE(INVERT_E0_DIR); }}
+   #else
+     extern bool extruder_duplication_enabled;
+-    #define WRITE_E_STEP(v) { if(extruder_duplication_enabled) { E0_STEP_WRITE(v); E1_STEP_WRITE(v); } else if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}
++    #define E_STEP_WRITE(v) { if(extruder_duplication_enabled) { E0_STEP_WRITE(v); E1_STEP_WRITE(v); } else if(current_block->active_extruder == 1) { E1_STEP_WRITE(v); } else { E0_STEP_WRITE(v); }}
+     #define NORM_E_DIR() { if(extruder_duplication_enabled) { E0_DIR_WRITE(!INVERT_E0_DIR); E1_DIR_WRITE(!INVERT_E1_DIR); } else if(current_block->active_extruder == 1) { E1_DIR_WRITE(!INVERT_E1_DIR); } else { E0_DIR_WRITE(!INVERT_E0_DIR); }}
+     #define REV_E_DIR() { if(extruder_duplication_enabled) { E0_DIR_WRITE(INVERT_E0_DIR); E1_DIR_WRITE(INVERT_E1_DIR); } else if(current_block->active_extruder == 1) { E1_DIR_WRITE(INVERT_E1_DIR); } else { E0_DIR_WRITE(INVERT_E0_DIR); }}
+   #endif  
+ #else
+-  #define WRITE_E_STEP(v) E0_STEP_WRITE(v)
++  #define E_STEP_WRITE(v) E0_STEP_WRITE(v)
+   #define NORM_E_DIR() E0_DIR_WRITE(!INVERT_E0_DIR)
+   #define REV_E_DIR() E0_DIR_WRITE(INVERT_E0_DIR)
+ #endif
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index f6353fc..9a30726 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -882,8 +882,8 @@ void tp_init()
+ {
+   #if MB(RUMBA) && ((TEMP_SENSOR_0==-1)||(TEMP_SENSOR_1==-1)||(TEMP_SENSOR_2==-1)||(TEMP_SENSOR_BED==-1))
+     //disable RUMBA JTAG in case the thermocouple extension is plugged on top of JTAG connector
+-    MCUCR=(1<<JTD);
+-    MCUCR=(1<<JTD);
++    MCUCR=BIT(JTD);
++    MCUCR=BIT(JTD);
+   #endif
+   
+   // Finish init of mult extruder arrays 
+@@ -941,13 +941,13 @@ void tp_init()
+   #endif //HEATER_0_USES_MAX6675
+ 
+   #ifdef DIDR2
+-    #define ANALOG_SELECT(pin) do{ if (pin < 8) DIDR0 |= 1 << pin; else DIDR2 |= 1 << (pin - 8); }while(0)
++    #define ANALOG_SELECT(pin) do{ if (pin < 8) DIDR0 |= BIT(pin); else DIDR2 |= BIT(pin - 8); }while(0)
+   #else
+-    #define ANALOG_SELECT(pin) do{ DIDR0 |= 1 << pin; }while(0)
++    #define ANALOG_SELECT(pin) do{ DIDR0 |= BIT(pin); }while(0)
+   #endif
+ 
+   // Set analog inputs
+-  ADCSRA = 1<<ADEN | 1<<ADSC | 1<<ADIF | 0x07;
++  ADCSRA = BIT(ADEN) | BIT(ADSC) | BIT(ADIF) | 0x07;
+   DIDR0 = 0;
+   #ifdef DIDR2
+     DIDR2 = 0;
+@@ -974,7 +974,7 @@ void tp_init()
+   // Use timer0 for temperature measurement
+   // Interleave temperature interrupt with millies interrupt
+   OCR0B = 128;
+-  TIMSK0 |= (1<<OCIE0B);  
++  TIMSK0 |= BIT(OCIE0B);  
+   
+   // Wait for temperature measurement to settle
+   delay(250);
+@@ -1178,12 +1178,12 @@ void disable_heater() {
+     max6675_temp = 0;
+ 
+     #ifdef PRR
+-      PRR &= ~(1<<PRSPI);
++      PRR &= ~BIT(PRSPI);
+     #elif defined(PRR0)
+-      PRR0 &= ~(1<<PRSPI);
++      PRR0 &= ~BIT(PRSPI);
+     #endif
+ 
+-    SPCR = (1<<MSTR) | (1<<SPE) | (1<<SPR0);
++    SPCR = BIT(MSTR) | BIT(SPE) | BIT(SPR0);
+ 
+     // enable TT_MAX6675
+     WRITE(MAX6675_SS, 0);
+@@ -1194,13 +1194,13 @@ void disable_heater() {
+ 
+     // read MSB
+     SPDR = 0;
+-    for (;(SPSR & (1<<SPIF)) == 0;);
++    for (;(SPSR & BIT(SPIF)) == 0;);
+     max6675_temp = SPDR;
+     max6675_temp <<= 8;
+ 
+     // read LSB
+     SPDR = 0;
+-    for (;(SPSR & (1<<SPIF)) == 0;);
++    for (;(SPSR & BIT(SPIF)) == 0;);
+     max6675_temp |= SPDR;
+ 
+     // disable TT_MAX6675
+@@ -1250,7 +1250,7 @@ ISR(TIMER0_COMPB_vect) {
+   static unsigned long raw_temp_3_value = 0;
+   static unsigned long raw_temp_bed_value = 0;
+   static TempState temp_state = StartupDelay;
+-  static unsigned char pwm_count = (1 << SOFT_PWM_SCALE);
++  static unsigned char pwm_count = BIT(SOFT_PWM_SCALE);
+ 
+   // Static members for each heater
+   #ifdef SLOW_PWM_HEATERS
+@@ -1335,7 +1335,7 @@ ISR(TIMER0_COMPB_vect) {
+       if (soft_pwm_fan < pwm_count) WRITE_FAN(0);
+     #endif
+     
+-    pwm_count += (1 << SOFT_PWM_SCALE);
++    pwm_count += BIT(SOFT_PWM_SCALE);
+     pwm_count &= 0x7f;
+   
+   #else // SLOW_PWM_HEATERS
+@@ -1416,7 +1416,7 @@ ISR(TIMER0_COMPB_vect) {
+       if (soft_pwm_fan < pwm_count) WRITE_FAN(0);
+     #endif //FAN_SOFT_PWM
+ 
+-    pwm_count += (1 << SOFT_PWM_SCALE);
++    pwm_count += BIT(SOFT_PWM_SCALE);
+     pwm_count &= 0x7f;
+ 
+     // increment slow_pwm_count only every 64 pwm_count circa 65.5ms
+@@ -1442,9 +1442,9 @@ ISR(TIMER0_COMPB_vect) {
+   
+   #endif // SLOW_PWM_HEATERS
+ 
+-  #define SET_ADMUX_ADCSRA(pin) ADMUX = (1 << REFS0) | (pin & 0x07); ADCSRA |= 1<<ADSC
++  #define SET_ADMUX_ADCSRA(pin) ADMUX = BIT(REFS0) | (pin & 0x07); ADCSRA |= BIT(ADSC)
+   #ifdef MUX5
+-    #define START_ADC(pin) if (pin > 7) ADCSRB = 1 << MUX5; else ADCSRB = 0; SET_ADMUX_ADCSRA(pin)
++    #define START_ADC(pin) if (pin > 7) ADCSRB = BIT(MUX5); else ADCSRB = 0; SET_ADMUX_ADCSRA(pin)
+   #else
+     #define START_ADC(pin) ADCSRB = 0; SET_ADMUX_ADCSRA(pin)
+   #endif
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 39b0923..8575abb 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1426,7 +1426,7 @@ void lcd_buttons_update() {
+       WRITE(SHIFT_LD, HIGH);
+       for(int8_t i = 0; i < 8; i++) {
+         newbutton_reprapworld_keypad >>= 1;
+-        if (READ(SHIFT_OUT)) newbutton_reprapworld_keypad |= (1 << 7);
++        if (READ(SHIFT_OUT)) newbutton_reprapworld_keypad |= BIT(7);
+         WRITE(SHIFT_CLK, HIGH);
+         WRITE(SHIFT_CLK, LOW);
+       }
+@@ -1439,7 +1439,7 @@ void lcd_buttons_update() {
+     unsigned char tmp_buttons = 0;
+     for(int8_t i=0; i<8; i++) {
+       newbutton >>= 1;
+-      if (READ(SHIFT_OUT)) newbutton |= (1 << 7);
++      if (READ(SHIFT_OUT)) newbutton |= BIT(7);
+       WRITE(SHIFT_CLK, HIGH);
+       WRITE(SHIFT_CLK, LOW);
+     }
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index d861e9d..9d89f51 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -57,20 +57,20 @@
+   void lcd_ignore_click(bool b=true);
+ 
+   #ifdef NEWPANEL
+-    #define EN_C (1<<BLEN_C)
+-    #define EN_B (1<<BLEN_B)
+-    #define EN_A (1<<BLEN_A)
++    #define EN_C BIT(BLEN_C)
++    #define EN_B BIT(BLEN_B)
++    #define EN_A BIT(BLEN_A)
+ 
+     #define LCD_CLICKED (buttons&EN_C)
+     #ifdef REPRAPWORLD_KEYPAD
+-  	  #define EN_REPRAPWORLD_KEYPAD_F3 (1<<BLEN_REPRAPWORLD_KEYPAD_F3)
+-  	  #define EN_REPRAPWORLD_KEYPAD_F2 (1<<BLEN_REPRAPWORLD_KEYPAD_F2)
+-  	  #define EN_REPRAPWORLD_KEYPAD_F1 (1<<BLEN_REPRAPWORLD_KEYPAD_F1)
+-  	  #define EN_REPRAPWORLD_KEYPAD_UP (1<<BLEN_REPRAPWORLD_KEYPAD_UP)
+-  	  #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<BLEN_REPRAPWORLD_KEYPAD_RIGHT)
+-  	  #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<BLEN_REPRAPWORLD_KEYPAD_MIDDLE)
+-  	  #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<BLEN_REPRAPWORLD_KEYPAD_DOWN)
+-  	  #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<BLEN_REPRAPWORLD_KEYPAD_LEFT)
++  	  #define EN_REPRAPWORLD_KEYPAD_F3 BIT(BLEN_REPRAPWORLD_KEYPAD_F3)
++  	  #define EN_REPRAPWORLD_KEYPAD_F2 BIT(BLEN_REPRAPWORLD_KEYPAD_F2)
++  	  #define EN_REPRAPWORLD_KEYPAD_F1 BIT(BLEN_REPRAPWORLD_KEYPAD_F1)
++  	  #define EN_REPRAPWORLD_KEYPAD_UP BIT(BLEN_REPRAPWORLD_KEYPAD_UP)
++  	  #define EN_REPRAPWORLD_KEYPAD_RIGHT BIT(BLEN_REPRAPWORLD_KEYPAD_RIGHT)
++  	  #define EN_REPRAPWORLD_KEYPAD_MIDDLE BIT(BLEN_REPRAPWORLD_KEYPAD_MIDDLE)
++  	  #define EN_REPRAPWORLD_KEYPAD_DOWN BIT(BLEN_REPRAPWORLD_KEYPAD_DOWN)
++  	  #define EN_REPRAPWORLD_KEYPAD_LEFT BIT(BLEN_REPRAPWORLD_KEYPAD_LEFT)
+ 
+   	  #define LCD_CLICKED ((buttons&EN_C) || (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F1))
+   	  #define REPRAPWORLD_KEYPAD_MOVE_Z_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F2)
+@@ -83,14 +83,14 @@
+     #endif //REPRAPWORLD_KEYPAD
+   #else
+     //atomic, do not change
+-    #define B_LE (1<<BL_LE)
+-    #define B_UP (1<<BL_UP)
+-    #define B_MI (1<<BL_MI)
+-    #define B_DW (1<<BL_DW)
+-    #define B_RI (1<<BL_RI)
+-    #define B_ST (1<<BL_ST)
+-    #define EN_B (1<<BLEN_B)
+-    #define EN_A (1<<BLEN_A)
++    #define B_LE BIT(BL_LE)
++    #define B_UP BIT(BL_UP)
++    #define B_MI BIT(BL_MI)
++    #define B_DW BIT(BL_DW)
++    #define B_RI BIT(BL_RI)
++    #define B_ST BIT(BL_ST)
++    #define EN_B BIT(BLEN_B)
++    #define EN_A BIT(BLEN_A)
+     
+     #define LCD_CLICKED ((buttons&B_MI)||(buttons&B_ST))
+   #endif//NEWPANEL
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 2081414..979f236 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -24,13 +24,13 @@
+ #define BLEN_B 1
+ #define BLEN_A 0
+ 
+-#define EN_B (1<<BLEN_B) // The two encoder pins are connected through BTN_EN1 and BTN_EN2
+-#define EN_A (1<<BLEN_A)
++#define EN_B BIT(BLEN_B) // The two encoder pins are connected through BTN_EN1 and BTN_EN2
++#define EN_A BIT(BLEN_A)
+ 
+ #if defined(BTN_ENC) && BTN_ENC > -1
+   // encoder click is directly connected
+   #define BLEN_C 2 
+-  #define EN_C (1<<BLEN_C) 
++  #define EN_C BIT(BLEN_C) 
+ #endif 
+   
+ //
+@@ -85,14 +85,14 @@
+     
+     #define REPRAPWORLD_BTN_OFFSET 3 // bit offset into buttons for shift register values
+ 
+-    #define EN_REPRAPWORLD_KEYPAD_F3 (1<<(BLEN_REPRAPWORLD_KEYPAD_F3+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F2 (1<<(BLEN_REPRAPWORLD_KEYPAD_F2+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_F1 (1<<(BLEN_REPRAPWORLD_KEYPAD_F1+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_UP (1<<(BLEN_REPRAPWORLD_KEYPAD_UP+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<(BLEN_REPRAPWORLD_KEYPAD_RIGHT+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<(BLEN_REPRAPWORLD_KEYPAD_MIDDLE+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<(BLEN_REPRAPWORLD_KEYPAD_DOWN+REPRAPWORLD_BTN_OFFSET))
+-    #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<(BLEN_REPRAPWORLD_KEYPAD_LEFT+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_F3 BIT((BLEN_REPRAPWORLD_KEYPAD_F3+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_F2 BIT((BLEN_REPRAPWORLD_KEYPAD_F2+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_F1 BIT((BLEN_REPRAPWORLD_KEYPAD_F1+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_UP BIT((BLEN_REPRAPWORLD_KEYPAD_UP+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_RIGHT BIT((BLEN_REPRAPWORLD_KEYPAD_RIGHT+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_MIDDLE BIT((BLEN_REPRAPWORLD_KEYPAD_MIDDLE+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_DOWN BIT((BLEN_REPRAPWORLD_KEYPAD_DOWN+REPRAPWORLD_BTN_OFFSET))
++    #define EN_REPRAPWORLD_KEYPAD_LEFT BIT((BLEN_REPRAPWORLD_KEYPAD_LEFT+REPRAPWORLD_BTN_OFFSET))
+ 
+     #define LCD_CLICKED ((buttons&EN_C) || (buttons&EN_REPRAPWORLD_KEYPAD_F1))
+     #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons&EN_REPRAPWORLD_KEYPAD_DOWN)
+@@ -113,12 +113,12 @@
+   #define BL_ST 2
+ 
+   //automatic, do not change
+-  #define B_LE (1<<BL_LE)
+-  #define B_UP (1<<BL_UP)
+-  #define B_MI (1<<BL_MI)
+-  #define B_DW (1<<BL_DW)
+-  #define B_RI (1<<BL_RI)
+-  #define B_ST (1<<BL_ST)
++  #define B_LE BIT(BL_LE)
++  #define B_UP BIT(BL_UP)
++  #define B_MI BIT(BL_MI)
++  #define B_DW BIT(BL_DW)
++  #define B_RI BIT(BL_RI)
++  #define B_ST BIT(BL_ST)
+   
+   #define LCD_CLICKED (buttons&(B_MI|B_ST))
+ #endif
+
+commit bb4cb1b15aa351e5e97ba5757e5e8e55e4ee822e (from 4eabd80025071c4ce9ed4b944fe9eadb548153a5)
+Merge: 63f41f5 4eabd80
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 15 06:05:08 2015 -0700
+
+    Merge pull request #1606 from thinkyhead/cleanup_stepper
+    
+    Cleanup of stepper.cpp
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index f279ef0..697753b 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -362,6 +362,15 @@ const bool Z_MAX_ENDSTOP_INVERTING = false; // set to true to invert the logic o
+ #define Y_MAX_LENGTH (Y_MAX_POS - Y_MIN_POS)
+ #define Z_MAX_LENGTH (Z_MAX_POS - Z_MIN_POS)
+ 
++//===========================================================================
++//============================= Filament Runout Sensor ======================
++//===========================================================================
++//#define FILAMENT_RUNOUT_SENSOR // Uncomment for defining a filament runout sensor such as a mechanical or opto endstop to check the existence of filament
++                                 // In RAMPS uses servo pin 2. Can be changed in pins file. For other boards pin definition should be made.
++                                 // It is assumed that when logic high = filament available
++                                 //                    when logic  low = filament ran out
++//const bool FIL_RUNOUT_INVERTING = true;  // Should be uncommented and true or false should assigned
++//#define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+ 
+ //===========================================================================
+ //============================= Bed Auto Leveling ===========================
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index e5962ac..286a8d5 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -202,6 +202,10 @@ void prepare_move();
+ void kill();
+ void Stop();
+ 
++#ifdef FILAMENT_RUNOUT_SENSOR
++void filrunout();
++#endif
++
+ bool IsStopped();
+ 
+ bool enquecommand(const char *cmd); //put a single ASCII command at the end of the current buffer or return false when it is full
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ff2ae85..45208b0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -370,6 +370,10 @@ bool cancel_heatup = false;
+   int meas_delay_cm = MEASUREMENT_DELAY_CM;  //distance delay setting
+ #endif
+ 
++#ifdef FILAMENT_RUNOUT_SENSOR
++   static bool filrunoutEnqued = false;
++#endif
++
+ const char errormagic[] PROGMEM = "Error:";
+ const char echomagic[] PROGMEM = "echo:";
+ 
+@@ -529,6 +533,16 @@ void setup_killpin()
+   #endif
+ }
+ 
++void setup_filrunoutpin()
++{
++#if defined(FILRUNOUT_PIN) && FILRUNOUT_PIN > -1
++   pinMode(FILRUNOUT_PIN,INPUT);
++   #if defined(ENDSTOPPULLUP_FIL_RUNOUT)
++      WRITE(FILLRUNOUT_PIN,HIGH);
++   #endif
++#endif
++}
++
+ // Set home pin
+ void setup_homepin(void)
+ {
+@@ -605,6 +619,7 @@ void servo_init()
+ void setup()
+ {
+   setup_killpin();
++  setup_filrunoutpin();
+   setup_powerhold();
+   MYSERIAL.begin(BAUDRATE);
+   SERIAL_PROTOCOLLNPGM("start");
+@@ -4136,6 +4151,11 @@ inline void gcode_M503() {
+       plan_buffer_line(lastpos[X_AXIS], lastpos[Y_AXIS], lastpos[Z_AXIS], target[E_AXIS], fr60, active_extruder); //move z back
+       plan_buffer_line(lastpos[X_AXIS], lastpos[Y_AXIS], lastpos[Z_AXIS], lastpos[E_AXIS], fr60, active_extruder); //final untretract
+     #endif        
++
++    #ifdef FILAMENT_RUNOUT_SENSOR
++      filrunoutEnqued = false;
++    #endif
++    
+   }
+ 
+ #endif // FILAMENTCHANGEENABLE
+@@ -5275,6 +5295,12 @@ void manage_inactivity(bool ignore_stepper_queue/*=false*/) //default argument s
+    const int KILL_DELAY = 10000;
+ #endif
+ 
++#if defined(FILRUNOUT_PIN) && FILRUNOUT_PIN > -1
++    if(card.sdprinting) {
++      if(!(READ(FILRUNOUT_PIN))^FIL_RUNOUT_INVERTING)
++      filrunout();        }
++#endif
++
+ #if defined(HOME_PIN) && HOME_PIN > -1
+    static int homeDebounceCount = 0;   // poor man's debouncing count
+    const int HOME_DEBOUNCE_DELAY = 10000;
+@@ -5423,6 +5449,16 @@ void kill()
+   while(1) { /* Intentionally left empty */ } // Wait for reset
+ }
+ 
++#ifdef FILAMENT_RUNOUT_SENSOR
++   void filrunout()
++   {
++      if filrunoutEnqued == false {
++         filrunoutEnqued = true;
++         enquecommand("M600");
++      }
++   }
++#endif
++
+ void Stop()
+ {
+   disable_heater();
+diff --git a/Marlin/pins_RAMPS_13.h b/Marlin/pins_RAMPS_13.h
+index d85b778..71287f6 100644
+--- a/Marlin/pins_RAMPS_13.h
++++ b/Marlin/pins_RAMPS_13.h
+@@ -61,6 +61,11 @@
+   #define FILWIDTH_PIN        5
+ #endif
+ 
++#if defined(FILAMENT_RUNOUT_SENSOR)
++  // define digital pin 4 for the filament runout sensor. Use the RAMPS 1.4 digital input 4 on the servos connector
++  #define FILRUNOUT_PIN        4
++#endif
++
+ #if MB(RAMPS_13_EFB) || MB(RAMPS_13_EFF)
+   #define FAN_PIN            9 // (Sprinter config)
+   #if MB(RAMPS_13_EFF)
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 9a8dabc..9a30726 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -75,6 +75,10 @@
+ //============================= public variables ============================
+ //===========================================================================
+ 
++#ifdef K1 // Defined in Configuration.h in the PID settings
++  #define K2 (1.0-K1)
++#endif
++
+ // Sampling period of the temperature routine
+ #ifdef PID_dT
+   #undef PID_dT
+@@ -127,8 +131,6 @@ static volatile bool temp_meas_ready = false;
+   static float pid_error[EXTRUDERS];
+   static float temp_iState_min[EXTRUDERS];
+   static float temp_iState_max[EXTRUDERS];
+-  // static float pid_input[EXTRUDERS];
+-  // static float pid_output[EXTRUDERS];
+   static bool pid_reset[EXTRUDERS];
+ #endif //PIDTEMP
+ #ifdef PIDTEMPBED
+@@ -546,12 +548,102 @@ void bed_max_temp_error(void) {
+   _temp_error(-1, MSG_MAXTEMP_BED_OFF, MSG_ERR_MAXTEMP_BED);
+ }
+ 
++float get_pid_output(int e) {
++  float pid_output;
++  #ifdef PIDTEMP
++    #ifndef PID_OPENLOOP
++      pid_error[e] = target_temperature[e] - current_temperature[e];
++      if (pid_error[e] > PID_FUNCTIONAL_RANGE) {
++        pid_output = BANG_MAX;
++        pid_reset[e] = true;
++      }
++      else if (pid_error[e] < -PID_FUNCTIONAL_RANGE || target_temperature[e] == 0) {
++        pid_output = 0;
++        pid_reset[e] = true;
++      }
++      else {
++        if (pid_reset[e]) {
++          temp_iState[e] = 0.0;
++          pid_reset[e] = false;
++        }
++        pTerm[e] = PID_PARAM(Kp,e) * pid_error[e];
++        temp_iState[e] += pid_error[e];
++        temp_iState[e] = constrain(temp_iState[e], temp_iState_min[e], temp_iState_max[e]);
++        iTerm[e] = PID_PARAM(Ki,e) * temp_iState[e];
++
++        dTerm[e] = K2 * PID_PARAM(Kd,e) * (current_temperature[e] - temp_dState[e]) + K1 * dTerm[e];
++        pid_output = pTerm[e] + iTerm[e] - dTerm[e];
++        if (pid_output > PID_MAX) {
++          if (pid_error[e] > 0) temp_iState[e] -= pid_error[e]; // conditional un-integration
++          pid_output = PID_MAX;
++        }
++        else if (pid_output < 0) {
++          if (pid_error[e] < 0) temp_iState[e] -= pid_error[e]; // conditional un-integration
++          pid_output = 0;
++        }
++      }
++      temp_dState[e] = current_temperature[e];
++    #else
++      pid_output = constrain(target_temperature[e], 0, PID_MAX);
++    #endif //PID_OPENLOOP
++
++    #ifdef PID_DEBUG
++      SERIAL_ECHO_START;
++      SERIAL_ECHO(MSG_PID_DEBUG);
++      SERIAL_ECHO(e);
++      SERIAL_ECHO(MSG_PID_DEBUG_INPUT);
++      SERIAL_ECHO(current_temperature[e]);
++      SERIAL_ECHO(MSG_PID_DEBUG_OUTPUT);
++      SERIAL_ECHO(pid_output);
++      SERIAL_ECHO(MSG_PID_DEBUG_PTERM);
++      SERIAL_ECHO(pTerm[e]);
++      SERIAL_ECHO(MSG_PID_DEBUG_ITERM);
++      SERIAL_ECHO(iTerm[e]);
++      SERIAL_ECHO(MSG_PID_DEBUG_DTERM);
++      SERIAL_ECHOLN(dTerm[e]);
++    #endif //PID_DEBUG
++
++  #else /* PID off */
++    pid_output = (current_temperature[e] < target_temperature[e]) ? PID_MAX : 0;
++  #endif
++
++  return pid_output;
++}
++
++#ifdef PIDTEMPBED
++  float get_pid_output_bed() {
++    float pid_output;
++    #ifndef PID_OPENLOOP
++      pid_error_bed = target_temperature_bed - current_temperature_bed;
++      pTerm_bed = bedKp * pid_error_bed;
++      temp_iState_bed += pid_error_bed;
++      temp_iState_bed = constrain(temp_iState_bed, temp_iState_min_bed, temp_iState_max_bed);
++      iTerm_bed = bedKi * temp_iState_bed;
++
++      dTerm_bed = K2 * bedKd * (current_temperature_bed - temp_dState_bed) + K1 * dTerm_bed;
++      temp_dState_bed = current_temperature_bed;
++
++      pid_output = pTerm_bed + iTerm_bed - dTerm_bed;
++      if (pid_output > MAX_BED_POWER) {
++        if (pid_error_bed > 0) temp_iState_bed -= pid_error_bed; // conditional un-integration
++        pid_output = MAX_BED_POWER;
++      }
++      else if (pid_output < 0) {
++        if (pid_error_bed < 0) temp_iState_bed -= pid_error_bed; // conditional un-integration
++        pid_output = 0;
++      }
++    #else
++      pid_output = constrain(target_temperature_bed, 0, MAX_BED_POWER);
++    #endif // PID_OPENLOOP
++
++    return pid_output;
++  }
++#endif
++
+ void manage_heater() {
+ 
+   if (!temp_meas_ready) return;
+ 
+-  float pid_input, pid_output;
+-
+   updateTemperaturesFromRawValues();
+ 
+   #ifdef HEATER_0_USES_MAX6675
+@@ -569,69 +661,7 @@ void manage_heater() {
+       thermal_runaway_protection(&thermal_runaway_state_machine[e], &thermal_runaway_timer[e], current_temperature[e], target_temperature[e], e, THERMAL_RUNAWAY_PROTECTION_PERIOD, THERMAL_RUNAWAY_PROTECTION_HYSTERESIS);
+     #endif
+ 
+-    #ifdef PIDTEMP
+-      pid_input = current_temperature[e];
+-
+-      #ifndef PID_OPENLOOP
+-        pid_error[e] = target_temperature[e] - pid_input;
+-        if (pid_error[e] > PID_FUNCTIONAL_RANGE) {
+-          pid_output = BANG_MAX;
+-          pid_reset[e] = true;
+-        }
+-        else if (pid_error[e] < -PID_FUNCTIONAL_RANGE || target_temperature[e] == 0) {
+-          pid_output = 0;
+-          pid_reset[e] = true;
+-        }
+-        else {
+-          if (pid_reset[e] == true) {
+-            temp_iState[e] = 0.0;
+-            pid_reset[e] = false;
+-          }
+-          pTerm[e] = PID_PARAM(Kp,e) * pid_error[e];
+-          temp_iState[e] += pid_error[e];
+-          temp_iState[e] = constrain(temp_iState[e], temp_iState_min[e], temp_iState_max[e]);
+-          iTerm[e] = PID_PARAM(Ki,e) * temp_iState[e];
+-
+-          //K1 defined in Configuration.h in the PID settings
+-          #define K2 (1.0-K1)
+-          dTerm[e] = (PID_PARAM(Kd,e) * (pid_input - temp_dState[e])) * K2 + (K1 * dTerm[e]);
+-          pid_output = pTerm[e] + iTerm[e] - dTerm[e];
+-          if (pid_output > PID_MAX) {
+-            if (pid_error[e] > 0) temp_iState[e] -= pid_error[e]; // conditional un-integration
+-            pid_output = PID_MAX;
+-          }
+-          else if (pid_output < 0) {
+-            if (pid_error[e] < 0) temp_iState[e] -= pid_error[e]; // conditional un-integration
+-            pid_output = 0;
+-          }
+-        }
+-        temp_dState[e] = pid_input;
+-      #else
+-        pid_output = constrain(target_temperature[e], 0, PID_MAX);
+-      #endif //PID_OPENLOOP
+-
+-      #ifdef PID_DEBUG
+-        SERIAL_ECHO_START;
+-        SERIAL_ECHO(MSG_PID_DEBUG);
+-        SERIAL_ECHO(e);
+-        SERIAL_ECHO(MSG_PID_DEBUG_INPUT);
+-        SERIAL_ECHO(pid_input);
+-        SERIAL_ECHO(MSG_PID_DEBUG_OUTPUT);
+-        SERIAL_ECHO(pid_output);
+-        SERIAL_ECHO(MSG_PID_DEBUG_PTERM);
+-        SERIAL_ECHO(pTerm[e]);
+-        SERIAL_ECHO(MSG_PID_DEBUG_ITERM);
+-        SERIAL_ECHO(iTerm[e]);
+-        SERIAL_ECHO(MSG_PID_DEBUG_DTERM);
+-        SERIAL_ECHOLN(dTerm[e]);
+-      #endif //PID_DEBUG
+-
+-    #else /* PID off */
+-
+-      pid_output = 0;
+-      if (current_temperature[e] < target_temperature[e]) pid_output = PID_MAX;
+-
+-    #endif
++    float pid_output = get_pid_output(e);
+ 
+     // Check if temperature is within the correct range
+     soft_pwm[e] = current_temperature[e] > minttemp[e] && current_temperature[e] < maxttemp[e] ? (int)pid_output >> 1 : 0;
+@@ -678,33 +708,7 @@ void manage_heater() {
+     #endif
+ 
+     #ifdef PIDTEMPBED
+-      pid_input = current_temperature_bed;
+-
+-      #ifndef PID_OPENLOOP
+-        pid_error_bed = target_temperature_bed - pid_input;
+-        pTerm_bed = bedKp * pid_error_bed;
+-        temp_iState_bed += pid_error_bed;
+-        temp_iState_bed = constrain(temp_iState_bed, temp_iState_min_bed, temp_iState_max_bed);
+-        iTerm_bed = bedKi * temp_iState_bed;
+-
+-        //K1 defined in Configuration.h in the PID settings
+-  		  #define K2 (1.0-K1)
+-  		  dTerm_bed = (bedKd * (pid_input - temp_dState_bed))*K2 + (K1 * dTerm_bed);
+-        temp_dState_bed = pid_input;
+-
+-        pid_output = pTerm_bed + iTerm_bed - dTerm_bed;
+-        if (pid_output > MAX_BED_POWER) {
+-          if (pid_error_bed > 0) temp_iState_bed -= pid_error_bed; // conditional un-integration
+-          pid_output = MAX_BED_POWER;
+-        }
+-        else if (pid_output < 0) {
+-          if (pid_error_bed < 0) temp_iState_bed -= pid_error_bed; // conditional un-integration
+-          pid_output = 0;
+-        }
+-
+-      #else
+-        pid_output = constrain(target_temperature_bed, 0, MAX_BED_POWER);
+-      #endif //PID_OPENLOOP
++      float pid_output = get_pid_output_bed();
+ 
+       soft_pwm_bed = current_temperature_bed > BED_MINTEMP && current_temperature_bed < BED_MAXTEMP ? (int)pid_output >> 1 : 0;
+ 
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index f95431a..6b6c005 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -27,9 +27,15 @@ static void ST7920_SWSPI_SND_8BIT(uint8_t val)
+   for( i=0; i<8; i++ )
+   {
+     WRITE(ST7920_CLK_PIN,0);
++    #if F_CPU == 20000000
++      __asm__("nop\n\t"); 
++    #endif
+     WRITE(ST7920_DAT_PIN,val&0x80); 
+     val<<=1;
+     WRITE(ST7920_CLK_PIN,1);
++    #if F_CPU == 20000000
++      __asm__("nop\n\t""nop\n\t"); 
++    #endif
+   }
+ }
+ 
+

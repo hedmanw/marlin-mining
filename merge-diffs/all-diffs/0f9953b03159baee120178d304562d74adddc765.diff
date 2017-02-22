@@ -1,0 +1,221 @@
+commit 0f9953b03159baee120178d304562d74adddc765 (from d76389b4d1832660192dff54e8d43a341ca4fd98)
+Merge: d76389b 11c075c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 12:56:58 2016 -0700
+
+    Merge pull request #4342 from AnHardt/rep-cons-g28
+    
+    Introduce line_to_axis_pos() for use in homeaxis()
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a4fbec0..701a203 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1613,9 +1613,20 @@ inline float set_homing_bump_feedrate(AxisEnum axis) {
+ inline void line_to_current_position() {
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
+ }
++
+ inline void line_to_z(float zPosition) {
+   planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], zPosition, current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
+ }
++
++inline void line_to_axis_pos(AxisEnum axis, float where, float fr_mm_m = 0.0) {
++  float old_feedrate_mm_m = feedrate_mm_m;
++  current_position[axis] = where;
++  feedrate_mm_m = (fr_mm_m != 0.0) ? fr_mm_m : homing_feedrate_mm_m[axis];
++  planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], MMM_TO_MMS(feedrate_mm_m), active_extruder);
++  stepper.synchronize(); // The lost one
++  feedrate_mm_m = old_feedrate_mm_m;
++}
++
+ //
+ // line_to_destination
+ // Move the planner, not necessarily synced with current_position
+@@ -1708,11 +1719,6 @@ static void do_blocking_move_to(float x, float y, float z, float fr_mm_m = 0.0)
+   feedrate_mm_m = old_feedrate_mm_m;
+ }
+ 
+-inline void do_blocking_move_to_axis_pos(AxisEnum axis, float where, float fr_mm_m = 0.0) {
+-  current_position[axis] = where;
+-  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+-}
+-
+ inline void do_blocking_move_to_x(float x, float fr_mm_m = 0.0) {
+   do_blocking_move_to(x, current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+ }
+@@ -2425,19 +2431,17 @@ static void homeaxis(AxisEnum axis) {
+   #endif
+ 
+   // Move towards the endstop until an endstop is triggered
+-  do_blocking_move_to_axis_pos(axis, 1.5 * max_length(axis) * axis_home_dir, homing_feedrate_mm_m[axis]);
++  line_to_axis_pos(axis, 1.5 * max_length(axis) * axis_home_dir);
+ 
+   // Set the axis position as setup for the move
+   current_position[axis] = 0;
+   sync_plan_position();
+ 
+   // Move away from the endstop by the axis HOME_BUMP_MM
+-  do_blocking_move_to_axis_pos(axis, -home_bump_mm(axis) * axis_home_dir, homing_feedrate_mm_m[axis]);
+-
+-  // Slow down the feedrate for the next move
++  line_to_axis_pos(axis, -home_bump_mm(axis) * axis_home_dir);
+ 
+   // Move slowly towards the endstop until triggered
+-  do_blocking_move_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, set_homing_bump_feedrate(axis));
++  line_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, set_homing_bump_feedrate(axis));
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("> TRIGGER ENDSTOP", current_position);
+@@ -2458,7 +2462,7 @@ static void homeaxis(AxisEnum axis) {
+       sync_plan_position();
+ 
+       // Move to the adjusted endstop height
+-      do_blocking_move_to_z(adj, homing_feedrate_mm_m[axis]);
++      line_to_axis_pos(axis, adj);
+ 
+       if (lockZ1) stepper.set_z_lock(false); else stepper.set_z2_lock(false);
+       stepper.set_homing_flag(false);
+@@ -2475,7 +2479,7 @@ static void homeaxis(AxisEnum axis) {
+           DEBUG_POS("", current_position);
+         }
+       #endif
+-      do_blocking_move_to_axis_pos(axis, endstop_adj[axis], set_homing_bump_feedrate(axis));
++      line_to_axis_pos(axis, endstop_adj[axis]);
+     }
+   #endif
+ 
+@@ -2825,10 +2829,28 @@ inline void gcode_G4() {
+   }
+ #endif
+ 
++#if ENABLED(NOZZLE_PARK_FEATURE)
++  #include "nozzle.h"
++
++  /**
++   * G27: Park the nozzle
++   */
++  inline void gcode_G27() {
++    // Don't allow nozzle parking without homing first
++    if (axis_unhomed_error(true, true, true)) { return; }
++    uint8_t const z_action = code_seen('P') ? code_value_ushort() : 0;
++    Nozzle::park(z_action);
++  }
++#endif // NOZZLE_PARK_FEATURE
++
+ #if ENABLED(QUICK_HOME)
+ 
+   static void quick_home_xy() {
+ 
++    // Pretend the current position is 0,0
++    current_position[X_AXIS] = current_position[Y_AXIS] = 0.0;
++    sync_plan_position();
++
+     #if ENABLED(DUAL_X_CARRIAGE)
+       int x_axis_home_dir = x_home_dir(active_extruder);
+       extruder_duplication_enabled = false;
+@@ -2839,30 +2861,16 @@ inline void gcode_G4() {
+     float mlx = max_length(X_AXIS),
+           mly = max_length(Y_AXIS),
+           mlratio = mlx > mly ? mly / mlx : mlx / mly,
+-          fr_mm_m = min(homing_feedrate_mm_m[X_AXIS], homing_feedrate_mm_m[Y_AXIS]) * sqrt(sq(mlratio) + 1);
++          fr_mm_m = min(homing_feedrate_mm_m[X_AXIS], homing_feedrate_mm_m[Y_AXIS]) * sqrt(sq(mlratio) + 1.0);
+ 
+     do_blocking_move_to_xy(1.5 * mlx * x_axis_home_dir, 1.5 * mly * home_dir(Y_AXIS), fr_mm_m);
+     endstops.hit_on_purpose(); // clear endstop hit flags
+-    current_position[X_AXIS] = current_position[Y_AXIS] = 0;
++    current_position[X_AXIS] = current_position[Y_AXIS] = 0.0;
+ 
+   }
+ 
+ #endif // QUICK_HOME
+ 
+-#if ENABLED(NOZZLE_PARK_FEATURE)
+-  #include "nozzle.h"
+-
+-  /**
+-   * G27: Park the nozzle
+-   */
+-  inline void gcode_G27() {
+-    // Don't allow nozzle parking without homing first
+-    if (axis_unhomed_error(true, true, true)) { return; }
+-    uint8_t const z_action = code_seen('P') ? code_value_ushort() : 0;
+-    Nozzle::park(z_action);
+-  }
+-#endif // NOZZLE_PARK_FEATURE
+-
+ /**
+  * G28: Home all axes according to settings
+  *
+@@ -2931,20 +2939,19 @@ inline void gcode_G28() {
+      */
+ 
+     // Pretend the current position is 0,0,0
+-    for (int i = X_AXIS; i <= Z_AXIS; i++) current_position[i] = 0;
++    // This is like quick_home_xy() but for 3 towers.
++    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 0.0;
+     sync_plan_position();
+ 
+     // Move all carriages up together until the first endstop is hit.
+-    for (int i = X_AXIS; i <= Z_AXIS; i++) destination[i] = 3 * (Z_MAX_LENGTH);
++    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 3.0 * (Z_MAX_LENGTH);
+     feedrate_mm_m = 1.732 * homing_feedrate_mm_m[X_AXIS];
+-    line_to_destination();
++    line_to_current_position();
+     stepper.synchronize();
+     endstops.hit_on_purpose(); // clear endstop hit flags
++    current_position[X_AXIS] = current_position[Y_AXIS] = current_position[Z_AXIS] = 0.0;
+ 
+-    // Destination reached
+-    for (int i = X_AXIS; i <= Z_AXIS; i++) current_position[i] = destination[i];
+-
+-    // take care of back off and rehome now we are all at the top
++    // take care of back off and rehome. Now one carriage is at the top.
+     HOMEAXIS(X);
+     HOMEAXIS(Y);
+     HOMEAXIS(Z);
+@@ -5325,7 +5332,7 @@ inline void gcode_M200() {
+     if (volumetric_enabled) {
+       filament_size[target_extruder] = code_value_linear_units();
+       // make sure all extruders have some sane value for the filament size
+-      for (int i = 0; i < COUNT(filament_size); i++)
++      for (uint8_t i = 0; i < COUNT(filament_size); i++)
+         if (! filament_size[i]) filament_size[i] = DEFAULT_NOMINAL_FILAMENT_DIA;
+     }
+   }
+@@ -8695,6 +8702,6 @@ float calculate_volumetric_multiplier(float diameter) {
+ }
+ 
+ void calculate_volumetric_multipliers() {
+-  for (int i = 0; i < COUNT(filament_size); i++)
++  for (uint8_t i = 0; i < COUNT(filament_size); i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
+
+commit 0f9953b03159baee120178d304562d74adddc765 (from 11c075c6b2a2d78ce63ed63357519f8e3ee695a1)
+Merge: d76389b 11c075c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 19 12:56:58 2016 -0700
+
+    Merge pull request #4342 from AnHardt/rep-cons-g28
+    
+    Introduce line_to_axis_pos() for use in homeaxis()
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index f96d74c..f1f71b3 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -2741,7 +2741,11 @@ void lcd_update() {
+ void set_utf_strlen(char* s, uint8_t n) {
+   uint8_t i = 0, j = 0;
+   while (s[i] && (j < n)) {
+-    if ((s[i] & 0xC0u) != 0x80u) j++;
++    #if ENABLED(MAPPER_NON)
++      j++;
++    #else
++      if ((s[i] & 0xC0u) != 0x80u) j++;
++    #endif
+     i++;
+   }
+   while (j++ < n) s[i++] = ' ';
+

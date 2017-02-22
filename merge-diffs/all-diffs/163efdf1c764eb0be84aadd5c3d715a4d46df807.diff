@@ -1,0 +1,2045 @@
+commit 163efdf1c764eb0be84aadd5c3d715a4d46df807 (from 87aaf0f70a22686d2107efa01cfa19bba542c386)
+Merge: 87aaf0f 5cf349a
+Author: Bernhard Kubicek <kubicek@gmx.at>
+Date:   Sun Nov 6 19:49:04 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 722cb96..d417d41 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -14,8 +14,9 @@
+ // Gen6 = 5,
+ // Sanguinololu 1.2 and above = 62
+ // Ultimaker = 7,
++// Teensylu = 8
+ #define MOTHERBOARD 7
+-//#define MOTHERBOARD 5
++
+ 
+ 
+ //// Thermistor settings:
+@@ -59,7 +60,6 @@ const bool ENDSTOPS_INVERTING = true; // set to true to invert the logic of the
+ // #define ULTRA_LCD  //any lcd 
+ 
+ #define ULTIPANEL
+-#define ULTIPANEL
+ #ifdef ULTIPANEL
+   //#define NEWPANEL  //enable this if you have a click-encoder panel
+   #define SDSUPPORT
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 5a489ec..fec01b8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -1152,8 +1152,8 @@ inline void get_coordinates()
+ inline void get_arc_coordinates()
+ {
+    get_coordinates();
+-   if(code_seen("I")) offset[0] = code_value();
+-   if(code_seen("J")) offset[1] = code_value();
++   if(code_seen('I')) offset[0] = code_value();
++   if(code_seen('J')) offset[1] = code_value();
+ }
+ 
+ void prepare_move()
+@@ -1165,119 +1165,16 @@ void prepare_move()
+ }
+ 
+ void prepare_arc_move(char isclockwise) {
+-#if 0
+-  if (radius_mode) {
+-    /* 
+-      We need to calculate the center of the circle that has the designated radius and passes
+-      through both the current position and the target position. This method calculates the following
+-      set of equations where [x,y] is the vector from current to target position, d == magnitude of 
+-      that vector, h == hypotenuse of the triangle formed by the radius of the circle, the distance to
+-      the center of the travel vector. A vector perpendicular to the travel vector [-y,x] is scaled to the 
+-      length of h [-y/d*h, x/d*h] and added to the center of the travel vector [x/2,y/2] to form the new point 
+-      [i,j] at [x/2-y/d*h, y/2+x/d*h] which will be the center of our arc.
+-      
+-      d^2 == x^2 + y^2
+-      h^2 == r^2 - (d/2)^2
+-      i == x/2 - y/d*h
+-      j == y/2 + x/d*h
+-      
+-                                                           O <- [i,j]
+-                                                        -  |
+-                                              r      -     |
+-                                                  -        |
+-                                               -           | h
+-                                            -              |
+-                              [0,0] ->  C -----------------+--------------- T  <- [x,y]
+-                                        | <------ d/2 ---->|
+-                
+-      C - Current position
+-      T - Target position
+-      O - center of circle that pass through both C and T
+-      d - distance from C to T
+-      r - designated radius
+-      h - distance from center of CT to O
+-      
+-      Expanding the equations:
+-
+-      d -> sqrt(x^2 + y^2)
+-      h -> sqrt(4 * r^2 - x^2 - y^2)/2
+-      i -> (x - (y * sqrt(4 * r^2 - x^2 - y^2)) / sqrt(x^2 + y^2)) / 2 
+-      j -> (y + (x * sqrt(4 * r^2 - x^2 - y^2)) / sqrt(x^2 + y^2)) / 2
+-     
+-      Which can be written:
+-      
+-      i -> (x - (y * sqrt(4 * r^2 - x^2 - y^2))/sqrt(x^2 + y^2))/2
+-      j -> (y + (x * sqrt(4 * r^2 - x^2 - y^2))/sqrt(x^2 + y^2))/2
+-      
+-      Which we for size and speed reasons optimize to:
+-
+-      h_x2_div_d = sqrt(4 * r^2 - x^2 - y^2)/sqrt(x^2 + y^2)
+-      i = (x - (y * h_x2_div_d))/2
+-      j = (y + (x * h_x2_div_d))/2
+-      
+-    */
+-    
+-    // Calculate the change in position along each selected axis
+-    double x = target[gc.plane_axis_0]-gc.position[gc.plane_axis_0];
+-    double y = target[gc.plane_axis_1]-gc.position[gc.plane_axis_1];
+-    
+-    clear_vector(offset);
+-    double h_x2_div_d = -sqrt(4 * r*r - x*x - y*y)/hypot(x,y); // == -(h * 2 / d)
+-    // If r is smaller than d, the arc is now traversing the complex plane beyond the reach of any
+-    // real CNC, and thus - for practical reasons - we will terminate promptly:
+-    if(isnan(h_x2_div_d)) { FAIL(STATUS_FLOATING_POINT_ERROR); return(gc.status_code); }
+-    // Invert the sign of h_x2_div_d if the circle is counter clockwise (see sketch below)
+-    if (gc.motion_mode == MOTION_MODE_CCW_ARC) { h_x2_div_d = -h_x2_div_d; }
+-    
+-    /* The counter clockwise circle lies to the left of the target direction. When offset is positive,
+-       the left hand circle will be generated - when it is negative the right hand circle is generated.
+-       
+-       
+-                                                         T  <-- Target position
+-                                                         
+-                                                         ^ 
+-              Clockwise circles with this center         |          Clockwise circles with this center will have
+-              will have > 180 deg of angular travel      |          < 180 deg of angular travel, which is a good thing!
+-                                               \         |          /   
+-  center of arc when h_x2_div_d is positive ->  x <----- | -----> x <- center of arc when h_x2_div_d is negative
+-                                                         |
+-                                                         |
+-                                                         
+-                                                         C  <-- Current position                                 */
+-                
+-
+-    // Negative R is g-code-alese for "I want a circle with more than 180 degrees of travel" (go figure!), 
+-    // even though it is advised against ever generating such circles in a single line of g-code. By 
+-    // inverting the sign of h_x2_div_d the center of the circles is placed on the opposite side of the line of
+-    // travel and thus we get the unadvisably long arcs as prescribed.
+-    if (r < 0) { 
+-        h_x2_div_d = -h_x2_div_d; 
+-        r = -r; // Finished with r. Set to positive for mc_arc
+-    }        
+-    // Complete the operation by calculating the actual center of the arc
+-    offset[gc.plane_axis_0] = 0.5*(x-(y*h_x2_div_d));
+-    offset[gc.plane_axis_1] = 0.5*(y+(x*h_x2_div_d));
+-
+-  } else { // Offset mode specific computations
+-#endif
+-    float r = hypot(offset[X_AXIS], offset[Y_AXIS]); // Compute arc radius for mc_arc
+-
+-//  }
+-  
+-  // Set clockwise/counter-clockwise sign for mc_arc computations
+-//  uint8_t isclockwise = false;
+-//  if (gc.motion_mode == MOTION_MODE_CW_ARC) { isclockwise = true; }
++  float r = hypot(offset[X_AXIS], offset[Y_AXIS]); // Compute arc radius for mc_arc
+ 
+   // Trace the arc
+   mc_arc(current_position, destination, offset, X_AXIS, Y_AXIS, Z_AXIS, feedrate*feedmultiply/60.0/100.0, r, isclockwise);
+-    
+-//  }
+   
+   // As far as the parser is concerned, the position is now == target. In reality the
+   // motion control system might still be processing the action and the real tool position
+   // in any intermediate location.
+-  for(int ii=0; ii < NUM_AXIS; ii++) {
+-    current_position[ii] = destination[ii];
++  for(int i=0; i < NUM_AXIS; i++) {
++    current_position[i] = destination[i];
+   }
+ }
+ 
+diff --git a/Marlin/motion_control.cpp b/Marlin/motion_control.cpp
+index 7539614..c2fce52 100644
+--- a/Marlin/motion_control.cpp
++++ b/Marlin/motion_control.cpp
+@@ -19,12 +19,8 @@
+   along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
+-//#include "motion_control.h"
+ #include "Configuration.h"
+ #include "Marlin.h"
+-//#include <util/delay.h>
+-//#include <math.h>
+-//#include <stdlib.h>
+ #include "stepper.h"
+ #include "planner.h"
+ 
+@@ -35,10 +31,10 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+ {      
+   //   int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
+   //   plan_set_acceleration_manager_enabled(false); // disable acceleration management for the duration of the arc
+-  SERIAL_ECHOLN("mc_arc.");
+   float center_axis0 = position[axis_0] + offset[axis_0];
+   float center_axis1 = position[axis_1] + offset[axis_1];
+   float linear_travel = target[axis_linear] - position[axis_linear];
++  float extruder_travel = target[E_AXIS] - position[E_AXIS];
+   float r_axis0 = -offset[axis_0];  // Radius vector from center to current location
+   float r_axis1 = -offset[axis_1];
+   float rt_axis0 = target[axis_0] - center_axis0;
+@@ -60,6 +56,7 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+   */
+   float theta_per_segment = angular_travel/segments;
+   float linear_per_segment = linear_travel/segments;
++  float extruder_per_segment = extruder_travel/segments;
+   
+   /* Vector rotation by transformation matrix: r is the original vector, r_T is the rotated vector,
+      and phi is the angle of rotation. Based on the solution approach by Jens Geisler.
+@@ -90,7 +87,7 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+   float cos_T = 1-0.5*theta_per_segment*theta_per_segment; // Small angle approximation
+   float sin_T = theta_per_segment;
+   
+-  float arc_target[3];
++  float arc_target[4];
+   float sin_Ti;
+   float cos_Ti;
+   float r_axisi;
+@@ -99,6 +96,9 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+ 
+   // Initialize the linear axis
+   arc_target[axis_linear] = position[axis_linear];
++  
++  // Initialize the extruder axis
++  arc_target[E_AXIS] = position[E_AXIS];
+ 
+   for (i = 1; i<segments; i++) { // Increment (segments-1)
+     
+@@ -122,6 +122,7 @@ void mc_arc(float *position, float *target, float *offset, uint8_t axis_0, uint8
+     arc_target[axis_0] = center_axis0 + r_axis0;
+     arc_target[axis_1] = center_axis1 + r_axis1;
+     arc_target[axis_linear] += linear_per_segment;
++    arc_target[E_AXIS] += extruder_per_segment;
+     plan_buffer_line(arc_target[X_AXIS], arc_target[Y_AXIS], arc_target[Z_AXIS], target[E_AXIS], feed_rate);
+     
+   }
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 4df1bd0..807709e 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -1,638 +1,694 @@
+-#ifndef PINS_H
+-#define PINS_H
+-
+-/****************************************************************************************
+-* Arduino pin assignment
+-*
+-*                  ATMega168
+-*                   +-\/-+
+-*             PC6  1|    |28  PC5 (AI 5 / D19)
+-*       (D 0) PD0  2|    |27  PC4 (AI 4 / D18)
+-*       (D 1) PD1  3|    |26  PC3 (AI 3 / D17)
+-*       (D 2) PD2  4|    |25  PC2 (AI 2 / D16)
+-*  PWM+ (D 3) PD3  5|    |24  PC1 (AI 1 / D15)
+-*       (D 4) PD4  6|    |23  PC0 (AI 0 / D14)
+-*             VCC  7|    |22  GND
+-*             GND  8|    |21  AREF
+-*             PB6  9|    |20  AVCC
+-*             PB7 10|    |19  PB5 (D 13)
+-*  PWM+ (D 5) PD5 11|    |18  PB4 (D 12)
+-*  PWM+ (D 6) PD6 12|    |17  PB3 (D 11) PWM
+-*       (D 7) PD7 13|    |16  PB2 (D 10) PWM
+-*       (D 8) PB0 14|    |15  PB1 (D 9)  PWM
+-*                   +----+
+-****************************************************************************************/
+-#if MOTHERBOARD == 0
+-#define KNOWN_BOARD 1
+-
+-#ifndef __AVR_ATmega168__
+-#error Oops!  Make sure you have 'Arduino Diecimila' selected from the boards menu.
+-#endif
+-
+-#define X_STEP_PIN          2
+-#define X_DIR_PIN           3
+-#define X_ENABLE_PIN       -1
+-#define X_MIN_PIN           4
+-#define X_MAX_PIN           9
+-
+-#define Y_STEP_PIN         10
+-#define Y_DIR_PIN           7
+-#define Y_ENABLE_PIN       -1
+-#define Y_MIN_PIN           8
+-#define Y_MAX_PIN          13
+-
+-#define Z_STEP_PIN         19
+-#define Z_DIR_PIN          18
+-#define Z_ENABLE_PIN        5
+-#define Z_MIN_PIN          17
+-#define Z_MAX_PIN          16
+-
+-#define E_STEP_PIN         11
+-#define E_DIR_PIN          12
+-#define E_ENABLE_PIN       -1
+-
+-#define SDPOWER          -1
+-#define SDSS          -1
+-#define LED_PIN            -1
+-#define FAN_PIN            -1
+-#define PS_ON_PIN          15
+-#define KILL_PIN           -1
+-
+-#define HEATER_0_PIN        6
+-#define TEMP_0_PIN          0    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define HEATER_1_PIN        -1
+-#define HEATER_2_PIN        -1
+-#endif
+-
+-
+-
+-/****************************************************************************************
+-* Sanguino/RepRap Motherboard with direct-drive extruders
+-*
+-*                        ATMega644P
+-*
+-*                        +---\/---+
+-*            (D 0) PB0  1|        |40  PA0 (AI 0 / D31)
+-*            (D 1) PB1  2|        |39  PA1 (AI 1 / D30)
+-*       INT2 (D 2) PB2  3|        |38  PA2 (AI 2 / D29)
+-*        PWM (D 3) PB3  4|        |37  PA3 (AI 3 / D28)
+-*        PWM (D 4) PB4  5|        |36  PA4 (AI 4 / D27)
+-*       MOSI (D 5) PB5  6|        |35  PA5 (AI 5 / D26)
+-*       MISO (D 6) PB6  7|        |34  PA6 (AI 6 / D25)
+-*        SCK (D 7) PB7  8|        |33  PA7 (AI 7 / D24)
+-*                  RST  9|        |32  AREF
+-*                  VCC 10|        |31  GND 
+-*                  GND 11|        |30  AVCC
+-*                XTAL2 12|        |29  PC7 (D 23)
+-*                XTAL1 13|        |28  PC6 (D 22)
+-*       RX0 (D 8)  PD0 14|        |27  PC5 (D 21) TDI
+-*       TX0 (D 9)  PD1 15|        |26  PC4 (D 20) TDO
+-*  INT0 RX1 (D 10) PD2 16|        |25  PC3 (D 19) TMS
+-*  INT1 TX1 (D 11) PD3 17|        |24  PC2 (D 18) TCK
+-*       PWM (D 12) PD4 18|        |23  PC1 (D 17) SDA
+-*       PWM (D 13) PD5 19|        |22  PC0 (D 16) SCL
+-*       PWM (D 14) PD6 20|        |21  PD7 (D 15) PWM
+-*                        +--------+
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 1
+-#define KNOWN_BOARD 1
+-
+-#ifndef __AVR_ATmega644P__
+-#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
+-#endif
+-
+-#define X_STEP_PIN         15
+-#define X_DIR_PIN          18
+-#define X_ENABLE_PIN       19
+-#define X_MIN_PIN          20
+-#define X_MAX_PIN          21
+-
+-#define Y_STEP_PIN         23
+-#define Y_DIR_PIN          22
+-#define Y_ENABLE_PIN       19
+-#define Y_MIN_PIN          25
+-#define Y_MAX_PIN          26
+-
+-#define Z_STEP_PIN         29
+-#define Z_DIR_PIN          30
+-#define Z_ENABLE_PIN       31
+-#define Z_MIN_PIN           2
+-#define Z_MAX_PIN           1
+-
+-#define E_STEP_PIN         12
+-#define E_DIR_PIN          16
+-#define E_ENABLE_PIN        3
+-
+-#define SDPOWER          -1
+-#define SDSS          -1
+-#define LED_PIN             0
+-#define FAN_PIN            -1
+-#define PS_ON_PIN          -1
+-#define KILL_PIN           -1
+-
+-#define HEATER_0_PIN       14
+-#define TEMP_0_PIN          4 //D27   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define HEATER_1_PIN        -1
+-#define HEATER_2_PIN        -1
+-/*  Unused (1) (2) (3) 4 5 6 7 8 9 10 11 12 13 (14) (15) (16) 17 (18) (19) (20) (21) (22) (23) 24 (25) (26) (27) 28 (29) (30) (31)  */
+-
+-
+-
+-#endif
+-
+-
+-/****************************************************************************************
+-* RepRap Motherboard  ****---NOOOOOO RS485/EXTRUDER CONTROLLER!!!!!!!!!!!!!!!!!---*******
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 2
+-#define KNOWN_BOARD 1
+-
+-#ifndef __AVR_ATmega644P__
+-#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
+-#endif
+-
+-#define X_STEP_PIN      15
+-#define X_DIR_PIN       18
+-#define X_ENABLE_PIN    19
+-#define X_MIN_PIN       20
+-#define X_MAX_PIN       21
+-
+-#define Y_STEP_PIN      23
+-#define Y_DIR_PIN       22
+-#define Y_ENABLE_PIN    24
+-#define Y_MIN_PIN       25
+-#define Y_MAX_PIN       26
+-
+-#define Z_STEP_PINN     27
+-#define Z_DIR_PINN      28
+-#define Z_ENABLE_PIN    29
+-#define Z_MIN_PIN       30
+-#define Z_MAX_PIN       31
+-
+-#define E_STEP_PIN      17
+-#define E_DIR_PIN       16
+-#define E_ENABLE_PIN    -1
+-
+-#define SDPOWER          -1
+-#define SDSS          4
+-#define LED_PIN          0
+-
+-#define SD_CARD_WRITE    2
+-#define SD_CARD_DETECT   3
+-#define SD_CARD_SELECT   4
+-
+-//our RS485 pins
+-#define TX_ENABLE_PIN	12
+-#define RX_ENABLE_PIN	13
+-
+-//pin for controlling the PSU.
+-#define PS_ON_PIN       14
+-
+-#define FAN_PIN         -1
+-#define KILL_PIN        -1
+-
+-#define HEATER_0_PIN    -1
+-#define TEMP_0_PIN      -1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define HEATER_1_PIN        -1
+-#define HEATER_2_PIN        -1
+-
+-
+-
+-#endif
+-
+-/****************************************************************************************
+-* Arduino Mega pin assignment
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 33
+-#define MOTHERBOARD 3
+-#define RAMPS_V_1_3
+-#endif
+-#if MOTHERBOARD == 3
+-#define KNOWN_BOARD 1
+-
+-//////////////////FIX THIS//////////////
+-#ifndef __AVR_ATmega1280__
+- #ifndef __AVR_ATmega2560__
+- #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
+- #endif
+-#endif
+-
+-// uncomment one of the following lines for RAMPS v1.3 or v1.0, comment both for v1.2 or 1.1
+-// #define RAMPS_V_1_3
+-// #define RAMPS_V_1_0
+-
+-#ifdef RAMPS_V_1_3
+-
+-#define X_STEP_PIN         54
+-#define X_DIR_PIN          55
+-#define X_ENABLE_PIN       38
+-#define X_MIN_PIN           3
+-#define X_MAX_PIN          -1   //2 //Max endstops default to disabled "-1", set to commented value to enable.
+-
+-#define Y_STEP_PIN         60
+-#define Y_DIR_PIN          61
+-#define Y_ENABLE_PIN       56
+-#define Y_MIN_PIN          14
+-#define Y_MAX_PIN          -1   //15
+-
+-#define Z_STEP_PIN         46
+-#define Z_DIR_PIN          48
+-#define Z_ENABLE_PIN       62
+-#define Z_MIN_PIN          18
+-#define Z_MAX_PIN          -1   //19
+-
+-#define E_STEP_PIN         26
+-#define E_DIR_PIN          28
+-#define E_ENABLE_PIN       24
+-
+-#define SDPOWER            -1
+-#define SDSS               53
+-#define LED_PIN            13
+-#define FAN_PIN            9
+-#define PS_ON_PIN          12
+-#define KILL_PIN           -1
+-
+-#define HEATER_0_PIN       10
+-#define HEATER_1_PIN       8
+-#define HEATER_2_PIN        -1
+-#define TEMP_0_PIN         13   // ANALOG NUMBERING
+-#define TEMP_1_PIN         14   // ANALOG NUMBERING
+-#define TEMP_2_PIN         -1   // ANALOG NUMBERING
+-
+-
+-#else // RAMPS_V_1_1 or RAMPS_V_1_2 as default
+-
+-#define X_STEP_PIN         26
+-#define X_DIR_PIN          28
+-#define X_ENABLE_PIN       24
+-#define X_MIN_PIN           3
+-#define X_MAX_PIN          -1    //2
+-
+-#define Y_STEP_PIN         38
+-#define Y_DIR_PIN          40
+-#define Y_ENABLE_PIN       36
+-#define Y_MIN_PIN          16
+-#define Y_MAX_PIN          -1    //17
+-
+-#define Z_STEP_PIN         44
+-#define Z_DIR_PIN          46
+-#define Z_ENABLE_PIN       42
+-#define Z_MIN_PIN          18
+-#define Z_MAX_PIN          -1    //19
+-
+-#define E_STEP_PIN         32
+-#define E_DIR_PIN          34
+-#define E_ENABLE_PIN       30
+-
+-#define SDPOWER            48
+-#define SDSS               53
+-#define LED_PIN            13
+-#define PS_ON_PIN          -1
+-#define KILL_PIN           -1
+-
+-
+-
+-#ifdef RAMPS_V_1_0 // RAMPS_V_1_0
+-  #define HEATER_0_PIN     12    // RAMPS 1.0
+-  #define HEATER_1_PIN     -1    // RAMPS 1.0
+-  #define FAN_PIN          11    // RAMPS 1.0
+-
+-#else // RAMPS_V_1_1 or RAMPS_V_1_2
+-  #define HEATER_0_PIN     10    // RAMPS 1.1
+-  #define HEATER_1_PIN      8    // RAMPS 1.1
+-  #define FAN_PIN           9    // RAMPS 1.1
+-#endif
+-#define HEATER_2_PIN        -1
+-#define TEMP_0_PIN          2    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define TEMP_1_PIN          1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define TEMP_2_PIN          -1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#endif
+-
+-// SPI for Max6675 Thermocouple 
+-
+-#ifndef SDSUPPORT
+-// these pins are defined in the SD library if building with SD support  #define SCK_PIN          52
+-  #define MISO_PIN         50
+-  #define MOSI_PIN         51
+-  #define MAX6675_SS       53
+-#else
+-  #define MAX6675_SS       49
+-#endif
+-
+-
+-#endif
+-/****************************************************************************************
+-* Duemilanove w/ ATMega328P pin assignment
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 4
+-#define KNOWN_BOARD 1
+-
+-#ifndef __AVR_ATmega328P__
+-#error Oops!  Make sure you have 'Arduino Duemilanove w/ ATMega328' selected from the 'Tools -> Boards' menu.
+-#endif
+-
+-#define X_STEP_PIN         19
+-#define X_DIR_PIN          18
+-#define X_ENABLE_PIN       -1
+-#define X_MIN_PIN          17
+-#define X_MAX_PIN          -1
+-
+-#define Y_STEP_PIN         10
+-#define Y_DIR_PIN           7
+-#define Y_ENABLE_PIN       -1
+-#define Y_MIN_PIN           8
+-#define Y_MAX_PIN          -1
+-
+-#define Z_STEP_PIN         13
+-#define Z_DIR_PIN           3
+-#define Z_ENABLE_PIN        2
+-#define Z_MIN_PIN           4
+-#define Z_MAX_PIN          -1
+-
+-#define E_STEP_PIN         11
+-#define E_DIR_PIN          12
+-#define E_ENABLE_PIN       -1
+-
+-#define SDPOWER          -1
+-#define SDSS          -1
+-#define LED_PIN            -1
+-#define FAN_PIN             5
+-#define PS_ON_PIN          -1
+-#define KILL_PIN           -1
+-
+-#define HEATER_0_PIN        6
+-#define TEMP_0_PIN          0    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+-#define HEATER_1_PIN        -1
+-#define HEATER_2_PIN        -1
+-
+-#endif
+-
+-/****************************************************************************************
+-* Gen6 pin assignment
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 5
+-#define KNOWN_BOARD 1
+-
+-#ifndef __AVR_ATmega644P__
+-    #error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
+-#endif
+-
+-//x axis pins
+-    #define X_STEP_PIN      15
+-    #define X_DIR_PIN       18
+-    #define X_ENABLE_PIN    19
+-    #define X_MIN_PIN       20
+-    #define X_MAX_PIN       -1
+-    
+-    //y axis pins
+-    #define Y_STEP_PIN      23
+-    #define Y_DIR_PIN       22
+-    #define Y_ENABLE_PIN    24
+-    #define Y_MIN_PIN       25
+-    #define Y_MAX_PIN       -1
+-    
+-    //z axis pins
+-    #define Z_STEP_PIN      27
+-    #define Z_DIR_PIN       28
+-    #define Z_ENABLE_PIN    29
+-    #define Z_MIN_PIN       30
+-    #define Z_MAX_PIN       -1
+-    
+-    //extruder pins
+-    #define E_STEP_PIN      4     //Edited @ EJE Electronics 20100715
+-    #define E_DIR_PIN       2     //Edited @ EJE Electronics 20100715
+-    #define E_ENABLE_PIN    3     //Added @ EJE Electronics 20100715
+-    #define TEMP_0_PIN      5     //changed @ rkoeppl 20110410
+-    #define HEATER_0_PIN    14    //changed @ rkoeppl 20110410
+-    #define HEATER_1_PIN    -1    //changed @ rkoeppl 20110410
+-    #define HEATER_2_PIN        -1
+-    
+-    #define SDPOWER          -1
+-    #define SDSS          17
+-    #define LED_PIN         -1    //changed @ rkoeppl 20110410
+-    #define TEMP_1_PIN      -1    //changed @ rkoeppl 20110410
+-    #define TEMP_2_PIN      -1
+-    #define FAN_PIN         -1    //changed @ rkoeppl 20110410
+-    #define PS_ON_PIN       -1    //changed @ rkoeppl 20110410
+-    //our pin for debugging.
+-    
+-    #define DEBUG_PIN        0
+-    
+-    //our RS485 pins
+-    #define TX_ENABLE_PIN	12
+-    #define RX_ENABLE_PIN	13
+-
+-#endif
+-
+-/****************************************************************************************
+-* Sanguinololu pin assignment
+-*
+-****************************************************************************************/
+-#if MOTHERBOARD == 62
+-#define MOTHERBOARD 6
+-#define SANGUINOLOLU_V_1_2 
+-#endif
+-#if MOTHERBOARD == 6
+-#define KNOWN_BOARD 1
+-#ifndef __AVR_ATmega644P__
+-#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
+-#endif
+-
+-#define X_STEP_PIN         15
+-#define X_DIR_PIN          21
+-#define X_MIN_PIN          18
+-#define X_MAX_PIN           -2
+-
+-#define Y_STEP_PIN         22
+-#define Y_DIR_PIN          23
+-#define Y_MIN_PIN          19
+-#define Y_MAX_PIN          -1
+-
+-#define Z_STEP_PIN         3
+-#define Z_DIR_PIN          2
+-#define Z_MIN_PIN          20
+-#define Z_MAX_PIN          -1
+-
+-#define E_STEP_PIN         1
+-#define E_DIR_PIN          0
+-
+-#define LED_PIN            -1
+-
+-#define FAN_PIN            -1 
+-
+-#define PS_ON_PIN          -1
+-#define KILL_PIN           -1
+-
+-#define HEATER_0_PIN       13 // (extruder)
+-
+-#ifdef SANGUINOLOLU_V_1_2
+-
+-#define HEATER_1_PIN       12 // (bed)
+-#define X_ENABLE_PIN       14
+-#define Y_ENABLE_PIN       14
+-#define Z_ENABLE_PIN       26
+-#define E_ENABLE_PIN       14
+-
+-#else
+-
+-#define HEATER_1_PIN       14  // (bed)
+-#define X_ENABLE_PIN       -1
+-#define Y_ENABLE_PIN       -1
+-#define Z_ENABLE_PIN       -1
+-#define E_ENABLE_PIN       -1
+-
+-#endif
+-
+-#define TEMP_0_PIN          7   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!! (pin 33 extruder)
+-#define TEMP_1_PIN          6   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!! (pin 34 bed)
+-#define TEMP_2_PIN         -1
+-#define SDPOWER            -1
+-#define SDSS               31
+-#define HEATER_2_PIN       -1
+-
+-#endif
+-
+-
+-#if MOTHERBOARD == 7
+-#define KNOWN_BOARD
+-/*****************************************************************
+-* Ultimaker pin assignment
+-******************************************************************/
+-
+-#ifndef __AVR_ATmega1280__
+- #ifndef __AVR_ATmega2560__
+- #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
+- #endif
+-#endif
+-
+-#define X_STEP_PIN 25
+-#define X_DIR_PIN 23
+-#define X_MIN_PIN 22
+-#define X_MAX_PIN 24
+-#define X_ENABLE_PIN 27
+-
+-#define Y_STEP_PIN 31
+-#define Y_DIR_PIN 33
+-#define Y_MIN_PIN 26
+-#define Y_MAX_PIN 28
+-#define Y_ENABLE_PIN 29
+-
+-#define Z_STEP_PIN 37 
+-#define Z_DIR_PIN 39
+-#define Z_MIN_PIN 30
+-#define Z_MAX_PIN 32
+-#define Z_ENABLE_PIN 35
+-
+-#define HEATER_1_PIN 4 
+-#define TEMP_1_PIN 11  
+-
+-#define EXTRUDER_0_STEP_PIN 43 
+-#define EXTRUDER_0_DIR_PIN 45
+-#define EXTRUDER_0_ENABLE_PIN 41
+-#define HEATER_0_PIN  2
+-#define TEMP_0_PIN 8   
+-
+-#define EXTRUDER_1_STEP_PIN 49 
+-#define EXTRUDER_1_DIR_PIN 47
+-#define EXTRUDER_1_ENABLE_PIN 51
+-#define EXTRUDER_1_HEATER_PIN 3
+-#define EXTRUDER_1_TEMPERATURE_PIN 10 
+-#define HEATER_2_PIN 51
+-#define TEMP_2_PIN 3
+-
+-
+-
+-#define E_STEP_PIN         EXTRUDER_0_STEP_PIN
+-#define E_DIR_PIN          EXTRUDER_0_DIR_PIN
+-#define E_ENABLE_PIN       EXTRUDER_0_ENABLE_PIN
+-
+-#define SDPOWER            -1
+-#define SDSS               53
+-#define LED_PIN            13
+-#define FAN_PIN            7
+-#define PS_ON_PIN          12
+-#define KILL_PIN           -1
+-
+-#ifdef ULTRA_LCD
+-
+-  #ifdef NEWPANEL
+-  //arduino pin witch triggers an piezzo beeper
+-    #define BEEPER 18
+-
+-    #define LCD_PINS_RS 20 
+-    #define LCD_PINS_ENABLE 17
+-    #define LCD_PINS_D4 16
+-    #define LCD_PINS_D5 21 
+-    #define LCD_PINS_D6 5
+-    #define LCD_PINS_D7 6
+-    
+-    //buttons are directly attached
+-    #define BTN_EN1 40
+-    #define BTN_EN2 42
+-    #define BTN_ENC 19  //the click
+-    
+-    #define BLEN_C 2
+-    #define BLEN_B 1
+-    #define BLEN_A 0
+-    
+-    #define SDCARDDETECT 38
+-    
+-      //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-  #else //old style panel with shift register
+-    //arduino pin witch triggers an piezzo beeper
+-    #define BEEPER 18
+-
+-    //buttons are attached to a shift register
+-    #define SHIFT_CLK 38
+-    #define SHIFT_LD 42
+-    #define SHIFT_OUT 40
+-    #define SHIFT_EN 17
+-    
+-    #define LCD_PINS_RS 16 
+-    #define LCD_PINS_ENABLE 5
+-    #define LCD_PINS_D4 6
+-    #define LCD_PINS_D5 21 
+-    #define LCD_PINS_D6 20
+-    #define LCD_PINS_D7 19
+-    
+-    //encoder rotation values
+-    #define encrot0 0
+-    #define encrot1 2
+-    #define encrot2 3
+-    #define encrot3 1
+-
+-    
+-    //bits in the shift register that carry the buttons for:
+-    // left up center down right red
+-    #define BL_LE 7
+-    #define BL_UP 6
+-    #define BL_MI 5
+-    #define BL_DW 4
+-    #define BL_RI 3
+-    #define BL_ST 2
+-
+-    #define BLEN_B 1
+-    #define BLEN_A 0
+-  #endif 
+-#endif //ULTRA_LCD
+-
+-#endif
+-
+-
+-#ifndef KNOWN_BOARD
+-#error Unknown MOTHERBOARD value in configuration.h
+-#endif
+-
+-//List of pins which to ignore when asked to change by gcode, 0 and 1 are RX and TX, do not mess with those!
+-#define SENSITIVE_PINS {0, 1, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN, X_MIN_PIN, X_MAX_PIN, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN, Y_MIN_PIN, Y_MAX_PIN, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN, Z_MIN_PIN, Z_MAX_PIN, E_STEP_PIN, E_DIR_PIN, E_ENABLE_PIN, LED_PIN, PS_ON_PIN, HEATER_0_PIN, HEATER_1_PIN, HEATER_2_PIN, FAN_PIN, TEMP_0_PIN, TEMP_1_PIN, TEMP_2_PIN}
+-
++#ifndef PINS_H
++#define PINS_H
++
++/****************************************************************************************
++* Arduino pin assignment
++*
++*                  ATMega168
++*                   +-\/-+
++*             PC6  1|    |28  PC5 (AI 5 / D19)
++*       (D 0) PD0  2|    |27  PC4 (AI 4 / D18)
++*       (D 1) PD1  3|    |26  PC3 (AI 3 / D17)
++*       (D 2) PD2  4|    |25  PC2 (AI 2 / D16)
++*  PWM+ (D 3) PD3  5|    |24  PC1 (AI 1 / D15)
++*       (D 4) PD4  6|    |23  PC0 (AI 0 / D14)
++*             VCC  7|    |22  GND
++*             GND  8|    |21  AREF
++*             PB6  9|    |20  AVCC
++*             PB7 10|    |19  PB5 (D 13)
++*  PWM+ (D 5) PD5 11|    |18  PB4 (D 12)
++*  PWM+ (D 6) PD6 12|    |17  PB3 (D 11) PWM
++*       (D 7) PD7 13|    |16  PB2 (D 10) PWM
++*       (D 8) PB0 14|    |15  PB1 (D 9)  PWM
++*                   +----+
++****************************************************************************************/
++#if MOTHERBOARD == 0
++#define KNOWN_BOARD 1
++
++#ifndef __AVR_ATmega168__
++#error Oops!  Make sure you have 'Arduino Diecimila' selected from the boards menu.
++#endif
++
++#define X_STEP_PIN          2
++#define X_DIR_PIN           3
++#define X_ENABLE_PIN       -1
++#define X_MIN_PIN           4
++#define X_MAX_PIN           9
++
++#define Y_STEP_PIN         10
++#define Y_DIR_PIN           7
++#define Y_ENABLE_PIN       -1
++#define Y_MIN_PIN           8
++#define Y_MAX_PIN          13
++
++#define Z_STEP_PIN         19
++#define Z_DIR_PIN          18
++#define Z_ENABLE_PIN        5
++#define Z_MIN_PIN          17
++#define Z_MAX_PIN          16
++
++#define E_STEP_PIN         11
++#define E_DIR_PIN          12
++#define E_ENABLE_PIN       -1
++
++#define SDPOWER          -1
++#define SDSS          -1
++#define LED_PIN            -1
++#define FAN_PIN            -1
++#define PS_ON_PIN          15
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN        6
++#define TEMP_0_PIN          0    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define HEATER_1_PIN        -1
++#define HEATER_2_PIN        -1
++#endif
++
++
++
++/****************************************************************************************
++* Sanguino/RepRap Motherboard with direct-drive extruders
++*
++*                        ATMega644P
++*
++*                        +---\/---+
++*            (D 0) PB0  1|        |40  PA0 (AI 0 / D31)
++*            (D 1) PB1  2|        |39  PA1 (AI 1 / D30)
++*       INT2 (D 2) PB2  3|        |38  PA2 (AI 2 / D29)
++*        PWM (D 3) PB3  4|        |37  PA3 (AI 3 / D28)
++*        PWM (D 4) PB4  5|        |36  PA4 (AI 4 / D27)
++*       MOSI (D 5) PB5  6|        |35  PA5 (AI 5 / D26)
++*       MISO (D 6) PB6  7|        |34  PA6 (AI 6 / D25)
++*        SCK (D 7) PB7  8|        |33  PA7 (AI 7 / D24)
++*                  RST  9|        |32  AREF
++*                  VCC 10|        |31  GND 
++*                  GND 11|        |30  AVCC
++*                XTAL2 12|        |29  PC7 (D 23)
++*                XTAL1 13|        |28  PC6 (D 22)
++*       RX0 (D 8)  PD0 14|        |27  PC5 (D 21) TDI
++*       TX0 (D 9)  PD1 15|        |26  PC4 (D 20) TDO
++*  INT0 RX1 (D 10) PD2 16|        |25  PC3 (D 19) TMS
++*  INT1 TX1 (D 11) PD3 17|        |24  PC2 (D 18) TCK
++*       PWM (D 12) PD4 18|        |23  PC1 (D 17) SDA
++*       PWM (D 13) PD5 19|        |22  PC0 (D 16) SCL
++*       PWM (D 14) PD6 20|        |21  PD7 (D 15) PWM
++*                        +--------+
++*
++****************************************************************************************/
++#if MOTHERBOARD == 1
++#define KNOWN_BOARD 1
++
++#ifndef __AVR_ATmega644P__
++#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define X_STEP_PIN         15
++#define X_DIR_PIN          18
++#define X_ENABLE_PIN       19
++#define X_MIN_PIN          20
++#define X_MAX_PIN          21
++
++#define Y_STEP_PIN         23
++#define Y_DIR_PIN          22
++#define Y_ENABLE_PIN       19
++#define Y_MIN_PIN          25
++#define Y_MAX_PIN          26
++
++#define Z_STEP_PIN         29
++#define Z_DIR_PIN          30
++#define Z_ENABLE_PIN       31
++#define Z_MIN_PIN           2
++#define Z_MAX_PIN           1
++
++#define E_STEP_PIN         12
++#define E_DIR_PIN          16
++#define E_ENABLE_PIN        3
++
++#define SDPOWER          -1
++#define SDSS          -1
++#define LED_PIN             0
++#define FAN_PIN            -1
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN       14
++#define TEMP_0_PIN          4 //D27   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define HEATER_1_PIN        -1
++#define HEATER_2_PIN        -1
++/*  Unused (1) (2) (3) 4 5 6 7 8 9 10 11 12 13 (14) (15) (16) 17 (18) (19) (20) (21) (22) (23) 24 (25) (26) (27) 28 (29) (30) (31)  */
++
++
++
++#endif
++
++
++/****************************************************************************************
++* RepRap Motherboard  ****---NOOOOOO RS485/EXTRUDER CONTROLLER!!!!!!!!!!!!!!!!!---*******
++*
++****************************************************************************************/
++#if MOTHERBOARD == 2
++#define KNOWN_BOARD 1
++
++#ifndef __AVR_ATmega644P__
++#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define X_STEP_PIN      15
++#define X_DIR_PIN       18
++#define X_ENABLE_PIN    19
++#define X_MIN_PIN       20
++#define X_MAX_PIN       21
++
++#define Y_STEP_PIN      23
++#define Y_DIR_PIN       22
++#define Y_ENABLE_PIN    24
++#define Y_MIN_PIN       25
++#define Y_MAX_PIN       26
++
++#define Z_STEP_PINN     27
++#define Z_DIR_PINN      28
++#define Z_ENABLE_PIN    29
++#define Z_MIN_PIN       30
++#define Z_MAX_PIN       31
++
++#define E_STEP_PIN      17
++#define E_DIR_PIN       16
++#define E_ENABLE_PIN    -1
++
++#define SDPOWER          -1
++#define SDSS          4
++#define LED_PIN          0
++
++#define SD_CARD_WRITE    2
++#define SD_CARD_DETECT   3
++#define SD_CARD_SELECT   4
++
++//our RS485 pins
++#define TX_ENABLE_PIN	12
++#define RX_ENABLE_PIN	13
++
++//pin for controlling the PSU.
++#define PS_ON_PIN       14
++
++#define FAN_PIN         -1
++#define KILL_PIN        -1
++
++#define HEATER_0_PIN    -1
++#define TEMP_0_PIN      -1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define HEATER_1_PIN        -1
++#define HEATER_2_PIN        -1
++
++
++
++#endif
++
++/****************************************************************************************
++* Arduino Mega pin assignment
++*
++****************************************************************************************/
++#if MOTHERBOARD == 33
++#define MOTHERBOARD 3
++#define RAMPS_V_1_3
++#endif
++#if MOTHERBOARD == 3
++#define KNOWN_BOARD 1
++
++//////////////////FIX THIS//////////////
++#ifndef __AVR_ATmega1280__
++ #ifndef __AVR_ATmega2560__
++ #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
++ #endif
++#endif
++
++// uncomment one of the following lines for RAMPS v1.3 or v1.0, comment both for v1.2 or 1.1
++// #define RAMPS_V_1_3
++// #define RAMPS_V_1_0
++
++#ifdef RAMPS_V_1_3
++
++#define X_STEP_PIN         54
++#define X_DIR_PIN          55
++#define X_ENABLE_PIN       38
++#define X_MIN_PIN           3
++#define X_MAX_PIN          -1   //2 //Max endstops default to disabled "-1", set to commented value to enable.
++
++#define Y_STEP_PIN         60
++#define Y_DIR_PIN          61
++#define Y_ENABLE_PIN       56
++#define Y_MIN_PIN          14
++#define Y_MAX_PIN          -1   //15
++
++#define Z_STEP_PIN         46
++#define Z_DIR_PIN          48
++#define Z_ENABLE_PIN       62
++#define Z_MIN_PIN          18
++#define Z_MAX_PIN          -1   //19
++
++#define E_STEP_PIN         26
++#define E_DIR_PIN          28
++#define E_ENABLE_PIN       24
++
++#define SDPOWER            -1
++#define SDSS               53
++#define LED_PIN            13
++#define FAN_PIN            9
++#define PS_ON_PIN          12
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN       10
++#define HEATER_1_PIN       8
++#define HEATER_2_PIN        -1
++#define TEMP_0_PIN         13   // ANALOG NUMBERING
++#define TEMP_1_PIN         14   // ANALOG NUMBERING
++#define TEMP_2_PIN         -1   // ANALOG NUMBERING
++
++
++#else // RAMPS_V_1_1 or RAMPS_V_1_2 as default
++
++#define X_STEP_PIN         26
++#define X_DIR_PIN          28
++#define X_ENABLE_PIN       24
++#define X_MIN_PIN           3
++#define X_MAX_PIN          -1    //2
++
++#define Y_STEP_PIN         38
++#define Y_DIR_PIN          40
++#define Y_ENABLE_PIN       36
++#define Y_MIN_PIN          16
++#define Y_MAX_PIN          -1    //17
++
++#define Z_STEP_PIN         44
++#define Z_DIR_PIN          46
++#define Z_ENABLE_PIN       42
++#define Z_MIN_PIN          18
++#define Z_MAX_PIN          -1    //19
++
++#define E_STEP_PIN         32
++#define E_DIR_PIN          34
++#define E_ENABLE_PIN       30
++
++#define SDPOWER            48
++#define SDSS               53
++#define LED_PIN            13
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1
++
++
++
++#ifdef RAMPS_V_1_0 // RAMPS_V_1_0
++  #define HEATER_0_PIN     12    // RAMPS 1.0
++  #define HEATER_1_PIN     -1    // RAMPS 1.0
++  #define FAN_PIN          11    // RAMPS 1.0
++
++#else // RAMPS_V_1_1 or RAMPS_V_1_2
++  #define HEATER_0_PIN     10    // RAMPS 1.1
++  #define HEATER_1_PIN      8    // RAMPS 1.1
++  #define FAN_PIN           9    // RAMPS 1.1
++#endif
++#define HEATER_2_PIN        -1
++#define TEMP_0_PIN          2    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define TEMP_1_PIN          1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define TEMP_2_PIN          -1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#endif
++
++// SPI for Max6675 Thermocouple 
++
++#ifndef SDSUPPORT
++// these pins are defined in the SD library if building with SD support  #define SCK_PIN          52
++  #define MISO_PIN         50
++  #define MOSI_PIN         51
++  #define MAX6675_SS       53
++#else
++  #define MAX6675_SS       49
++#endif
++
++
++#endif
++/****************************************************************************************
++* Duemilanove w/ ATMega328P pin assignment
++*
++****************************************************************************************/
++#if MOTHERBOARD == 4
++#define KNOWN_BOARD 1
++
++#ifndef __AVR_ATmega328P__
++#error Oops!  Make sure you have 'Arduino Duemilanove w/ ATMega328' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define X_STEP_PIN         19
++#define X_DIR_PIN          18
++#define X_ENABLE_PIN       -1
++#define X_MIN_PIN          17
++#define X_MAX_PIN          -1
++
++#define Y_STEP_PIN         10
++#define Y_DIR_PIN           7
++#define Y_ENABLE_PIN       -1
++#define Y_MIN_PIN           8
++#define Y_MAX_PIN          -1
++
++#define Z_STEP_PIN         13
++#define Z_DIR_PIN           3
++#define Z_ENABLE_PIN        2
++#define Z_MIN_PIN           4
++#define Z_MAX_PIN          -1
++
++#define E_STEP_PIN         11
++#define E_DIR_PIN          12
++#define E_ENABLE_PIN       -1
++
++#define SDPOWER          -1
++#define SDSS          -1
++#define LED_PIN            -1
++#define FAN_PIN             5
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN        6
++#define TEMP_0_PIN          0    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
++#define HEATER_1_PIN        -1
++#define HEATER_2_PIN        -1
++
++#endif
++
++/****************************************************************************************
++* Gen6 pin assignment
++*
++****************************************************************************************/
++#if MOTHERBOARD == 5
++#define KNOWN_BOARD 1
++
++#ifndef __AVR_ATmega644P__
++    #error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
++#endif
++
++//x axis pins
++    #define X_STEP_PIN      15
++    #define X_DIR_PIN       18
++    #define X_ENABLE_PIN    19
++    #define X_MIN_PIN       20
++    #define X_MAX_PIN       -1
++    
++    //y axis pins
++    #define Y_STEP_PIN      23
++    #define Y_DIR_PIN       22
++    #define Y_ENABLE_PIN    24
++    #define Y_MIN_PIN       25
++    #define Y_MAX_PIN       -1
++    
++    //z axis pins
++    #define Z_STEP_PIN      27
++    #define Z_DIR_PIN       28
++    #define Z_ENABLE_PIN    29
++    #define Z_MIN_PIN       30
++    #define Z_MAX_PIN       -1
++    
++    //extruder pins
++    #define E_STEP_PIN      4     //Edited @ EJE Electronics 20100715
++    #define E_DIR_PIN       2     //Edited @ EJE Electronics 20100715
++    #define E_ENABLE_PIN    3     //Added @ EJE Electronics 20100715
++    #define TEMP_0_PIN      5     //changed @ rkoeppl 20110410
++    #define HEATER_0_PIN    14    //changed @ rkoeppl 20110410
++    #define HEATER_1_PIN    -1    //changed @ rkoeppl 20110410
++    #define HEATER_2_PIN        -1
++    
++    #define SDPOWER          -1
++    #define SDSS          17
++    #define LED_PIN         -1    //changed @ rkoeppl 20110410
++    #define TEMP_1_PIN      -1    //changed @ rkoeppl 20110410
++    #define TEMP_2_PIN      -1
++    #define FAN_PIN         -1    //changed @ rkoeppl 20110410
++    #define PS_ON_PIN       -1    //changed @ rkoeppl 20110410
++    //our pin for debugging.
++    
++    #define DEBUG_PIN        0
++    
++    //our RS485 pins
++    #define TX_ENABLE_PIN	12
++    #define RX_ENABLE_PIN	13
++
++#endif
++
++/****************************************************************************************
++* Sanguinololu pin assignment
++*
++****************************************************************************************/
++#if MOTHERBOARD == 62
++#define MOTHERBOARD 6
++#define SANGUINOLOLU_V_1_2 
++#endif
++#if MOTHERBOARD == 6
++#define KNOWN_BOARD 1
++#ifndef __AVR_ATmega644P__
++#error Oops!  Make sure you have 'Sanguino' selected from the 'Tools -> Boards' menu.
++#endif
++
++#define X_STEP_PIN         15
++#define X_DIR_PIN          21
++#define X_MIN_PIN          18
++#define X_MAX_PIN           -2
++
++#define Y_STEP_PIN         22
++#define Y_DIR_PIN          23
++#define Y_MIN_PIN          19
++#define Y_MAX_PIN          -1
++
++#define Z_STEP_PIN         3
++#define Z_DIR_PIN          2
++#define Z_MIN_PIN          20
++#define Z_MAX_PIN          -1
++
++#define E_STEP_PIN         1
++#define E_DIR_PIN          0
++
++#define LED_PIN            -1
++
++#define FAN_PIN            -1 
++
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1
++
++#define HEATER_0_PIN       13 // (extruder)
++
++#ifdef SANGUINOLOLU_V_1_2
++
++#define HEATER_1_PIN       12 // (bed)
++#define X_ENABLE_PIN       14
++#define Y_ENABLE_PIN       14
++#define Z_ENABLE_PIN       26
++#define E_ENABLE_PIN       14
++
++#else
++
++#define HEATER_1_PIN       14  // (bed)
++#define X_ENABLE_PIN       -1
++#define Y_ENABLE_PIN       -1
++#define Z_ENABLE_PIN       -1
++#define E_ENABLE_PIN       -1
++
++#endif
++
++#define TEMP_0_PIN          7   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!! (pin 33 extruder)
++#define TEMP_1_PIN          6   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!! (pin 34 bed)
++#define TEMP_2_PIN         -1
++#define SDPOWER            -1
++#define SDSS               31
++#define HEATER_2_PIN       -1
++
++#endif
++
++
++#if MOTHERBOARD == 7
++#define KNOWN_BOARD
++/*****************************************************************
++* Ultimaker pin assignment
++******************************************************************/
++
++#ifndef __AVR_ATmega1280__
++ #ifndef __AVR_ATmega2560__
++ #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
++ #endif
++#endif
++
++#define X_STEP_PIN 25
++#define X_DIR_PIN 23
++#define X_MIN_PIN 22
++#define X_MAX_PIN 24
++#define X_ENABLE_PIN 27
++
++#define Y_STEP_PIN 31
++#define Y_DIR_PIN 33
++#define Y_MIN_PIN 26
++#define Y_MAX_PIN 28
++#define Y_ENABLE_PIN 29
++
++#define Z_STEP_PIN 37 
++#define Z_DIR_PIN 39
++#define Z_MIN_PIN 30
++#define Z_MAX_PIN 32
++#define Z_ENABLE_PIN 35
++
++#define HEATER_1_PIN 4 
++#define TEMP_1_PIN 11  
++
++#define EXTRUDER_0_STEP_PIN 43 
++#define EXTRUDER_0_DIR_PIN 45
++#define EXTRUDER_0_ENABLE_PIN 41
++#define HEATER_0_PIN  2
++#define TEMP_0_PIN 8   
++
++#define EXTRUDER_1_STEP_PIN 49 
++#define EXTRUDER_1_DIR_PIN 47
++#define EXTRUDER_1_ENABLE_PIN 51
++#define EXTRUDER_1_HEATER_PIN 3
++#define EXTRUDER_1_TEMPERATURE_PIN 10 
++#define HEATER_2_PIN 51
++#define TEMP_2_PIN 3
++
++
++
++#define E_STEP_PIN         EXTRUDER_0_STEP_PIN
++#define E_DIR_PIN          EXTRUDER_0_DIR_PIN
++#define E_ENABLE_PIN       EXTRUDER_0_ENABLE_PIN
++
++#define SDPOWER            -1
++#define SDSS               53
++#define LED_PIN            13
++#define FAN_PIN            7
++#define PS_ON_PIN          12
++#define KILL_PIN           -1
++
++#ifdef ULTRA_LCD
++
++  #ifdef NEWPANEL
++  //arduino pin witch triggers an piezzo beeper
++    #define BEEPER 18
++
++    #define LCD_PINS_RS 20 
++    #define LCD_PINS_ENABLE 17
++    #define LCD_PINS_D4 16
++    #define LCD_PINS_D5 21 
++    #define LCD_PINS_D6 5
++    #define LCD_PINS_D7 6
++    
++    //buttons are directly attached
++    #define BTN_EN1 40
++    #define BTN_EN2 42
++    #define BTN_ENC 19  //the click
++    
++    #define BLEN_C 2
++    #define BLEN_B 1
++    #define BLEN_A 0
++    
++    #define SDCARDDETECT 38
++    
++      //encoder rotation values
++    #define encrot0 0
++    #define encrot1 2
++    #define encrot2 3
++    #define encrot3 1
++  #else //old style panel with shift register
++    //arduino pin witch triggers an piezzo beeper
++    #define BEEPER 18
++
++    //buttons are attached to a shift register
++    #define SHIFT_CLK 38
++    #define SHIFT_LD 42
++    #define SHIFT_OUT 40
++    #define SHIFT_EN 17
++    
++    #define LCD_PINS_RS 16 
++    #define LCD_PINS_ENABLE 5
++    #define LCD_PINS_D4 6
++    #define LCD_PINS_D5 21 
++    #define LCD_PINS_D6 20
++    #define LCD_PINS_D7 19
++    
++    //encoder rotation values
++    #define encrot0 0
++    #define encrot1 2
++    #define encrot2 3
++    #define encrot3 1
++
++    
++    //bits in the shift register that carry the buttons for:
++    // left up center down right red
++    #define BL_LE 7
++    #define BL_UP 6
++    #define BL_MI 5
++    #define BL_DW 4
++    #define BL_RI 3
++    #define BL_ST 2
++
++    #define BLEN_B 1
++    #define BLEN_A 0
++  #endif 
++#endif //ULTRA_LCD
++
++#endif
++
++/****************************************************************************************
++* Teensylu 0.7 pin assingments (ATMEGA90USB)
++* Requires the Teensyduino software with Teensy2.0++ selected in arduino IDE!
++****************************************************************************************/
++#if MOTHERBOARD == 8
++#define MOTHERBOARD 8
++#define KNOWN_BOARD 1
++
++
++#define X_STEP_PIN          0  
++#define X_DIR_PIN           1  
++#define X_ENABLE_PIN       39 
++#define X_MIN_PIN          13 
++#define X_MAX_PIN          -1    
++
++#define Y_STEP_PIN          2  
++#define Y_DIR_PIN           3 
++#define Y_ENABLE_PIN       38 
++#define Y_MIN_PIN          14 
++#define Y_MAX_PIN          -1    
++
++#define Z_STEP_PIN          4
++#define Z_DIR_PIN           5 
++#define Z_ENABLE_PIN       23 
++#define Z_MIN_PIN          15 
++#define Z_MAX_PIN          -1    
++
++#define E_STEP_PIN          6  
++#define E_DIR_PIN           7 
++#define E_ENABLE_PIN       19 
++
++
++
++#define HEATER_0_PIN       21  // Extruder
++#define HEATER_1_PIN       20  // Bed
++#define HEATER_2_PIN       -1
++#define FAN_PIN            22  // Fan   
++
++#define TEMP_0_PIN          7  // Extruder
++#define TEMP_1_PIN          6  // Bed
++#define TEMP_2_PIN         -1
++
++#define SDPOWER            -1
++#define SDSS                8
++#define LED_PIN            -1
++#define PS_ON_PIN          -1
++#define KILL_PIN           -1 
++#define ALARM_PIN          -1
++
++#ifndef SDSUPPORT
++// these pins are defined in the SD library if building with SD support  
++  #define SCK_PIN           9 
++  #define MISO_PIN         11 
++  #define MOSI_PIN         10 
++#endif
++#endif
++
++#ifndef KNOWN_BOARD
++#error Unknown MOTHERBOARD value in configuration.h
++#endif
++
++//List of pins which to ignore when asked to change by gcode, 0 and 1 are RX and TX, do not mess with those!
++#define SENSITIVE_PINS {0, 1, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN, X_MIN_PIN, X_MAX_PIN, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN, Y_MIN_PIN, Y_MAX_PIN, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN, Z_MIN_PIN, Z_MAX_PIN, E_STEP_PIN, E_DIR_PIN, E_ENABLE_PIN, LED_PIN, PS_ON_PIN, HEATER_0_PIN, HEATER_1_PIN, HEATER_2_PIN, FAN_PIN, TEMP_0_PIN, TEMP_1_PIN, TEMP_2_PIN}
++
+ #endif
+
+commit 163efdf1c764eb0be84aadd5c3d715a4d46df807 (from 5cf349a24a610d7223c5bc88193c07c713818028)
+Merge: 87aaf0f 5cf349a
+Author: Bernhard Kubicek <kubicek@gmx.at>
+Date:   Sun Nov 6 19:49:04 2011 +0100
+
+    Merge branch 'Marlin_v1' of https://github.com/ErikZalm/Marlin into Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 1c77733..d417d41 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -61,11 +61,11 @@ const bool ENDSTOPS_INVERTING = true; // set to true to invert the logic of the
+ 
+ #define ULTIPANEL
+ #ifdef ULTIPANEL
+- //#define NEWPANEL  //enable this if you have a click-encoder panel
+- #define SDSUPPORT
+- #define ULTRA_LCD
+- #define LCD_WIDTH 20
+-#define LCD_HEIGHT 4
++  //#define NEWPANEL  //enable this if you have a click-encoder panel
++  #define SDSUPPORT
++  #define ULTRA_LCD
++  #define LCD_WIDTH 20
++  #define LCD_HEIGHT 4
+ #else //no panel but just lcd 
+   #ifdef ULTRA_LCD
+     #define LCD_WIDTH 16
+@@ -251,4 +251,8 @@ const int dropsegments=5; //everything with this number of steps  will be ignore
+   #define BLOCK_BUFFER_SIZE 16 // maximize block buffer
+ #endif
+ 
++//The ASCII buffer for recieving from the serial:
++#define MAX_CMD_SIZE 96
++#define BUFSIZE 4
++
+ #endif //__CONFIGURATION_H
+diff --git a/Marlin/Marlin.pde b/Marlin/Marlin.pde
+index 4cbe570..fec01b8 100644
+--- a/Marlin/Marlin.pde
++++ b/Marlin/Marlin.pde
+@@ -107,68 +107,82 @@ char version_string[] = "1.0.0 Alpha 1";
+ 
+ //Stepper Movement Variables
+ 
+-const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
+-float destination[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
+-float current_position[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
+-float offset[3] = {0.0, 0.0, 0.0};
+-bool home_all_axis = true;
+-float feedrate = 1500.0, next_feedrate, saved_feedrate;
+-long gcode_N, gcode_LastN;
++//===========================================================================
++//=============================imported variables============================
++//===========================================================================
++extern float HeaterPower;
+ 
++//public variables
+ float homing_feedrate[] = HOMING_FEEDRATE;
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+-
+-bool relative_mode = false;  //Determines Absolute or Relative Coordinates
+-bool relative_mode_e = false;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
+-
+-uint8_t fanpwm=0;
+-
+ volatile int feedmultiply=100; //100->1 200->2
+ int saved_feedmultiply;
+ volatile bool feedmultiplychanged=false;
+ 
++//===========================================================================
++//=============================private variables=============================
++//===========================================================================
++const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
++static float destination[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
++static float current_position[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
++static float offset[3] = {0.0, 0.0, 0.0};
++static bool home_all_axis = true;
++static float feedrate = 1500.0, next_feedrate, saved_feedrate;
++static long gcode_N, gcode_LastN;
++
++
++
++static bool relative_mode = false;  //Determines Absolute or Relative Coordinates
++static bool relative_mode_e = false;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
++
++static uint8_t fanpwm=0;
++
++
+ // comm variables
+-#define MAX_CMD_SIZE 96
+-#define BUFSIZE 4
+-char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
+-bool fromsd[BUFSIZE];
+-int bufindr = 0;
+-int bufindw = 0;
+-int buflen = 0;
+-int i = 0;
+-char serial_char;
+-int serial_count = 0;
+-boolean comment_mode = false;
+-char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
+-extern float HeaterPower;
++
++static char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
++static bool fromsd[BUFSIZE];
++static int bufindr = 0;
++static int bufindw = 0;
++static int buflen = 0;
++static int i = 0;
++static char serial_char;
++static int serial_count = 0;
++static boolean comment_mode = false;
++static char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
+ 
+ const int sensitive_pins[] = SENSITIVE_PINS; // Sensitive pin list for M42
+ 
+-float tt = 0, bt = 0;
++static float tt = 0, bt = 0;
+ 
+ //Inactivity shutdown variables
+-unsigned long previous_millis_cmd = 0;
+-unsigned long max_inactive_time = 0;
+-unsigned long stepper_inactive_time = 0;
++static unsigned long previous_millis_cmd = 0;
++static unsigned long max_inactive_time = 0;
++static unsigned long stepper_inactive_time = 0;
++
++static unsigned long starttime=0;
++static unsigned long stoptime=0;
+ 
+-unsigned long starttime=0;
+-unsigned long stoptime=0;
+ #ifdef SDSUPPORT
+-  Sd2Card card;
+-  SdVolume volume;
+-  SdFile root;
+-  SdFile file;
+-  uint32_t filesize = 0;
+-  uint32_t sdpos = 0;
+-  bool sdmode = false;
+-  bool sdactive = false;
+-  bool savetosd = false;
+-  int16_t n;
+-  unsigned long autostart_atmillis=0;
++  static Sd2Card card;
++  static SdVolume volume;
++  static SdFile root;
++  static SdFile file;
++  static uint32_t filesize = 0;
++  static uint32_t sdpos = 0;
++  static bool sdmode = false;
++  static bool sdactive = false;
++  static bool savetosd = false;
++  static int16_t n;
++  static unsigned long autostart_atmillis=0;
+   
+-  bool autostart_stilltocheck=true; //the sd start is delayed, because otherwise the serial cannot answer fast enought to make contact with the hostsoftware.
+-
++  static bool autostart_stilltocheck=true; //the sd start is delayed, because otherwise the serial cannot answer fast enought to make contact with the hostsoftware.
++#endif //SDSUPPORT
+ 
++//===========================================================================
++//=============================ROUTINES=============================
++//===========================================================================
++#ifdef SDSUPPORT
+   void initsd()
+   {
+     sdactive = false;
+@@ -223,6 +237,65 @@ unsigned long stoptime=0;
+       SERIAL_ERRORLN("error writing to file");
+     }
+   }
++  
++
++  void checkautostart(bool force)
++  {
++  //this is to delay autostart and hence the initialisaiton of the sd card to some seconds after the normal init, so the device is available quick after a reset
++    if(!force)
++    {
++      if(!autostart_stilltocheck)
++        return;
++      if(autostart_atmillis<millis())
++        return;
++    }
++    autostart_stilltocheck=false;
++    if(!sdactive)
++    {
++      initsd();
++      if(!sdactive) //fail
++        return;
++    }
++    static int lastnr=0;
++    char autoname[30];
++    sprintf(autoname,"auto%i.g",lastnr);
++    for(int i=0;i<(int)strlen(autoname);i++)
++      autoname[i]=tolower(autoname[i]);
++    dir_t p;
++
++    root.rewind();
++    
++    bool found=false;
++    while (root.readDir(p) > 0) 
++    {
++      for(int i=0;i<(int)strlen((char*)p.name);i++)
++      p.name[i]=tolower(p.name[i]);
++      //Serial.print((char*)p.name);
++      //Serial.print(" ");
++      //Serial.println(autoname);
++      if(p.name[9]!='~') //skip safety copies
++      if(strncmp((char*)p.name,autoname,5)==0)
++      {
++        char cmd[30];
++
++        sprintf(cmd,"M23 %s",autoname);
++        //sprintf(cmd,"M115");
++        //enquecommand("G92 Z0");
++        //enquecommand("G1 Z10 F2000");
++        //enquecommand("G28 X-105 Y-105");
++        enquecommand(cmd);
++        enquecommand("M24");
++        found=true;
++      }
++    }
++    if(!found)
++      lastnr=-1;
++    else
++      lastnr++;
++  }
++#else  //NO SD SUPORT
++  inline void checkautostart(bool x){};
++  
+ #endif //SDSUPPORT
+ 
+ 
+@@ -272,66 +345,6 @@ void setup()
+   tp_init();    // Initialize temperature loop
+ }
+ 
+-#ifdef SDSUPPORT
+-
+-void checkautostart(bool force)
+-{
+-//this is to delay autostart and hence the initialisaiton of the sd card to some seconds after the normal init, so the device is available quick after a reset
+-  if(!force)
+-  {
+-    if(!autostart_stilltocheck)
+-      return;
+-    if(autostart_atmillis<millis())
+-      return;
+-  }
+-  autostart_stilltocheck=false;
+-  if(!sdactive)
+-  {
+-    initsd();
+-    if(!sdactive) //fail
+-      return;
+-  }
+-  static int lastnr=0;
+-  char autoname[30];
+-  sprintf(autoname,"auto%i.g",lastnr);
+-  for(int i=0;i<(int)strlen(autoname);i++)
+-    autoname[i]=tolower(autoname[i]);
+-  dir_t p;
+-
+-  root.rewind();
+-  
+-  bool found=false;
+-  while (root.readDir(p) > 0) 
+-  {
+-    for(int i=0;i<(int)strlen((char*)p.name);i++)
+-    p.name[i]=tolower(p.name[i]);
+-    //Serial.print((char*)p.name);
+-    //Serial.print(" ");
+-    //Serial.println(autoname);
+-    if(p.name[9]!='~') //skip safety copies
+-    if(strncmp((char*)p.name,autoname,5)==0)
+-    {
+-      char cmd[30];
+-
+-      sprintf(cmd,"M23 %s",autoname);
+-      //sprintf(cmd,"M115");
+-      //enquecommand("G92 Z0");
+-      //enquecommand("G1 Z10 F2000");
+-      //enquecommand("G28 X-105 Y-105");
+-      enquecommand(cmd);
+-      enquecommand("M24");
+-      found=true;
+-    }
+-  }
+-  if(!found)
+-    lastnr=-1;
+-  else
+-    lastnr++;
+-}
+-#else  //NO SD SUPORT
+-  inline void checkautostart(bool x){}
+-#endif
+-
+ 
+ void loop()
+ {
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index b4271ba..888fe45 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -65,6 +65,7 @@
+ #include "temperature.h"
+ #include "ultralcd.h"
+ 
++//public variables
+ unsigned long minsegmenttime;
+ float max_feedrate[4]; // set the max speeds
+ float axis_steps_per_unit[4];
+@@ -76,14 +77,16 @@ float max_xy_jerk; //speed than can be stopped at once, if i understand correctl
+ float max_z_jerk;
+ float mintravelfeedrate;
+ unsigned long axis_steps_per_sqr_second[NUM_AXIS];
+-// Manage heater variables.
++long position[4];   //rescaled from extern when axis_steps_per_unit are changed by gcode
+ 
++
++//private variables
+ static block_t block_buffer[BLOCK_BUFFER_SIZE];            // A ring buffer for motion instfructions
+ static volatile unsigned char block_buffer_head;           // Index of the next block to be pushed
+ static volatile unsigned char block_buffer_tail;           // Index of the block to process now
+ 
+ // The current position of the tool in absolute steps
+-long position[4];   
++
+ 
+ #define ONE_MINUTE_OF_MICROSECONDS 60000000.0
+ 
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index c25b9c3..1121c65 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -42,25 +42,29 @@
+ int target_raw[3] = {0, 0, 0};
+ int current_raw[3] = {0, 0, 0};
+ 
+-bool temp_meas_ready = false;
++static bool temp_meas_ready = false;
+ 
+-unsigned long previous_millis_heater, previous_millis_bed_heater;
++static unsigned long previous_millis_heater, previous_millis_bed_heater;
+ 
+ #ifdef PIDTEMP
+-  float temp_iState = 0;
+-  float temp_dState = 0;
+-  float pTerm;
+-  float iTerm;
+-  float dTerm;
++  //static cannot be external:
++  static float temp_iState = 0;
++  static float temp_dState = 0;
++  static float pTerm;
++  static float iTerm;
++  static float dTerm;
+       //int output;
+-  float pid_error;
+-  float temp_iState_min;
+-  float temp_iState_max;
+-  float pid_setpoint = 0.0;
+-  float pid_input;
+-  float pid_output;
+-  bool pid_reset;
++  static float pid_error;
++  static float temp_iState_min;
++  static float temp_iState_max;
++  static float pid_input;
++  static float pid_output;
++  static bool pid_reset;
++  
++  // probably used external
+   float HeaterPower;
++  float pid_setpoint = 0.0;
++
+   
+   float Kp=DEFAULT_Kp;
+   float Ki=DEFAULT_Ki;
+@@ -69,29 +73,29 @@ unsigned long previous_millis_heater, previous_millis_bed_heater;
+ #endif //PIDTEMP
+   
+ #ifdef WATCHPERIOD
+-  int watch_raw[3] = {-1000,-1000,-1000};
+-  unsigned long watchmillis = 0;
++  static int watch_raw[3] = {-1000,-1000,-1000};
++  static unsigned long watchmillis = 0;
+ #endif //WATCHPERIOD
+ 
+ #ifdef HEATER_0_MINTEMP
+-  int minttemp_0 = temp2analog(HEATER_0_MINTEMP);
++  static int minttemp_0 = temp2analog(HEATER_0_MINTEMP);
+ #endif //MINTEMP
+ #ifdef HEATER_0_MAXTEMP
+-  int maxttemp_0 = temp2analog(HEATER_0_MAXTEMP);
++  static int maxttemp_0 = temp2analog(HEATER_0_MAXTEMP);
+ #endif //MAXTEMP
+ 
+ #ifdef HEATER_1_MINTEMP
+-  int minttemp_1 = temp2analog(HEATER_1_MINTEMP);
++  static int minttemp_1 = temp2analog(HEATER_1_MINTEMP);
+ #endif //MINTEMP
+ #ifdef HEATER_1_MAXTEMP
+-  int maxttemp_1 = temp2analog(HEATER_1_MAXTEMP);
++  static int maxttemp_1 = temp2analog(HEATER_1_MAXTEMP);
+ #endif //MAXTEMP
+ 
+ #ifdef BED_MINTEMP
+-  int bed_minttemp = temp2analog(BED_MINTEMP);
++  static int bed_minttemp = temp2analog(BED_MINTEMP);
+ #endif //BED_MINTEMP
+ #ifdef BED_MAXTEMP
+-  int bed_maxttemp = temp2analog(BED_MAXTEMP);
++  static int bed_maxttemp = temp2analog(BED_MAXTEMP);
+ #endif //BED_MAXTEMP
+ 
+ void manage_heater()
+diff --git a/Marlin/ultralcd.pde b/Marlin/ultralcd.pde
+index a45b368..a0c56e9 100644
+--- a/Marlin/ultralcd.pde
++++ b/Marlin/ultralcd.pde
+@@ -3,14 +3,17 @@
+ 
+ 
+ extern volatile int feedmultiply;
++extern volatile bool feedmultiplychanged;
++
+ extern long position[4];   
+ 
+-char messagetext[LCD_WIDTH]="";
++static char messagetext[LCD_WIDTH]="";
+ 
+ #include <LiquidCrystal.h>
+ LiquidCrystal lcd(LCD_PINS_RS, LCD_PINS_ENABLE, LCD_PINS_D4, LCD_PINS_D5,LCD_PINS_D6,LCD_PINS_D7);  //RS,Enable,D4,D5,D6,D7 
+ 
+-unsigned long previous_millis_lcd=0;
++static unsigned long previous_millis_lcd=0;
++static long previous_millis_buttons=0;
+ 
+ inline int intround(const float &x){return int(0.5+x);}
+ 
+@@ -18,9 +21,9 @@ volatile char buttons=0;  //the last checked buttons in a bit array.
+ int encoderpos=0;
+ short lastenc=0;
+ #ifdef NEWPANEL
+- long blocking=0;
++ static long blocking=0;
+ #else
+- long blocking[8]={0,0,0,0,0,0,0,0};
++ static long blocking[8]={0,0,0,0,0,0,0,0};
+ #endif
+ MainMenu menu;
+ 
+@@ -31,10 +34,9 @@ void lcd_status(const char* message)
+ 
+ inline void clear()
+ {
+-  
+   lcd.clear();
+ }
+-long previous_millis_buttons=0;
++
+ 
+ void lcd_init()
+ {
+@@ -228,7 +230,6 @@ MainMenu::MainMenu()
+   linechanging=false;
+ }
+ 
+-extern volatile bool feedmultiplychanged;
+ 
+ void MainMenu::showStatus()
+ { 
+

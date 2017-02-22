@@ -1,0 +1,452 @@
+commit 666f9cd7b488d314fd82459b241835c94d4ae03e (from e7aae314deeb25bbf17e9864403c1924512270ea)
+Merge: e7aae31 a37c7ff
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Apr 12 21:26:36 2015 -0700
+
+    Merge pull request #1897 from epatel/Development
+    
+    Manual bed leveling menu fixes.
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 9fef9c1..bdd1577 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1797,7 +1797,7 @@ char *ftostr52(const float &x) {
+       if (max_software_endstops && current_position[Z_AXIS] > Z_MAX_POS) current_position[Z_AXIS] = Z_MAX_POS;
+       encoderPosition = 0;
+       line_to_current();
+-      lcdDrawUpdate = 1;
++      lcdDrawUpdate = 2;
+     }
+     if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR("Z"), ftostr43(current_position[Z_AXIS]));
+     static bool debounce_click = false;
+@@ -1828,7 +1828,7 @@ char *ftostr52(const float &x) {
+           current_position[X_AXIS] = mbl.get_x(ix);
+           current_position[Y_AXIS] = mbl.get_y(iy);
+           line_to_current();
+-          lcdDrawUpdate = 1;
++          lcdDrawUpdate = 2;
+         }
+       }
+     } else {
+@@ -1837,6 +1837,7 @@ char *ftostr52(const float &x) {
+   }
+ 
+   static void _lcd_level_bed_homing() {
++    if (lcdDrawUpdate) lcd_implementation_drawedit(PSTR("XYZ"), "Homing");
+     if (axis_known_position[X_AXIS] &&
+         axis_known_position[Y_AXIS] &&
+         axis_known_position[Z_AXIS]) {
+@@ -1848,6 +1849,7 @@ char *ftostr52(const float &x) {
+       _lcd_level_bed_position = 0;
+       lcd_goto_menu(_lcd_level_bed);
+     }
++    lcdDrawUpdate = 2;
+   }
+ 
+   static void lcd_level_bed() {
+@@ -1856,6 +1858,7 @@ char *ftostr52(const float &x) {
+     axis_known_position[Z_AXIS] = false;
+     mbl.reset();
+     enquecommands_P(PSTR("G28"));
++    lcdDrawUpdate = 2;
+     lcd_goto_menu(_lcd_level_bed_homing);
+   }
+ 
+
+commit 666f9cd7b488d314fd82459b241835c94d4ae03e (from a37c7ff16d239794e6e53cc30f79f98d4b3cab41)
+Merge: e7aae31 a37c7ff
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Apr 12 21:26:36 2015 -0700
+
+    Merge pull request #1897 from epatel/Development
+    
+    Manual bed leveling menu fixes.
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 646dc60..f48646a 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -70,7 +70,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 37dc7af..ddf8036 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -850,6 +850,11 @@ void get_command()
+ 
+ }
+ 
++float code_has_value() {
++  char c = *(strchr_pointer + 1);
++  return (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.';
++}
++
+ float code_value() {
+   float ret;
+   char *e = strchr(strchr_pointer, 'E');
+@@ -1814,21 +1819,24 @@ inline void gcode_G28() {
+ 
+     home_all_axis = !(homeX || homeY || homeZ) || (homeX && homeY && homeZ);
+ 
+-    #if Z_HOME_DIR > 0                      // If homing away from BED do Z first
++    if (home_all_axis || homeZ) {
+ 
+-      if (home_all_axis || homeZ) HOMEAXIS(Z);
++      #if Z_HOME_DIR > 0  // If homing away from BED do Z first
+ 
+-    #elif !defined(Z_SAFE_HOMING) && defined(Z_RAISE_BEFORE_HOMING) && Z_RAISE_BEFORE_HOMING > 0
++        HOMEAXIS(Z);
+ 
+-      // Raise Z before homing any other axes
+-      if (home_all_axis || homeZ) {
+-        destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);    // Set destination away from bed
++      #elif !defined(Z_SAFE_HOMING) && defined(Z_RAISE_BEFORE_HOMING) && Z_RAISE_BEFORE_HOMING > 0
++
++        // Raise Z before homing any other axes
++        // (Does this need to be "negative home direction?" Why not just use Z_RAISE_BEFORE_HOMING?)
++        destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);
+         feedrate = max_feedrate[Z_AXIS] * 60;
+         line_to_destination();
+         st_synchronize();
+-      }
+ 
+-    #endif
++      #endif
++
++    } // home_all_axis || homeZ
+ 
+     #ifdef QUICK_HOME
+ 
+@@ -1897,97 +1905,104 @@ inline void gcode_G28() {
+     if (home_all_axis || homeY) HOMEAXIS(Y);
+ 
+     // Set the X position, if included
+-    // Adds the home_offset as well, which may be wrong
+-    if (code_seen(axis_codes[X_AXIS])) {
+-      float v = code_value();
+-      if (v) current_position[X_AXIS] = v
+-        #ifndef SCARA
+-          + home_offset[X_AXIS]
+-        #endif
+-      ;
+-    }
++    if (code_seen(axis_codes[X_AXIS]) && code_has_value())
++      current_position[X_AXIS] = code_value();
+ 
+     // Set the Y position, if included
+-    // Adds the home_offset as well, which may be wrong
+-    if (code_seen(axis_codes[Y_AXIS])) {
+-      float v = code_value();
+-      if (v) current_position[Y_AXIS] = v
+-        #ifndef SCARA
+-          + home_offset[Y_AXIS]
+-        #endif
+-      ;
+-    }
++    if (code_seen(axis_codes[Y_AXIS]) && code_has_value())
++      current_position[Y_AXIS] = code_value();
+ 
+     // Home Z last if homing towards the bed
+     #if Z_HOME_DIR < 0
+ 
+-      #ifndef Z_SAFE_HOMING
++      if (home_all_axis || homeZ) {
+ 
+-        if (home_all_axis || homeZ) HOMEAXIS(Z);
++        #ifdef Z_SAFE_HOMING
+ 
+-      #else // Z_SAFE_HOMING
++          if (home_all_axis) {
+ 
+-        if (home_all_axis) {
+-          destination[X_AXIS] = round(Z_SAFE_HOMING_X_POINT - X_PROBE_OFFSET_FROM_EXTRUDER);
+-          destination[Y_AXIS] = round(Z_SAFE_HOMING_Y_POINT - Y_PROBE_OFFSET_FROM_EXTRUDER);
+-          destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);    // Set destination away from bed
+-          feedrate = XY_TRAVEL_SPEED;
+-          current_position[Z_AXIS] = 0;
++            current_position[Z_AXIS] = 0;
++            sync_plan_position();
+ 
+-          sync_plan_position();
+-          line_to_destination();
+-          st_synchronize();
+-          current_position[X_AXIS] = destination[X_AXIS];
+-          current_position[Y_AXIS] = destination[Y_AXIS];
++            //
++            // Set the probe (or just the nozzle) destination to the safe homing point
++            //
++            // NOTE: If current_position[X_AXIS] or current_position[Y_AXIS] were set above
++            // then this may not work as expected.
++            destination[X_AXIS] = round(Z_SAFE_HOMING_X_POINT - X_PROBE_OFFSET_FROM_EXTRUDER);
++            destination[Y_AXIS] = round(Z_SAFE_HOMING_Y_POINT - Y_PROBE_OFFSET_FROM_EXTRUDER);
++            destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);    // Set destination away from bed
++            feedrate = XY_TRAVEL_SPEED;
++            // This could potentially move X, Y, Z all together
++            line_to_destination();
++            st_synchronize();
+ 
+-          HOMEAXIS(Z);
+-        }
++            // Set current X, Y is the Z_SAFE_HOMING_POINT minus PROBE_OFFSET_FROM_EXTRUDER
++            current_position[X_AXIS] = destination[X_AXIS];
++            current_position[Y_AXIS] = destination[Y_AXIS];
+ 
+-        // Let's see if X and Y are homed and probe is inside bed area.
+-        if (homeZ) {
+-
+-          if (axis_known_position[X_AXIS] && axis_known_position[Y_AXIS]) {
+-
+-            float cpx = current_position[X_AXIS], cpy = current_position[Y_AXIS];
+-            if (   cpx >= X_MIN_POS - X_PROBE_OFFSET_FROM_EXTRUDER
+-                && cpx <= X_MAX_POS - X_PROBE_OFFSET_FROM_EXTRUDER
+-                && cpy >= Y_MIN_POS - Y_PROBE_OFFSET_FROM_EXTRUDER
+-                && cpy <= Y_MAX_POS - Y_PROBE_OFFSET_FROM_EXTRUDER) {
+-              current_position[Z_AXIS] = 0;
+-              plan_set_position(cpx, cpy, 0, current_position[E_AXIS]);
+-              destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);    // Set destination away from bed
+-              feedrate = max_feedrate[Z_AXIS] * 60;  // max_feedrate is in mm/s. line_to_destination is feedrate/60.
+-              line_to_destination();
+-              st_synchronize();
+-              HOMEAXIS(Z);
+-            }
+-            else {
++            // Home the Z axis
++            HOMEAXIS(Z);
++          }
++
++          else if (homeZ) { // Don't need to Home Z twice
++
++            // Let's see if X and Y are homed
++            if (axis_known_position[X_AXIS] && axis_known_position[Y_AXIS]) {
++
++              // Make sure the probe is within the physical limits
++              // NOTE: This doesn't necessarily ensure the probe is also within the bed!
++              float cpx = current_position[X_AXIS], cpy = current_position[Y_AXIS];
++              if (   cpx >= X_MIN_POS - X_PROBE_OFFSET_FROM_EXTRUDER
++                  && cpx <= X_MAX_POS - X_PROBE_OFFSET_FROM_EXTRUDER
++                  && cpy >= Y_MIN_POS - Y_PROBE_OFFSET_FROM_EXTRUDER
++                  && cpy <= Y_MAX_POS - Y_PROBE_OFFSET_FROM_EXTRUDER) {
++                // Set the plan current position to X, Y, 0
++                current_position[Z_AXIS] = 0;
++                plan_set_position(cpx, cpy, 0, current_position[E_AXIS]); // = sync_plan_position
++
++                // Set Z destination away from bed and raise the axis
++                // NOTE: This should always just be Z_RAISE_BEFORE_HOMING unless...???
++                destination[Z_AXIS] = -Z_RAISE_BEFORE_HOMING * home_dir(Z_AXIS);
++                feedrate = max_feedrate[Z_AXIS] * 60;  // feedrate (mm/m) = max_feedrate (mm/s)
++                line_to_destination();
++                st_synchronize();
++
++                // Home the Z axis
++                HOMEAXIS(Z);
++              }
++              else {
+                 LCD_MESSAGEPGM(MSG_ZPROBE_OUT);
+                 SERIAL_ECHO_START;
+                 SERIAL_ECHOLNPGM(MSG_ZPROBE_OUT);
++              }
+             }
+-          }
+-          else {
+-            LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
+-            SERIAL_ECHO_START;
+-            SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
+-          }
+-        }
++            else {
++              LCD_MESSAGEPGM(MSG_POSITION_UNKNOWN);
++              SERIAL_ECHO_START;
++              SERIAL_ECHOLNPGM(MSG_POSITION_UNKNOWN);
++            }
++
++          } // !home_all_axes && homeZ
+ 
+-      #endif // Z_SAFE_HOMING
++        #else // !Z_SAFE_HOMING
++
++          HOMEAXIS(Z);
++
++        #endif // !Z_SAFE_HOMING
++
++      } // home_all_axis || homeZ
+ 
+     #endif // Z_HOME_DIR < 0
+ 
+     // Set the Z position, if included
+-    // Adds the home_offset as well, which may be wrong
+-    if (code_seen(axis_codes[Z_AXIS])) {
+-      float v = code_value();
+-      if (v) current_position[Z_AXIS] = v + home_offset[Z_AXIS];
+-    }
++    if (code_seen(axis_codes[Z_AXIS]) && code_has_value())
++      current_position[Z_AXIS] = code_value();
+ 
+     #if defined(ENABLE_AUTO_BED_LEVELING) && (Z_HOME_DIR < 0)
+       if (home_all_axis || homeZ) current_position[Z_AXIS] += zprobe_zoffset;  // Add Z_Probe offset (the distance is negative)
+     #endif
++
+     sync_plan_position();
+ 
+   #endif // else DELTA
+diff --git a/Marlin/configurator/config/Configuration.h b/Marlin/configurator/config/Configuration.h
+index 57f3775..2b2175c 100644
+--- a/Marlin/configurator/config/Configuration.h
++++ b/Marlin/configurator/config/Configuration.h
+@@ -70,7 +70,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index 9dbbc82..02504e2 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -64,7 +64,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+  
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 60e2db8..df0614b 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -64,7 +64,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index 65fccb0..1f180a5 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -82,7 +82,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index 293aa77..eaa1a8b 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -64,7 +64,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index e355a41..a01bcb6 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -64,7 +64,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 06cd2ae..423822a 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -64,7 +64,7 @@ Here are some standard links for getting your machine calibrated:
+ 
+ // Optional custom name for your RepStrap or other custom machine
+ // Displayed in the LCD "Ready" message
+-// #define CUSTOM_MACHINE_NAME "This RepRap"
++// #define CUSTOM_MACHINE_NAME "3D Printer"
+ 
+ // Define this to set a unique identifier for this printer, (Used by some programs to differentiate between machines)
+ // You can use an online service to generate a random UUID. (eg http://www.uuidgenerator.net/version4)
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 5d1fd6c..179a1b9 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -70,7 +70,7 @@
+   #endif
+ #else
+   #ifndef MACHINE_NAME
+-    #define MACHINE_NAME "Mendel"
++    #define MACHINE_NAME "3D Printer"
+   #endif
+ #endif
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 77af203..49c0908 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -504,7 +504,7 @@ float junction_deviation = 0.1;
+ 
+   #ifdef PREVENT_DANGEROUS_EXTRUDE
+     if (de) {
+-      if (degHotend(active_extruder) < extrude_min_temp) {
++      if (degHotend(extruder) < extrude_min_temp) {
+         position[E_AXIS] = target[E_AXIS]; // Behave as if the move really took place, but ignore E part
+         de = 0; // no difference
+         SERIAL_ECHO_START;
+@@ -541,8 +541,8 @@ float junction_deviation = 0.1;
+ 
+   block->steps[Z_AXIS] = labs(dz);
+   block->steps[E_AXIS] = labs(de);
+-  block->steps[E_AXIS] *= volumetric_multiplier[active_extruder];
+-  block->steps[E_AXIS] *= extruder_multiply[active_extruder];
++  block->steps[E_AXIS] *= volumetric_multiplier[extruder];
++  block->steps[E_AXIS] *= extruder_multiply[extruder];
+   block->steps[E_AXIS] /= 100;
+   block->step_event_count = max(block->steps[X_AXIS], max(block->steps[Y_AXIS], max(block->steps[Z_AXIS], block->steps[E_AXIS])));
+ 
+@@ -676,7 +676,7 @@ float junction_deviation = 0.1;
+     delta_mm[Y_AXIS] = dy / axis_steps_per_unit[Y_AXIS];
+   #endif
+   delta_mm[Z_AXIS] = dz / axis_steps_per_unit[Z_AXIS];
+-  delta_mm[E_AXIS] = (de / axis_steps_per_unit[E_AXIS]) * volumetric_multiplier[active_extruder] * extruder_multiply[active_extruder] / 100.0;
++  delta_mm[E_AXIS] = (de / axis_steps_per_unit[E_AXIS]) * volumetric_multiplier[extruder] * extruder_multiply[extruder] / 100.0;
+ 
+   if (block->steps[X_AXIS] <= dropsegments && block->steps[Y_AXIS] <= dropsegments && block->steps[Z_AXIS] <= dropsegments) {
+     block->millimeters = fabs(delta_mm[E_AXIS]);
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index c53d7c0..1f28b3a 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -1072,10 +1072,7 @@ void st_init() {
+       TCCR0A &= ~BIT(WGM01);
+       TCCR0A &= ~BIT(WGM00);
+     #endif
+-    e_steps[0] = 0;
+-    e_steps[1] = 0;
+-    e_steps[2] = 0;
+-    e_steps[3] = 0;
++    e_steps[0] = e_steps[1] = e_steps[2] = e_steps[3] = 0;
+     TIMSK0 |= BIT(OCIE0A);
+   #endif //ADVANCE
+ 
+

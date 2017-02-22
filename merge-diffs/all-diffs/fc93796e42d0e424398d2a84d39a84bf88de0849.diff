@@ -1,0 +1,300 @@
+commit fc93796e42d0e424398d2a84d39a84bf88de0849 (from 00261cbfcb42aa9e39995940d16e0f3a505a7fa7)
+Merge: 00261cb a1b50f1
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Oct 9 00:52:48 2016 -0500
+
+    Merge pull request #4967 from thinkyhead/rc_dac_menu
+    
+    Revised DAC Drive Strength Menu
+
+diff --git a/Marlin/dac_mcp4728.cpp b/Marlin/dac_mcp4728.cpp
+index 01e38ed..5ba78e0 100644
+--- a/Marlin/dac_mcp4728.cpp
++++ b/Marlin/dac_mcp4728.cpp
+@@ -34,7 +34,7 @@
+ 
+ #if ENABLED(DAC_STEPPER_CURRENT)
+ 
+-uint16_t     mcp4728_values[4];
++uint16_t mcp4728_values[XYZE];
+ 
+ /**
+  * Begin I2C, get current values (input register and eeprom) of mcp4728
+@@ -42,16 +42,13 @@ uint16_t     mcp4728_values[4];
+ void mcp4728_init() {
+   Wire.begin();
+   Wire.requestFrom(int(DAC_DEV_ADDRESS), 24);
+-  while(Wire.available()) {
+-    int deviceID = Wire.read();
+-    int hiByte = Wire.read();
+-    int loByte = Wire.read();
++  while (Wire.available()) {
++    char deviceID = Wire.read(),
++         hiByte = Wire.read(),
++         loByte = Wire.read();
+ 
+-    int isEEPROM = (deviceID & 0B00001000) >> 3;
+-    int channel = (deviceID & 0B00110000) >> 4;
+-    if (isEEPROM != 1) {
+-      mcp4728_values[channel] = word((hiByte & 0B00001111), loByte);
+-    }
++    if (!(deviceID & 0x08))
++      mcp4728_values[(deviceID & 0x30) >> 4] = word((hiByte & 0x0F), loByte);
+   }
+ }
+ 
+@@ -71,8 +68,8 @@ uint8_t mcp4728_analogWrite(uint8_t channel, uint16_t value) {
+ uint8_t mcp4728_eepromWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+   Wire.write(SEQWRITE);
+-  for (uint8_t channel=0; channel <= 3; channel++) {
+-    Wire.write(DAC_STEPPER_VREF << 7 | 0 << 5 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
++  for (uint8_t channel = 0; channel < COUNT(channel); channel++) {
++    Wire.write(DAC_STEPPER_VREF << 7 | DAC_STEPPER_GAIN << 4 | highByte(mcp4728_values[channel]));
+     Wire.write(lowByte(mcp4728_values[channel]));
+   }
+   return Wire.endTransmission();
+@@ -83,7 +80,7 @@ uint8_t mcp4728_eepromWrite() {
+  */
+ uint8_t mcp4728_setVref_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.write(VREFWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(GAINWRITE | (value ? 0x0F : 0x00));
+   return Wire.endTransmission();
+ }
+ /**
+@@ -91,7 +88,7 @@ uint8_t mcp4728_setVref_all(uint8_t value) {
+  */
+ uint8_t mcp4728_setGain_all(uint8_t value) {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  Wire.write(GAINWRITE | value << 3 | value << 2 | value << 1 | value);
++  Wire.write(GAINWRITE | (value ? 0x0F : 0x00));
+   return Wire.endTransmission();
+ }
+ 
+@@ -105,13 +102,22 @@ uint16_t mcp4728_getValue(uint8_t channel) { return mcp4728_values[channel]; }
+  * Return Vout
+  *
+ uint16_t mcp4728_getVout(uint8_t channel) {
+-  uint32_t vref = 2048;
+-  uint32_t vOut = (vref * mcp4728_values[channel] * (_DAC_STEPPER_GAIN + 1)) / 4096;
++  uint32_t vref = 2048,
++           vOut = (vref * mcp4728_values[channel] * (_DAC_STEPPER_GAIN + 1)) / 4096;
+   if (vOut > defaultVDD) vOut = defaultVDD;
+   return vOut;
+ }
+ */
+ 
++/* Returns DAC values as a 0-100 percentage of drive strength */
++uint16_t mcp4728_getDrvPct(uint8_t channel) { return uint16_t(100.0 * mcp4728_values[channel] / (DAC_STEPPER_MAX) + 0.5); }
++
++/* Recieves all Drive strengths as 0-100 percent values, updates DAC Values array and calls fastwrite to update the DAC */
++void mcp4728_setDrvPct(int16_t pct[XYZE]) {
++  LOOP_XYZE(i) mcp4728_values[i] = 0.01 * pct[i] * (DAC_STEPPER_MAX);
++  mcp4728_fastWrite();
++}
++
+ /**
+  * FastWrite input register values - All DAC ouput update. refer to DATASHEET 5.6.1
+  * DAC Input and PowerDown bits update.
+@@ -119,7 +125,7 @@ uint16_t mcp4728_getVout(uint8_t channel) {
+  */
+ uint8_t mcp4728_fastWrite() {
+   Wire.beginTransmission(DAC_DEV_ADDRESS);
+-  for (uint8_t channel=0; channel <= 3; channel++) {
++  for (uint8_t channel = 0; channel < COUNT(channel); channel++) {
+     Wire.write(highByte(mcp4728_values[channel]));
+     Wire.write(lowByte(mcp4728_values[channel]));
+   }
+diff --git a/Marlin/dac_mcp4728.h b/Marlin/dac_mcp4728.h
+index c096c85..1949d40 100644
+--- a/Marlin/dac_mcp4728.h
++++ b/Marlin/dac_mcp4728.h
+@@ -32,7 +32,7 @@
+ #if ENABLED(DAC_STEPPER_CURRENT)
+ #include "Wire.h"
+ 
+-#define defaultVDD     5000
++#define defaultVDD     DAC_STEPPER_MAX //was 5000 but differs with internal Vref
+ #define BASE_ADDR      0x60
+ #define RESET          0B00000110
+ #define WAKE           0B00001001
+@@ -59,6 +59,8 @@ uint8_t mcp4728_setGain_all(uint8_t value);
+ uint16_t mcp4728_getValue(uint8_t channel);
+ uint8_t mcp4728_fastWrite();
+ uint8_t mcp4728_simpleCommand(byte simpleCommand);
++uint16_t mcp4728_getDrvPct(uint8_t channel);
++void mcp4728_setDrvPct(int16_t pct[XYZE]);
+ 
+ #endif
+ #endif
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index aa11a13..cfad896 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -544,6 +544,15 @@
+ #ifndef MSG_FILAMENT_CHANGE_OPTION_RESUME
+   #define MSG_FILAMENT_CHANGE_OPTION_RESUME   "Resume print"
+ #endif
++#ifndef MSG_DRIVE_STRENGTH
++  #define MSG_DRIVE_STRENGTH                  "Drive Strength"
++#endif
++#ifndef MSG_DAC_PERCENT
++  #define MSG_DAC_PERCENT                     "Driver %"
++#endif
++#ifndef MSG_DAC_EEPROM_WRITE
++  #define MSG_DAC_EEPROM_WRITE                "DAC EEPROM Write"
++#endif
+ #if LCD_HEIGHT >= 4
+   #ifndef MSG_FILAMENT_CHANGE_INIT_1
+     #define MSG_FILAMENT_CHANGE_INIT_1          "Wait for start"
+diff --git a/Marlin/stepper_dac.cpp b/Marlin/stepper_dac.cpp
+index 440bd78..5443abc 100644
+--- a/Marlin/stepper_dac.cpp
++++ b/Marlin/stepper_dac.cpp
+@@ -49,6 +49,7 @@
+ 
+   bool dac_present = false;
+   const uint8_t dac_order[NUM_AXIS] = DAC_STEPPER_ORDER;
++  uint16_t dac_channel_pct[XYZE];
+ 
+   int dac_init() {
+     #if PIN_EXISTS(DAC_DISABLE)
+@@ -72,7 +73,7 @@
+ 
+     NOMORE(val, 100);
+ 
+-    mcp4728_analogWrite(dac_order[channel], val * DAC_STEPPER_MAX / 100);
++    mcp4728_analogWrite(dac_order[channel], val * 0.01 * (DAC_STEPPER_MAX));
+     mcp4728_simpleCommand(UPDATE);
+   }
+ 
+@@ -85,8 +86,14 @@
+     mcp4728_simpleCommand(UPDATE);
+   }
+ 
+-  static float dac_perc(int8_t n) { return 100.0 * mcp4728_getValue(dac_order[n]) / DAC_STEPPER_MAX; }
+-  static float dac_amps(int8_t n) { return ((2.048 * mcp4728_getValue(dac_order[n])) / 4096.0) / (8.0 * DAC_STEPPER_SENSE); }
++  static float dac_perc(int8_t n) { return 100.0 * mcp4728_getValue(dac_order[n]) * (1.0 / (DAC_STEPPER_MAX)); }
++  static float dac_amps(int8_t n) { return mcp4728_getDrvPct(dac_order[n]) * (DAC_STEPPER_MAX) * (0.125 * (DAC_STEPPER_SENSE)); }
++  
++  int16_t dac_current_get_percent(AxisEnum axis) { return mcp4728_getDrvPct(dac_order[axis]); }
++  void dac_current_set_percents(int16_t pct[XYZE]) {
++    LOOP_XYZE(i) dac_channel_pct[i] = pct[dac_order[i]];
++    mcp4728_setDrvPct(dac_channel_pct);
++  }
+ 
+   void dac_print_values() {
+     if (!dac_present) return;
+@@ -94,16 +101,15 @@
+     SERIAL_ECHO_START;
+     SERIAL_ECHOLNPGM("Stepper current values in % (Amps):");
+     SERIAL_ECHO_START;
+-    SERIAL_ECHOPAIR(" X:",  dac_perc(0));
+-    SERIAL_ECHOPAIR(" (",   dac_amps(0));
+-    SERIAL_ECHOPAIR(") Y:", dac_perc(1));
+-    SERIAL_ECHOPAIR(" (",   dac_amps(1));
+-    SERIAL_ECHOPAIR(") Z:", dac_perc(2));
+-    SERIAL_ECHOPAIR(" (",   dac_amps(2));
+-    SERIAL_ECHOPAIR(") E:", dac_perc(3));
+-    SERIAL_ECHOPAIR(" (",   dac_amps(3));
+-    SERIAL_CHAR(')');
+-    SERIAL_EOL;
++    SERIAL_ECHOPAIR(" X:",  dac_perc(X_AXIS)); 
++    SERIAL_ECHOPAIR(" (",   dac_amps(X_AXIS));
++    SERIAL_ECHOPAIR(") Y:", dac_perc(Y_AXIS));
++    SERIAL_ECHOPAIR(" (",   dac_amps(Y_AXIS));
++    SERIAL_ECHOPAIR(") Z:", dac_perc(Z_AXIS));
++    SERIAL_ECHOPAIR(" (",   dac_amps(Z_AXIS));
++    SERIAL_ECHOPAIR(") E:", dac_perc(E_AXIS));
++    SERIAL_ECHOPAIR(" (",   dac_amps(E_AXIS));
++    SERIAL_ECHOLN(")");
+   }
+ 
+   void dac_commit_eeprom() {
+diff --git a/Marlin/stepper_dac.h b/Marlin/stepper_dac.h
+index d80a846..ab338a2 100644
+--- a/Marlin/stepper_dac.h
++++ b/Marlin/stepper_dac.h
+@@ -51,5 +51,7 @@ void dac_current_percent(uint8_t channel, float val);
+ void dac_current_raw(uint8_t channel, uint16_t val);
+ void dac_print_values();
+ void dac_commit_eeprom();
++int16_t dac_current_get_percent(AxisEnum axis);
++void dac_current_set_percents(int16_t pct[XYZE]);
+ 
+ #endif // STEPPER_DAC_H
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index d802c89..2cf83a6 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -62,6 +62,11 @@ millis_t next_lcd_update_ms;
+ 
+ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to draw, decrements after every draw. Set to 2 in LCD routines so the LCD gets at least 1 full redraw (first redraw is partial)
+ 
++#if ENABLED(DAC_STEPPER_CURRENT)
++  #include "stepper_dac.h" //was dac_mcp4728.h MarlinMain uses stepper dac for the m-codes
++  uint16_t driverPercent[XYZE];
++#endif
++
+ #if ENABLED(ULTIPANEL)
+ 
+   // place-holders for Ki and Kd edits
+@@ -114,6 +119,13 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+   static void lcd_control_motion_menu();
+   static void lcd_control_volumetric_menu();
+ 
++  #if ENABLED(DAC_STEPPER_CURRENT)
++    static void dac_driver_commit();
++    static void dac_driver_getValues();
++    static void lcd_dac_menu();
++    static void lcd_dac_write_eeprom();
++  #endif
++
+   #if ENABLED(LCD_INFO_MENU)
+     #if ENABLED(PRINTCOUNTER)
+       static void lcd_info_stats_menu();
+@@ -848,6 +860,31 @@ void kill_screen(const char* lcd_msg) {
+ 
+   /**
+    *
++   * "Driver current control" submenu items
++   *
++   */
++  #if ENABLED(DAC_STEPPER_CURRENT)
++    static void dac_driver_getValues() { LOOP_XYZE(i) driverPercent[i] = dac_current_get_percent((AxisEnum)i); }
++
++    static void dac_driver_commit() { dac_current_set_percents(driverPercent); }
++
++    static void dac_driver_eeprom_write() { dac_commit_eeprom(); }
++
++    static void lcd_dac_menu() {
++      dac_driver_getValues();
++      START_MENU();    
++      MENU_ITEM(back, MSG_CONTROL);
++      MENU_ITEM_EDIT_CALLBACK(int3, MSG_X " " MSG_DAC_PERCENT, &driverPercent[X_AXIS], 0, 100, dac_driver_commit);
++      MENU_ITEM_EDIT_CALLBACK(int3, MSG_Y " " MSG_DAC_PERCENT, &driverPercent[Y_AXIS], 0, 100, dac_driver_commit);
++      MENU_ITEM_EDIT_CALLBACK(int3, MSG_Z " " MSG_DAC_PERCENT, &driverPercent[Z_AXIS], 0, 100, dac_driver_commit);
++      MENU_ITEM_EDIT_CALLBACK(int3, MSG_E " " MSG_DAC_PERCENT, &driverPercent[E_AXIS], 0, 100, dac_driver_commit);
++      MENU_ITEM(function, MSG_DAC_EEPROM_WRITE, dac_driver_eeprom_write);
++      END_MENU();
++    }
++  #endif
++
++  /**
++   *
+    * "Prepare" submenu items
+    *
+    */
+@@ -1529,6 +1566,10 @@ void kill_screen(const char* lcd_msg) {
+     #if ENABLED(FWRETRACT)
+       MENU_ITEM(submenu, MSG_RETRACT, lcd_control_retract_menu);
+     #endif
++    #if ENABLED(DAC_STEPPER_CURRENT)
++      MENU_ITEM(submenu, MSG_DRIVE_STRENGTH, lcd_dac_menu); 
++    #endif
++
+     #if ENABLED(EEPROM_SETTINGS)
+       MENU_ITEM(function, MSG_STORE_EPROM, Config_StoreSettings);
+       MENU_ITEM(function, MSG_LOAD_EPROM, Config_RetrieveSettings);
+

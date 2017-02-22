@@ -1,0 +1,266 @@
+commit f45b6a77620c95656ba4f969d15447e84127ed10 (from 59fafb93b2944a116c3f70c6146037230733904c)
+Merge: 59fafb9 61437d9
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Nov 28 01:45:27 2016 -0600
+
+    Merge pull request #5314 from thinkyhead/case_light_menu_fix
+    
+    Fix and optimize case-light code
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ef17e71..a2f04dc 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -881,27 +881,6 @@ void setup_homepin(void) {
+   #endif
+ }
+ 
+-#if HAS_CASE_LIGHT
+-
+-  void setup_case_light() {
+-    digitalWrite(CASE_LIGHT_PIN,
+-      #if ENABLED(CASE_LIGHT_DEFAULT_ON)
+-        255
+-      #else
+-        0
+-      #endif
+-    );
+-    analogWrite(CASE_LIGHT_PIN,
+-      #if ENABLED(CASE_LIGHT_DEFAULT_ON)
+-        255
+-      #else
+-        0
+-      #endif
+-    );
+-  }
+-
+-#endif
+-
+ void setup_powerhold() {
+   #if HAS_SUICIDE
+     OUT_WRITE(SUICIDE_PIN, HIGH);
+@@ -7279,6 +7258,13 @@ inline void gcode_M907() {
+ 
+ #if HAS_CASE_LIGHT
+ 
++  uint8_t case_light_brightness = 255;
++
++  void update_case_light() {
++    digitalWrite(CASE_LIGHT_PIN, case_light_on ? HIGH : LOW);
++    analogWrite(CASE_LIGHT_PIN, case_light_on ? case_light_brightness : 0);
++  }
++
+   /**
+    * M355: Turn case lights on/off and set brightness
+    *
+@@ -7286,13 +7272,9 @@ inline void gcode_M907() {
+    *   P<byte>  Set case light brightness (PWM pin required)
+    */
+   inline void gcode_M355() {
+-    static uint8_t case_light_brightness = 255;
+     if (code_seen('P')) case_light_brightness = code_value_byte();
+-    if (code_seen('S')) {
+-      case_light_on = code_value_bool();
+-      digitalWrite(CASE_LIGHT_PIN, case_light_on ? HIGH : LOW);
+-      analogWrite(CASE_LIGHT_PIN, case_light_on ? case_light_brightness : 0);
+-    }
++    if (code_seen('S')) case_light_on = code_value_bool();
++    update_case_light();
+     SERIAL_ECHO_START;
+     SERIAL_ECHOPGM("Case lights ");
+     case_light_on ? SERIAL_ECHOLNPGM("on") : SERIAL_ECHOLNPGM("off");
+@@ -10020,7 +10002,7 @@ void setup() {
+   #endif
+ 
+   #if HAS_CASE_LIGHT
+-    setup_case_light();
++    update_case_light();
+   #endif
+ 
+   #if HAS_BED_PROBE
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 30074cf..d506714 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -110,9 +110,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+   #if HAS_POWER_SWITCH
+     extern bool powersupply;
+   #endif
+-  #if HAS_CASE_LIGHT
+-    extern bool case_light_on;
+-  #endif
++
+   const float manual_feedrate_mm_m[] = MANUAL_FEEDRATE;
+   void lcd_main_menu();
+   void lcd_tune_menu();
+@@ -580,6 +578,19 @@ void kill_screen(const char* lcd_msg) {
+ 
+   #endif //SDSUPPORT
+ 
++  #if HAS_CASE_LIGHT && ENABLED(MENU_ITEM_CASE_LIGHT)
++
++    extern bool case_light_on;
++    extern void update_case_light();
++
++    void toggle_case_light() {
++      case_light_on = !case_light_on;
++      lcdDrawUpdate = LCDVIEW_CALL_REDRAW_NEXT;
++      update_case_light();
++    }
++
++  #endif // MENU_ITEM_CASE_LIGHT
++
+   /**
+    *
+    * "Main" menu
+@@ -594,10 +605,10 @@ void kill_screen(const char* lcd_msg) {
+     // Switch case light on/off
+     //
+     #if HAS_CASE_LIGHT && ENABLED(MENU_ITEM_CASE_LIGHT)
+-      if (case_light_on == 0)
+-        MENU_ITEM(gcode, MSG_LIGHTS_ON, PSTR("M355 S1"));
++      if (case_light_on)
++        MENU_ITEM(function, MSG_LIGHTS_OFF, toggle_case_light);
+       else
+-        MENU_ITEM(gcode, MSG_LIGHTS_OFF, PSTR("M355 S0"));
++        MENU_ITEM(function, MSG_LIGHTS_ON, toggle_case_light);
+     #endif
+ 
+     #if ENABLED(BLTOUCH)
+
+commit f45b6a77620c95656ba4f969d15447e84127ed10 (from 61437d988ada581ff9d8c27bcf39484fa98b36f4)
+Merge: 59fafb9 61437d9
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Nov 28 01:45:27 2016 -0600
+
+    Merge pull request #5314 from thinkyhead/case_light_menu_fix
+    
+    Fix and optimize case-light code
+
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 0e2fd9b..d506714 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -213,6 +213,10 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+     #define ENCODER_PULSES_PER_STEP 1
+   #endif
+ 
++  #ifndef TALL_FONT_CORRECTION
++    #define TALL_FONT_CORRECTION 0
++  #endif
++
+   /**
+    * START_SCREEN_OR_MENU generates init code for a screen or menu
+    *
+@@ -236,7 +240,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+ 
+   #define SCREEN_OR_MENU_LOOP() \
+     int8_t _menuLineNr = encoderTopLine, _thisItemNr; \
+-    for (int8_t _lcdLineNr = 0; _lcdLineNr < LCD_HEIGHT; _lcdLineNr++, _menuLineNr++) { \
++    for (int8_t _lcdLineNr = 0; _lcdLineNr < LCD_HEIGHT - TALL_FONT_CORRECTION; _lcdLineNr++, _menuLineNr++) { \
+       _thisItemNr = 0
+ 
+   /**
+@@ -247,7 +251,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+    *               Scroll as-needed to keep the selected line in view.
+    */
+   #define START_SCREEN() \
+-    START_SCREEN_OR_MENU(LCD_HEIGHT); \
++    START_SCREEN_OR_MENU(LCD_HEIGHT - TALL_FONT_CORRECTION); \
+     encoderTopLine = encoderLine; \
+     bool _skipStatic = false; \
+     SCREEN_OR_MENU_LOOP()
+@@ -255,8 +259,8 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+   #define START_MENU() \
+     START_SCREEN_OR_MENU(1); \
+     NOMORE(encoderTopLine, encoderLine); \
+-    if (encoderLine >= encoderTopLine + LCD_HEIGHT) { \
+-      encoderTopLine = encoderLine - (LCD_HEIGHT - 1); \
++    if (encoderLine >= encoderTopLine + LCD_HEIGHT - TALL_FONT_CORRECTION) { \
++      encoderTopLine = encoderLine - (LCD_HEIGHT - TALL_FONT_CORRECTION - 1); \
+     } \
+     bool _skipStatic = true; \
+     SCREEN_OR_MENU_LOOP()
+diff --git a/Marlin/ultralcd_impl_DOGM.h b/Marlin/ultralcd_impl_DOGM.h
+index 05dd718..50956b6 100644
+--- a/Marlin/ultralcd_impl_DOGM.h
++++ b/Marlin/ultralcd_impl_DOGM.h
+@@ -519,13 +519,14 @@ static void lcd_implementation_status_screen() {
+ 
+   // Enable to save many cycles by drawing a hollow frame
+   #define XYZ_HOLLOW_FRAME
++  #define MENU_HOLLOW_FRAME
+ 
+   #if ENABLED(XYZ_HOLLOW_FRAME)
+     #define XYZ_FRAME_TOP 29
+     #define XYZ_FRAME_HEIGHT INFO_FONT_HEIGHT + 3
+   #else
+     #define XYZ_FRAME_TOP 30
+-    #define XYZ_FRAME_HEIGHT INFO_FONT_HEIGHT + 2
++    #define XYZ_FRAME_HEIGHT INFO_FONT_HEIGHT + 1
+   #endif
+ 
+   // Before homing the axis letters are blinking 'X' <-> '?'.
+@@ -580,13 +581,13 @@ static void lcd_implementation_status_screen() {
+   // Feedrate
+   //
+ 
+-  if (PAGE_CONTAINS(50 - INFO_FONT_HEIGHT, 49)) {
++  if (PAGE_CONTAINS(51 - INFO_FONT_HEIGHT, 49)) {
+     lcd_setFont(FONT_MENU);
+-    u8g.setPrintPos(3, 49);
++    u8g.setPrintPos(3, 50);
+     lcd_print(LCD_STR_FEEDRATE[0]);
+ 
+     lcd_setFont(FONT_STATUSMENU);
+-    u8g.setPrintPos(12, 49);
++    u8g.setPrintPos(12, 50);
+     lcd_print(itostr3(feedrate_percentage));
+     u8g.print('%');
+   }
+@@ -595,7 +596,7 @@ static void lcd_implementation_status_screen() {
+   // Status line
+   //
+ 
+-  #define STATUS_BASELINE (54 + INFO_FONT_HEIGHT)
++  #define STATUS_BASELINE (55 + INFO_FONT_HEIGHT)
+ 
+   if (PAGE_CONTAINS(STATUS_BASELINE + 1 - INFO_FONT_HEIGHT, STATUS_BASELINE)) {
+     u8g.setPrintPos(0, STATUS_BASELINE);
+@@ -624,19 +625,26 @@ static void lcd_implementation_status_screen() {
+   // Set the colors for a menu item based on whether it is selected
+   static void lcd_implementation_mark_as_selected(const uint8_t row, const bool isSelected) {
+ 
+-    row_y1 = row * (DOG_CHAR_HEIGHT) + 1;
+-    row_y2 = row_y1 + (DOG_CHAR_HEIGHT) - 1;
++    row_y1 = row * (DOG_CHAR_HEIGHT + 2 * (TALL_FONT_CORRECTION)) + 1;
++    row_y2 = row_y1 + (DOG_CHAR_HEIGHT + 2 * (TALL_FONT_CORRECTION)) - 1;
+ 
+-    if (!PAGE_CONTAINS(row_y1 + 2 - (TALL_FONT_CORRECTION), row_y2 + 2 - (TALL_FONT_CORRECTION))) return;
++    if (!PAGE_CONTAINS(row_y1 + 1, row_y1 + 1 + DOG_CHAR_HEIGHT + 2 * (TALL_FONT_CORRECTION))) return;
+ 
+     if (isSelected) {
+-      u8g.setColorIndex(1);  // black on white
+-      u8g.drawBox(0, row_y1 + 2 - (TALL_FONT_CORRECTION), LCD_PIXEL_WIDTH, DOG_CHAR_HEIGHT);
+-      u8g.setColorIndex(0);  // following text must be white on black
+-    }
+-    else {
+-      u8g.setColorIndex(1); // unmarked text is black on white
++      #if ENABLED(MENU_HOLLOW_FRAME)
++        u8g.drawHLine(0, row_y1 + 1, LCD_PIXEL_WIDTH);
++        u8g.drawHLine(0, row_y1 + 1 + DOG_CHAR_HEIGHT + 2 * (TALL_FONT_CORRECTION), LCD_PIXEL_WIDTH);
++      #else
++        u8g.setColorIndex(1); // black on white
++        u8g.drawBox(0, row_y1 + 2, LCD_PIXEL_WIDTH, DOG_CHAR_HEIGHT - 1 + 2 * (TALL_FONT_CORRECTION));
++        u8g.setColorIndex(0); // white on black
++      #endif
+     }
++    #if DISABLED(MENU_HOLLOW_FRAME)
++      else {
++        u8g.setColorIndex(1); // unmarked text is black on white
++      }
++    #endif
+     u8g.setPrintPos((START_COL) * (DOG_CHAR_WIDTH), row_y2);
+   }
+ 
+

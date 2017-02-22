@@ -1,0 +1,192 @@
+commit 19741a0ba6fe4b0904dcc67596133d0a7c299feb (from db86aaf38538287f01df0d9a827ab288ddeeb01f)
+Merge: db86aaf 7c16e77
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 16 21:32:25 2016 -0700
+
+    Merge pull request #3503 from thinkyhead/rc_lcd_endstop_msg
+    
+    Show all endstops on LCD in checkHitEndstops
+
+diff --git a/Marlin/language_en.h b/Marlin/language_en.h
+index 74da3cd..c213fb5 100644
+--- a/Marlin/language_en.h
++++ b/Marlin/language_en.h
+@@ -49,6 +49,9 @@
+ #ifndef MSG_SD_REMOVED
+   #define MSG_SD_REMOVED                      "Card removed"
+ #endif
++#ifndef MSG_LCD_ENDSTOPS
++  #define MSG_LCD_ENDSTOPS                    "Endstops" // Max length 8 characters
++#endif
+ #ifndef MSG_MAIN
+   #define MSG_MAIN                            "Main"
+ #endif
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index f8f9312..9e6fd77 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -291,28 +291,39 @@ void endstops_hit_on_purpose() { endstop_hit_bits = 0; }
+ 
+ void checkHitEndstops() {
+   if (endstop_hit_bits) {
++    #if ENABLED(ULTRA_LCD)
++      char chrX = ' ', chrY = ' ', chrZ = ' ', chrP = ' ';
++      #define _SET_STOP_CHAR(A,C) (chr## A = C)
++    #else
++      #define _SET_STOP_CHAR(A,C) ;
++    #endif
++
++    #define _ENDSTOP_HIT(A,C) do{ \
++      SERIAL_ECHOPAIR(" " STRINGIFY(A) ":", endstops_trigsteps[A ##_AXIS] / axis_steps_per_unit[A ##_AXIS]); \
++      _SET_STOP_CHAR(A,C); }while(0)
++
++    #define _ENDSTOP_HIT_TEST(A,C) \
++      if (TEST(endstop_hit_bits, A ##_MIN) || TEST(endstop_hit_bits, A ##_MAX)) \
++        _ENDSTOP_HIT(A,C)
++
+     SERIAL_ECHO_START;
+     SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
+-    if (TEST(endstop_hit_bits, X_MIN)) {
+-      SERIAL_ECHOPAIR(" X:", endstops_trigsteps[X_AXIS] / axis_steps_per_unit[X_AXIS]);
+-      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "X");
+-    }
+-    if (TEST(endstop_hit_bits, Y_MIN)) {
+-      SERIAL_ECHOPAIR(" Y:", endstops_trigsteps[Y_AXIS] / axis_steps_per_unit[Y_AXIS]);
+-      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Y");
+-    }
+-    if (TEST(endstop_hit_bits, Z_MIN)) {
+-      SERIAL_ECHOPAIR(" Z:", endstops_trigsteps[Z_AXIS] / axis_steps_per_unit[Z_AXIS]);
+-      LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "Z");
+-    }
++    _ENDSTOP_HIT_TEST(X, 'X');
++    _ENDSTOP_HIT_TEST(Y, 'Y');
++    _ENDSTOP_HIT_TEST(Z, 'Z');
++
+     #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+-      if (TEST(endstop_hit_bits, Z_MIN_PROBE)) {
+-        SERIAL_ECHOPAIR(" Z_MIN_PROBE:", endstops_trigsteps[Z_AXIS] / axis_steps_per_unit[Z_AXIS]);
+-        LCD_MESSAGEPGM(MSG_ENDSTOPS_HIT "ZP");
+-      }
++      #define P_AXIS Z_AXIS
++      if (TEST(endstop_hit_bits, Z_MIN_PROBE)) _ENDSTOP_HIT(P, 'P');
+     #endif
+     SERIAL_EOL;
+ 
++    #if ENABLED(ULTRA_LCD)
++      char msg[3 * strlen(MSG_LCD_ENDSTOPS) + 8 + 1]; // Room for a UTF 8 string
++      sprintf_P(msg, PSTR(MSG_LCD_ENDSTOPS " %c %c %c %c"), chrX, chrY, chrZ, chrP);
++      lcd_setstatus(msg);
++    #endif
++
+     endstops_hit_on_purpose();
+ 
+     #if ENABLED(ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED) && ENABLED(SDSUPPORT)
+
+commit 19741a0ba6fe4b0904dcc67596133d0a7c299feb (from 7c16e774cada5cc8a59acc17becf6dc76d81c570)
+Merge: db86aaf 7c16e77
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Apr 16 21:32:25 2016 -0700
+
+    Merge pull request #3503 from thinkyhead/rc_lcd_endstop_msg
+    
+    Show all endstops on LCD in checkHitEndstops
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 63942d8..ab0a24e 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1413,9 +1413,6 @@ static void setup_for_endstop_move() {
+ 
+       static void set_bed_level_equation_lsq(double* plane_equation_coefficients) {
+ 
+-        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
+-        plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
+-
+         //plan_bed_level_matrix.debug("bed level before");
+ 
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -1427,14 +1424,16 @@ static void setup_for_endstop_move() {
+           }
+         #endif
+ 
++        vector_3 planeNormal = vector_3(-plane_equation_coefficients[0], -plane_equation_coefficients[1], 1);
++        plan_bed_level_matrix = matrix_3x3::create_look_at(planeNormal);
++
+         vector_3 corrected_position = plan_get_position();
+- 
+         current_position[X_AXIS] = corrected_position.x;
+         current_position[Y_AXIS] = corrected_position.y;
+         current_position[Z_AXIS] = corrected_position.z;
+ 
+         #if ENABLED(DEBUG_LEVELING_FEATURE)
+-          if (DEBUGGING(LEVELING)) DEBUG_POS("<<< set_bed_level_equation_lsq", current_position);
++          if (DEBUGGING(LEVELING)) DEBUG_POS("<<< set_bed_level_equation_lsq", corrected_position);
+         #endif
+ 
+         sync_plan_position();
+diff --git a/Marlin/Sd2Card.cpp b/Marlin/Sd2Card.cpp
+index 62416b0..6087aa8 100644
+--- a/Marlin/Sd2Card.cpp
++++ b/Marlin/Sd2Card.cpp
+@@ -383,38 +383,31 @@ fail:
+  * the value zero, false, is returned for failure.
+  */
+ bool Sd2Card::readBlock(uint32_t blockNumber, uint8_t* dst) {
+-#if ENABLED(SD_CHECK_AND_RETRY)
+-  uint8_t retryCnt = 3;
+   // use address if not SDHC card
+   if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-retry2:
+-  retryCnt --;
+-  if (cardCommand(CMD17, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD17);
+-    if (retryCnt > 0) goto retry;
+-    goto fail;
+-  }
+-  if (!readData(dst, 512)) {
+-    if (retryCnt > 0) goto retry;
+-    goto fail;
+-  }
+-  return true;
+-retry:
+-  chipSelectHigh();
+-  cardCommand(CMD12, 0);//Try sending a stop command, but ignore the result.
+-  errorCode_ = 0;
+-  goto retry2;
+-#else
+-  // use address if not SDHC card
+-  if (type() != SD_CARD_TYPE_SDHC) blockNumber <<= 9;
+-  if (cardCommand(CMD17, blockNumber)) {
+-    error(SD_CARD_ERROR_CMD17);
+-    goto fail;
+-  }
+-  return readData(dst, 512);
+-#endif
+ 
+-fail:
++  #if ENABLED(SD_CHECK_AND_RETRY)
++    uint8_t retryCnt = 3;
++    do {
++      if (!cardCommand(CMD17, blockNumber)) {
++        if (readData(dst, 512)) return true;
++      }
++      else
++        error(SD_CARD_ERROR_CMD17);
++
++      if (--retryCnt) break;
++
++      chipSelectHigh();
++      cardCommand(CMD12, 0); // Try sending a stop command, ignore the result.
++      errorCode_ = 0;
++    } while (true);
++  #else
++    if (cardCommand(CMD17, blockNumber))
++      error(SD_CARD_ERROR_CMD17);
++    else
++      return readData(dst, 512);
++  #endif
++
+   chipSelectHigh();
+   return false;
+ }
+

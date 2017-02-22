@@ -1,0 +1,262 @@
+commit 733453569ba14affe49070a9d41a20b42cce2e53 (from 6970c24ee659594ab27026b6267f22b183ddcae8)
+Merge: 6970c24 628dcbc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 19 04:38:18 2016 -0500
+
+    Merge pull request #4650 from thinkyhead/rc_percent_is_percent
+    
+    extruder_multiplier => flow_percentage
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 28c3250..697acf6 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -265,7 +265,7 @@ extern int feedrate_percentage;
+ 
+ extern bool axis_relative_modes[];
+ extern bool volumetric_enabled;
+-extern int extruder_multiplier[EXTRUDERS]; // sets extrude multiply factor (in percent) for each extruder individually
++extern int flow_percentage[EXTRUDERS]; // Extrusion factor for each extruder
+ extern float filament_size[EXTRUDERS]; // cross-sectional area of filament (in millimeters), typically around 1.75 or 2.85, 0 disables the volumetric calculations for the extruder.
+ extern float volumetric_multiplier[EXTRUDERS]; // reciprocal of cross-sectional area of filament (in square millimeters), stored this way to reduce computational burden in planner
+ extern bool axis_known_position[3]; // axis[n].is_known
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0a38562..870a162 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -320,7 +320,7 @@ static float feedrate_mm_s = MMM_TO_MMS(1500.0), saved_feedrate_mm_s;
+ int feedrate_percentage = 100, saved_feedrate_percentage;
+ 
+ bool axis_relative_modes[] = AXIS_RELATIVE_MODES;
+-int extruder_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
++int flow_percentage[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(100);
+ bool volumetric_enabled = false;
+ float filament_size[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(DEFAULT_NOMINAL_FILAMENT_DIA);
+ float volumetric_multiplier[EXTRUDERS] = ARRAY_BY_EXTRUDERS1(1.0);
+@@ -5594,7 +5594,7 @@ inline void gcode_M220() {
+ inline void gcode_M221() {
+   if (get_target_extruder_from_command(221)) return;
+   if (code_seen('S'))
+-    extruder_multiplier[target_extruder] = code_value_int();
++    flow_percentage[target_extruder] = code_value_int();
+ }
+ 
+ /**
+@@ -6059,7 +6059,7 @@ inline void gcode_M400() { stepper.synchronize(); }
+     //SERIAL_PROTOCOLPGM("Filament dia (measured mm):");
+     //SERIAL_PROTOCOL(filament_width_meas);
+     //SERIAL_PROTOCOLPGM("Extrusion ratio(%):");
+-    //SERIAL_PROTOCOL(extruder_multiplier[active_extruder]);
++    //SERIAL_PROTOCOL(flow_percentage[active_extruder]);
+   }
+ 
+   /**
+@@ -8431,15 +8431,18 @@ void prepare_move_to_destination() {
+   static millis_t next_status_led_update_ms = 0;
+ 
+   void handle_status_leds(void) {
+-    float max_temp = 0.0;
+     if (ELAPSED(millis(), next_status_led_update_ms)) {
+       next_status_led_update_ms += 500; // Update every 0.5s
++      float max_temp =
++        #if HAS_TEMP_BED
++          MAX3(max_temp, thermalManager.degTargetBed(), thermalManager.degBed())
++        #else
++          0.0
++        #endif
++      ;
+       HOTEND_LOOP() {
+-        max_temp = max(max(max_temp, thermalManager.degHotend(e)), thermalManager.degTargetHotend(e));
++        max_temp = MAX3(max_temp, thermalManager.degHotend(e), thermalManager.degTargetHotend(e));
+       }
+-      #if HAS_TEMP_BED
+-        max_temp = max(max(max_temp, thermalManager.degTargetBed()), thermalManager.degBed());
+-      #endif
+       bool new_led = (max_temp > 55.0) ? true : (max_temp < 54.0) ? false : red_led;
+       if (new_led != red_led) {
+         red_led = new_led;
+diff --git a/Marlin/macros.h b/Marlin/macros.h
+index 5eec73e..c070569 100644
+--- a/Marlin/macros.h
++++ b/Marlin/macros.h
+@@ -118,4 +118,7 @@
+ 
+ #define CEILING(x,y) (((x) + (y) - 1) / (y))
+ 
++#define MAX3(a, b, c)    max(max(a, b), c)
++#define MAX4(a, b, c, d) max(max(max(a, b), c), d)
++
+ #endif //__MACROS_H
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4e4d4a1..7b0f099 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -622,11 +622,8 @@ void Planner::check_axes_activity() {
+     block->steps[Z_AXIS] = labs(dz);
+   #endif
+ 
+-  block->steps[E_AXIS] = labs(de);
+-  block->steps[E_AXIS] *= volumetric_multiplier[extruder];
+-  block->steps[E_AXIS] *= extruder_multiplier[extruder];
+-  block->steps[E_AXIS] /= 100;
+-  block->step_event_count = max(block->steps[X_AXIS], max(block->steps[Y_AXIS], max(block->steps[Z_AXIS], block->steps[E_AXIS])));
++  block->steps[E_AXIS] = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
++  block->step_event_count = MAX4(block->steps[X_AXIS], block->steps[Y_AXIS], block->steps[Z_AXIS], block->steps[E_AXIS]);
+ 
+   // Bail if this is a zero-length block
+   if (block->step_event_count <= dropsegments) return;
+@@ -809,7 +806,7 @@ void Planner::check_axes_activity() {
+     delta_mm[Y_AXIS] = dy * steps_to_mm[Y_AXIS];
+     delta_mm[Z_AXIS] = dz * steps_to_mm[Z_AXIS];
+   #endif
+-  delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * extruder_multiplier[extruder];
++  delta_mm[E_AXIS] = 0.01 * (de * steps_to_mm[E_AXIS]) * volumetric_multiplier[extruder] * flow_percentage[extruder];
+ 
+   if (block->steps[X_AXIS] <= dropsegments && block->steps[Y_AXIS] <= dropsegments && block->steps[Z_AXIS] <= dropsegments) {
+     block->millimeters = fabs(delta_mm[E_AXIS]);
+@@ -930,8 +927,8 @@ void Planner::check_axes_activity() {
+     }
+     ys0 = axis_segment_time[Y_AXIS][0] = ys0 + segment_time;
+ 
+-    long max_x_segment_time = max(xs0, max(xs1, xs2)),
+-         max_y_segment_time = max(ys0, max(ys1, ys2)),
++    long max_x_segment_time = MAX3(xs0, xs1, xs2),
++         max_y_segment_time = MAX3(ys0, ys1, ys2),
+          min_xy_segment_time = min(max_x_segment_time, max_y_segment_time);
+     if (min_xy_segment_time < MAX_FREQ_TIME) {
+       float low_sf = speed_factor * min_xy_segment_time / (MAX_FREQ_TIME);
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 2398ee7..f6ff6eb 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -799,15 +799,15 @@ void kill_screen(const char* lcd_msg) {
+     // Flow 4:
+     //
+     #if EXTRUDERS == 1
+-      MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[0], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW, &flow_percentage[0], 10, 999);
+     #else // EXTRUDERS > 1
+-      MENU_ITEM_EDIT(int3, MSG_FLOW, &extruder_multiplier[active_extruder], 10, 999);
+-      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N1, &extruder_multiplier[0], 10, 999);
+-      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N2, &extruder_multiplier[1], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW, &flow_percentage[active_extruder], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N1, &flow_percentage[0], 10, 999);
++      MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N2, &flow_percentage[1], 10, 999);
+       #if EXTRUDERS > 2
+-        MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N3, &extruder_multiplier[2], 10, 999);
++        MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N3, &flow_percentage[2], 10, 999);
+         #if EXTRUDERS > 3
+-          MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N4, &extruder_multiplier[3], 10, 999);
++          MENU_ITEM_EDIT(int3, MSG_FLOW MSG_N4, &flow_percentage[3], 10, 999);
+         #endif //EXTRUDERS > 3
+       #endif //EXTRUDERS > 2
+     #endif //EXTRUDERS > 1
+
+commit 733453569ba14affe49070a9d41a20b42cce2e53 (from 628dcbc76403721a346d3ee56fcaa429b9f1a827)
+Merge: 6970c24 628dcbc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Fri Aug 19 04:38:18 2016 -0500
+
+    Merge pull request #4650 from thinkyhead/rc_percent_is_percent
+    
+    extruder_multiplier => flow_percentage
+
+diff --git a/Marlin/language_ru.h b/Marlin/language_ru.h
+index e953b0b..7fb0e10 100644
+--- a/Marlin/language_ru.h
++++ b/Marlin/language_ru.h
+@@ -37,15 +37,17 @@
+ #define MSG_SD_INSERTED                     "Карта вставлена"
+ #define MSG_SD_REMOVED                      "Карта извлечена"
+ #define MSG_MAIN                            "Меню"
++#define MSG_LCD_ENDSTOPS                    "концевик"
+ #define MSG_AUTOSTART                       "Автостарт"
+ #define MSG_DISABLE_STEPPERS                "Выкл. двигатели"
+ #define MSG_AUTO_HOME                       "Парковка"
+-#define MSG_LEVEL_BED_HOMING                "Homing XYZ"
+-#define MSG_LEVEL_BED_WAITING               "Click to Begin"
+-#define MSG_LEVEL_BED_DONE                  "Leveling Done!"
+-#define MSG_LEVEL_BED_CANCEL                "Cancel"
++#define MSG_LEVEL_BED_HOMING                "Нулевое полож"
++#define MSG_LEVEL_BED_WAITING               "Нажмите начать"
++#define MSG_LEVEL_BED_NEXT_POINT            "Следующая точка"
++#define MSG_LEVEL_BED_DONE                  "Уровень!"
++#define MSG_LEVEL_BED_CANCEL                "Отменить"
+ #define MSG_SET_HOME_OFFSETS                "Запомнить парковку"
+-#define MSG_HOME_OFFSETS_APPLIED            "Offsets applied"
++#define MSG_HOME_OFFSETS_APPLIED            "Коррекции примен"
+ #define MSG_SET_ORIGIN                      "Запомнить ноль"
+ #define MSG_PREHEAT_1                       "Преднагрев PLA"
+ #define MSG_PREHEAT_1_N                     "Греть PLA Сопло "
+@@ -63,6 +65,7 @@
+ #define MSG_EXTRUDE                         "Экструзия"
+ #define MSG_RETRACT                         "Втягивание"
+ #define MSG_MOVE_AXIS                       "Движение по осям"
++#define MSG_LEVEL_BED                       "Калибровать стол"
+ #define MSG_MOVE_X                          "Движение по X"
+ #define MSG_MOVE_Y                          "Движение по Y"
+ #define MSG_MOVE_Z                          "Движение по Z"
+@@ -70,8 +73,8 @@
+ #define MSG_MOVE_01MM                       "Движение XYZ 0.1mm"
+ #define MSG_MOVE_1MM                        "Движение XYZ 1mm"
+ #define MSG_MOVE_10MM                       "Движение XY 10mm"
+-#define MSG_LEVEL_BED                       "Калибровать стол"
+ #define MSG_SPEED                           "Скорость"
++#define MSG_BED_Z                           "Z стола"
+ #define MSG_NOZZLE                          LCD_STR_THERMOMETER " Сопло"
+ #define MSG_BED                             LCD_STR_THERMOMETER " Стол"
+ #define MSG_FAN_SPEED                       "Кулер"
+@@ -88,14 +91,15 @@
+ #define MSG_PID_D                           "PID-D"
+ #define MSG_PID_C                           "PID-C"
+ #define MSG_ACC                             "Acc"
+-#define MSG_VXY_JERK                        "Vxy-jerk"
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
+-#define MSG_VMAX                            "Vmax "
+-#define MSG_VMIN                            "Vmin"
+-#define MSG_VTRAV_MIN                       "VTrav min"
+-#define MSG_AMAX                            "Amax"
++#define MSG_VXY_JERK                        "Vxy-рывок"
++#define MSG_VZ_JERK                         "Vz-рывок"
++#define MSG_VE_JERK                         "Ve-рывок"
++#define MSG_VMAX                            "Vмакс "
++#define MSG_VMIN                            "Vмин"
++#define MSG_VTRAV_MIN                       "Vпутеш. мин"
++#define MSG_AMAX                            "Aмакс"
+ #define MSG_A_RETRACT                       "A-втягивание"
++#define MSG_A_TRAVEL                        "A-путеш."
+ #define MSG_XSTEPS                          "X шаг/мм"
+ #define MSG_YSTEPS                          "Y шаг/мм"
+ #define MSG_ZSTEPS                          "Z шаг/мм"
+@@ -137,15 +141,16 @@
+ #define MSG_INIT_SDCARD                     "Иниц. карту"
+ #define MSG_CNG_SDCARD                      "Сменить карту"
+ #define MSG_ZPROBE_OUT                      "Z датчик вне стола"
+-#define MSG_YX_UNHOMED                      "Паркуй X/Y перед Z"
++#define MSG_HOME                            "Паркуй X/Y перед Z"
++#define MSG_FIRST                           "первый"
+ #define MSG_ZPROBE_ZOFFSET                  "Смещение Z"
+-#define MSG_BABYSTEP_X                      "Babystep X"
+-#define MSG_BABYSTEP_Y                      "Babystep Y"
+-#define MSG_BABYSTEP_Z                      "Babystep Z"
++#define MSG_BABYSTEP_X                      "Микрошаг X"
++#define MSG_BABYSTEP_Y                      "Микрошаг Y"
++#define MSG_BABYSTEP_Z                      "Микрошаг Z"
+ #define MSG_ENDSTOP_ABORT                   "Сработал концевик"
+ #define MSG_HEATING_FAILED_LCD              "Разогрев не удался"
+ #define MSG_ERR_REDUNDANT_TEMP              "Ошибка:Слишком горячо"
+-#define MSG_THERMAL_RUNAWAY                 "THERMAL RUNAWAY"
++#define MSG_THERMAL_RUNAWAY                 "ТЕПЛО УБЕГАНИЯ!"
+ #define MSG_ERR_MAXTEMP                     "Ошибка: Т макс."
+ #define MSG_ERR_MINTEMP                     "Ошибка: Т мин."
+ #define MSG_ERR_MAXTEMP_BED                 "Ошибка:Т макс.стол"
+@@ -158,6 +163,6 @@
+ #define MSG_DELTA_CALIBRATE_X               "Калибровать X"
+ #define MSG_DELTA_CALIBRATE_Y               "Калибровать Y"
+ #define MSG_DELTA_CALIBRATE_Z               "Калибровать Z"
+-#define MSG_DELTA_CALIBRATE_CENTER          "Калибровать Center"
++#define MSG_DELTA_CALIBRATE_CENTER          "Калибровать центр"
+ 
+ #endif // LANGUAGE_RU_H
+

@@ -1,0 +1,421 @@
+commit 3422103863f74a8e92b59a4bc802b5b0196b0bfb (from 92757bd7b32e852c53583ddd9d66a0b8e40e8f11)
+Merge: 92757bd 493d30c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 18:31:25 2016 -0700
+
+    Merge pull request #4310 from thinkyhead/rc_mbl_position_shift
+    
+    Fix position shift with MBL
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0cadef0..a4fbec0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -7831,76 +7831,59 @@ void clamp_to_software_endstops(float target[3]) {
+ #if ENABLED(MESH_BED_LEVELING)
+ 
+ // This function is used to split lines on mesh borders so each segment is only part of one mesh area
+-void mesh_buffer_line(float x, float y, float z, const float e, float fr_mm_s, const uint8_t& extruder, uint8_t x_splits = 0xff, uint8_t y_splits = 0xff) {
+-  if (!mbl.active()) {
+-    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
+-    set_current_to_destination();
+-    return;
+-  }
+-  int pcx = mbl.cell_index_x(RAW_CURRENT_POSITION(X_AXIS)),
+-      pcy = mbl.cell_index_y(RAW_CURRENT_POSITION(Y_AXIS)),
+-      cx = mbl.cell_index_x(RAW_POSITION(x, X_AXIS)),
+-      cy = mbl.cell_index_y(RAW_POSITION(y, Y_AXIS));
+-  NOMORE(pcx, MESH_NUM_X_POINTS - 2);
+-  NOMORE(pcy, MESH_NUM_Y_POINTS - 2);
+-  NOMORE(cx,  MESH_NUM_X_POINTS - 2);
+-  NOMORE(cy,  MESH_NUM_Y_POINTS - 2);
+-  if (pcx == cx && pcy == cy) {
++void mesh_line_to_destination(float fr_mm_m, uint8_t x_splits = 0xff, uint8_t y_splits = 0xff) {
++  int cx1 = mbl.cell_index_x(RAW_CURRENT_POSITION(X_AXIS)),
++      cy1 = mbl.cell_index_y(RAW_CURRENT_POSITION(Y_AXIS)),
++      cx2 = mbl.cell_index_x(RAW_POSITION(destination[X_AXIS], X_AXIS)),
++      cy2 = mbl.cell_index_y(RAW_POSITION(destination[Y_AXIS], Y_AXIS));
++  NOMORE(cx1, MESH_NUM_X_POINTS - 2);
++  NOMORE(cy1, MESH_NUM_Y_POINTS - 2);
++  NOMORE(cx2, MESH_NUM_X_POINTS - 2);
++  NOMORE(cy2, MESH_NUM_Y_POINTS - 2);
++
++  if (cx1 == cx2 && cy1 == cy2) {
+     // Start and end on same mesh square
+-    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
++    line_to_destination(fr_mm_m);
+     set_current_to_destination();
+     return;
+   }
+-  float nx, ny, nz, ne, normalized_dist;
+-  if (cx > pcx && TEST(x_splits, cx)) {
+-    nx = mbl.get_probe_x(cx) + home_offset[X_AXIS];
+-    normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+-    ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+-    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+-    ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(x_splits, cx);
+-  }
+-  else if (cx < pcx && TEST(x_splits, pcx)) {
+-    nx = mbl.get_probe_x(pcx) + home_offset[X_AXIS];
+-    normalized_dist = (nx - current_position[X_AXIS]) / (x - current_position[X_AXIS]);
+-    ny = current_position[Y_AXIS] + (y - current_position[Y_AXIS]) * normalized_dist;
+-    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+-    ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(x_splits, pcx);
+-  }
+-  else if (cy > pcy && TEST(y_splits, cy)) {
+-    ny = mbl.get_probe_y(cy) + home_offset[Y_AXIS];
+-    normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+-    nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+-    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+-    ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(y_splits, cy);
+-  }
+-  else if (cy < pcy && TEST(y_splits, pcy)) {
+-    ny = mbl.get_probe_y(pcy) + home_offset[Y_AXIS];
+-    normalized_dist = (ny - current_position[Y_AXIS]) / (y - current_position[Y_AXIS]);
+-    nx = current_position[X_AXIS] + (x - current_position[X_AXIS]) * normalized_dist;
+-    nz = current_position[Z_AXIS] + (z - current_position[Z_AXIS]) * normalized_dist;
+-    ne = current_position[E_AXIS] + (e - current_position[E_AXIS]) * normalized_dist;
+-    CBI(y_splits, pcy);
++
++  #define MBL_SEGMENT_END(A) (current_position[A ##_AXIS] + (destination[A ##_AXIS] - current_position[A ##_AXIS]) * normalized_dist)
++
++  float normalized_dist, end[NUM_AXIS];
++
++  // Split at the left/front border of the right/top square
++  int8_t gcx = max(cx1, cx2), gcy = max(cy1, cy2);
++  if (cx2 != cx1 && TEST(x_splits, gcx)) {
++    memcpy(end, destination, sizeof(end));
++    destination[X_AXIS] = mbl.get_probe_x(gcx) + home_offset[X_AXIS] + position_shift[X_AXIS];
++    normalized_dist = (destination[X_AXIS] - current_position[X_AXIS]) / (end[X_AXIS] - current_position[X_AXIS]);
++    destination[Y_AXIS] = MBL_SEGMENT_END(Y);
++    CBI(x_splits, gcx);
++  }
++  else if (cy2 != cy1 && TEST(y_splits, gcy)) {
++    memcpy(end, destination, sizeof(end));
++    destination[Y_AXIS] = mbl.get_probe_y(gcy) + home_offset[Y_AXIS] + position_shift[Y_AXIS];
++    normalized_dist = (destination[Y_AXIS] - current_position[Y_AXIS]) / (end[Y_AXIS] - current_position[Y_AXIS]);
++    destination[X_AXIS] = MBL_SEGMENT_END(X);
++    CBI(y_splits, gcy);
+   }
+   else {
+     // Already split on a border
+-    planner.buffer_line(x, y, z, e, fr_mm_s, extruder);
++    line_to_destination(fr_mm_m);
+     set_current_to_destination();
+     return;
+   }
++
++  destination[Z_AXIS] = MBL_SEGMENT_END(Z);
++  destination[E_AXIS] = MBL_SEGMENT_END(E);
++
+   // Do the split and look for more borders
+-  destination[X_AXIS] = nx;
+-  destination[Y_AXIS] = ny;
+-  destination[Z_AXIS] = nz;
+-  destination[E_AXIS] = ne;
+-  mesh_buffer_line(nx, ny, nz, ne, fr_mm_s, extruder, x_splits, y_splits);
+-  destination[X_AXIS] = x;
+-  destination[Y_AXIS] = y;
+-  destination[Z_AXIS] = z;
+-  destination[E_AXIS] = e;
+-  mesh_buffer_line(x, y, z, e, fr_mm_s, extruder, x_splits, y_splits);
++  mesh_line_to_destination(fr_mm_m, x_splits, y_splits);
++
++  // Restore destination from stack
++  memcpy(destination, end, sizeof(end));
++  mesh_line_to_destination(fr_mm_m, x_splits, y_splits);
+ }
+ #endif  // MESH_BED_LEVELING
+ 
+@@ -7997,11 +7980,13 @@ void mesh_buffer_line(float x, float y, float z, const float e, float fr_mm_s, c
+     }
+     else {
+       #if ENABLED(MESH_BED_LEVELING)
+-        mesh_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], MMM_TO_MMS_SCALED(feedrate_mm_m), active_extruder);
+-        return false;
+-      #else
+-        line_to_destination(MMM_SCALED(feedrate_mm_m));
++        if (mbl.active()) {
++          mesh_line_to_destination(MMM_SCALED(feedrate_mm_m));
++          return false;
++        }
++        else
+       #endif
++          line_to_destination(MMM_SCALED(feedrate_mm_m));
+     }
+     return true;
+   }
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index 0866344..a8f2388 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -238,8 +238,8 @@
+     #error "MESH_BED_LEVELING does not yet support DELTA printers."
+   #elif ENABLED(AUTO_BED_LEVELING_FEATURE)
+     #error "Select AUTO_BED_LEVELING_FEATURE or MESH_BED_LEVELING, not both."
+-  #elif MESH_NUM_X_POINTS > 7 || MESH_NUM_Y_POINTS > 7
+-    #error "MESH_NUM_X_POINTS and MESH_NUM_Y_POINTS need to be less than 8."
++  #elif MESH_NUM_X_POINTS > 9 || MESH_NUM_Y_POINTS > 9
++    #error "MESH_NUM_X_POINTS and MESH_NUM_Y_POINTS must be less than 10."
+   #endif
+ #elif ENABLED(MANUAL_BED_LEVELING)
+   #error "MESH_BED_LEVELING is required for MANUAL_BED_LEVELING."
+diff --git a/Marlin/configuration_store.cpp b/Marlin/configuration_store.cpp
+index ab5af80..b203bbb 100644
+--- a/Marlin/configuration_store.cpp
++++ b/Marlin/configuration_store.cpp
+@@ -67,7 +67,7 @@
+  *  203            z_offset (float)
+  *  207            mesh_num_x (uint8 as set in firmware)
+  *  208            mesh_num_y (uint8 as set in firmware)
+- *  209 G29 S3 XYZ z_values[][] (float x9, by default)
++ *  209 G29 S3 XYZ z_values[][] (float x9, by default, up to float x 81)
+  *
+  * AUTO BED LEVELING
+  *  245  M851      zprobe_zoffset (float)
+
+commit 3422103863f74a8e92b59a4bc802b5b0196b0bfb (from 493d30cd976f0432c7d8bafda9ed36958a1706aa)
+Merge: 92757bd 493d30c
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jul 17 18:31:25 2016 -0700
+
+    Merge pull request #4310 from thinkyhead/rc_mbl_position_shift
+    
+    Fix position shift with MBL
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 74ec068..a4fbec0 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1594,7 +1594,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+ /**
+  * Some planner shorthand inline functions
+  */
+-inline void set_homing_bump_feedrate(AxisEnum axis) {
++inline float set_homing_bump_feedrate(AxisEnum axis) {
+   const int homing_bump_divisor[] = HOMING_BUMP_DIVISOR;
+   int hbd = homing_bump_divisor[axis];
+   if (hbd < 1) {
+@@ -1603,6 +1603,7 @@ inline void set_homing_bump_feedrate(AxisEnum axis) {
+     SERIAL_ECHOLNPGM("Warning: Homing Bump Divisor < 1");
+   }
+   feedrate_mm_m = homing_feedrate_mm_m[axis] / hbd;
++  return feedrate_mm_m;
+ }
+ //
+ // line_to_current_position
+@@ -1707,6 +1708,11 @@ static void do_blocking_move_to(float x, float y, float z, float fr_mm_m = 0.0)
+   feedrate_mm_m = old_feedrate_mm_m;
+ }
+ 
++inline void do_blocking_move_to_axis_pos(AxisEnum axis, float where, float fr_mm_m = 0.0) {
++  current_position[axis] = where;
++  do_blocking_move_to(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
++}
++
+ inline void do_blocking_move_to_x(float x, float fr_mm_m = 0.0) {
+   do_blocking_move_to(x, current_position[Y_AXIS], current_position[Z_AXIS], fr_mm_m);
+ }
+@@ -2419,27 +2425,19 @@ static void homeaxis(AxisEnum axis) {
+   #endif
+ 
+   // Move towards the endstop until an endstop is triggered
+-  destination[axis] = 1.5 * max_length(axis) * axis_home_dir;
+-  feedrate_mm_m = homing_feedrate_mm_m[axis];
+-  line_to_destination();
+-  stepper.synchronize();
++  do_blocking_move_to_axis_pos(axis, 1.5 * max_length(axis) * axis_home_dir, homing_feedrate_mm_m[axis]);
+ 
+   // Set the axis position as setup for the move
+   current_position[axis] = 0;
+   sync_plan_position();
+ 
+   // Move away from the endstop by the axis HOME_BUMP_MM
+-  destination[axis] = -home_bump_mm(axis) * axis_home_dir;
+-  line_to_destination();
+-  stepper.synchronize();
++  do_blocking_move_to_axis_pos(axis, -home_bump_mm(axis) * axis_home_dir, homing_feedrate_mm_m[axis]);
+ 
+   // Slow down the feedrate for the next move
+-  set_homing_bump_feedrate(axis);
+ 
+   // Move slowly towards the endstop until triggered
+-  destination[axis] = 2 * home_bump_mm(axis) * axis_home_dir;
+-  line_to_destination();
+-  stepper.synchronize();
++  do_blocking_move_to_axis_pos(axis, 2 * home_bump_mm(axis) * axis_home_dir, set_homing_bump_feedrate(axis));
+ 
+   #if ENABLED(DEBUG_LEVELING_FEATURE)
+     if (DEBUGGING(LEVELING)) DEBUG_POS("> TRIGGER ENDSTOP", current_position);
+@@ -2460,10 +2458,7 @@ static void homeaxis(AxisEnum axis) {
+       sync_plan_position();
+ 
+       // Move to the adjusted endstop height
+-      feedrate_mm_m = homing_feedrate_mm_m[axis];
+-      destination[Z_AXIS] = adj;
+-      line_to_destination();
+-      stepper.synchronize();
++      do_blocking_move_to_z(adj, homing_feedrate_mm_m[axis]);
+ 
+       if (lockZ1) stepper.set_z_lock(false); else stepper.set_z2_lock(false);
+       stepper.set_homing_flag(false);
+@@ -2474,15 +2469,13 @@ static void homeaxis(AxisEnum axis) {
+     // retrace by the amount specified in endstop_adj
+     if (endstop_adj[axis] * axis_home_dir < 0) {
+       sync_plan_position();
+-      destination[axis] = endstop_adj[axis];
+       #if ENABLED(DEBUG_LEVELING_FEATURE)
+         if (DEBUGGING(LEVELING)) {
+           SERIAL_ECHOPAIR("> endstop_adj = ", endstop_adj[axis]);
+-          DEBUG_POS("", destination);
++          DEBUG_POS("", current_position);
+         }
+       #endif
+-      line_to_destination();
+-      stepper.synchronize();
++      do_blocking_move_to_axis_pos(axis, endstop_adj[axis], set_homing_bump_feedrate(axis));
+     }
+   #endif
+ 
+@@ -2836,8 +2829,6 @@ inline void gcode_G4() {
+ 
+   static void quick_home_xy() {
+ 
+-    current_position[X_AXIS] = current_position[Y_AXIS] = 0;
+-
+     #if ENABLED(DUAL_X_CARRIAGE)
+       int x_axis_home_dir = x_home_dir(active_extruder);
+       extruder_duplication_enabled = false;
+@@ -2845,17 +2836,15 @@ inline void gcode_G4() {
+       int x_axis_home_dir = home_dir(X_AXIS);
+     #endif
+ 
+-    float mlx = max_length(X_AXIS), mly = max_length(Y_AXIS),
+-          mlratio = mlx > mly ? mly / mlx : mlx / mly;
++    float mlx = max_length(X_AXIS),
++          mly = max_length(Y_AXIS),
++          mlratio = mlx > mly ? mly / mlx : mlx / mly,
++          fr_mm_m = min(homing_feedrate_mm_m[X_AXIS], homing_feedrate_mm_m[Y_AXIS]) * sqrt(sq(mlratio) + 1);
+ 
+-    destination[X_AXIS] = 1.5 * mlx * x_axis_home_dir;
+-    destination[Y_AXIS] = 1.5 * mly * home_dir(Y_AXIS);
+-    feedrate_mm_m = min(homing_feedrate_mm_m[X_AXIS], homing_feedrate_mm_m[Y_AXIS]) * sqrt(sq(mlratio) + 1);
+-    line_to_destination();
+-    stepper.synchronize();
++    do_blocking_move_to_xy(1.5 * mlx * x_axis_home_dir, 1.5 * mly * home_dir(Y_AXIS), fr_mm_m);
+     endstops.hit_on_purpose(); // clear endstop hit flags
++    current_position[X_AXIS] = current_position[Y_AXIS] = 0;
+ 
+-    destination[X_AXIS] = destination[Y_AXIS] = 0;
+   }
+ 
+ #endif // QUICK_HOME
+@@ -6717,7 +6706,8 @@ inline void gcode_T(uint8_t tmp_extruder) {
+ 
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) {
+-        SERIAL_ECHOLNPGM(">>> gcode_T");
++        SERIAL_ECHOPAIR(">>> gcode_T(", tmp_extruder);
++        SERIAL_ECHOLNPGM(")");
+         DEBUG_POS("BEFORE", current_position);
+       }
+     #endif
+@@ -6946,7 +6936,7 @@ inline void gcode_T(uint8_t tmp_extruder) {
+           #if ENABLED(DEBUG_LEVELING_FEATURE)
+             if (DEBUGGING(LEVELING)) {
+               SERIAL_ECHOPAIR("Offset Tool XY by { ", xydiff[X_AXIS]);
+-              SERIAL_ECHOPAIR(", ", xydiff[X_AXIS]);
++              SERIAL_ECHOPAIR(", ", xydiff[Y_AXIS]);
+               SERIAL_ECHOLNPGM(" }");
+             }
+           #endif
+diff --git a/Marlin/example_configurations/K8400/Configuration.h b/Marlin/example_configurations/K8400/Configuration.h
+index 316a2c0..8be33d7 100644
+--- a/Marlin/example_configurations/K8400/Configuration.h
++++ b/Marlin/example_configurations/K8400/Configuration.h
+@@ -152,6 +152,30 @@
+ // For Cyclops or any "multi-extruder" that shares a single nozzle.
+ //#define SINGLENOZZLE
+ 
++// A dual extruder that uses a single stepper motor
++// Don't forget to set SSDE_SERVO_ANGLES and HOTEND_OFFSET_X/Y/Z
++//#define SWITCHING_EXTRUDER
++#if ENABLED(SWITCHING_EXTRUDER)
++  #define SWITCHING_EXTRUDER_SERVO_NR 0
++  #define SWITCHING_EXTRUDER_SERVO_ANGLES { 0, 90 } // Angles for E0, E1
++  //#define HOTEND_OFFSET_Z {0.0, 0.0}
++#endif
++
++/**
++ * "Mixing Extruder"
++ *   - Adds a new code, M165, to set the current mix factors.
++ *   - Extends the stepping routines to move multiple steppers in proportion to the mix.
++ *   - Optional support for Repetier Host M163, M164, and virtual extruder.
++ *   - This implementation supports only a single extruder.
++ *   - Enable DIRECT_MIXING_IN_G1 for Pia Taubert's reference implementation
++ */
++//#define MIXING_EXTRUDER
++#if ENABLED(MIXING_EXTRUDER)
++  #define MIXING_STEPPERS 2        // Number of steppers in your mixing extruder
++  #define MIXING_VIRTUAL_TOOLS 16  // Use the Virtual Tool method with M163 and M164
++  //#define DIRECT_MIXING_IN_G1    // Allow ABCDHI mix factors in G1 movement commands
++#endif
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+@@ -162,7 +186,6 @@
+ // 1 = ATX
+ // 2 = X-Box 360 203Watts (the blue wire connected to PS_ON and the red wire to VCC)
+ // :{1:'ATX',2:'X-Box 360'}
+-
+ #define POWER_SUPPLY 1
+ 
+ // Define this to have the electronics keep the power supply off on startup. If you don't know what this is leave it.
+diff --git a/Marlin/example_configurations/K8400/Dual-head/Configuration.h b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+index 4024761..158f6ad 100644
+--- a/Marlin/example_configurations/K8400/Dual-head/Configuration.h
++++ b/Marlin/example_configurations/K8400/Dual-head/Configuration.h
+@@ -152,6 +152,30 @@
+ // For Cyclops or any "multi-extruder" that shares a single nozzle.
+ //#define SINGLENOZZLE
+ 
++// A dual extruder that uses a single stepper motor
++// Don't forget to set SSDE_SERVO_ANGLES and HOTEND_OFFSET_X/Y/Z
++//#define SWITCHING_EXTRUDER
++#if ENABLED(SWITCHING_EXTRUDER)
++  #define SWITCHING_EXTRUDER_SERVO_NR 0
++  #define SWITCHING_EXTRUDER_SERVO_ANGLES { 0, 90 } // Angles for E0, E1
++  //#define HOTEND_OFFSET_Z {0.0, 0.0}
++#endif
++
++/**
++ * "Mixing Extruder"
++ *   - Adds a new code, M165, to set the current mix factors.
++ *   - Extends the stepping routines to move multiple steppers in proportion to the mix.
++ *   - Optional support for Repetier Host M163, M164, and virtual extruder.
++ *   - This implementation supports only a single extruder.
++ *   - Enable DIRECT_MIXING_IN_G1 for Pia Taubert's reference implementation
++ */
++//#define MIXING_EXTRUDER
++#if ENABLED(MIXING_EXTRUDER)
++  #define MIXING_STEPPERS 2        // Number of steppers in your mixing extruder
++  #define MIXING_VIRTUAL_TOOLS 16  // Use the Virtual Tool method with M163 and M164
++  //#define DIRECT_MIXING_IN_G1    // Allow ABCDHI mix factors in G1 movement commands
++#endif
++
+ // Offset of the extruders (uncomment if using more than one and relying on firmware to position when changing).
+ // The offset has to be X=0, Y=0 for the extruder 0 hotend (default extruder).
+ // For the other hotends it is their distance from the extruder 0 hotend.
+@@ -162,7 +186,6 @@
+ // 1 = ATX
+ // 2 = X-Box 360 203Watts (the blue wire connected to PS_ON and the red wire to VCC)
+ // :{1:'ATX',2:'X-Box 360'}
+-
+ #define POWER_SUPPLY 1
+ 
+ // Define this to have the electronics keep the power supply off on startup. If you don't know what this is leave it.
+

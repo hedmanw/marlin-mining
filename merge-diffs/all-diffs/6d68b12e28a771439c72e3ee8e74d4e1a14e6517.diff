@@ -1,0 +1,204 @@
+commit 6d68b12e28a771439c72e3ee8e74d4e1a14e6517 (from aaaf4febafa6c4c095e919395ddcb722cfc4b166)
+Merge: aaaf4fe e761bdb
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 19 16:29:27 2016 -0700
+
+    Merge pull request #3797 from AnHardt/fix-screen-updatedelay
+    
+    Rework intermediate idle() and manage_heater() calls in G2/G3 and G5
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index f04ca2e..1e70d78 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -448,11 +448,11 @@
+ // @section extras
+ 
+ // Arc interpretation settings:
+-#define ARC_SUPPORT  // Disabling this saves ~2660bytes
++#define ARC_SUPPORT  // Disabling this saves ~2738 bytes
+ #define MM_PER_ARC_SEGMENT 1
+ #define N_ARC_CORRECTION 25
+ 
+-// Support for G5 with XYZE destination and IJPQ offsets
++// Support for G5 with XYZE destination and IJPQ offsets. Needs ~2666 bytes
+ //#define BEZIER_CURVE_SUPPORT
+ 
+ const unsigned int dropsegments = 5; //everything with less than this number of steps will be ignored as move and joined with the next movement
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 1f15c09..d7cf578 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -106,7 +106,7 @@
+  * G2  - CW ARC
+  * G3  - CCW ARC
+  * G4  - Dwell S<seconds> or P<milliseconds>
+- * G5  - Cubic B-spline with
++ * G5  - Cubic B-spline with XYZE destination and IJPQ offsets
+  * G10 - retract filament according to settings of M207
+  * G11 - retract recover filament according to settings of M208
+  * G28 - Home one or more axes
+@@ -2546,14 +2546,7 @@ inline void gcode_G4() {
+   inline void gcode_G5() {
+     if (IsRunning()) {
+ 
+-      #ifdef SF_ARC_FIX
+-        bool relative_mode_backup = relative_mode;
+-        relative_mode = true;
+-      #endif
+       gcode_get_destination();
+-      #ifdef SF_ARC_FIX
+-        relative_mode = relative_mode_backup;
+-      #endif
+ 
+       float offset[] = {
+         code_seen('I') ? code_value() : 0.0,
+@@ -7604,13 +7597,14 @@ void prepare_move() {
+ 
+     float feed_rate = feedrate * feedrate_multiplier / 60 / 100.0;
+ 
+-    millis_t previous_ms = millis();
++    millis_t next_ping_ms = millis() + 200UL;
+ 
+     for (i = 1; i < segments; i++) { // Iterate (segments-1) times
+ 
++      thermalManager.manage_heater();
+       millis_t now = millis();
+-      if (now - previous_ms > 200UL) {
+-        previous_ms = now;
++      if (ELAPSED(now, next_ping_ms)) {
++        next_ping_ms = now + 200UL;
+         idle();
+       }
+ 
+diff --git a/Marlin/planner_bezier.cpp b/Marlin/planner_bezier.cpp
+index b72478d..ad80c6b 100644
+--- a/Marlin/planner_bezier.cpp
++++ b/Marlin/planner_bezier.cpp
+@@ -118,15 +118,15 @@ void cubic_b_spline(const float position[NUM_AXIS], const float target[NUM_AXIS]
+   bez_target[Y_AXIS] = position[Y_AXIS];
+   float step = MAX_STEP;
+ 
+-  uint8_t idle_counter = 0;
+   millis_t next_ping_ms = millis() + 200UL;
+ 
+   while (t < 1.0) {
+ 
++    thermalManager.manage_heater();
+     millis_t now = millis();
+     if (ELAPSED(now, next_ping_ms)) {
+       next_ping_ms = now + 200UL;
+-      (idle_counter++ & 0x03) ? thermalManager.manage_heater() : idle();
++      idle();
+     }
+ 
+     // First try to reduce the step in order to make it sufficiently
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 7f0b9a2..4d7f80b 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -282,7 +282,6 @@ menuPosition menu_history[10];
+ uint8_t menu_history_depth = 0;
+ 
+ millis_t next_lcd_update_ms;
+-uint8_t lcd_status_update_delay;
+ bool ignore_click = false;
+ bool wait_for_unclick;
+ bool defer_return_to_status = false;
+@@ -2248,9 +2247,13 @@ void lcd_update() {
+       }
+     #endif //ULTIPANEL
+ 
+-    // Simply redraw the Info Screen 10 times a second
+-    if (currentMenu == lcd_status_screen && !(++lcd_status_update_delay % 10))
++    // Here we arrive every ~100ms when ideling often enough.
++    // Instead of tracking the changes simply redraw the Info Screen ~1 time a second.
++    static int8_t lcd_status_update_delay = 1; // first update one loop delayed
++    if (currentMenu == lcd_status_screen && !lcd_status_update_delay--) {
++      lcd_status_update_delay = 9;
+       lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
++    }
+ 
+     if (lcdDrawUpdate) {
+ 
+
+commit 6d68b12e28a771439c72e3ee8e74d4e1a14e6517 (from e761bdbb4b77c5653557e0429d125fc0d0035327)
+Merge: aaaf4fe e761bdb
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu May 19 16:29:27 2016 -0700
+
+    Merge pull request #3797 from AnHardt/fix-screen-updatedelay
+    
+    Rework intermediate idle() and manage_heater() calls in G2/G3 and G5
+
+diff --git a/Marlin/language_gl.h b/Marlin/language_gl.h
+index beafa84..ad4e53e 100644
+--- a/Marlin/language_gl.h
++++ b/Marlin/language_gl.h
+@@ -38,10 +38,18 @@
+ #define WELCOME_MSG                         MACHINE_NAME " lista."
+ #define MSG_SD_INSERTED                     "Tarxeta inserida"
+ #define MSG_SD_REMOVED                      "Tarxeta retirada"
++#define MSG_LCD_ENDSTOPS                    "Endstops" // Max length 8 characters
+ #define MSG_MAIN                            "Menu principal"
+ #define MSG_AUTOSTART                       "Autoarranque"
+ #define MSG_DISABLE_STEPPERS                "Apagar motores"
+ #define MSG_AUTO_HOME                       "Ir a orixe"
++#define MSG_LEVEL_BED_HOMING                "Ir orixes XYZ"
++#define MSG_LEVEL_BED_WAITING               "Prema pulsador"
++#define MSG_LEVEL_BED_NEXT_POINT            "Seguinte punto"
++#define MSG_LEVEL_BED_DONE                  "Nivelado feito!"
++#define MSG_LEVEL_BED_CANCEL                "Cancelar"
++#define MSG_SET_HOME_OFFSETS                "Offsets a orixe"
++#define MSG_HOME_OFFSETS_APPLIED            "Offsets fixados"
+ #define MSG_SET_ORIGIN                      "Fixar orixe"
+ #define MSG_PREHEAT_PLA                     "Prequentar PLA"
+ #define MSG_PREHEAT_PLA_N                   "Prequentar PLA "
+@@ -53,6 +61,10 @@
+ #define MSG_PREHEAT_ABS_ALL                 "Preque. ABS Todo"
+ #define MSG_PREHEAT_ABS_BEDONLY             "Preque. ABS Cama"
+ #define MSG_PREHEAT_ABS_SETTINGS            "Preque. ABS conf"
++#define MSG_H1                              "1"
++#define MSG_H2                              "2"
++#define MSG_H3                              "3"
++#define MSG_H4                              "4"
+ #define MSG_COOLDOWN                        "Arrefriar"
+ #define MSG_SWITCH_PS_ON                    "Acender"
+ #define MSG_SWITCH_PS_OFF                   "Apagar"
+@@ -63,12 +75,21 @@
+ #define MSG_MOVE_X                          "Mover X"
+ #define MSG_MOVE_Y                          "Mover Y"
+ #define MSG_MOVE_Z                          "Mover Z"
+-#define MSG_MOVE_E                          "Extruir"
++#define MSG_MOVE_E                          "Extrusor"
++#define MSG_MOVE_E1                         "1"
++#define MSG_MOVE_E2                         "2"
++#define MSG_MOVE_E3                         "3"
++#define MSG_MOVE_E4                         "4"
+ #define MSG_MOVE_01MM                       "Mover 0.1mm"
+ #define MSG_MOVE_1MM                        "Mover 1mm"
+ #define MSG_MOVE_10MM                       "Mover 10mm"
+ #define MSG_SPEED                           "Velocidade"
++#define MSG_BED_Z                           "Cama Z"
+ #define MSG_NOZZLE                          "Bico"
++#define MSG_N1                              " 1"
++#define MSG_N2                              " 2"
++#define MSG_N3                              " 3"
++#define MSG_N4                              " 4"
+ #define MSG_BED                             "Cama"
+ #define MSG_FAN_SPEED                       "Velocidade vent."
+ #define MSG_FLOW                            "Fluxo"
+@@ -109,7 +130,11 @@
+ #define MSG_MOTION                          "Movemento"
+ #define MSG_VOLUMETRIC                      "Filamento"
+ #define MSG_VOLUMETRIC_ENABLED              "E en mm3"
+-#define MSG_FILAMENT_DIAM                   "Diametro filam."
++#define MSG_FILAMENT_DIAM                   "Diam. fil."
++#define MSG_DIAM_E1                         " 1"
++#define MSG_DIAM_E2                         " 2"
++#define MSG_DIAM_E3                         " 3"
++#define MSG_DIAM_E4                         " 4"
+ #define MSG_CONTRAST                        "Constraste LCD"
+ #define MSG_STORE_EPROM                     "Gardar en memo."
+ #define MSG_LOAD_EPROM                      "Cargar de memo."
+

@@ -1,0 +1,752 @@
+commit 09ef955191058a23e737fa30a6e2a3f8b5f9261e (from 4634feaeab91e9f4d74f3ac76a97bff8adacc715)
+Merge: 4634fea 38b0082
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sat Mar 19 03:19:18 2016 -0700
+
+    Merge pull request #3086 from thinkyhead/rc_two_fans
+    
+    Support for multiple PWM fans
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index 95cab20..f3cc902 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -465,7 +465,9 @@
+   #define HAS_AUTO_FAN_2 (PIN_EXISTS(EXTRUDER_2_AUTO_FAN))
+   #define HAS_AUTO_FAN_3 (PIN_EXISTS(EXTRUDER_3_AUTO_FAN))
+   #define HAS_AUTO_FAN (HAS_AUTO_FAN_0 || HAS_AUTO_FAN_1 || HAS_AUTO_FAN_2 || HAS_AUTO_FAN_3)
+-  #define HAS_FAN (PIN_EXISTS(FAN))
++  #define HAS_FAN0 (PIN_EXISTS(FAN))
++  #define HAS_FAN1 (PIN_EXISTS(FAN1) && CONTROLLERFAN_PIN != FAN1_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN1_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN1_PIN)
++  #define HAS_FAN2 (PIN_EXISTS(FAN2) && CONTROLLERFAN_PIN != FAN2_PIN && EXTRUDER_0_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_1_AUTO_FAN_PIN != FAN2_PIN && EXTRUDER_2_AUTO_FAN_PIN != FAN2_PIN)
+   #define HAS_CONTROLLERFAN (PIN_EXISTS(CONTROLLERFAN))
+   #define HAS_SERVOS (defined(NUM_SERVOS) && NUM_SERVOS > 0)
+   #define HAS_SERVO_0 (PIN_EXISTS(SERVO0))
+@@ -550,9 +552,31 @@
+   #if HAS_HEATER_BED
+     #define WRITE_HEATER_BED(v) WRITE(HEATER_BED_PIN, v)
+   #endif
+-  #if HAS_FAN
++
++  /**
++   * Up to 3 PWM fans
++   */
++  #if HAS_FAN2
++    #define FAN_COUNT 3
++  #elif HAS_FAN1
++    #define FAN_COUNT 2
++  #elif HAS_FAN0
++    #define FAN_COUNT 1
++  #else
++    #define FAN_COUNT 0
++  #endif
++
++  #if HAS_FAN0
+     #define WRITE_FAN(v) WRITE(FAN_PIN, v)
++    #define WRITE_FAN0(v) WRITE_FAN(v)
++  #endif
++  #if HAS_FAN1
++    #define WRITE_FAN1(v) WRITE(FAN1_PIN, v)
++  #endif
++  #if HAS_FAN2
++    #define WRITE_FAN2(v) WRITE(FAN2_PIN, v)
+   #endif
++  #define WRITE_FAN_N(n, v) WRITE_FAN##n(v)
+ 
+   #define HAS_BUZZER (PIN_EXISTS(BEEPER) || defined(LCD_USE_I2C_BUZZER))
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index a7f20f1..ca223e9 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -306,17 +306,15 @@ extern bool axis_homed[3]; // axis[n].is_homed
+   extern float extrude_min_temp;
+ #endif
+ 
+-extern int fanSpeed;
++#if FAN_COUNT > 0
++  extern int fanSpeeds[FAN_COUNT];
++#endif
+ 
+ #if ENABLED(BARICUDA)
+   extern int ValvePressure;
+   extern int EtoPPressure;
+ #endif
+ 
+-#if ENABLED(FAN_SOFT_PWM)
+-  extern unsigned char fanSpeedSoftPwm;
+-#endif
+-
+ #if ENABLED(FILAMENT_SENSOR)
+   extern float filament_width_nominal;  //holds the theoretical filament diameter i.e., 3.00 or 1.75
+   extern bool filament_sensor;  //indicates that filament sensor readings should control extrusion
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 984e263..bd66e37 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -267,8 +267,11 @@ float home_offset[3] = { 0 };
+ float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
+ float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
+ 
++#if FAN_COUNT > 0
++  int fanSpeeds[FAN_COUNT] = { 0 };
++#endif
++
+ uint8_t active_extruder = 0;
+-int fanSpeed = 0;
+ bool cancel_heatup = false;
+ 
+ const char errormagic[] PROGMEM = "Error:";
+@@ -3581,31 +3584,39 @@ inline void gcode_M31() {
+ 
+ /**
+  * M42: Change pin status via GCode
++ *
++ *  P<pin>  Pin number (LED if omitted)
++ *  S<byte> Pin status from 0 - 255
+  */
+ inline void gcode_M42() {
+   if (code_seen('S')) {
+-    int pin_status = code_value_short(),
+-        pin_number = LED_PIN;
++    int pin_status = code_value_short();
++    if (pin_status < 0 || pin_status > 255) return;
+ 
+-    if (code_seen('P') && pin_status >= 0 && pin_status <= 255)
+-      pin_number = code_value_short();
++    int pin_number = code_seen('P') ? code_value_short() : LED_PIN;
++    if (pin_number < 0) return;
+ 
+-    for (uint8_t i = 0; i < COUNT(sensitive_pins); i++) {
+-      if (sensitive_pins[i] == pin_number) {
+-        pin_number = -1;
+-        break;
+-      }
+-    }
++    for (uint8_t i = 0; i < COUNT(sensitive_pins); i++)
++      if (pin_number == sensitive_pins[i]) return;
++
++    pinMode(pin_number, OUTPUT);
++    digitalWrite(pin_number, pin_status);
++    analogWrite(pin_number, pin_status);
+ 
+-    #if HAS_FAN
+-      if (pin_number == FAN_PIN) fanSpeed = pin_status;
++    #if FAN_COUNT > 0
++      switch (pin_number) {
++        #if HAS_FAN0
++          case FAN_PIN: fanSpeeds[0] = pin_status; break;
++        #endif
++        #if HAS_FAN1
++          case FAN1_PIN: fanSpeeds[1] = pin_status; break;
++        #endif
++        #if HAS_FAN2
++          case FAN2_PIN: fanSpeeds[2] = pin_status; break;
++        #endif
++      }
+     #endif
+ 
+-    if (pin_number > -1) {
+-      pinMode(pin_number, OUTPUT);
+-      digitalWrite(pin_number, pin_status);
+-      analogWrite(pin_number, pin_status);
+-    }
+   } // code_seen('S')
+ }
+ 
+@@ -3968,19 +3979,30 @@ inline void gcode_M105() {
+   SERIAL_EOL;
+ }
+ 
+-#if HAS_FAN
++#if FAN_COUNT > 0
+ 
+   /**
+    * M106: Set Fan Speed
++   *
++   *  S<int>   Speed between 0-255
++   *  P<index> Fan index, if more than one fan
+    */
+-  inline void gcode_M106() { fanSpeed = code_seen('S') ? constrain(code_value_short(), 0, 255) : 255; }
++  inline void gcode_M106() {
++    uint16_t s = code_seen('S') ? code_value_short() : 255,
++             p = code_seen('P') ? code_value_short() : 0;
++    NOMORE(s, 255);
++    if (p < FAN_COUNT) fanSpeeds[p] = s;
++  }
+ 
+   /**
+    * M107: Fan Off
+    */
+-  inline void gcode_M107() { fanSpeed = 0; }
++  inline void gcode_M107() {
++    uint16_t p = code_seen('P') ? code_value_short() : 0;
++    if (p < FAN_COUNT) fanSpeeds[p] = 0;
++  }
+ 
+-#endif // HAS_FAN
++#endif // FAN_COUNT > 0
+ 
+ /**
+  * M109: Sxxx Wait for extruder(s) to reach temperature. Waits only when heating.
+@@ -4047,7 +4069,7 @@ inline void gcode_M109() {
+         }
+       #else
+         SERIAL_EOL;
+-      #endif //TEMP_RESIDENCY_TIME
++      #endif
+     }
+ 
+     idle();
+@@ -4261,7 +4283,13 @@ inline void gcode_M140() {
+ inline void gcode_M81() {
+   disable_all_heaters();
+   finishAndDisableSteppers();
+-  fanSpeed = 0;
++  #if FAN_COUNT > 0
++    #if FAN_COUNT > 1
++      for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
++    #else
++      fanSpeeds[0] = 0;
++    #endif
++  #endif
+   delay(1000); // Wait 1 second before switching off
+   #if HAS_SUICIDE
+     st_synchronize();
+@@ -6015,14 +6043,14 @@ void process_next_command() {
+           break;
+       #endif // HAS_TEMP_BED
+ 
+-      #if HAS_FAN
++      #if FAN_COUNT > 0
+         case 106: // M106: Fan On
+           gcode_M106();
+           break;
+         case 107: // M107: Fan Off
+           gcode_M107();
+           break;
+-      #endif // HAS_FAN
++      #endif // FAN_COUNT > 0
+ 
+       #if ENABLED(BARICUDA)
+         // PWM for HEATER_1_PIN
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index a96ae8b..91e5fc6 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -264,22 +264,36 @@
+ /**
+  * Make sure auto fan pins don't conflict with the fan pin
+  */
+-#if HAS_AUTO_FAN && HAS_FAN
+-  #if EXTRUDER_0_AUTO_FAN_PIN == FAN_PIN
+-    #error You cannot set EXTRUDER_0_AUTO_FAN_PIN equal to FAN_PIN.
+-  #elif EXTRUDER_1_AUTO_FAN_PIN == FAN_PIN
+-    #error You cannot set EXTRUDER_1_AUTO_FAN_PIN equal to FAN_PIN.
+-  #elif EXTRUDER_2_AUTO_FAN_PIN == FAN_PIN
+-    #error You cannot set EXTRUDER_2_AUTO_FAN_PIN equal to FAN_PIN.
+-  #elif EXTRUDER_3_AUTO_FAN_PIN == FAN_PIN
+-    #error You cannot set EXTRUDER_3_AUTO_FAN_PIN equal to FAN_PIN.
++#if HAS_AUTO_FAN
++  #if HAS_FAN0
++    #if EXTRUDER_0_AUTO_FAN_PIN == FAN_PIN
++      #error You cannot set EXTRUDER_0_AUTO_FAN_PIN equal to FAN_PIN.
++    #elif EXTRUDER_1_AUTO_FAN_PIN == FAN_PIN
++      #error You cannot set EXTRUDER_1_AUTO_FAN_PIN equal to FAN_PIN.
++    #elif EXTRUDER_2_AUTO_FAN_PIN == FAN_PIN
++      #error You cannot set EXTRUDER_2_AUTO_FAN_PIN equal to FAN_PIN.
++    #elif EXTRUDER_3_AUTO_FAN_PIN == FAN_PIN
++      #error You cannot set EXTRUDER_3_AUTO_FAN_PIN equal to FAN_PIN.
++    #endif
+   #endif
+ #endif
+ 
+-#if HAS_FAN && CONTROLLERFAN_PIN == FAN_PIN
++#if HAS_FAN0 && CONTROLLERFAN_PIN == FAN_PIN
+   #error You cannot set CONTROLLERFAN_PIN equal to FAN_PIN.
+ #endif
+ 
++#if HAS_CONTROLLERFAN
++  #if EXTRUDER_0_AUTO_FAN_PIN == CONTROLLERFAN_PIN
++    #error You cannot set EXTRUDER_0_AUTO_FAN_PIN equal to CONTROLLERFAN_PIN.
++  #elif EXTRUDER_1_AUTO_FAN_PIN == CONTROLLERFAN_PIN
++    #error You cannot set EXTRUDER_1_AUTO_FAN_PIN equal to CONTROLLERFAN_PIN.
++  #elif EXTRUDER_2_AUTO_FAN_PIN == CONTROLLERFAN_PIN
++    #error You cannot set EXTRUDER_2_AUTO_FAN_PIN equal to CONTROLLERFAN_PIN.
++  #elif EXTRUDER_3_AUTO_FAN_PIN == CONTROLLERFAN_PIN
++    #error You cannot set EXTRUDER_3_AUTO_FAN_PIN equal to CONTROLLERFAN_PIN.
++  #endif
++#endif
++
+ /**
+  * Test Heater, Temp Sensor, and Extruder Pins; Sensor Type must also be set.
+  */
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 7e85c1e..110640b 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -283,7 +283,7 @@ static void lcd_implementation_status_screen() {
+   u8g.setColorIndex(1); // black on white
+ 
+   // Symbols menu graphics, animated fan
+-  u8g.drawBitmapP(9,1,STATUS_SCREENBYTEWIDTH,STATUS_SCREENHEIGHT, (blink % 2) && fanSpeed ? status_screen0_bmp : status_screen1_bmp);
++  u8g.drawBitmapP(9,1,STATUS_SCREENBYTEWIDTH,STATUS_SCREENHEIGHT, (blink % 2) && fanSpeeds[0] ? status_screen0_bmp : status_screen1_bmp);
+ 
+   #if ENABLED(SDSUPPORT)
+     // SD Card Symbol
+@@ -324,8 +324,8 @@ static void lcd_implementation_status_screen() {
+   // Fan
+   lcd_setFont(FONT_STATUSMENU);
+   u8g.setPrintPos(104, 27);
+-  #if HAS_FAN
+-    int per = ((fanSpeed + 1) * 100) / 256;
++  #if HAS_FAN0
++    int per = ((fanSpeeds[0] + 1) * 100) / 256;
+     if (per) {
+       lcd_print(itostr3(per));
+       lcd_print('%');
+diff --git a/Marlin/pins_MEGACONTROLLER.h b/Marlin/pins_MEGACONTROLLER.h
+index c595a88..ce4a8b0 100644
+--- a/Marlin/pins_MEGACONTROLLER.h
++++ b/Marlin/pins_MEGACONTROLLER.h
+@@ -49,7 +49,7 @@
+ #define FAN1_PIN 35
+ #define FAN2_PIN 36
+ #define FAN_SOFT_PWM
+-#define CONTROLLERFAN_PIN 36
++#define CONTROLLERFAN_PIN FAN2_PIN
+ #define PS_ON_PIN -1
+ #define KILL_PIN -1
+ 
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index e223e32..f4a3dc3 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -93,6 +93,10 @@ unsigned long axis_steps_per_sqr_second[NUM_AXIS];
+   bool autotemp_enabled = false;
+ #endif
+ 
++#if ENABLED(FAN_SOFT_PWM)
++  extern unsigned char fanSpeedSoftPwm[FAN_COUNT];
++#endif
++
+ //===========================================================================
+ //============ semi-private variables, used in inline functions =============
+ //===========================================================================
+@@ -399,7 +403,12 @@ void plan_init() {
+ 
+ void check_axes_activity() {
+   unsigned char axis_active[NUM_AXIS] = { 0 },
+-                tail_fan_speed = fanSpeed;
++                tail_fan_speed[FAN_COUNT];
++
++  #if FAN_COUNT > 0
++    for (uint8_t i = 0; i < FAN_COUNT; i++) tail_fan_speed[i] = fanSpeeds[i];
++  #endif
++
+   #if ENABLED(BARICUDA)
+     unsigned char tail_valve_pressure = ValvePressure,
+                   tail_e_to_p_pressure = EtoPPressure;
+@@ -408,13 +417,19 @@ void check_axes_activity() {
+   block_t* block;
+ 
+   if (blocks_queued()) {
++
+     uint8_t block_index = block_buffer_tail;
+-    tail_fan_speed = block_buffer[block_index].fan_speed;
++
++    #if FAN_COUNT > 0
++      for (uint8_t i = 0; i < FAN_COUNT; i++) tail_fan_speed[i] = block_buffer[block_index].fan_speed[i];
++    #endif
++
+     #if ENABLED(BARICUDA)
+       block = &block_buffer[block_index];
+       tail_valve_pressure = block->valve_pressure;
+       tail_e_to_p_pressure = block->e_to_p_pressure;
+     #endif
++
+     while (block_index != block_buffer_head) {
+       block = &block_buffer[block_index];
+       for (int i = 0; i < NUM_AXIS; i++) if (block->steps[i]) axis_active[i]++;
+@@ -439,32 +454,65 @@ void check_axes_activity() {
+     }
+   #endif
+ 
+-  #if HAS_FAN
++  #if FAN_COUNT > 0
++
++    #if defined(FAN_MIN_PWM)
++      #define CALC_FAN_SPEED(f) (tail_fan_speed[f] ? ( FAN_MIN_PWM + (tail_fan_speed[f] * (255 - FAN_MIN_PWM)) / 255 ) : 0)
++    #else
++      #define CALC_FAN_SPEED(f) tail_fan_speed[f]
++    #endif
++
+     #ifdef FAN_KICKSTART_TIME
+-      static millis_t fan_kick_end = 0;
+-      if (tail_fan_speed) {
+-        millis_t ms = millis();
+-        if (fan_kick_end == 0) {
+-          fan_kick_end = ms + FAN_KICKSTART_TIME;
+-          tail_fan_speed = 255; // Starting up.
++
++      static millis_t fan_kick_end[FAN_COUNT] = { 0 }, ms = millis();
++
++      #define KICKSTART_FAN(f) \
++        if (tail_fan_speed[f]) { \
++          if (fan_kick_end[f] == 0) { \
++            fan_kick_end[f] = ms + FAN_KICKSTART_TIME; \
++            tail_fan_speed[f] = 255; \
++          } \
++          else if (fan_kick_end[f] > ms) \
++            tail_fan_speed[f] = 255; \
++          else \
++            fan_kick_end[f] = 0; \
+         }
+-        else if (ms < fan_kick_end)
+-          tail_fan_speed = 255; // Still spinning up.
+-        else
+-          fan_kick_end = 0;
+-      }
++
++      #if HAS_FAN0
++        KICKSTART_FAN(0);
++      #endif
++      #if HAS_FAN1
++        KICKSTART_FAN(1);
++      #endif
++      #if HAS_FAN2
++        KICKSTART_FAN(2);
++      #endif
++
+     #endif //FAN_KICKSTART_TIME
+-    #if defined(FAN_MIN_PWM)
+-      #define CALC_FAN_SPEED (tail_fan_speed ? ( FAN_MIN_PWM + (tail_fan_speed * (255 - (FAN_MIN_PWM))) / 255 ) : 0)
+-    #else
+-      #define CALC_FAN_SPEED tail_fan_speed
+-    #endif // FAN_MIN_PWM
++
+     #if ENABLED(FAN_SOFT_PWM)
+-      fanSpeedSoftPwm = CALC_FAN_SPEED;
++      #if HAS_FAN0
++        fanSpeedSoftPwm[0] = CALC_FAN_SPEED(0);
++      #endif
++      #if HAS_FAN1
++        fanSpeedSoftPwm[1] = CALC_FAN_SPEED(1);
++      #endif
++      #if HAS_FAN2
++        fanSpeedSoftPwm[2] = CALC_FAN_SPEED(2);
++      #endif
+     #else
+-      analogWrite(FAN_PIN, CALC_FAN_SPEED);
+-    #endif // FAN_SOFT_PWM
+-  #endif // HAS_FAN
++      #if HAS_FAN0
++        analogWrite(FAN_PIN, CALC_FAN_SPEED(0));
++      #endif
++      #if HAS_FAN1
++        analogWrite(FAN1_PIN, CALC_FAN_SPEED(1));
++      #endif
++      #if HAS_FAN2
++        analogWrite(FAN2_PIN, CALC_FAN_SPEED(2));
++      #endif
++    #endif
++
++  #endif // FAN_COUNT > 0
+ 
+   #if ENABLED(AUTOTEMP)
+     getHighESpeed();
+@@ -576,7 +624,10 @@ float junction_deviation = 0.1;
+   // Bail if this is a zero-length block
+   if (block->step_event_count <= dropsegments) return;
+ 
+-  block->fan_speed = fanSpeed;
++  #if FAN_COUNT > 0
++    for (uint8_t i = 0; i < FAN_COUNT; i++) block->fan_speed[i] = fanSpeeds[i];
++  #endif
++
+   #if ENABLED(BARICUDA)
+     block->valve_pressure = ValvePressure;
+     block->e_to_p_pressure = EtoPPressure;
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 0427b7b..125075f 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -59,12 +59,18 @@ typedef struct {
+   unsigned long initial_rate;                        // The jerk-adjusted step rate at start of block
+   unsigned long final_rate;                          // The minimal rate at exit
+   unsigned long acceleration_st;                     // acceleration steps/sec^2
+-  unsigned long fan_speed;
++
++  #if FAN_COUNT > 0
++    unsigned long fan_speed[FAN_COUNT];
++  #endif
++
+   #if ENABLED(BARICUDA)
+     unsigned long valve_pressure;
+     unsigned long e_to_p_pressure;
+   #endif
++
+   volatile char busy;
++
+ } block_t;
+ 
+ #define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index 750a6ab..ca0aa2b 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -62,7 +62,7 @@ float current_temperature_bed = 0.0;
+ #endif //PIDTEMPBED
+ 
+ #if ENABLED(FAN_SOFT_PWM)
+-  unsigned char fanSpeedSoftPwm;
++  unsigned char fanSpeedSoftPwm[FAN_COUNT];
+ #endif
+ 
+ unsigned char soft_pwm_bed;
+@@ -130,7 +130,7 @@ static volatile bool temp_meas_ready = false;
+ static unsigned char soft_pwm[EXTRUDERS];
+ 
+ #if ENABLED(FAN_SOFT_PWM)
+-  static unsigned char soft_pwm_fan;
++  static unsigned char soft_pwm_fan[FAN_COUNT];
+ #endif
+ #if HAS_AUTO_FAN
+   static millis_t next_auto_fan_check_ms;
+@@ -886,17 +886,40 @@ void tp_init() {
+   #if HAS_HEATER_BED
+     SET_OUTPUT(HEATER_BED_PIN);
+   #endif
+-  #if HAS_FAN
+-    #if ENABLED(FAST_PWM_FAN) || ENABLED(FAN_SOFT_PWM)
++
++  #if ENABLED(FAST_PWM_FAN) || ENABLED(FAN_SOFT_PWM)
++
++    #if HAS_FAN0
+       SET_OUTPUT(FAN_PIN);
+       #if ENABLED(FAST_PWM_FAN)
+         setPwmFrequency(FAN_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
+       #endif
+       #if ENABLED(FAN_SOFT_PWM)
+-        soft_pwm_fan = fanSpeedSoftPwm / 2;
++        soft_pwm_fan[0] = fanSpeedSoftPwm[0] / 2;
++      #endif
++    #endif
++
++    #if HAS_FAN1
++      SET_OUTPUT(FAN1_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(FAN1_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++      #if ENABLED(FAN_SOFT_PWM)
++        soft_pwm_fan[1] = fanSpeedSoftPwm[1] / 2;
++      #endif
++    #endif
++
++    #if HAS_FAN2
++      SET_OUTPUT(FAN2_PIN);
++      #if ENABLED(FAST_PWM_FAN)
++        setPwmFrequency(FAN2_PIN, 1); // No prescaling. Pwm frequency = F_CPU/256/8
++      #endif
++      #if ENABLED(FAN_SOFT_PWM)
++        soft_pwm_fan[2] = fanSpeedSoftPwm[2] / 2;
+       #endif
+     #endif
+-  #endif
++
++  #endif // FAST_PWM_FAN || FAN_SOFT_PWM
+ 
+   #if ENABLED(HEATER_0_USES_MAX6675)
+ 
+@@ -1320,9 +1343,20 @@ ISR(TIMER0_COMPB_vect) {
+         soft_pwm_BED = soft_pwm_bed;
+         WRITE_HEATER_BED(soft_pwm_BED > 0 ? 1 : 0);
+       #endif
++
+       #if ENABLED(FAN_SOFT_PWM)
+-        soft_pwm_fan = fanSpeedSoftPwm / 2;
+-        WRITE_FAN(soft_pwm_fan > 0 ? 1 : 0);
++        #if HAS_FAN0
++          soft_pwm_fan[0] = fanSpeedSoftPwm[0] / 2;
++          WRITE_FAN(soft_pwm_fan[0] > 0 ? 1 : 0);
++        #endif
++        #if HAS_FAN1
++          soft_pwm_fan[1] = fanSpeedSoftPwm[1] / 2;
++          WRITE_FAN1(soft_pwm_fan[1] > 0 ? 1 : 0);
++        #endif
++        #if HAS_FAN2
++          soft_pwm_fan[2] = fanSpeedSoftPwm[2] / 2;
++          WRITE_FAN2(soft_pwm_fan[2] > 0 ? 1 : 0);
++        #endif
+       #endif
+     }
+ 
+@@ -1342,7 +1376,15 @@ ISR(TIMER0_COMPB_vect) {
+     #endif
+ 
+     #if ENABLED(FAN_SOFT_PWM)
+-      if (soft_pwm_fan < pwm_count) WRITE_FAN(0);
++      #if HAS_FAN0
++        if (soft_pwm_fan[0] < pwm_count) WRITE_FAN(0);
++      #endif
++      #if HAS_FAN1
++        if (soft_pwm_fan[1] < pwm_count) WRITE_FAN1(0);
++      #endif
++      #if HAS_FAN2
++        if (soft_pwm_fan[2] < pwm_count) WRITE_FAN2(0);
++      #endif
+     #endif
+ 
+     pwm_count += _BV(SOFT_PWM_SCALE);
+@@ -1421,10 +1463,28 @@ ISR(TIMER0_COMPB_vect) {
+ 
+     #if ENABLED(FAN_SOFT_PWM)
+       if (pwm_count == 0) {
+-        soft_pwm_fan = fanSpeedSoftPwm / 2;
+-        WRITE_FAN(soft_pwm_fan > 0 ? 1 : 0);
++        #if HAS_FAN0
++          soft_pwm_fan[0] = fanSpeedSoftPwm[0] / 2;
++          WRITE_FAN(soft_pwm_fan[0] > 0 ? 1 : 0);
++        #endif
++        #if HAS_FAN1
++          soft_pwm_fan[1] = fanSpeedSoftPwm[1] / 2;
++          WRITE_FAN1(soft_pwm_fan[1] > 0 ? 1 : 0);
++        #endif
++        #if HAS_FAN2
++          soft_pwm_fan[2] = fanSpeedSoftPwm[2] / 2;
++          WRITE_FAN2(soft_pwm_fan[2] > 0 ? 1 : 0);
++        #endif
+       }
+-      if (soft_pwm_fan < pwm_count) WRITE_FAN(0);
++      #if HAS_FAN0
++        if (soft_pwm_fan[0] < pwm_count) WRITE_FAN(0);
++      #endif
++      #if HAS_FAN1
++        if (soft_pwm_fan[1] < pwm_count) WRITE_FAN1(0);
++      #endif
++      #if HAS_FAN2
++        if (soft_pwm_fan[2] < pwm_count) WRITE_FAN2(0);
++      #endif
+     #endif //FAN_SOFT_PWM
+ 
+     pwm_count += _BV(SOFT_PWM_SCALE);
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index d98c023..d8aa630 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -614,7 +614,22 @@ static void lcd_tune_menu() {
+   //
+   // Fan Speed:
+   //
+-  MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
++  #if FAN_COUNT > 0
++    #if HAS_FAN0
++      #if FAN_COUNT > 1
++        #define MSG_1ST_FAN_SPEED MSG_FAN_SPEED " 1"
++      #else
++        #define MSG_1ST_FAN_SPEED MSG_FAN_SPEED
++      #endif
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_1ST_FAN_SPEED, &fanSpeeds[0], 0, 255);
++    #endif
++    #if HAS_FAN1
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED " 2", &fanSpeeds[1], 0, 255);
++    #endif
++    #if HAS_FAN2
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED " 3", &fanSpeeds[2], 0, 255);
++    #endif
++  #endif // FAN_COUNT > 0
+ 
+   //
+   // Flow:
+@@ -665,7 +680,13 @@ void _lcd_preheat(int endnum, const float temph, const float tempb, const int fa
+   #if TEMP_SENSOR_BED != 0
+     setTargetBed(tempb);
+   #endif
+-  fanSpeed = fan;
++  #if FAN_COUNT > 0
++    #if FAN_COUNT > 1
++      fanSpeeds[active_extruder < FAN_COUNT ? active_extruder : 0] = fan;
++    #else
++      fanSpeeds[0] = fan;
++    #endif
++  #endif
+   lcd_return_to_status();
+ }
+ 
+@@ -755,8 +776,10 @@ void _lcd_preheat(int endnum, const float temph, const float tempb, const int fa
+ #endif // TEMP_SENSOR_0 && (TEMP_SENSOR_1 || TEMP_SENSOR_2 || TEMP_SENSOR_3 || TEMP_SENSOR_BED)
+ 
+ void lcd_cooldown() {
++  #if FAN_COUNT > 0
++    for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
++  #endif
+   disable_all_heaters();
+-  fanSpeed = 0;
+   lcd_return_to_status();
+ }
+ 
+@@ -1125,7 +1148,22 @@ static void lcd_control_temperature_menu() {
+   //
+   // Fan Speed:
+   //
+-  MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED, &fanSpeed, 0, 255);
++  #if FAN_COUNT > 0
++    #if HAS_FAN0
++      #if FAN_COUNT > 1
++        #define MSG_1ST_FAN_SPEED MSG_FAN_SPEED " 1"
++      #else
++        #define MSG_1ST_FAN_SPEED MSG_FAN_SPEED
++      #endif
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_1ST_FAN_SPEED, &fanSpeeds[0], 0, 255);
++    #endif
++    #if HAS_FAN1
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED " 2", &fanSpeeds[1], 0, 255);
++    #endif
++    #if HAS_FAN2
++      MENU_MULTIPLIER_ITEM_EDIT(int3, MSG_FAN_SPEED " 3", &fanSpeeds[2], 0, 255);
++    #endif
++  #endif // FAN_COUNT > 0
+ 
+   //
+   // Autotemp, Min, Max, Fact
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 7dfa7f4..164afd3 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -873,16 +873,34 @@ void lcd_implementation_drawedit(const char* pstr, char* value) {
+     // Set the LEDS - referred to as backlights by the LiquidTWI2 library
+     static uint8_t ledsprev = 0;
+     uint8_t leds = 0;
++
+     if (target_temperature_bed > 0) leds |= LED_A;
++
+     if (target_temperature[0] > 0) leds |= LED_B;
+-    if (fanSpeed) leds |= LED_C;
++
++    #if FAN_COUNT > 0
++      if (0
++        #if HAS_FAN0
++          || fanSpeeds[0]
++        #endif
++        #if HAS_FAN1
++          || fanSpeeds[1]
++        #endif
++        #if HAS_FAN2
++          || fanSpeeds[2]
++        #endif
++      ) leds |= LED_C;
++    #endif // FAN_COUNT > 0
++
+     #if EXTRUDERS > 1
+       if (target_temperature[1] > 0) leds |= LED_C;
+     #endif
++
+     if (leds != ledsprev) {
+       lcd.setBacklight(leds);
+       ledsprev = leds;
+     }
++
+   }
+ 
+ #endif // LCD_HAS_STATUS_INDICATORS
+

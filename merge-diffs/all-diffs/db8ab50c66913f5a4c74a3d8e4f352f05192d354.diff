@@ -1,0 +1,312 @@
+commit db8ab50c66913f5a4c74a3d8e4f352f05192d354 (from 06332f20be01ea65f330c968d997ba98f8c40acf)
+Merge: 06332f2 f8c10d6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 20 17:07:00 2016 -0700
+
+    Merge pull request #3192 from tnw513/fix_lang
+    
+    Added missing translations.
+
+diff --git a/Marlin/language_es.h b/Marlin/language_es.h
+index cc877ec..364a3aa 100644
+--- a/Marlin/language_es.h
++++ b/Marlin/language_es.h
+@@ -39,6 +39,7 @@
+ #define MSG_EXTRUDE                         "Extruir"
+ #define MSG_RETRACT                         "Retraer"
+ #define MSG_MOVE_AXIS                       "Mover ejes"
++#define MSG_LEVEL_BED                       "Nivelar cama"
+ #define MSG_MOVE_X                          "Mover X"
+ #define MSG_MOVE_Y                          "Mover Y"
+ #define MSG_MOVE_Z                          "Mover Z"
+diff --git a/Marlin/language_it.h b/Marlin/language_it.h
+index 238906d..ecaa787 100644
+--- a/Marlin/language_it.h
++++ b/Marlin/language_it.h
+@@ -39,6 +39,7 @@
+ #define MSG_EXTRUDE                         "Estrudi"
+ #define MSG_RETRACT                         "Ritrai"
+ #define MSG_MOVE_AXIS                       "Muovi Asse"
++#define MSG_LEVEL_BED                       "Livellamento piano"
+ #define MSG_MOVE_X                          "Muovi X"
+ #define MSG_MOVE_Y                          "Muovi Y"
+ #define MSG_MOVE_Z                          "Muovi Z"
+
+commit db8ab50c66913f5a4c74a3d8e4f352f05192d354 (from f8c10d6b0e84fc5f6a7ed0d34eedcd722835f919)
+Merge: 06332f2 f8c10d6
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Mar 20 17:07:00 2016 -0700
+
+    Merge pull request #3192 from tnw513/fix_lang
+    
+    Added missing translations.
+
+diff --git a/.travis.yml b/.travis.yml
+index babda87..610612e 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -155,6 +155,11 @@ script:
+   - sed -i 's/\/\/#define LCM1602/#define LCM1602/g' Marlin/Configuration.h
+   - rm -rf .build/
+   - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
++  # Enable FILAMENTCHANGEENABLE
++  - cp Marlin/Configuration.h.backup Marlin/Configuration.h
++  - sed -i 's/\/\/#define FILAMENTCHANGEENABLE/#define FILAMENTCHANGEENABLE/g' Marlin/Configuration.h
++  - rm -rf .build/
++  - DISPLAY=:1.0 ~/bin/arduino --verify --board marlin:avr:mega  Marlin/Marlin.ino
+   # Enable filament sensor
+   - cp Marlin/Configuration.h.backup Marlin/Configuration.h
+   - sed -i 's/\/\/#define FILAMENT_SENSOR/#define FILAMENT_SENSOR/g' Marlin/Configuration.h
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index 359ab4c..414aeb3 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -356,4 +356,9 @@ extern uint8_t active_extruder;
+ 
+ extern void calculate_volumetric_multipliers();
+ 
++// Print job timer related functions
++millis_t print_job_timer();
++bool print_job_start(millis_t t = 0);
++bool print_job_stop(bool force = false);
++
+ #endif //MARLIN_H
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 6212e6a..da50091 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -977,9 +977,9 @@ void get_command() {
+       ) {
+         if (card_eof) {
+           SERIAL_PROTOCOLLNPGM(MSG_FILE_PRINTED);
+-          print_job_stop_ms = millis();
++          print_job_stop(true);
+           char time[30];
+-          millis_t t = (print_job_stop_ms - print_job_start_ms) / 1000;
++          millis_t t = print_job_timer();
+           int hours = t / 60 / 60, minutes = (t / 60) % 60;
+           sprintf_P(time, PSTR("%i " MSG_END_HOUR " %i " MSG_END_MINUTE), hours, minutes);
+           SERIAL_ECHO_START;
+@@ -3454,7 +3454,7 @@ inline void gcode_M17() {
+    */
+   inline void gcode_M24() {
+     card.startFileprint();
+-    print_job_start_ms = millis();
++    print_job_start();
+   }
+ 
+   /**
+@@ -3510,8 +3510,7 @@ inline void gcode_M17() {
+  * M31: Get the time since the start of SD Print (or last M109)
+  */
+ inline void gcode_M31() {
+-  print_job_stop_ms = millis();
+-  millis_t t = (print_job_stop_ms - print_job_start_ms) / 1000;
++  millis_t t = print_job_timer();
+   int min = t / 60, sec = t % 60;
+   char time[30];
+   sprintf_P(time, PSTR("%i min, %i sec"), min, sec);
+@@ -3545,8 +3544,9 @@ inline void gcode_M31() {
+         card.setIndex(code_value_short());
+ 
+       card.startFileprint();
+-      if (!call_procedure)
+-        print_job_start_ms = millis(); //procedure calls count as normal print time.
++
++      // Procedure calls count as normal print time.
++      if (!call_procedure) print_job_start();
+     }
+   }
+ 
+@@ -3884,6 +3884,8 @@ inline void gcode_M104() {
+         setTargetHotend1(temp == 0.0 ? 0.0 : temp + duplicate_extruder_temp_offset);
+     #endif
+   }
++
++  print_job_stop();
+ }
+ 
+ #if HAS_TEMP_0 || HAS_TEMP_BED || ENABLED(HEATER_0_USES_MAX6675)
+@@ -4008,11 +4010,12 @@ inline void gcode_M105() {
+ inline void gcode_M109() {
+   bool no_wait_for_cooling = true;
+ 
++  // Start hook must happen before setTargetHotend()
++  print_job_start();
++
+   if (setTargetedHotend(109)) return;
+   if (marlin_debug_flags & DEBUG_DRYRUN) return;
+ 
+-  LCD_MESSAGEPGM(MSG_HEATING);
+-
+   no_wait_for_cooling = code_seen('S');
+   if (no_wait_for_cooling || code_seen('R')) {
+     float temp = code_value();
+@@ -4021,8 +4024,12 @@ inline void gcode_M109() {
+       if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && target_extruder == 0)
+         setTargetHotend1(temp == 0.0 ? 0.0 : temp + duplicate_extruder_temp_offset);
+     #endif
++
++    if (temp > degHotend(target_extruder)) LCD_MESSAGEPGM(MSG_HEATING);
+   }
+ 
++  if (print_job_stop()) LCD_MESSAGEPGM(WELCOME_MSG);
++
+   #if ENABLED(AUTOTEMP)
+     autotemp_enabled = code_seen('F');
+     if (autotemp_enabled) autotemp_factor = code_value();
+@@ -4082,7 +4089,6 @@ inline void gcode_M109() {
+   } // while(!cancel_heatup && TEMP_CONDITIONS)
+ 
+   LCD_MESSAGEPGM(MSG_HEATING_COMPLETE);
+-  print_job_start_ms = previous_cmd_ms;
+ }
+ 
+ #if HAS_TEMP_BED
+@@ -5508,7 +5514,7 @@ inline void gcode_M503() {
+     delay(100);
+     LCD_ALERTMESSAGEPGM(MSG_FILAMENTCHANGE);
+     millis_t next_tick = 0;
+-    KEEPALIVE_STATE(WAIT_FOR_USER);
++    KEEPALIVE_STATE(PAUSED_FOR_USER);
+     while (!lcd_clicked()) {
+       #if DISABLED(AUTO_FILAMENT_CHANGE)
+         millis_t ms = millis();
+@@ -6028,6 +6034,7 @@ void process_next_command() {
+ 
+       case 105: // M105: Read current temperature
+         gcode_M105();
++        KEEPALIVE_STATE(NOT_BUSY);
+         return; // "ok" already printed
+ 
+       case 109: // M109: Wait for temperature
+@@ -7397,3 +7404,50 @@ void calculate_volumetric_multipliers() {
+   for (int i = 0; i < EXTRUDERS; i++)
+     volumetric_multiplier[i] = calculate_volumetric_multiplier(filament_size[i]);
+ }
++
++/**
++ * Start the print job timer
++ *
++ * The print job is only started if all extruders have their target temp at zero
++ * otherwise the print job timew would be reset everytime a M109 is received.
++ *
++ * @param t start timer timestamp
++ *
++ * @return true if the timer was started at function call
++ */
++bool print_job_start(millis_t t /* = 0 */) {
++  for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_start_ms = (t) ? t : millis();
++  print_job_stop_ms = 0;
++  return true;
++}
++
++/**
++ * Output the print job timer in seconds
++ *
++ * @return the number of seconds
++ */
++millis_t print_job_timer() {
++  if (!print_job_start_ms) return 0;
++  return (((print_job_stop_ms > print_job_start_ms)
++    ? print_job_stop_ms : millis()) - print_job_start_ms) / 1000;
++}
++
++/**
++ * Check if the running print job has finished and stop the timer
++ *
++ * When the target temperature for all extruders is zero then we assume that the
++ * print job has finished printing. There are some special conditions under which
++ * this assumption may not be valid: If during a print job for some reason the
++ * user decides to bring a nozzle temp down and only then heat the other afterwards.
++ *
++ * @param force stops the timer ignoring all pre-checks
++ *
++ * @return boolean true if the print job has finished printing
++ */
++bool print_job_stop(bool force /* = false */) {
++  if (!print_job_start_ms) return false;
++  if (!force) for (int i = 0; i < EXTRUDERS; i++) if (degTargetHotend(i) > 0) return false;
++  print_job_stop_ms = millis();
++  return true;
++}
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 563bc53..9cb52b7 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -305,7 +305,8 @@ static void lcd_implementation_status_screen() {
+ 
+     u8g.setPrintPos(80,48);
+     if (print_job_start_ms != 0) {
+-      uint16_t time = (millis() - print_job_start_ms) / 60000;
++      uint16_t time = (((print_job_stop_ms > print_job_start_ms)
++                       ? print_job_stop_ms : millis()) - print_job_start_ms) / 60000;
+       lcd_print(itostr2(time/60));
+       lcd_print(':');
+       lcd_print(itostr2(time%60));
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index ca0aa2b..054990d 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -1134,6 +1134,9 @@ void disable_all_heaters() {
+   for (int i = 0; i < EXTRUDERS; i++) setTargetHotend(0, i);
+   setTargetBed(0);
+ 
++  // If all heaters go down then for sure our print job has stopped
++  print_job_stop(true);
++
+   #define DISABLE_HEATER(NR) { \
+     setTargetHotend(NR, 0); \
+     soft_pwm[NR] = 0; \
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 8a033af..12acdf0 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -136,7 +136,7 @@ extern volatile uint8_t buttons;  //an extended version of the last checked butt
+   #define LCD_I2C_PIN_D5  5
+   #define LCD_I2C_PIN_D6  6
+   #define LCD_I2C_PIN_D7  7
+-  
++
+   #include <Wire.h>
+   #include <LCD.h>
+   #include <LiquidCrystal_I2C.h>
+@@ -637,7 +637,7 @@ static void lcd_implementation_status_screen() {
+         else {
+           if (!axis_homed[X_AXIS])
+             lcd_printPGM(PSTR("?"));
+-          else 
++          else
+             #if DISABLED(DISABLE_REDUCED_ACCURACY_WARNING)
+               if (!axis_known_position[X_AXIS])
+                 lcd_printPGM(PSTR(" "));
+@@ -654,7 +654,7 @@ static void lcd_implementation_status_screen() {
+         else {
+           if (!axis_homed[Y_AXIS])
+             lcd_printPGM(PSTR("?"));
+-          else 
++          else
+             #if DISABLED(DISABLE_REDUCED_ACCURACY_WARNING)
+               if (!axis_known_position[Y_AXIS])
+                 lcd_printPGM(PSTR(" "));
+@@ -674,7 +674,7 @@ static void lcd_implementation_status_screen() {
+     else {
+       if (!axis_homed[Z_AXIS])
+         lcd_printPGM(PSTR("?"));
+-      else 
++      else
+         #if DISABLED(DISABLE_REDUCED_ACCURACY_WARNING)
+           if (!axis_known_position[Z_AXIS])
+             lcd_printPGM(PSTR(" "));
+@@ -712,7 +712,8 @@ static void lcd_implementation_status_screen() {
+     lcd.setCursor(LCD_WIDTH - 6, 2);
+     lcd.print(LCD_STR_CLOCK[0]);
+     if (print_job_start_ms != 0) {
+-      uint16_t time = millis() / 60000 - print_job_start_ms / 60000;
++      uint16_t time = (((print_job_stop_ms > print_job_start_ms)
++                       ? print_job_stop_ms : millis()) - print_job_start_ms) / 60000;
+       lcd.print(itostr2(time / 60));
+       lcd.print(':');
+       lcd.print(itostr2(time % 60));
+

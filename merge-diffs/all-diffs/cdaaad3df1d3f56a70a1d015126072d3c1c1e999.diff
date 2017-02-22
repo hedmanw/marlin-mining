@@ -1,0 +1,981 @@
+commit cdaaad3df1d3f56a70a1d015126072d3c1c1e999 (from e3bdefd873146e244586ed63ccd04d97d98db0e2)
+Merge: e3bdefd e509cdb
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Jul 14 15:45:49 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/makr3d/Marlin into makr3d-Marlin_v1
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 50b74a5..33e0d33 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -17,8 +17,7 @@
+ #define SERIAL_PORT 0
+ 
+ // This determines the communication speed of the printer
+-#define BAUDRATE 250000
+-//#define BAUDRATE 115200
++#define BAUDRATE 115200
+ 
+ //// The following define selects which electronics board you have. Please choose the one that matches your setup
+ // 10 = Gen7 custom (Alfons3 Version) "https://github.com/Alfons3/Generation_7_Electronics"
+@@ -36,6 +35,7 @@
+ // 63 = Melzi
+ // 64 = STB V1.1
+ // 65 = Azteeg X1
++// 66 = Melzi with ATmega1284 (MaKr3d version)
+ // 7  = Ultimaker
+ // 71 = Ultimaker (Older electronics. Pre 1.5.4. This is rare)
+ // 77 = 3Drag Controller
+@@ -371,10 +371,10 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).
+ // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
+ //define this to enable eeprom support
+-//#define EEPROM_SETTINGS
++#define EEPROM_SETTINGS
+ //to disable EEPROM Serial responses and decrease program space by ~1700 byte: comment this out:
+ // please keep turned on if you can.
+-//#define EEPROM_CHITCHAT
++#define EEPROM_CHITCHAT
+ 
+ // Preheat Constants
+ #define PLA_PREHEAT_HOTEND_TEMP 180 
+@@ -394,6 +394,10 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define ULTIMAKERCONTROLLER //as available from the ultimaker online store.
+ //#define ULTIPANEL  //the ultipanel as on thingiverse
+ 
++// The MaKr3d Makr-Panel with graphic controller and SD support
++// http://reprap.org/wiki/MaKr3d_MaKrPanel
++//#define MAKRPANEL
++
+ // The RepRapDiscount Smart Controller (white PCB)
+ // http://reprap.org/wiki/RepRapDiscount_Smart_Controller
+ //#define REPRAP_DISCOUNT_SMART_CONTROLLER
+@@ -419,6 +423,14 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+ //#define RA_CONTROL_PANEL
+ 
+ //automatic expansion
++#if defined (MAKRPANEL)
++ #define DOGLCD
++ #define SDSUPPORT
++ #define ULTIPANEL
++ #define NEWPANEL
++ #define DEFAULT_LCD_CONTRAST 17
++#endif
++
+ #if defined (REPRAP_DISCOUNT_FULL_GRAPHIC_SMART_CONTROLLER)
+  #define DOGLCD
+  #define U8GLIB_ST7920
+@@ -505,6 +517,13 @@ const bool Z_ENDSTOPS_INVERTING = true; // set to true to invert the logic of th
+   #endif
+ #endif
+ 
++// default LCD contrast for dogm-like LCD displays
++#ifdef DOGLCD
++# ifndef DEFAULT_LCD_CONTRAST
++#  define DEFAULT_LCD_CONTRAST 32
++# endif
++#endif
++
+ // Increase the FAN pwm frequency. Removes the PWM noise but increases heating in the FET/Arduino
+ //#define FAST_PWM_FAN
+ 
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index 4e11c44..65d0302 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -37,7 +37,7 @@ void _EEPROM_readData(int &pos, uint8_t* value, uint8_t size)
+ // the default values are used whenever there is a change to the data, to prevent
+ // wrong data being written to the variables.
+ // ALSO:  always make sure the variables in the Store and retrieve sections are in the same order.
+-#define EEPROM_VERSION "V07"
++#define EEPROM_VERSION "V08"
+ 
+ #ifdef EEPROM_SETTINGS
+ void Config_StoreSettings() 
+@@ -78,6 +78,10 @@ void Config_StoreSettings()
+     EEPROM_WRITE_VAR(i,dummy);
+     EEPROM_WRITE_VAR(i,dummy);
+   #endif
++  #ifndef DOGLCD
++    int lcd_contrast = 32;
++  #endif
++  EEPROM_WRITE_VAR(i,lcd_contrast);
+   char ver2[4]=EEPROM_VERSION;
+   i=EEPROM_OFFSET;
+   EEPROM_WRITE_VAR(i,ver2); // validate data
+@@ -198,6 +202,10 @@ void Config_RetrieveSettings()
+         EEPROM_READ_VAR(i,Kp);
+         EEPROM_READ_VAR(i,Ki);
+         EEPROM_READ_VAR(i,Kd);
++        #ifndef DOGLCD
++        int lcd_contrast;
++        #endif
++        EEPROM_READ_VAR(i,lcd_contrast);
+ 
+ 		// Call updatePID (similar to when we have processed M301)
+ 		updatePID();
+@@ -244,6 +252,9 @@ void Config_ResetDefault()
+     absPreheatHPBTemp = ABS_PREHEAT_HPB_TEMP;
+     absPreheatFanSpeed = ABS_PREHEAT_FAN_SPEED;
+ #endif
++#ifdef DOGLCD
++    lcd_contrast = DEFAULT_LCD_CONTRAST;
++#endif
+ #ifdef PIDTEMP
+     Kp = DEFAULT_Kp;
+     Ki = scalePID_i(DEFAULT_Ki);
+diff --git a/Marlin/Makefile b/Marlin/Makefile
+index 3d04d36..a4ae1d7 100644
+--- a/Marlin/Makefile
++++ b/Marlin/Makefile
+@@ -114,6 +114,12 @@ MCU              ?= atmega644p
+ else ifeq  ($(HARDWARE_MOTHERBOARD),63)
+ HARDWARE_VARIANT ?= Sanguino
+ MCU              ?= atmega644p
++else ifeq  ($(HARDWARE_MOTHERBOARD),65)
++HARDWARE_VARIANT ?= Sanguino
++MCU              ?= atmega1284p
++else ifeq  ($(HARDWARE_MOTHERBOARD),66)
++HARDWARE_VARIANT ?= Sanguino
++MCU              ?= atmega1284p
+ 
+ #Ultimaker
+ else ifeq  ($(HARDWARE_MOTHERBOARD),7)
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0677c0b..79911fc 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -125,6 +125,7 @@
+ // M220 S<factor in percent>- set speed factor override percentage
+ // M221 S<factor in percent>- set extrude factor override percentage
+ // M240 - Trigger a camera to take a photograph
++// M250 - Set LCD contrast C<contrast value> (value 0..63)
+ // M280 - set servo position absolute. P: servo index, S: angle or microseconds
+ // M300 - Play beepsound S<frequency Hz> P<duration ms>
+ // M301 - Set PID parameters P I and D
+@@ -421,6 +422,7 @@ void setup()
+   servo_init();
+ 
+   lcd_init();
++  _delay_ms(1000);	// wait 1sec to display the splash screen
+   
+   #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
+     SET_OUTPUT(CONTROLLERFAN_PIN); //Set pin used for driver cooling fan
+@@ -1699,6 +1701,18 @@ void process_commands()
+       #endif
+      }
+     break;
++#ifdef DOGLCD
++    case 250: // M250  Set LCD contrast value: C<value> (value 0..63)
++     {
++	  if (code_seen('C')) {
++	   lcd_setcontrast( ((int)code_value())&63 );
++          }
++          SERIAL_PROTOCOLPGM("lcd contrast value: ");
++          SERIAL_PROTOCOL(lcd_contrast);
++          SERIAL_PROTOCOLLN("");
++     }
++    break;
++#endif
+     #ifdef PREVENT_DANGEROUS_EXTRUDE
+     case 302: // allow cold extrudes, or set the minimum extrude temperature
+     {
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 17a56ad..489a122 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -74,16 +74,28 @@
+ 
+ #define FONT_STATUSMENU	u8g_font_6x9
+ 
++int lcd_contrast;
++
+ // LCD selection
+ #ifdef U8GLIB_ST7920
+ //U8GLIB_ST7920_128X64_RRD u8g(0,0,0);
+ U8GLIB_ST7920_128X64_RRD u8g(0);
++#elsif defined(MAKRPANEL)
++// The MaKrPanel display, ST7565 controller as well
++U8GLIB_NHD_C12864 u8g(DOGLCD_CS, DOGLCD_A0);
+ #else
++// for regular DOGM128 display with HW-SPI
+ U8GLIB_DOGM128 u8g(DOGLCD_CS, DOGLCD_A0);	// HW-SPI Com: CS, A0
+ #endif
+ 
+ static void lcd_implementation_init()
+ {
++#ifdef LCD_PIN_BL
++	pinMode(LCD_PIN_BL, OUTPUT);	// Enable LCD backlight
++	digitalWrite(LCD_PIN_BL, HIGH);
++#endif
++
++        u8g.setContrast(lcd_contrast);	
+ 	//  Uncomment this if you have the first generation (V1.10) of STBs board
+ 	//  pinMode(17, OUTPUT);	// Enable LCD backlight
+ 	//  digitalWrite(17, HIGH);
+@@ -117,14 +129,14 @@ static void lcd_implementation_init()
+ 			u8g.setFont(u8g_font_6x10_marlin);
+ 			u8g.drawStr(62,10,"MARLIN"); 
+ 			u8g.setFont(u8g_font_5x8);
+-			u8g.drawStr(62,19,"V1.0.0 RC2");
++			u8g.drawStr(62,19,"V1.0.0 RC2-mm");
+ 			u8g.setFont(u8g_font_6x10_marlin);
+ 			u8g.drawStr(62,28,"by ErikZalm");
+ 			u8g.drawStr(62,41,"DOGM128 LCD");
+ 			u8g.setFont(u8g_font_5x8);
+ 			u8g.drawStr(62,48,"enhancements");
+ 			u8g.setFont(u8g_font_5x8);
+-			u8g.drawStr(62,55,"by STB");
++			u8g.drawStr(62,55,"by STB, MM");
+ 			u8g.drawStr(62,61,"uses u");
+ 			u8g.drawStr90(92,57,"8");
+ 			u8g.drawStr(100,61,"glib");
+diff --git a/Marlin/language.h b/Marlin/language.h
+index c40b369..d8802cd 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -101,6 +101,7 @@
+ 	#define MSG_RECTRACT "Rectract"
+ 	#define MSG_TEMPERATURE "Temperature"
+ 	#define MSG_MOTION "Motion"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Store memory"
+ 	#define MSG_LOAD_EPROM "Load memory"
+ 	#define MSG_RESTORE_FAILSAFE "Restore Failsafe"
+@@ -260,6 +261,7 @@
+ 	#define MSG_RECTRACT "Wycofanie"
+ 	#define MSG_TEMPERATURE "Temperatura"
+ 	#define MSG_MOTION "Ruch"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Zapisz w pamieci"
+ 	#define MSG_LOAD_EPROM "Wczytaj z pamieci"
+ 	#define MSG_RESTORE_FAILSAFE " Ustawienia fabryczne"
+@@ -423,6 +425,7 @@
+ #define MSG_TEMPERATURE_WIDE " Temperature \x7E"
+ #define MSG_TEMPERATURE_RTN " Temperature \003"
+ #define MSG_MOTION_WIDE " Mouvement \x7E"
++	#define MSG_CONTRAST "LCD contrast"
+ #define MSG_STORE_EPROM " Sauvegarder memoire"
+ #define MSG_LOAD_EPROM " Lire memoire"
+ #define MSG_RESTORE_FAILSAFE " Restaurer memoire"
+@@ -535,7 +538,7 @@
+ 
+ 	#define MSG_SD_INSERTED      "SDKarte erkannt"
+ 	#define MSG_SD_REMOVED       "SDKarte entfernt"
+-	#define MSG_MAIN             "Hauptmneü"
++	#define MSG_MAIN             "Hauptmenü"
+ 	#define MSG_AUTOSTART        "Autostart"
+ 	#define MSG_DISABLE_STEPPERS "Stepper abschalten"
+ 	#define MSG_AUTO_HOME        "Auto Nullpunkt"
+@@ -554,7 +557,7 @@
+ 	#define MSG_NOZZLE2          "Düse3"
+ 	#define MSG_BED              "Bett"
+ 	#define MSG_FAN_SPEED        "Lüftergeschw."
+-	#define MSG_FLOW             "Fluß"
++	#define MSG_FLOW             "Fluss"
+ 	#define MSG_CONTROL          "Einstellungen"
+ 	#define MSG_MIN              "\002 Min"
+ 	#define MSG_MAX              "\002 Max"
+@@ -587,6 +590,7 @@
+ 	#define MSG_WATCH            "Beobachten"
+ 	#define MSG_TEMPERATURE      "Temperatur"
+ 	#define MSG_MOTION           "Bewegung"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM      "EPROM speichern"
+ 	#define MSG_LOAD_EPROM       "EPROM laden"
+ 	#define MSG_RESTORE_FAILSAFE "Standardkonfig."
+@@ -913,6 +917,7 @@
+ #define MSG_RECTRACT    					" Откат подачи      \x7E"
+ #define MSG_TEMPERATURE  				" Температура       \x7E"
+ #define MSG_MOTION						" Скорости          \x7E"
++	#define MSG_CONTRAST "LCD contrast"
+ #define MSG_STORE_EPROM						" Сохранить настройки"
+ #define MSG_LOAD_EPROM						" Загрузить настройки"
+ #define MSG_RESTORE_FAILSAFE				" Сброс настроек     "
+@@ -1068,6 +1073,7 @@
+ 	#define MSG_RECTRACT             "Ritrai"
+ 	#define MSG_TEMPERATURE          "Temperatura"
+ 	#define MSG_MOTION               "Movimento"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM          "Salva in EEPROM"
+ 	#define MSG_LOAD_EPROM           "Carica da EEPROM"
+ 	#define MSG_RESTORE_FAILSAFE     "Impostaz. default"
+@@ -1398,6 +1404,7 @@
+ 	#define MSG_RECTRACT "Veda takaisin"
+ 	#define MSG_TEMPERATURE "Lampotila"
+ 	#define MSG_MOTION "Liike"
++	#define MSG_CONTRAST "LCD contrast"
+ 	#define MSG_STORE_EPROM "Tallenna muistiin"
+ 	#define MSG_LOAD_EPROM "Lataa muistista"
+ 	#define MSG_RESTORE_FAILSAFE "Palauta oletus"
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index 88dc1f5..877b860 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -843,13 +843,13 @@
+ #if MOTHERBOARD == 64
+ #define STB
+ #endif
+-#if MOTHERBOARD == 63
++#if MOTHERBOARD == 63 || MOTHERBOARD == 66
+ #define MELZI
+ #endif
+ #if MOTHERBOARD == 65
+ #define AZTEEG_X1
+ #endif
+-#if MOTHERBOARD == 62 || MOTHERBOARD == 63 || MOTHERBOARD == 64 || MOTHERBOARD == 65
++#if MOTHERBOARD == 62 || MOTHERBOARD == 63 || MOTHERBOARD == 64 || MOTHERBOARD == 65 || MOTHERBOARD == 66
+ #undef MOTHERBOARD
+ #define MOTHERBOARD 6
+ #define SANGUINOLOLU_V_1_2
+@@ -891,6 +891,8 @@
+ 
+ #ifdef STB
+ #define FAN_PIN            4
++	//  Uncomment this if you have the first generation (V1.10) of STBs board
++#define LCD_PIN_BL         17 // LCD backlight LED
+ #endif
+ 
+ #ifdef AZTEEG_X1
+@@ -975,6 +977,27 @@
+    #endif //Newpanel
+  #endif //Ultipanel
+ 
++ #ifdef MAKRPANEL
++     #define BEEPER 29
++     // Pins for DOGM SPI LCD Support
++     #define DOGLCD_A0  30
++     #define DOGLCD_CS  17
++     #define LCD_PIN_BL	28	// backlight LED on PA3
++     // GLCD features
++     #define LCD_CONTRAST 1
++     // Uncomment screen orientation
++     #define LCD_SCREEN_ROT_0
++       // #define LCD_SCREEN_ROT_90
++       // #define LCD_SCREEN_ROT_180
++       // #define LCD_SCREEN_ROT_270
++     //The encoder and click button
++     #define BTN_EN1 11
++     #define BTN_EN2 10
++     #define BTN_ENC 16  //the click switch
++     //not connected to a pin
++     #define SDCARDDETECT -1    
++ #endif //Makrpanel
++
+ #endif
+ 
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index eae4dd8..98024e1 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -49,6 +49,9 @@ static void lcd_control_temperature_menu();
+ static void lcd_control_temperature_preheat_pla_settings_menu();
+ static void lcd_control_temperature_preheat_abs_settings_menu();
+ static void lcd_control_motion_menu();
++#ifdef DOGLCD
++static void lcd_set_contrast();
++#endif
+ static void lcd_control_retract_menu();
+ static void lcd_sdcard_menu();
+ 
+@@ -492,6 +495,10 @@ static void lcd_control_menu()
+     MENU_ITEM(back, MSG_MAIN, lcd_main_menu);
+     MENU_ITEM(submenu, MSG_TEMPERATURE, lcd_control_temperature_menu);
+     MENU_ITEM(submenu, MSG_MOTION, lcd_control_motion_menu);
++#ifdef DOGLCD
++//    MENU_ITEM_EDIT(int3, MSG_CONTRAST, &lcd_contrast, 0, 63);
++    MENU_ITEM(submenu, MSG_CONTRAST, lcd_set_contrast);
++#endif
+ #ifdef FWRETRACT
+     MENU_ITEM(submenu, MSG_RETRACT, lcd_control_retract_menu);
+ #endif
+@@ -603,6 +610,31 @@ static void lcd_control_motion_menu()
+     END_MENU();
+ }
+ 
++#ifdef DOGLCD
++static void lcd_set_contrast()
++{
++    if (encoderPosition != 0)
++    {
++        lcd_contrast -= encoderPosition;
++        if (lcd_contrast < 0) lcd_contrast = 0;
++        else if (lcd_contrast > 63) lcd_contrast = 63;
++        encoderPosition = 0;
++        lcdDrawUpdate = 1;
++        u8g.setContrast(lcd_contrast);
++    }
++    if (lcdDrawUpdate)
++    {
++        lcd_implementation_drawedit(PSTR("Contrast"), itostr2(lcd_contrast));
++    }
++    if (LCD_CLICKED)
++    {
++        lcd_quick_feedback();
++        currentMenu = lcd_control_menu;
++        encoderPosition = 0;
++    }
++}
++#endif
++
+ #ifdef FWRETRACT
+ static void lcd_control_retract_menu()
+ {
+@@ -992,6 +1024,14 @@ void lcd_reset_alert_level()
+     lcd_status_message_level = 0;
+ }
+ 
++#ifdef DOGLCD
++void lcd_setcontrast(uint8_t value)
++{
++    lcd_contrast = value & 63;
++    u8g.setContrast(lcd_contrast);	
++}
++#endif
++
+ #ifdef ULTIPANEL
+ /* Warning: This function is called from interrupt context */
+ void lcd_buttons_update()
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 89c6d7f..d6fa0fd 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -11,7 +11,12 @@
+   void lcd_setstatuspgm(const char* message);
+   void lcd_setalertstatuspgm(const char* message);
+   void lcd_reset_alert_level();
+-  
++
++#ifdef DOGLCD
++  extern int lcd_contrast;
++  void lcd_setcontrast(uint8_t value);
++#endif
++
+   static unsigned char blink = 0;	// Variable for visualisation of fan rotation in GLCD
+ 
+   #define LCD_MESSAGEPGM(x) lcd_setstatuspgm(PSTR(x))
+
+commit cdaaad3df1d3f56a70a1d015126072d3c1c1e999 (from e509cdbeb020a5d47ede81ead6767c9a747adbe6)
+Merge: e3bdefd e509cdb
+Author: Erik van der Zalm <erik@vdzalm.eu>
+Date:   Sun Jul 14 15:45:49 2013 +0200
+
+    Merge branch 'Marlin_v1' of https://github.com/makr3d/Marlin into makr3d-Marlin_v1
+
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 287cc02..d8802cd 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -82,9 +82,9 @@
+ 	#define MSG_PID_D "PID-D"
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Accel"
+-	#define MSG_VXY_JERK "Vxy-jerk"
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VXY_JERK "Vxy-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX "Vmax "
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+@@ -243,8 +243,8 @@
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Acc"
+ 	#define MSG_VXY_JERK "Zryw Vxy"
+-	#define MSG_VZ_JERK "Zryw Vz"
+-	#define MSG_VE_JERK "Zryw Ve"
++	#define MSG_VZ_JERK "Zryw Vz"
++	#define MSG_VE_JERK "Zryw Ve"
+ 	#define MSG_VMAX "Vmax"
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+@@ -405,8 +405,8 @@
+ #define MSG_PID_C " PID-C: "
+ #define MSG_ACC " Acc:"
+ #define MSG_VXY_JERK "Vxy-jerk"
+-#define MSG_VZ_JERK "Vz-jerk"
+-#define MSG_VE_JERK "Ve-jerk"
++#define MSG_VZ_JERK "Vz-jerk"
++#define MSG_VE_JERK "Ve-jerk"
+ #define MSG_VMAX " Vmax "
+ #define MSG_X "x:"
+ #define MSG_Y "y:"
+@@ -571,8 +571,8 @@
+ 	#define MSG_PID_C            "PID-C"
+ 	#define MSG_ACC              "Acc"
+ 	#define MSG_VXY_JERK         "Vxy-jerk"
+-	#define MSG_VZ_JERK          "Vz-jerk"
+-	#define MSG_VE_JERK          "Ve-jerk"
++	#define MSG_VZ_JERK          "Vz-jerk"
++	#define MSG_VE_JERK          "Ve-jerk"
+ 	#define MSG_VMAX             "Vmax "
+ 	#define MSG_X                "x"
+ 	#define MSG_Y                "y"
+@@ -696,91 +696,98 @@
+ #if LANGUAGE_CHOICE == 5
+ 
+ // LCD Menu Messages
+-#define WELCOME_MSG MACHINE_NAME " Lista."
++#define WELCOME_MSG MACHINE_NAME "Lista."
+ #define MSG_SD_INSERTED "Tarjeta SD Colocada"
+ #define MSG_SD_REMOVED "Tarjeta SD Retirada"
+-#define MSG_MAIN " Menu Principal \003"
++#define MSG_MAIN "Menu Principal"
+ #define MSG_AUTOSTART " Autostart"
+-#define MSG_DISABLE_STEPPERS " Apagar Motores"
+-#define MSG_AUTO_HOME " Llevar Ejes al Cero"
+-#define MSG_SET_ORIGIN " Establecer Cero"
+-#define MSG_COOLDOWN " Enfriar"
+-#define MSG_EXTRUDE " Extruir"
+-#define MSG_RETRACT " Retraer"
+-#define MSG_PREHEAT_PLA " Precalentar PLA"
+-#define MSG_PREHEAT_PLA_SETTINGS " Ajustar temp. PLA"
+-#define MSG_PREHEAT_ABS " Precalentar ABS"
+-#define MSG_PREHEAT_ABS_SETTINGS " Ajustar temp. ABS"
+-#define MSG_MOVE_AXIS " Mover Ejes      \x7E"
+-#define MSG_SPEED " Velocidad:"
+-#define MSG_NOZZLE " \002Fusor:"
+-#define MSG_NOZZLE1 " \002Fusor2:"
+-#define MSG_NOZZLE2 " \002Fusor3:"
+-#define MSG_BED " \002Base:"
+-#define MSG_FAN_SPEED " Ventilador:"
+-#define MSG_FLOW " Flujo:"
+-#define MSG_CONTROL " Control \003"
+-#define MSG_MIN " \002 Min:"
+-#define MSG_MAX " \002 Max:"
+-#define MSG_FACTOR " \002 Fact:"
+-#define MSG_AUTOTEMP " Autotemp:"
+-#define MSG_ON "On "
++#define MSG_DISABLE_STEPPERS "Apagar Motores"
++#define MSG_AUTO_HOME "Llevar al Origen" // "Llevar Ejes al Cero"
++#define MSG_SET_ORIGIN "Establecer Cero"
++#define MSG_PREHEAT_PLA "Precalentar PLA"
++#define MSG_PREHEAT_PLA_SETTINGS "Ajustar temp. PLA"
++#define MSG_PREHEAT_ABS "Precalentar ABS"
++#define MSG_PREHEAT_ABS_SETTINGS "Ajustar temp. ABS"
++#define MSG_COOLDOWN "Enfriar"
++#define MSG_EXTRUDE "Extruir"
++#define MSG_RETRACT "Retraer"
++#define MSG_MOVE_AXIS "Mover Ejes"
++#define MSG_SPEED "Velocidad"
++#define MSG_NOZZLE "Nozzle"
++#define MSG_NOZZLE1 "Nozzle2"
++#define MSG_NOZZLE2 "Nozzle3"
++#define MSG_BED "Base"
++#define MSG_FAN_SPEED "Ventilador"
++#define MSG_FLOW "Flujo"
++#define MSG_CONTROL "Control"
++#define MSG_MIN "\002 Min"
++#define MSG_MAX "\002 Max"
++#define MSG_FACTOR "\002 Fact"
++#define MSG_AUTOTEMP "Autotemp"
++#define MSG_ON "On"
+ #define MSG_OFF "Off"
+-#define MSG_PID_P " PID-P: "
+-#define MSG_PID_I " PID-I: "
+-#define MSG_PID_D " PID-D: "
+-#define MSG_PID_C " PID-C: "
+-#define MSG_ACC  " Acc:"
+-#define MSG_VXY_JERK " Vxy-agit: "
+-#define MSG_VZ_JERK "Vz-agit"
+-#define MSG_VE_JERK "Ve-agit"
+-#define MSG_VMAX " Vmax "
+-#define MSG_X "x:"
+-#define MSG_Y "y:"
+-#define MSG_Z "z:"
+-#define MSG_E "e:"
+-#define MSG_VMIN " Vmin:"
+-#define MSG_VTRAV_MIN " VTrav min:"
+-#define MSG_AMAX " Amax "
+-#define MSG_A_RETRACT " A-retrac.:"
+-#define MSG_XSTEPS " Xpasos/mm:"
+-#define MSG_YSTEPS " Ypasos/mm:"
+-#define MSG_ZSTEPS " Zpasos/mm:"
+-#define MSG_ESTEPS " Epasos/mm:"
+-#define MSG_MAIN_WIDE " Menu Principal  \003"
+-#define MSG_RECTRACT_WIDE " Retraer         \x7E"
+-#define MSG_TEMPERATURE_WIDE " Temperatura     \x7E"
+-#define MSG_TEMPERATURE_RTN  " Temperatura     \003"
+-#define MSG_MOTION_WIDE " Movimiento      \x7E"
+-#define MSG_STORE_EPROM " Guardar Memoria"
+-#define MSG_LOAD_EPROM " Cargar Memoria"
+-#define MSG_RESTORE_FAILSAFE " Rest. de emergencia"
+-#define MSG_REFRESH "\004Volver a cargar"
+-#define MSG_WATCH " Monitorizar \003"
+-#define MSG_PREPARE " Preparar \x7E"
+-#define MSG_PREPARE_ALT " Preparar \003"
+-#define MSG_CONTROL_ARROW " Control  \x7E"
+-#define MSG_RETRACT_ARROW " Retraer  \x7E"
+-#define MSG_TUNE " Ajustar \x7E"
+-#define MSG_PAUSE_PRINT " Pausar Impresion \x7E"
+-#define MSG_RESUME_PRINT " Reanudar Impresion \x7E"
+-#define MSG_STOP_PRINT " Detener Impresion \x7E"
+-#define MSG_CARD_MENU " Menu de SD    \x7E"
+-#define MSG_NO_CARD " No hay Tarjeta SD"
++#define MSG_PID_P "PID-P"
++#define MSG_PID_I "PID-I"
++#define MSG_PID_D "PID-D"
++#define MSG_PID_C "PID-C"
++#define MSG_ACC  "Acel"
++#define MSG_VXY_JERK "Vxy-jerk"
++#define MSG_VZ_JERK "Vz-jerk"
++#define MSG_VE_JERK "Ve-jerk"
++#define MSG_VMAX "Vmax"
++#define MSG_X "x"
++#define MSG_Y "y"
++#define MSG_Z "z"
++#define MSG_E "e"
++#define MSG_VMIN "Vmin"
++#define MSG_VTRAV_MIN "VTrav min"
++#define MSG_AMAX "Amax"
++#define MSG_A_RETRACT "A-retrac."
++#define MSG_XSTEPS "X pasos/mm"
++#define MSG_YSTEPS "Y pasos/mm"
++#define MSG_ZSTEPS "Z pasos/mm"
++#define MSG_ESTEPS "E pasos/mm"
++#define MSG_RECTRACT "Retraer"
++#define MSG_TEMPERATURE "Temperatura"
++#define MSG_MOTION "Movimiento"
++#define MSG_STORE_EPROM "Guardar Memoria"
++#define MSG_LOAD_EPROM "Cargar Memoria"
++#define MSG_RESTORE_FAILSAFE "Rest. de emergencia"
++#define MSG_REFRESH "Volver a cargar"
++#define MSG_WATCH "Monitorizar"
++#define MSG_PREPARE "Preparar"
++#define MSG_TUNE "Ajustar"
++#define MSG_PAUSE_PRINT "Pausar Impresion"
++#define MSG_RESUME_PRINT "Reanudar Impresion"
++#define MSG_STOP_PRINT "Detener Impresion"
++#define MSG_CARD_MENU "Menu de SD"
++#define MSG_NO_CARD "No hay Tarjeta SD"
+ #define MSG_DWELL "Reposo..."
+ #define MSG_USERWAIT "Esperando Ordenes..."
++#define MSG_RESUMING "Resumiendo Impresion"
+ #define MSG_NO_MOVE "Sin movimiento"
+-#define MSG_PART_RELEASE "Desacople Parcial"
+ #define MSG_KILLED "PARADA DE EMERGENCIA. "
+-#define MSG_STOPPED "PARADA. "
+-#define MSG_STEPPER_RELEASED "Desacoplada."
+-#define MSG_CONTROL_RETRACT  " Retraer mm:"
+-#define MSG_CONTROL_RETRACTF " Retraer  F:"
+-#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+-#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
+-#define MSG_CONTROL_RETRACT_RECOVERF " DesRet F:"
+-#define MSG_AUTORETRACT " AutoRetr.:"
++#define MSG_STOPPED "PARADA."
++#define MSG_CONTROL_RETRACT  "Retraer mm"
++#define MSG_CONTROL_RETRACTF "Retraer  F"
++#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
++#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
++#define MSG_AUTORETRACT "AutoRetr."
+ #define MSG_FILAMENTCHANGE "Change filament"
++#define MSG_INIT_SDCARD "Iniciando. Tarjeta-SD"
++#define MSG_CNG_SDCARD "Cambiar Tarjeta-SD"
++#define MSG_RECTRACT_WIDE "Retraer"
++#define MSG_TEMPERATURE_WIDE "Temperatura"
++#define MSG_TEMPERATURE_RTN  "Temperatura"
++#define MSG_MAIN_WIDE "Menu Principal"
++#define MSG_MOTION_WIDE "Movimiento"
++#define MSG_PREPARE_ALT "Preparar"
++#define MSG_CONTROL_ARROW "Control"
++#define MSG_RETRACT_ARROW "Retraer"
++#define MSG_PART_RELEASE "Desacople Parcial"
++#define MSG_STEPPER_RELEASED "Desacoplada."
++
+ // Serial Console Messages
+ 
+ #define MSG_Enqueing "En cola \""
+@@ -825,11 +832,11 @@
+ #define MSG_Y_MIN "y_min: "
+ #define MSG_Y_MAX "y_max: "
+ #define MSG_Z_MIN "z_min: "
++#define MSG_Z_MAX "z_max: "
+ #define MSG_M119_REPORT "Comprobando fines de carrera."
+ #define MSG_ENDSTOP_HIT "PULSADO"
+ #define MSG_ENDSTOP_OPEN "abierto"
+-#define MSG_HOTEND_OFFSET "Despl. Hotend:"
+-        
++#define MSG_HOTEND_OFFSET "Hotend offsets:"
+ #define MSG_SD_CANT_OPEN_SUBDIR "No se pudo abrir la subcarpeta."
+ #define MSG_SD_INIT_FAIL "Fallo al iniciar la SD"
+ #define MSG_SD_VOL_INIT_FAIL "Fallo al montar el volumen"
+@@ -892,8 +899,8 @@
+ #define MSG_PID_C							" PID-C: "
+ #define MSG_ACC								" Acc:"
+ #define MSG_VXY_JERK						" Vxy-jerk: "
+-#define MSG_VZ_JERK                         "Vz-jerk"
+-#define MSG_VE_JERK                         "Ve-jerk"
++#define MSG_VZ_JERK                         "Vz-jerk"
++#define MSG_VE_JERK                         "Ve-jerk"
+ #define MSG_VMAX							" Vmax "
+ #define MSG_X								"x:"
+ #define MSG_Y								"y:"
+@@ -1048,8 +1055,8 @@
+ 	#define MSG_PID_C                "PID-C"
+ 	#define MSG_ACC                  "Accel"
+ 	#define MSG_VXY_JERK             "Vxy-jerk"
+-	#define MSG_VZ_JERK              "Vz-jerk"
+-	#define MSG_VE_JERK              "Ve-jerk"
++	#define MSG_VZ_JERK              "Vz-jerk"
++	#define MSG_VE_JERK              "Ve-jerk"
+ 	#define MSG_VMAX                 "Vmax"
+ 	#define MSG_X                    "x"
+ 	#define MSG_Y                    "y"
+@@ -1211,8 +1218,8 @@
+ 	#define MSG_PID_C " PID-C: "
+ 	#define MSG_ACC  " Acc:"
+ 	#define MSG_VXY_JERK " Vxy-jerk: "
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX " Vmax "
+ 	#define MSG_X "x:"
+ 	#define MSG_Y "y:"
+@@ -1379,8 +1386,8 @@
+ 	#define MSG_PID_C "PID-C"
+ 	#define MSG_ACC  "Kiihtyv"
+ 	#define MSG_VXY_JERK "Vxy-jerk"
+-	#define MSG_VZ_JERK "Vz-jerk"
+-	#define MSG_VE_JERK "Ve-jerk"
++	#define MSG_VZ_JERK "Vz-jerk"
++	#define MSG_VE_JERK "Ve-jerk"
+ 	#define MSG_VMAX "Vmax "
+ 	#define MSG_X "x"
+ 	#define MSG_Y "y"
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 4ddb247..98024e1 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -8,6 +8,8 @@
+ #include "stepper.h"
+ #include "ConfigurationStore.h"
+ 
++int8_t encoderDiff; /* encoderDiff is updated from interrupt context and added to encoderPosition every LCD update */
++
+ /* Configuration settings */
+ int plaPreheatHotendTemp;
+ int plaPreheatHPBTemp;
+@@ -125,13 +127,11 @@ static void menu_action_setting_edit_callback_long5(const char* pstr, unsigned l
+ #ifndef REPRAPWORLD_KEYPAD
+ volatile uint8_t buttons;//Contains the bits of the currently pressed buttons.
+ #else
+-volatile uint16_t buttons;//Contains the bits of the currently pressed buttons (extended).
++volatile uint8_t buttons_reprapworld_keypad; // to store the reprapworld_keypad shiftregister values
+ #endif
+-
+ uint8_t currentMenuViewOffset;              /* scroll offset in the current menu */
+ uint32_t blocking_enc;
+ uint8_t lastEncoderBits;
+-int8_t encoderDiff; /* encoderDiff is updated from interrupt context and added to encoderPosition every LCD update */
+ uint32_t encoderPosition;
+ #if (SDCARDDETECT > 0)
+ bool lcd_oldcardstatus;
+@@ -413,7 +413,7 @@ static void lcd_move_z()
+         if (current_position[Z_AXIS] > Z_MAX_POS)
+             current_position[Z_AXIS] = Z_MAX_POS;
+         encoderPosition = 0;
+-        plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], 60, active_extruder);
++        plan_buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], homing_feedrate[Z_AXIS]/60, active_extruder);
+         lcdDrawUpdate = 1;
+     }
+     if (lcdDrawUpdate)
+@@ -768,21 +768,39 @@ menu_edit_type(float, float52, ftostr52, 100)
+ menu_edit_type(unsigned long, long5, ftostr5, 0.01)
+ 
+ #ifdef REPRAPWORLD_KEYPAD
+-    static void reprapworld_keypad_move_y_down() {
+-        encoderPosition = 1;
+-        move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
+-        lcd_move_y();
+-    }
+-    static void reprapworld_keypad_move_y_up() {
+-        encoderPosition = -1;
+-        move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
+-        lcd_move_y();
+-    }
+-    static void reprapworld_keypad_move_home() {
+-        //enquecommand_P((PSTR("G28"))); // move all axis home
+-        // TODO gregor: move all axis home, i have currently only one axis on my prusa i3
+-        enquecommand_P((PSTR("G28 Y")));
+-    }
++	static void reprapworld_keypad_move_z_up() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_z();
++  }
++	static void reprapworld_keypad_move_z_down() {
++    encoderPosition = -1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_z();
++  }
++	static void reprapworld_keypad_move_x_left() {
++    encoderPosition = -1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_x();
++  }
++	static void reprapworld_keypad_move_x_right() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_x();
++	}
++	static void reprapworld_keypad_move_y_down() {
++    encoderPosition = 1;
++    move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++		lcd_move_y();
++	}
++	static void reprapworld_keypad_move_y_up() {
++		encoderPosition = -1;
++		move_menu_scale = REPRAPWORLD_KEYPAD_MOVE_STEP;
++    lcd_move_y();
++	}
++	static void reprapworld_keypad_move_home() {
++		enquecommand_P((PSTR("G28"))); // move all axis home
++	}
+ #endif
+ 
+ /** End of menus **/
+@@ -909,17 +927,29 @@ void lcd_update()
+     if (lcd_next_update_millis < millis())
+     {
+ #ifdef ULTIPANEL
+-        #ifdef REPRAPWORLD_KEYPAD
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN) {
+-            reprapworld_keypad_move_y_down();
+-        }
+-        if (REPRAPWORLD_KEYPAD_MOVE_Y_UP) {
+-            reprapworld_keypad_move_y_up();
+-        }
+-        if (REPRAPWORLD_KEYPAD_MOVE_HOME) {
+-            reprapworld_keypad_move_home();
+-        }
+-        #endif
++		#ifdef REPRAPWORLD_KEYPAD
++        	if (REPRAPWORLD_KEYPAD_MOVE_Z_UP) {
++        		reprapworld_keypad_move_z_up();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Z_DOWN) {
++        		reprapworld_keypad_move_z_down();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_X_LEFT) {
++        		reprapworld_keypad_move_x_left();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_X_RIGHT) {
++        		reprapworld_keypad_move_x_right();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Y_DOWN) {
++        		reprapworld_keypad_move_y_down();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_Y_UP) {
++        		reprapworld_keypad_move_y_up();
++        	}
++        	if (REPRAPWORLD_KEYPAD_MOVE_HOME) {
++        		reprapworld_keypad_move_home();
++        	}
++		#endif
+         if (encoderDiff)
+         {
+             lcdDrawUpdate = 1;
+@@ -1013,22 +1043,22 @@ void lcd_buttons_update()
+   #if BTN_ENC > 0
+     if((blocking_enc<millis()) && (READ(BTN_ENC)==0))
+         newbutton |= EN_C;
+-  #endif      
+-  #ifdef REPRAPWORLD_KEYPAD
+-    // for the reprapworld_keypad
+-    uint8_t newbutton_reprapworld_keypad=0;
+-    WRITE(SHIFT_LD,LOW);
+-    WRITE(SHIFT_LD,HIGH);
+-    for(int8_t i=0;i<8;i++) {
+-        newbutton_reprapworld_keypad = newbutton_reprapworld_keypad>>1;
+-        if(READ(SHIFT_OUT))
+-            newbutton_reprapworld_keypad|=(1<<7);
+-        WRITE(SHIFT_CLK,HIGH);
+-        WRITE(SHIFT_CLK,LOW);
+-    }
+-    newbutton |= ((~newbutton_reprapworld_keypad) << REPRAPWORLD_BTN_OFFSET); //invert it, because a pressed switch produces a logical 0
+   #endif
+     buttons = newbutton;
++    #ifdef REPRAPWORLD_KEYPAD
++      // for the reprapworld_keypad
++      uint8_t newbutton_reprapworld_keypad=0;
++      WRITE(SHIFT_LD,LOW);
++      WRITE(SHIFT_LD,HIGH);
++      for(int8_t i=0;i<8;i++) {
++          newbutton_reprapworld_keypad = newbutton_reprapworld_keypad>>1;
++          if(READ(SHIFT_OUT))
++              newbutton_reprapworld_keypad|=(1<<7);
++          WRITE(SHIFT_CLK,HIGH);
++          WRITE(SHIFT_CLK,LOW);
++      }
++      buttons_reprapworld_keypad=~newbutton_reprapworld_keypad; //invert it, because a pressed switch produces a logical 0
++	#endif
+ #else   //read it from the shift register
+     uint8_t newbutton=0;
+     WRITE(SHIFT_LD,LOW);
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index 8f2b376..d6fa0fd 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -27,6 +27,10 @@
+ 
+   #ifdef ULTIPANEL
+   void lcd_buttons_update();
++  extern volatile uint8_t buttons;  //the last checked buttons in a bit array.
++  #ifdef REPRAPWORLD_KEYPAD
++    extern volatile uint8_t buttons_reprapworld_keypad; // to store the keypad shiftregister values
++  #endif
+   #else
+   FORCE_INLINE void lcd_buttons_update() {}
+   #endif
+@@ -42,6 +46,45 @@
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+ 
++  #ifdef NEWPANEL
++    #define EN_C (1<<BLEN_C)
++    #define EN_B (1<<BLEN_B)
++    #define EN_A (1<<BLEN_A)
++
++    #define LCD_CLICKED (buttons&EN_C)
++    #ifdef REPRAPWORLD_KEYPAD
++  	  #define EN_REPRAPWORLD_KEYPAD_F3 (1<<BLEN_REPRAPWORLD_KEYPAD_F3)
++  	  #define EN_REPRAPWORLD_KEYPAD_F2 (1<<BLEN_REPRAPWORLD_KEYPAD_F2)
++  	  #define EN_REPRAPWORLD_KEYPAD_F1 (1<<BLEN_REPRAPWORLD_KEYPAD_F1)
++  	  #define EN_REPRAPWORLD_KEYPAD_UP (1<<BLEN_REPRAPWORLD_KEYPAD_UP)
++  	  #define EN_REPRAPWORLD_KEYPAD_RIGHT (1<<BLEN_REPRAPWORLD_KEYPAD_RIGHT)
++  	  #define EN_REPRAPWORLD_KEYPAD_MIDDLE (1<<BLEN_REPRAPWORLD_KEYPAD_MIDDLE)
++  	  #define EN_REPRAPWORLD_KEYPAD_DOWN (1<<BLEN_REPRAPWORLD_KEYPAD_DOWN)
++  	  #define EN_REPRAPWORLD_KEYPAD_LEFT (1<<BLEN_REPRAPWORLD_KEYPAD_LEFT)
++
++  	  #define LCD_CLICKED ((buttons&EN_C) || (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F1))
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Z_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F2)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Z_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_F3)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_X_LEFT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_LEFT)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_X_RIGHT (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_RIGHT)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Y_DOWN (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_DOWN)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_Y_UP (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_UP)
++  	  #define REPRAPWORLD_KEYPAD_MOVE_HOME (buttons_reprapworld_keypad&EN_REPRAPWORLD_KEYPAD_MIDDLE)
++    #endif //REPRAPWORLD_KEYPAD
++  #else
++    //atomatic, do not change
++    #define B_LE (1<<BL_LE)
++    #define B_UP (1<<BL_UP)
++    #define B_MI (1<<BL_MI)
++    #define B_DW (1<<BL_DW)
++    #define B_RI (1<<BL_RI)
++    #define B_ST (1<<BL_ST)
++    #define EN_B (1<<BLEN_B)
++    #define EN_A (1<<BLEN_A)
++    
++    #define LCD_CLICKED ((buttons&B_MI)||(buttons&B_ST))
++  #endif//NEWPANEL
++
+ #else //no lcd
+   FORCE_INLINE void lcd_update() {}
+   FORCE_INLINE void lcd_init() {}
+

@@ -1,0 +1,331 @@
+commit e5c7af5ddcc3bd4ed5ceb3c2a1a0f1f9923ea6f2 (from 2224032568f707c416c58c89f72cb36fc5faed4c)
+Merge: 2224032 cdd77d2
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 12 20:40:14 2016 -0700
+
+    Merge pull request #4222 from thinkyhead/rc_allow_cold_extrude
+    
+    M302: Add "P" parameter, status output
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 0af5490..911e61a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -5697,10 +5697,36 @@ inline void gcode_M226() {
+ #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
+ 
+   /**
+-   * M302: Allow cold extrudes, or set the minimum extrude S<temperature>.
++   * M302: Allow cold extrudes, or set the minimum extrude temperature
++   *
++   *       S<temperature> sets the minimum extrude temperature
++   *       P<bool> enables (1) or disables (0) cold extrusion
++   *
++   *  Examples:
++   *
++   *       M302         ; report current cold extrusion state
++   *       M302 P0      ; enable cold extrusion checking
++   *       M302 P1      ; disables cold extrusion checking
++   *       M302 S0      ; always allow extrusion (disables checking)
++   *       M302 S170    ; only allow extrusion above 170
++   *       M302 S170 P1 ; set min extrude temp to 170 but leave disabled
+    */
+   inline void gcode_M302() {
+-    thermalManager.extrude_min_temp = code_seen('S') ? code_value_temp_abs() : 0;
++    bool seen_S = code_seen('S');
++    if (seen_S) {
++      thermalManager.extrude_min_temp = code_value_temp_abs();
++      thermalManager.allow_cold_extrude = (thermalManager.extrude_min_temp == 0);
++    }
++
++    if (code_seen('P'))
++      thermalManager.allow_cold_extrude = (thermalManager.extrude_min_temp == 0) || code_value_bool();
++    else if (!seen_S) {
++      // Report current state
++      SERIAL_ECHO_START;
++      SERIAL_ECHOPAIR("Cold extrudes are ", (thermalManager.allow_cold_extrude ? "en" : "dis"));
++      SERIAL_ECHOPAIR("abled (min temp ", int(thermalManager.extrude_min_temp + 0.5));
++      SERIAL_ECHOLNPGM("C)");
++    }
+   }
+ 
+ #endif // PREVENT_DANGEROUS_EXTRUDE
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index aa0ff79..76c9dfd 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -50,13 +50,12 @@ Temperature thermalManager;
+ 
+ // public:
+ 
+-int Temperature::current_temperature_raw[HOTENDS] = { 0 };
+-float Temperature::current_temperature[HOTENDS] = { 0.0 };
+-int Temperature::target_temperature[HOTENDS] = { 0 };
+-
+-int Temperature::current_temperature_bed_raw = 0;
+-float Temperature::current_temperature_bed = 0.0;
+-int Temperature::target_temperature_bed = 0;
++float Temperature::current_temperature[HOTENDS] = { 0.0 },
++      Temperature::current_temperature_bed = 0.0;
++int   Temperature::current_temperature_raw[HOTENDS] = { 0 },
++      Temperature::target_temperature[HOTENDS] = { 0 },
++      Temperature::current_temperature_bed_raw = 0,
++      Temperature::target_temperature_bed = 0;
+ 
+ #if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
+   float Temperature::redundant_temperature = 0.0;
+@@ -107,6 +106,7 @@ unsigned char Temperature::soft_pwm_bed;
+ #endif
+ 
+ #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++  bool Temperature::allow_cold_extrude = false;
+   float Temperature::extrude_min_temp = EXTRUDE_MINTEMP;
+ #endif
+ 
+@@ -120,11 +120,11 @@ unsigned char Temperature::soft_pwm_bed;
+ volatile bool Temperature::temp_meas_ready = false;
+ 
+ #if ENABLED(PIDTEMP)
+-  float Temperature::temp_iState[HOTENDS] = { 0 };
+-  float Temperature::temp_dState[HOTENDS] = { 0 };
+-  float Temperature::pTerm[HOTENDS];
+-  float Temperature::iTerm[HOTENDS];
+-  float Temperature::dTerm[HOTENDS];
++  float Temperature::temp_iState[HOTENDS] = { 0 },
++        Temperature::temp_dState[HOTENDS] = { 0 },
++        Temperature::pTerm[HOTENDS],
++        Temperature::iTerm[HOTENDS],
++        Temperature::dTerm[HOTENDS];
+ 
+   #if ENABLED(PID_ADD_EXTRUSION_RATE)
+     float Temperature::cTerm[HOTENDS];
+@@ -133,21 +133,21 @@ volatile bool Temperature::temp_meas_ready = false;
+     int Temperature::lpq_ptr = 0;
+   #endif
+ 
+-  float Temperature::pid_error[HOTENDS];
+-  float Temperature::temp_iState_min[HOTENDS];
+-  float Temperature::temp_iState_max[HOTENDS];
++  float Temperature::pid_error[HOTENDS],
++        Temperature::temp_iState_min[HOTENDS],
++        Temperature::temp_iState_max[HOTENDS];
+   bool Temperature::pid_reset[HOTENDS];
+ #endif
+ 
+ #if ENABLED(PIDTEMPBED)
+-  float Temperature::temp_iState_bed = { 0 };
+-  float Temperature::temp_dState_bed = { 0 };
+-  float Temperature::pTerm_bed;
+-  float Temperature::iTerm_bed;
+-  float Temperature::dTerm_bed;
+-  float Temperature::pid_error_bed;
+-  float Temperature::temp_iState_min_bed;
+-  float Temperature::temp_iState_max_bed;
++  float Temperature::temp_iState_bed = { 0 },
++        Temperature::temp_dState_bed = { 0 },
++        Temperature::pTerm_bed,
++        Temperature::iTerm_bed,
++        Temperature::dTerm_bed,
++        Temperature::pid_error_bed,
++        Temperature::temp_iState_min_bed,
++        Temperature::temp_iState_max_bed;
+ #else
+   millis_t Temperature::next_bed_check_ms;
+ #endif
+@@ -156,10 +156,10 @@ unsigned long Temperature::raw_temp_value[4] = { 0 };
+ unsigned long Temperature::raw_temp_bed_value = 0;
+ 
+ // Init min and max temp with extreme values to prevent false errors during startup
+-int Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TEMP , HEATER_1_RAW_LO_TEMP , HEATER_2_RAW_LO_TEMP, HEATER_3_RAW_LO_TEMP);
+-int Temperature::maxttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_HI_TEMP , HEATER_1_RAW_HI_TEMP , HEATER_2_RAW_HI_TEMP, HEATER_3_RAW_HI_TEMP);
+-int Temperature::minttemp[HOTENDS] = { 0 };
+-int Temperature::maxttemp[HOTENDS] = ARRAY_BY_HOTENDS1(16383);
++int Temperature::minttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_LO_TEMP , HEATER_1_RAW_LO_TEMP , HEATER_2_RAW_LO_TEMP, HEATER_3_RAW_LO_TEMP),
++    Temperature::maxttemp_raw[HOTENDS] = ARRAY_BY_HOTENDS(HEATER_0_RAW_HI_TEMP , HEATER_1_RAW_HI_TEMP , HEATER_2_RAW_HI_TEMP, HEATER_3_RAW_HI_TEMP),
++    Temperature::minttemp[HOTENDS] = { 0 },
++    Temperature::maxttemp[HOTENDS] = ARRAY_BY_HOTENDS1(16383);
+ 
+ #ifdef MAX_CONSECUTIVE_LOW_TEMPERATURE_ERROR_ALLOWED
+   int Temperature::consecutive_low_temperature_error[HOTENDS] = { 0 };
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index fd737bc..8fab0db 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -52,13 +52,12 @@ class Temperature {
+ 
+   public:
+ 
+-    static int current_temperature_raw[HOTENDS];
+-    static float current_temperature[HOTENDS];
+-    static int target_temperature[HOTENDS];
+-
+-    static int current_temperature_bed_raw;
+-    static float current_temperature_bed;
+-    static int target_temperature_bed;
++    static float current_temperature[HOTENDS],
++                 current_temperature_bed;
++    static int   current_temperature_raw[HOTENDS],
++                 target_temperature[HOTENDS],
++                 current_temperature_bed_raw,
++                 target_temperature_bed;
+ 
+     #if ENABLED(TEMP_SENSOR_1_AS_REDUNDANT)
+       static float redundant_temperature;
+@@ -121,12 +120,13 @@ class Temperature {
+     #endif
+ 
+     #if ENABLED(PREVENT_DANGEROUS_EXTRUDE)
++      static bool allow_cold_extrude;
+       static float extrude_min_temp;
+       static bool tooColdToExtrude(uint8_t e) {
+         #if HOTENDS == 1
+           UNUSED(e);
+         #endif
+-        return degHotend(HOTEND_INDEX) < extrude_min_temp;
++        return allow_cold_extrude ? false : degHotend(HOTEND_INDEX) < extrude_min_temp;
+       }
+     #else
+       static bool tooColdToExtrude(uint8_t e) { UNUSED(e); return false; }
+@@ -142,11 +142,11 @@ class Temperature {
+     static volatile bool temp_meas_ready;
+ 
+     #if ENABLED(PIDTEMP)
+-      static float temp_iState[HOTENDS];
+-      static float temp_dState[HOTENDS];
+-      static float pTerm[HOTENDS];
+-      static float iTerm[HOTENDS];
+-      static float dTerm[HOTENDS];
++      static float temp_iState[HOTENDS],
++                   temp_dState[HOTENDS],
++                   pTerm[HOTENDS],
++                   iTerm[HOTENDS],
++                   dTerm[HOTENDS];
+ 
+       #if ENABLED(PID_ADD_EXTRUSION_RATE)
+         static float cTerm[HOTENDS];
+@@ -155,33 +155,33 @@ class Temperature {
+         static int lpq_ptr;
+       #endif
+ 
+-      static float pid_error[HOTENDS];
+-      static float temp_iState_min[HOTENDS];
+-      static float temp_iState_max[HOTENDS];
++      static float pid_error[HOTENDS],
++                   temp_iState_min[HOTENDS],
++                   temp_iState_max[HOTENDS];
+       static bool pid_reset[HOTENDS];
+     #endif
+ 
+     #if ENABLED(PIDTEMPBED)
+-      static float temp_iState_bed;
+-      static float temp_dState_bed;
+-      static float pTerm_bed;
+-      static float iTerm_bed;
+-      static float dTerm_bed;
+-      static float pid_error_bed;
+-      static float temp_iState_min_bed;
+-      static float temp_iState_max_bed;
++      static float temp_iState_bed,
++                   temp_dState_bed,
++                   pTerm_bed,
++                   iTerm_bed,
++                   dTerm_bed,
++                   pid_error_bed,
++                   temp_iState_min_bed,
++                   temp_iState_max_bed;
+     #else
+       static millis_t next_bed_check_ms;
+     #endif
+ 
+-    static unsigned long raw_temp_value[4];
+-    static unsigned long raw_temp_bed_value;
++    static unsigned long raw_temp_value[4],
++                         raw_temp_bed_value;
+ 
+     // Init min and max temp with extreme values to prevent false errors during startup
+-    static int minttemp_raw[HOTENDS];
+-    static int maxttemp_raw[HOTENDS];
+-    static int minttemp[HOTENDS];
+-    static int maxttemp[HOTENDS];
++    static int minttemp_raw[HOTENDS],
++               maxttemp_raw[HOTENDS],
++               minttemp[HOTENDS],
++               maxttemp[HOTENDS];
+ 
+     #ifdef MAX_CONSECUTIVE_LOW_TEMPERATURE_ERROR_ALLOWED
+       static int consecutive_low_temperature_error[HOTENDS];
+
+commit e5c7af5ddcc3bd4ed5ceb3c2a1a0f1f9923ea6f2 (from cdd77d23bb8b195c6df37740d7c55339a64a37bd)
+Merge: 2224032 cdd77d2
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Tue Jul 12 20:40:14 2016 -0700
+
+    Merge pull request #4222 from thinkyhead/rc_allow_cold_extrude
+    
+    M302: Add "P" parameter, status output
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 404c299..911e61a 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1707,12 +1707,6 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+   /**
+    * Raise Z to a minimum height to make room for a probe to move
+-   *
+-   * zprobe_zoffset: Negative of the Z height where the probe engages
+-   *        z_raise: The probing raise distance
+-   *
+-   * The zprobe_zoffset is negative for a switch below the nozzle, so
+-   * multiply by Z_HOME_DIR (-1) to move enough away from the bed.
+    */
+   inline void do_probe_raise(float z_raise) {
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -1723,7 +1717,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     #endif
+     float z_dest = home_offset[Z_AXIS] + z_raise;
+ 
+-    if ((Z_HOME_DIR) < 0 && zprobe_zoffset < 0)
++    if (zprobe_zoffset < 0)
+       z_dest -= zprobe_zoffset;
+ 
+     if (z_dest > current_position[Z_AXIS])
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index b1a3470..94a7110 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -1293,12 +1293,14 @@ void kill_screen(const char* lcd_msg) {
+ 
+   #endif // DELTA_CALIBRATION_MENU
+ 
++  float move_menu_scale;
++
+   /**
+    * If the most recent manual move hasn't been fed to the planner yet,
+    * and the planner can accept one, send immediately
+    */
+   inline void manage_manual_move() {
+-    if (manual_move_axis != (int8_t)NO_AXIS && millis() >= manual_move_start_time && !planner.is_full()) {
++    if (manual_move_axis != (int8_t)NO_AXIS && ELAPSED(millis(), manual_move_start_time) && !planner.is_full()) {
+       #if ENABLED(DELTA)
+         calculate_delta(current_position);
+         planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, manual_move_e_index);
+@@ -1321,7 +1323,7 @@ void kill_screen(const char* lcd_msg) {
+     #if EXTRUDERS > 1
+       if (axis == E_AXIS) manual_move_e_index = eindex >= 0 ? eindex : active_extruder;
+     #endif
+-    manual_move_start_time = millis() + 500UL; // 1/2 second delay
++    manual_move_start_time = millis() + (move_menu_scale < 0.99 ? 0UL : 250UL); // delay for bigger moves
+     manual_move_axis = (int8_t)axis;
+   }
+ 
+@@ -1331,8 +1333,6 @@ void kill_screen(const char* lcd_msg) {
+    *
+    */
+ 
+-  float move_menu_scale;
+-
+   static void _lcd_move_xyz(const char* name, AxisEnum axis, float min, float max) {
+     if (LCD_CLICKED) { lcd_goto_previous_menu(true); return; }
+     ENCODER_DIRECTION_NORMAL();
+

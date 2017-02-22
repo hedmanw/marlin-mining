@@ -1,0 +1,767 @@
+commit c13a831ea15a8f1738a9808874d18f2df6213c68 (from aacff0d3617ffa3bfb049e3421c5bf5b8b91f9d1)
+Merge: aacff0d 2d22902
+Author: daid <daid303@gmail.com>
+Date:   Thu Jul 24 19:41:34 2014 +0200
+
+    Merge pull request #1017 from foosel/fix/checksum_truncation_bug
+    
+    Fix for a wrong checksum truncation for certain commands
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index a23b84d..b373e22 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1730,7 +1730,7 @@ void process_commands()
+     case 23: //M23 - Select file
+       starpos = (strchr(strchr_pointer + 4,'*'));
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+       card.openFile(strchr_pointer + 4,true);
+       break;
+     case 24: //M24 - Start SD print
+@@ -1753,7 +1753,7 @@ void process_commands()
+       if(starpos != NULL){
+         char* npos = strchr(cmdbuffer[bufindr], 'N');
+         strchr_pointer = strchr(npos,' ') + 1;
+-        *(starpos-1) = '\0';
++        *(starpos) = '\0';
+       }
+       card.openFile(strchr_pointer+4,false);
+       break;
+@@ -1768,7 +1768,7 @@ void process_commands()
+         if(starpos != NULL){
+           char* npos = strchr(cmdbuffer[bufindr], 'N');
+           strchr_pointer = strchr(npos,' ') + 1;
+-          *(starpos-1) = '\0';
++          *(starpos) = '\0';
+         }
+         card.removeFile(strchr_pointer + 4);
+       }
+@@ -1790,7 +1790,7 @@ void process_commands()
+         namestartpos++; //to skip the '!'
+ 
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+ 
+       bool call_procedure=(code_seen('P'));
+ 
+@@ -1813,7 +1813,7 @@ void process_commands()
+       if(starpos != NULL){
+         char* npos = strchr(cmdbuffer[bufindr], 'N');
+         strchr_pointer = strchr(npos,' ') + 1;
+-        *(starpos-1) = '\0';
++        *(starpos) = '\0';
+       }
+       card.openLogFile(strchr_pointer+5);
+       break;
+@@ -2233,7 +2233,7 @@ void process_commands()
+     case 117: // M117 display message
+       starpos = (strchr(strchr_pointer + 5,'*'));
+       if(starpos!=NULL)
+-        *(starpos-1)='\0';
++        *(starpos)='\0';
+       lcd_setstatus(strchr_pointer + 5);
+       break;
+     case 114: // M114
+
+commit c13a831ea15a8f1738a9808874d18f2df6213c68 (from 2d22902d080b08c65ebdf5f8b3f03529ccd58144)
+Merge: aacff0d 2d22902
+Author: daid <daid303@gmail.com>
+Date:   Thu Jul 24 19:41:34 2014 +0200
+
+    Merge pull request #1017 from foosel/fix/checksum_truncation_bug
+    
+    Fix for a wrong checksum truncation for certain commands
+
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index 1355a7a..46d6b96 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -132,6 +132,7 @@
+ // 1010 is Pt1000 with 1k pullup (non standard)
+ // 147 is Pt100 with 4k7 pullup
+ // 110 is Pt100 with 1k pullup (non standard)
++// 70 is 500C thermistor for Pico hot end
+ 
+ #define TEMP_SENSOR_0 -1
+ #define TEMP_SENSOR_1 -1
+@@ -250,6 +251,44 @@
+ #define EXTRUDE_MINTEMP 170
+ #define EXTRUDE_MAXLENGTH (X_MAX_LENGTH+Y_MAX_LENGTH) //prevent extrusion of very large distances.
+ 
++/*================== Thermal Runaway Protection ==============================
++This is a feature to protect your printer from burn up in flames if it has
++a thermistor coming off place (this happened to a friend of mine recently and
++motivated me writing this feature).
++
++The issue: If a thermistor come off, it will read a lower temperature than actual.
++The system will turn the heater on forever, burning up the filament and anything
++else around.
++
++After the temperature reaches the target for the first time, this feature will 
++start measuring for how long the current temperature stays below the target 
++minus _HYSTERESIS (set_temperature - THERMAL_RUNAWAY_PROTECTION_HYSTERESIS).
++
++If it stays longer than _PERIOD, it means the thermistor temperature
++cannot catch up with the target, so something *may be* wrong. Then, to be on the
++safe side, the system will he halt.
++
++Bear in mind the count down will just start AFTER the first time the 
++thermistor temperature is over the target, so you will have no problem if
++your extruder heater takes 2 minutes to hit the target on heating.
++
++*/
++// If you want to enable this feature for all your extruder heaters,
++// uncomment the 2 defines below:
++
++// Parameters for all extruder heaters
++//#define THERMAL_RUNAWAY_PROTECTION_PERIOD 40 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_HYSTERESIS 4 // in degree Celsius
++
++// If you want to enable this feature for your bed heater,
++// uncomment the 2 defines below:
++
++// Parameters for the bed heater
++//#define THERMAL_RUNAWAY_PROTECTION_BED_PERIOD 20 //in seconds
++//#define THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS 2 // in degree Celsius
++//===========================================================================
++
++
+ //===========================================================================
+ //=============================Mechanical Settings===========================
+ //===========================================================================
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 245f65c..6398f41 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -410,9 +410,11 @@ const unsigned int dropsegments=5; //everything with less than this number of st
+ #ifdef FWRETRACT
+   #define MIN_RETRACT 0.1                //minimum extruded mm to accept a automatic gcode retraction attempt
+   #define RETRACT_LENGTH 3               //default retract length (positive mm)
++  #define RETRACT_LENGTH_SWAP 13         //default swap retract length (positive mm), for extruder change
+   #define RETRACT_FEEDRATE 45            //default feedrate for retracting (mm/s)
+   #define RETRACT_ZLIFT 0                //default retract Z-lift
+   #define RETRACT_RECOVER_LENGTH 0       //default additional recover length (mm, added to retract length when recovering)
++  #define RETRACT_RECOVER_LENGTH_SWAP 0  //default additional swap recover length (mm, added to retract length when recovering from extruder change)
+   #define RETRACT_RECOVER_FEEDRATE 8     //default feedrate for recovering from retraction (mm/s)
+ #endif
+ 
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index e728209..062b6d4 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -231,9 +231,9 @@ extern unsigned char fanSpeedSoftPwm;
+ 
+ #ifdef FWRETRACT
+ extern bool autoretract_enabled;
+-extern bool retracted;
+-extern float retract_length, retract_feedrate, retract_zlift;
+-extern float retract_recover_length, retract_recover_feedrate;
++extern bool retracted[EXTRUDERS];
++extern float retract_length, retract_length_swap, retract_feedrate, retract_zlift;
++extern float retract_recover_length, retract_recover_length_swap, retract_recover_feedrate;
+ #endif
+ 
+ extern unsigned long starttime;
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index c09585e..b373e22 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -243,11 +243,29 @@ int EtoPPressure=0;
+ 
+ #ifdef FWRETRACT
+   bool autoretract_enabled=false;
+-  bool retracted=false;
++  bool retracted[EXTRUDERS]={false
++    #if EXTRUDERS > 1
++    , false
++     #if EXTRUDERS > 2
++      , false
++     #endif
++  #endif
++  };
++  bool retracted_swap[EXTRUDERS]={false
++    #if EXTRUDERS > 1
++    , false
++     #if EXTRUDERS > 2
++      , false
++     #endif
++  #endif
++  };
++
+   float retract_length = RETRACT_LENGTH;
++  float retract_length_swap = RETRACT_LENGTH_SWAP;
+   float retract_feedrate = RETRACT_FEEDRATE;
+   float retract_zlift = RETRACT_ZLIFT;
+   float retract_recover_length = RETRACT_RECOVER_LENGTH;
++  float retract_recover_length_swap = RETRACT_RECOVER_LENGTH_SWAP;
+   float retract_recover_feedrate = RETRACT_RECOVER_FEEDRATE;
+ #endif
+ 
+@@ -276,6 +294,8 @@ int EtoPPressure=0;
+   float delta_segments_per_second= DELTA_SEGMENTS_PER_SECOND;
+ #endif					
+ 
++bool cancel_heatup = false ;
++
+ //===========================================================================
+ //=============================Private Variables=============================
+ //===========================================================================
+@@ -1117,23 +1137,27 @@ void refresh_cmd_timeout(void)
+ }
+ 
+ #ifdef FWRETRACT
+-  void retract(bool retracting) {
+-    if(retracting && !retracted) {
++  void retract(bool retracting, bool swapretract = false) {
++    if(retracting && !retracted[active_extruder]) {
+       destination[X_AXIS]=current_position[X_AXIS];
+       destination[Y_AXIS]=current_position[Y_AXIS];
+       destination[Z_AXIS]=current_position[Z_AXIS];
+       destination[E_AXIS]=current_position[E_AXIS];
+-      current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
++      if (swapretract) {
++        current_position[E_AXIS]+=retract_length_swap/volumetric_multiplier[active_extruder];
++      } else {
++        current_position[E_AXIS]+=retract_length/volumetric_multiplier[active_extruder];
++      }
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+       feedrate=retract_feedrate*60;
+-      retracted=true;
++      retracted[active_extruder]=true;
+       prepare_move();
+       current_position[Z_AXIS]-=retract_zlift;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       prepare_move();
+       feedrate = oldFeedrate;
+-    } else if(!retracting && retracted) {
++    } else if(!retracting && retracted[active_extruder]) {
+       destination[X_AXIS]=current_position[X_AXIS];
+       destination[Y_AXIS]=current_position[Y_AXIS];
+       destination[Z_AXIS]=current_position[Z_AXIS];
+@@ -1141,11 +1165,15 @@ void refresh_cmd_timeout(void)
+       current_position[Z_AXIS]+=retract_zlift;
+       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+       //prepare_move();
+-      current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
++      if (swapretract) {
++        current_position[E_AXIS]-=(retract_length_swap+retract_recover_length_swap)/volumetric_multiplier[active_extruder]; 
++      } else {
++        current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
++      }
+       plan_set_e_position(current_position[E_AXIS]);
+       float oldFeedrate = feedrate;
+       feedrate=retract_recover_feedrate*60;
+-      retracted=false;
++      retracted[active_extruder]=false;
+       prepare_move();
+       feedrate = oldFeedrate;
+     }
+@@ -1215,10 +1243,19 @@ void process_commands()
+       break;
+       #ifdef FWRETRACT
+       case 10: // G10 retract
++       #if EXTRUDERS > 1
++        retracted_swap[active_extruder]=(code_seen('S') && code_value_long() == 1); // checks for swap retract argument
++        retract(true,retracted_swap[active_extruder]);
++       #else
+         retract(true);
++       #endif
+       break;
+       case 11: // G11 retract_recover
++       #if EXTRUDERS > 1
++        retract(false,retracted_swap[active_extruder]);
++       #else
+         retract(false);
++       #endif 
+       break;
+       #endif //FWRETRACT
+     case 28: //G28 Home all Axis one at a time
+@@ -1945,14 +1982,16 @@ void process_commands()
+ 
+       /* See if we are heating up or cooling down */
+       target_direction = isHeatingHotend(tmp_extruder); // true if heating, false if cooling
++      
++      cancel_heatup = false;
+ 
+       #ifdef TEMP_RESIDENCY_TIME
+         long residencyStart;
+         residencyStart = -1;
+         /* continue to loop until we have reached the target temp
+           _and_ until TEMP_RESIDENCY_TIME hasn't passed since we reached it */
+-        while((residencyStart == -1) ||
+-              (residencyStart >= 0 && (((unsigned int) (millis() - residencyStart)) < (TEMP_RESIDENCY_TIME * 1000UL))) ) {
++        while((!cancel_heatup)&&((residencyStart == -1) ||
++              (residencyStart >= 0 && (((unsigned int) (millis() - residencyStart)) < (TEMP_RESIDENCY_TIME * 1000UL)))) ) {
+       #else
+         while ( target_direction ? (isHeatingHotend(tmp_extruder)) : (isCoolingHotend(tmp_extruder)&&(CooldownNoWait==false)) ) {
+       #endif //TEMP_RESIDENCY_TIME
+@@ -2008,10 +2047,11 @@ void process_commands()
+           CooldownNoWait = false;
+         }
+         codenum = millis();
+-
++        
++        cancel_heatup = false;
+         target_direction = isHeatingBed(); // true if heating, false if cooling
+ 
+-        while ( target_direction ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
++        while ( (target_direction)&&(!cancel_heatup) ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
+         {
+           if(( millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
+           {
+@@ -2391,8 +2431,28 @@ void process_commands()
+         int t= code_value() ;
+         switch(t)
+         {
+-          case 0: autoretract_enabled=false;retracted=false;break;
+-          case 1: autoretract_enabled=true;retracted=false;break;
++          case 0: 
++          {
++            autoretract_enabled=false;
++            retracted[0]=false;
++            #if EXTRUDERS > 1
++              retracted[1]=false;
++            #endif
++            #if EXTRUDERS > 2
++              retracted[2]=false;
++            #endif
++          }break;
++          case 1: 
++          {
++            autoretract_enabled=true;
++            retracted[0]=false;
++            #if EXTRUDERS > 1
++              retracted[1]=false;
++            #endif
++            #if EXTRUDERS > 2
++              retracted[2]=false;
++            #endif
++          }break;
+           default:
+             SERIAL_ECHO_START;
+             SERIAL_ECHOPGM(MSG_UNKNOWN_COMMAND);
+diff --git a/Marlin/language.h b/Marlin/language.h
+index c032aca..8522018 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -171,9 +171,11 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Re.mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "S UnRet+mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -371,9 +373,11 @@
+ 	#define MSG_STOPPED "Zatrzymany. "
+ 	#define MSG_STEPPER_RELEASED "Zwolniony."
+ 	#define MSG_CONTROL_RETRACT  "Wycofaj mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Z Wycof. mm"
+ 	#define MSG_CONTROL_RETRACTF "Wycofaj  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Skok Z mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Cof. wycof. +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Z Cof. wyc. +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "Cof. wycof.  V"
+ 	#define MSG_AUTORETRACT "Auto. wycofanie"
+ 	#define MSG_FILAMENTCHANGE "Zmien filament"
+@@ -572,9 +576,11 @@
+ 	#define MSG_STOPPED "STOPPE."
+ 	#define MSG_STEPPER_RELEASED "RELACHE."
+ 	#define MSG_CONTROL_RETRACT "Retraction mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Ech. Retr. mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraction V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Ech. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet V"
+ 	#define MSG_AUTORETRACT "Retract. Auto."
+ 	#define MSG_FILAMENTCHANGE "Changer filament"
+@@ -774,9 +780,11 @@
+ 	#define MSG_STOPPED          "GESTOPPT"
+ 	#define MSG_STEPPER_RELEASED "Stepper frei"
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Wechs. Retract mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Wechs. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT      "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Filament wechseln"
+@@ -972,9 +980,11 @@
+ 	#define MSG_KILLED "PARADA DE EMERG."
+ 	#define MSG_STOPPED "PARADA"
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Interc. Retraer mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraer  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Levantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Interc. DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet V"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Cambiar filamento"
+@@ -1179,9 +1189,11 @@
+ 	#define MSG_KILLED							"УБИТО."
+ 	#define MSG_STOPPED							"ОСТАНОВЛЕНО."
+ 	#define MSG_CONTROL_RETRACT					"Откат mm:"
++	#define MSG_CONTROL_RETRACT_SWAP				"своп Откат mm:"
+ 	#define MSG_CONTROL_RETRACTF				"Откат  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT			"Прыжок mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER			"Возврат +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP		"своп Возврат +mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF		"Возврат  V:"
+ 	#define MSG_AUTORETRACT						"АвтоОткат:"
+ 	#define MSG_FILAMENTCHANGE 					"Change filament"
+@@ -1376,9 +1388,11 @@
+ 	#define MSG_KILLED               "UCCISO. "
+ 	#define MSG_STOPPED              "ARRESTATO. "
+ 	#define MSG_CONTROL_RETRACT      "Ritrai mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Scamb. Ritrai mm"
+ 	#define MSG_CONTROL_RETRACTF     "Ritrai  V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Salta mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Scamb. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT          "AutoArretramento"
+ 	#define MSG_FILAMENTCHANGE       "Cambia filamento"
+@@ -1581,9 +1595,11 @@
+ 	#define MSG_STOPPED "PARADA. "
+ 	#define MSG_STEPPER_RELEASED "Lancado."
+ 	#define MSG_CONTROL_RETRACT  " Retrair mm:"
++	#define MSG_CONTROL_RETRACT_SWAP  "Troca Retrair mm:"
+ 	#define MSG_CONTROL_RETRACTF " Retrair  V:"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT " Levantar mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVER " DesRet +mm:"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Troca DesRet +mm:"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF " DesRet  V:"
+ 	#define MSG_AUTORETRACT " AutoRetr.:"
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -1781,9 +1797,11 @@
+ 	#define MSG_KILLED "KILLED. "
+ 	#define MSG_STOPPED "STOPPED. "
+ 	#define MSG_CONTROL_RETRACT  "Veda mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Va. Veda mm"
+ 	#define MSG_CONTROL_RETRACTF "Veda V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Z mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Va. UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  V"
+ 	#define MSG_AUTORETRACT "AutoVeto."
+ 	#define MSG_FILAMENTCHANGE "Change filament"
+@@ -1979,9 +1997,11 @@
+ 	#define MSG_KILLED "ATURADA D'EMERCH."
+ 	#define MSG_STOPPED "ATURADA."
+ 	#define MSG_CONTROL_RETRACT  "Retraer mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Retraer mm"
+ 	#define MSG_CONTROL_RETRACTF "Retraer  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Devantar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Cambear"
+@@ -2185,9 +2205,11 @@
+ 	#define MSG_KILLED "AFGEBROKEN. "
+ 	#define MSG_STOPPED "GESTOPT. "
+ 	#define MSG_CONTROL_RETRACT  "Retract mm"
++	#define MSG_CONTROL_RETRACT_SWAP "Ruil Retract mm"
+ 	#define MSG_CONTROL_RETRACTF "Retract  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Hop mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "UnRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Ruil UnRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Verv. Filament"
+@@ -2384,9 +2406,11 @@
+ 	#define MSG_KILLED "PARADA DE EMERG. "
+ 	#define MSG_STOPPED "ATURAT. "
+ 	#define MSG_CONTROL_RETRACT  "Retreure mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Retreure mm"
+ 	#define MSG_CONTROL_RETRACTF "Retreure  F"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Aixecar mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "DesRet +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap DesRet +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "DesRet  F"
+ 	#define MSG_AUTORETRACT "AutoRetr."
+ 	#define MSG_FILAMENTCHANGE "Canviar filament"
+@@ -2582,9 +2606,11 @@
+ 	#define MSG_KILLED "LARRIALDI GELDIA"
+ 	#define MSG_STOPPED "GELDITUTA. "
+ 	#define MSG_CONTROL_RETRACT  "Atzera egin mm"
++	#define MSG_CONTROL_RETRACT_SWAP  "Swap Atzera egin mm"
+ 	#define MSG_CONTROL_RETRACTF "Atzera egin V"
+ 	#define MSG_CONTROL_RETRACT_ZLIFT "Igo mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVER "Atzera egin +mm"
++	#define MSG_CONTROL_RETRACT_RECOVER_SWAP "Swap Atzera egin +mm"
+ 	#define MSG_CONTROL_RETRACT_RECOVERF "Atzera egin V"
+ 	#define MSG_AUTORETRACT "Atzera egin"
+ 	#define MSG_FILAMENTCHANGE "Aldatu filament."
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index aac6ca6..a10c255 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -416,6 +416,10 @@ void manage_heater()
+   for(int e = 0; e < EXTRUDERS; e++) 
+   {
+ 
++  #ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++    thermal_runaway_protection(&thermal_runaway_state_machine[e], &thermal_runaway_timer[e], current_temperature[e], target_temperature[e], e, THERMAL_RUNAWAY_PROTECTION_PERIOD, THERMAL_RUNAWAY_PROTECTION_HYSTERESIS);
++  #endif
++
+   #ifdef PIDTEMP
+     pid_input = current_temperature[e];
+ 
+@@ -526,6 +530,10 @@ void manage_heater()
+ 
+   #if TEMP_SENSOR_BED != 0
+   
++    #ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++      thermal_runaway_protection(&thermal_runaway_bed_state_machine, &thermal_runaway_bed_timer, current_temperature_bed, target_temperature_bed, 9, THERMAL_RUNAWAY_PROTECTION_BED_PERIOD, THERMAL_RUNAWAY_PROTECTION_BED_HYSTERESIS);
++    #endif
++
+   #ifdef PIDTEMPBED
+     pid_input = current_temperature_bed;
+ 
+@@ -896,6 +904,66 @@ void setWatch()
+ #endif 
+ }
+ 
++#ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc)
++{
++/*
++      SERIAL_ECHO_START;
++      SERIAL_ECHO("Thermal Thermal Runaway Running. Heater ID:");
++      SERIAL_ECHO(heater_id);
++      SERIAL_ECHO(" ;  State:");
++      SERIAL_ECHO(*state);
++      SERIAL_ECHO(" ;  Timer:");
++      SERIAL_ECHO(*timer);
++      SERIAL_ECHO(" ;  Temperature:");
++      SERIAL_ECHO(temperature);
++      SERIAL_ECHO(" ;  Target Temp:");
++      SERIAL_ECHO(target_temperature);
++      SERIAL_ECHOLN("");    
++*/
++  if ((target_temperature == 0) || thermal_runaway)
++  {
++    *state = 0;
++    *timer = 0;
++    return;
++  }
++  switch (*state)
++  {
++    case 0: // "Heater Inactive" state
++      if (target_temperature > 0) *state = 1;
++      break;
++    case 1: // "First Heating" state
++      if (temperature >= target_temperature) *state = 2;
++      break;
++    case 2: // "Temperature Stable" state
++      if (temperature >= (target_temperature - hysteresis_degc))
++      {
++        *timer = millis();
++      } 
++      else if ( (millis() - *timer) > period_seconds*1000)
++      {
++        SERIAL_ERROR_START;
++        SERIAL_ERRORLNPGM("Thermal Runaway, system stopped! Heater_ID: ");
++        SERIAL_ERRORLN((int)heater_id);
++        LCD_ALERTMESSAGEPGM("THERMAL RUNAWAY");
++        thermal_runaway = true;
++        while(1)
++        {
++          disable_heater();
++          disable_x();
++          disable_y();
++          disable_z();
++          disable_e0();
++          disable_e1();
++          disable_e2();
++          manage_heater();
++          lcd_update();
++        }
++      }
++      break;
++  }
++}
++#endif
+ 
+ void disable_heater()
+ {
+diff --git a/Marlin/temperature.h b/Marlin/temperature.h
+index a8580de..df2b5de 100644
+--- a/Marlin/temperature.h
++++ b/Marlin/temperature.h
+@@ -154,6 +154,17 @@ void disable_heater();
+ void setWatch();
+ void updatePID();
+ 
++#ifdef THERMAL_RUNAWAY_PROTECTION_PERIOD && THERMAL_RUNAWAY_PROTECTION_PERIOD > 0
++void thermal_runaway_protection(int *state, unsigned long *timer, float temperature, float target_temperature, int heater_id, int period_seconds, int hysteresis_degc);
++static int thermal_runaway_state_machine[3]; // = {0,0,0};
++static unsigned long thermal_runaway_timer[3]; // = {0,0,0};
++static bool thermal_runaway = false;
++  #if TEMP_SENSOR_BED != 0
++    static int thermal_runaway_bed_state_machine;
++    static unsigned long thermal_runaway_bed_timer;
++  #endif
++#endif
++
+ FORCE_INLINE void autotempShutdown(){
+  #ifdef AUTOTEMP
+  if(autotemp_enabled)
+diff --git a/Marlin/thermistortables.h b/Marlin/thermistortables.h
+index 07b385e..86bf5c2 100644
+--- a/Marlin/thermistortables.h
++++ b/Marlin/thermistortables.h
+@@ -1021,6 +1021,81 @@ const short temptable_1047[][2] PROGMEM = {
+   PtLine(300,1000,4700)
+ };
+ #endif
++#if (THERMISTORHEATER_0 == 70) || (THERMISTORHEATER_1 == 70) || (THERMISTORHEATER_2 == 70) || (THERMISTORBED == 70) // 500C thermistor for Pico hot end
++const short temptable_70[][2] PROGMEM = {
++  {  110.774119598719*OVERSAMPLENR ,  350 },
++  {  118.214386957249*OVERSAMPLENR ,  345 },
++  {  126.211418543166*OVERSAMPLENR ,  340 },
++  {  134.789559066223*OVERSAMPLENR ,  335 },
++  {  144.004513869701*OVERSAMPLENR ,  330 },
++  {  153.884483790827*OVERSAMPLENR ,  325 },
++  {  164.484880793637*OVERSAMPLENR ,  320 },
++  {  175.848885102724*OVERSAMPLENR ,  315 },
++  {  188.006799079015*OVERSAMPLENR ,  310 },
++  {  201.008072969044*OVERSAMPLENR ,  305 },
++  {  214.83716032276*OVERSAMPLENR ,  300 },
++  {  229.784739779664*OVERSAMPLENR ,  295 },
++  {  245.499466045473*OVERSAMPLENR ,  290 },
++  {  262.2766342096*OVERSAMPLENR ,  285 },
++  {  280.073883176433*OVERSAMPLENR ,  280 },
++  {  298.952693467726*OVERSAMPLENR ,  275 },
++  {  318.808251051674*OVERSAMPLENR ,  270 },
++  {  337.490932563222*OVERSAMPLENR ,  265 },
++  {  361.683649122745*OVERSAMPLENR ,  260 },
++  {  384.717024083981*OVERSAMPLENR ,  255 },
++  {  408.659301759076*OVERSAMPLENR ,  250 },
++  {  433.471659455884*OVERSAMPLENR ,  245 },
++  {  459.199039926034*OVERSAMPLENR ,  240 },
++  {  485.566500982316*OVERSAMPLENR ,  235 },
++  {  512.538918631075*OVERSAMPLENR ,  230 },
++  {  539.980999544838*OVERSAMPLENR ,  225 },
++  {  567.783095549935*OVERSAMPLENR ,  220 },
++  {  595.698041673552*OVERSAMPLENR ,  215 },
++  {  623.633922319597*OVERSAMPLENR ,  210 },
++  {  651.356162750829*OVERSAMPLENR ,  205 },
++  {  678.700901620956*OVERSAMPLENR ,  200 },
++  {  705.528145361264*OVERSAMPLENR ,  195 },
++  {  731.61267976339*OVERSAMPLENR ,  190 },
++  {  756.786212184365*OVERSAMPLENR ,  185 },
++  {  780.950223357761*OVERSAMPLENR ,  180 },
++  {  804.012961595082*OVERSAMPLENR ,  175 },
++  {  825.904975939166*OVERSAMPLENR ,  170 },
++  {  846.403941639008*OVERSAMPLENR ,  165 },
++  {  865.52326974895*OVERSAMPLENR ,  160 },
++  {  883.246145367727*OVERSAMPLENR ,  155 },
++  {  899.5821946515*OVERSAMPLENR ,  150 },
++  {  914.544289228582*OVERSAMPLENR ,  145 },
++  {  928.145628221761*OVERSAMPLENR ,  140 },
++  {  940.422208546562*OVERSAMPLENR ,  135 },
++  {  951.456922916497*OVERSAMPLENR ,  130 },
++  {  961.303500633788*OVERSAMPLENR ,  125 },
++  {  970.044756889055*OVERSAMPLENR ,  120 },
++  {  977.761456230051*OVERSAMPLENR ,  115 },
++  {  984.540978083453*OVERSAMPLENR ,  110 },
++  {  990.440780765757*OVERSAMPLENR ,  105 },
++  {  995.589621465301*OVERSAMPLENR ,  100 },
++  {  1000.02514280144*OVERSAMPLENR ,  95 },
++  {  1003.84429789876*OVERSAMPLENR ,  90 },
++  {  1007.10199009318*OVERSAMPLENR ,  85 },
++  {  1009.87151698323*OVERSAMPLENR ,  80 },
++  {  1012.21633594237*OVERSAMPLENR ,  75 },
++  {  1014.18959892949*OVERSAMPLENR ,  70 },
++  {  1015.84079162998*OVERSAMPLENR ,  65 },
++  {  1017.21555915335*OVERSAMPLENR ,  60 },
++  {  1018.35284662863*OVERSAMPLENR ,  55 },
++  {  1019.28926921888*OVERSAMPLENR ,  50 },
++  {  1020.05398015669*OVERSAMPLENR ,  45 },
++  {  1020.67737496272*OVERSAMPLENR ,  40 },
++  {  1021.1802909627*OVERSAMPLENR ,  35 },
++  {  1021.58459281248*OVERSAMPLENR ,  30 },
++  {  1021.90701441192*OVERSAMPLENR ,  25 },
++  {  1022.16215103698*OVERSAMPLENR ,  20 },
++  {  1022.36275529549*OVERSAMPLENR ,  15 },
++  {  1022.51930392497*OVERSAMPLENR ,  10 },
++  {  1022.64051573734*OVERSAMPLENR ,  5 },
++  {  1022.73355805611*OVERSAMPLENR ,  0 }
++};
++#endif
+ 
+ #define _TT_NAME(_N) temptable_ ## _N
+ #define TT_NAME(_N) _TT_NAME(_N)
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index f09dd41..9797b0b 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -19,7 +19,6 @@ int absPreheatHotendTemp;
+ int absPreheatHPBTemp;
+ int absPreheatFanSpeed;
+ 
+-
+ #ifdef ULTIPANEL
+ static float manual_feedrate[] = MANUAL_FEEDRATE;
+ #endif // ULTIPANEL
+@@ -194,7 +193,7 @@ static void lcd_status_screen()
+         currentMenu = lcd_main_menu;
+         encoderPosition = 0;
+         lcd_quick_feedback();
+-        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
++        lcd_implementation_init(); // to maybe revive the LCD if static electricity killed it.
+     }
+ 
+ #ifdef ULTIPANEL_FEEDMULTIPLY
+@@ -256,6 +255,8 @@ static void lcd_sdcard_stop()
+         enquecommand_P(PSTR(SD_FINISHED_RELEASECOMMAND));
+     }
+     autotempShutdown();
++    
++    cancel_heatup = true;
+ }
+ 
+ /* Menu implementation */
+@@ -903,9 +904,15 @@ static void lcd_control_retract_menu()
+     MENU_ITEM(back, MSG_CONTROL, lcd_control_menu);
+     MENU_ITEM_EDIT(bool, MSG_AUTORETRACT, &autoretract_enabled);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT, &retract_length, 0, 100);
++    #if EXTRUDERS > 1
++      MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_SWAP, &retract_length_swap, 0, 100);
++    #endif
+     MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACTF, &retract_feedrate, 1, 999);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_ZLIFT, &retract_zlift, 0, 999);
+     MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_RECOVER, &retract_recover_length, 0, 100);
++    #if EXTRUDERS > 1
++      MENU_ITEM_EDIT(float52, MSG_CONTROL_RETRACT_RECOVER_SWAP, &retract_recover_length_swap, 0, 100);
++    #endif
+     MENU_ITEM_EDIT(float3, MSG_CONTROL_RETRACT_RECOVERF, &retract_recover_feedrate, 1, 999);
+     END_MENU();
+ }
+diff --git a/Marlin/ultralcd.h b/Marlin/ultralcd.h
+index f4570f6..9bf6858 100644
+--- a/Marlin/ultralcd.h
++++ b/Marlin/ultralcd.h
+@@ -42,6 +42,8 @@
+   extern int absPreheatHotendTemp;
+   extern int absPreheatHPBTemp;
+   extern int absPreheatFanSpeed;
++  
++  extern bool cancel_heatup;
+     
+   void lcd_buzz(long duration,uint16_t freq);
+   bool lcd_clicked();
+

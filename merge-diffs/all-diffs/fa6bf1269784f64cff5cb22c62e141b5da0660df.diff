@@ -1,0 +1,2147 @@
+commit fa6bf1269784f64cff5cb22c62e141b5da0660df (from 3a107e280df7d44282e59ca69f011aab146b1b7d)
+Merge: 3a107e2 85e307d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 31 08:29:53 2016 -0500
+
+    Merge pull request #5118 from thinkyhead/rc_expanded_M43
+    
+    Enhancements to M43 pins debugging
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index f3588fd..918bae1 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -148,6 +148,7 @@
+  *        The '#' is necessary when calling from within sd files, as it stops buffer prereading
+  * M33  - Get the longname version of a path. (Requires LONG_FILENAME_HOST_SUPPORT)
+  * M42  - Change pin status via gcode: M42 P<pin> S<value>. LED pin assumed if P is omitted.
++ * M43  - Monitor pins & report changes - report active pins
+  * M48  - Measure Z Probe repeatability: M48 P<points> X<pos> Y<pos> V<level> E<engage> L<legs>. (Requires Z_MIN_PROBE_REPEATABILITY_TEST)
+  * M75  - Start the print job timer.
+  * M76  - Pause the print job timer.
+@@ -4675,20 +4676,43 @@ inline void gcode_M42() {
+   /**
+    * M43: Pin report and debug
+    *
+-   *      P<pin> Will read/watch a single pin
+-   *      W      Watch pins for changes until reboot
++   *      E<bool> Enable / disable background endstop monitoring
++   *               - Machine continues to operate
++   *               - Reports changes to endstops
++   *               - Toggles LED when an endstop changes
++   *
++   *   or
++   *
++   *      P<pin>  Pin to read or watch. If omitted, read/watch all pins.
++   *      W<bool> Watch pins -reporting changes- until reset, click, or M108.
++   *      I<bool> Flag to ignore Marlin's pin protection.
++   *
+    */
+   inline void gcode_M43() {
+-    int first_pin = 0, last_pin = DIO_COUNT - 1;
++
++    // Enable or disable endstop monitoring
++    if (code_seen('E')) {
++      endstop_monitor_flag = code_value_bool();
++      SERIAL_PROTOCOLPGM("endstop monitor ");
++      SERIAL_PROTOCOL(endstop_monitor_flag ? "en" : "dis");
++      SERIAL_PROTOCOLLNPGM("abled");
++      return;
++    }
++
++    // Get the range of pins to test or watch
++    int first_pin = 0, last_pin = NUM_DIGITAL_PINS - 1;
+     if (code_seen('P')) {
+       first_pin = last_pin = code_value_byte();
+-      if (first_pin > DIO_COUNT - 1) return;
++      if (first_pin > NUM_DIGITAL_PINS - 1) return;
+     }
+ 
++    bool ignore_protection = code_seen('I') ? code_value_bool() : false;
++
++    // Watch until click, M108, or reset
+     if (code_seen('W') && code_value_bool()) { // watch digital pins
+       byte pin_state[last_pin - first_pin + 1];
+       for (int8_t pin = first_pin; pin <= last_pin; pin++) {
+-        if (pin_is_protected(pin)) continue;
++        if (pin_is_protected(pin) && !ignore_protection) continue;
+         pinMode(pin, INPUT_PULLUP);
+         // if (IS_ANALOG(pin))
+         //   pin_state[pin - first_pin] = analogRead(pin - analogInputToDigitalPin(0)); // int16_t pin_state[...]
+@@ -4720,10 +4744,12 @@ inline void gcode_M42() {
+ 
+         safe_delay(500);
+       }
++      return;
+     }
+-    else // single pins report
+-      for (int8_t pin = first_pin; pin <= last_pin; pin++)
+-        report_pin_state(pin);
++
++    // Report current state of selected pin(s)
++    for (uint8_t pin = first_pin; pin <= last_pin; pin++)
++      report_pin_state_extended(pin, ignore_protection);
+   }
+ 
+ #endif // PINS_DEBUGGING
+diff --git a/Marlin/pinsDebug.h b/Marlin/pinsDebug.h
+index c06eabb..f116312 100644
+--- a/Marlin/pinsDebug.h
++++ b/Marlin/pinsDebug.h
+@@ -20,152 +20,155 @@
+  *
+  */
+ 
+-// How many DIO pins are defined?
+-#if defined(DIO85_PIN)
+-  #define DIO_COUNT 86
+-#elif defined(DIO53_PIN)
+-  #define DIO_COUNT 54
+-#elif defined(DIO47_PIN)
+-  #define DIO_COUNT 48
+-#elif defined(DIO31_PIN)
+-  #define DIO_COUNT 32
+-#elif defined(DIO21_PIN)
+-  #define DIO_COUNT 22
+-#endif
+-
+-#define _PIN_SAY(NAME) { SERIAL_ECHOPGM(STRINGIFY(NAME)); return true; }
+-#define PIN_SAY(NAME) if (pin == NAME) _PIN_SAY(_##NAME##_);
+-#define ANALOG_PIN_SAY(NAME) if (pin == analogInputToDigitalPin(NAME)) _PIN_SAY(_##NAME##_);
++bool endstop_monitor_flag = false;
++
++#define  NAME_FORMAT "%-28s"   // one place to specify the format of all the sources of names
++                               // "-" left justify, "28" minimum width of name, pad with blanks
++
++#define _PIN_SAY(NAME) { sprintf(buffer, NAME_FORMAT, NAME); SERIAL_ECHO(buffer); return true; }
++#define PIN_SAY(NAME) if (pin == NAME) _PIN_SAY(#NAME);
++
++#define _ANALOG_PIN_SAY(NAME) { sprintf(buffer, NAME_FORMAT, NAME); SERIAL_ECHO(buffer); pin_is_analog = true; return true; }
++#define ANALOG_PIN_SAY(NAME) if (pin == analogInputToDigitalPin(NAME)) _ANALOG_PIN_SAY(#NAME);
++
+ #define IS_ANALOG(P) ((P) >= analogInputToDigitalPin(0) && ((P) <= analogInputToDigitalPin(15) || (P) <= analogInputToDigitalPin(5)))
+ 
+-// Report pin name for a given fastio digital pin index
+-static bool report_pin_name(int8_t pin) {
++int digitalRead_mod(int8_t pin) { // same as digitalRead except the PWM stop section has been removed
++	uint8_t port = digitalPinToPort(pin);
++	return (port != NOT_A_PIN) && (*portInputRegister(port) & digitalPinToBitMask(pin)) ? HIGH : LOW;
++}
+ 
+-  SERIAL_ECHO((int)pin);
+-  SERIAL_CHAR(' ');
++/**
++ * Report pin name for a given fastio digital pin index
++ */
++static bool report_pin_name(int8_t pin, bool &pin_is_analog) {
++
++  char buffer[30];   // for the sprintf statements
++  pin_is_analog = false;   // default to digital pin
+ 
+   if (IS_ANALOG(pin)) {
+-    SERIAL_CHAR('('); SERIAL_CHAR('A');
+-    SERIAL_ECHO(int(pin - analogInputToDigitalPin(0)));
+-    SERIAL_CHAR(')'); SERIAL_CHAR(' ');
++    sprintf(buffer, "(A%2d)  ", int(pin - analogInputToDigitalPin(0)));
++    SERIAL_ECHO(buffer);
+   }
++  else SERIAL_ECHOPGM("       ");
+ 
+-  #if defined(RXD) && RXD > -1
+-    if (pin == 0) { SERIAL_ECHOPGM("RXD"); return true; }
++  #if defined(RXD) && RXD >= 0
++    if (pin == 0) { sprintf(buffer, NAME_FORMAT, "RXD"); SERIAL_ECHO(buffer); return true; }
+   #endif
+-  #if defined(TXD) && TXD > -1
+-    if (pin == 1) { SERIAL_ECHOPGM("TXD"); return true; }
++
++  #if defined(TXD) && TXD >= 0
++    if (pin == 1) { sprintf(buffer, NAME_FORMAT, "TXD"); SERIAL_ECHO(buffer); return true; }
+   #endif
+ 
+-  #if PIN_EXISTS(SERVO0)
+-    PIN_SAY(SERVO0_PIN);
++  // Pin list updated from 7 OCT RCBugfix branch
++  #if defined(__FD) && __FD >= 0
++    PIN_SAY(__FD)
+   #endif
+-  #if PIN_EXISTS(SERVO1)
+-    PIN_SAY(SERVO1_PIN);
++  #if defined(__FS) && __FS >= 0
++    PIN_SAY(__FS)
+   #endif
+-  #if PIN_EXISTS(SERVO2)
+-    PIN_SAY(SERVO2_PIN);
++  #if defined(__GD) && __GD >= 0
++    PIN_SAY(__GD)
+   #endif
+-  #if PIN_EXISTS(SERVO3)
+-    PIN_SAY(SERVO3_PIN);
++  #if defined(__GS) && __GS >= 0
++    PIN_SAY(__GS)
+   #endif
+ 
+-  #if PIN_EXISTS(X_MIN)
+-    PIN_SAY(X_MIN_PIN);
++  #if PIN_EXISTS(AVR_MISO)
++    PIN_SAY(AVR_MISO_PIN);
+   #endif
+-  #if PIN_EXISTS(X_MAX)
+-    PIN_SAY(X_MAX_PIN);
++  #if PIN_EXISTS(AVR_MOSI)
++    PIN_SAY(AVR_MOSI_PIN);
+   #endif
+-  #if PIN_EXISTS(Y_MIN)
+-    PIN_SAY(Y_MIN_PIN);
++  #if PIN_EXISTS(AVR_SCK)
++    PIN_SAY(AVR_SCK_PIN);
+   #endif
+-  #if PIN_EXISTS(Y_MAX)
+-    PIN_SAY(Y_MAX_PIN);
++  #if PIN_EXISTS(AVR_SS)
++    PIN_SAY(AVR_SS_PIN);
+   #endif
+-  #if PIN_EXISTS(Z_MIN)
+-    PIN_SAY(Z_MIN_PIN);
++  #if PIN_EXISTS(BEEPER)
++    PIN_SAY(BEEPER_PIN);
+   #endif
+-  #if PIN_EXISTS(Z_MAX)
+-    PIN_SAY(Z_MAX_PIN);
++  #if defined(BTN_CENTER) && BTN_CENTER >= 0
++    PIN_SAY(BTN_CENTER);
+   #endif
+-  #if PIN_EXISTS(Z_MIN_PROBE)
+-    PIN_SAY(Z_MIN_PROBE_PIN);
++  #if defined(BTN_DOWN) && BTN_DOWN >= 0
++    PIN_SAY(BTN_DOWN);
+   #endif
+-  #if PIN_EXISTS(X_STEP)
+-    PIN_SAY(X_STEP_PIN);
++  #if defined(BTN_DWN) && BTN_DWN >= 0
++    PIN_SAY(BTN_DWN);
+   #endif
+-  #if PIN_EXISTS(X_DIR)
+-    PIN_SAY(X_DIR_PIN);
++  #if defined(BTN_EN1) && BTN_EN1 >= 0
++    PIN_SAY(BTN_EN1);
+   #endif
+-  #if PIN_EXISTS(X_ENABLE)
+-    PIN_SAY(X_ENABLE_PIN);
++  #if defined(BTN_EN2) && BTN_EN2 >= 0
++    PIN_SAY(BTN_EN2);
+   #endif
+-  #if PIN_EXISTS(X_MS1)
+-    PIN_SAY(X_MS1_PIN);
++  #if defined(BTN_ENC) && BTN_ENC >= 0
++    PIN_SAY(BTN_ENC);
+   #endif
+-  #if PIN_EXISTS(X_MS2)
+-    PIN_SAY(X_MS2_PIN);
++  #if defined(BTN_HOME) && BTN_HOME >= 0
++    PIN_SAY(BTN_HOME);
+   #endif
+-  #if PIN_EXISTS(X2_STEP)
+-    PIN_SAY(X2_STEP_PIN);
++  #if defined(BTN_LEFT) && BTN_LEFT >= 0
++    PIN_SAY(BTN_LEFT);
+   #endif
+-  #if PIN_EXISTS(X2_DIR)
+-    PIN_SAY(X2_DIR_PIN);
++  #if defined(BTN_LFT) && BTN_LFT >= 0
++    PIN_SAY(BTN_LFT);
+   #endif
+-  #if PIN_EXISTS(X2_ENABLE)
+-    PIN_SAY(X2_ENABLE_PIN);
++  #if defined(BTN_RIGHT) && BTN_RIGHT >= 0
++    PIN_SAY(BTN_RIGHT);
+   #endif
+-  #if PIN_EXISTS(Y_STEP)
+-    PIN_SAY(Y_STEP_PIN);
++  #if defined(BTN_RT) && BTN_RT >= 0
++    PIN_SAY(BTN_RT);
+   #endif
+-  #if PIN_EXISTS(Y_DIR)
+-    PIN_SAY(Y_DIR_PIN);
++  #if defined(BTN_UP) && BTN_UP >= 0
++    PIN_SAY(BTN_UP);
+   #endif
+-  #if PIN_EXISTS(Y_ENABLE)
+-    PIN_SAY(Y_ENABLE_PIN);
++  #if PIN_EXISTS(CONTROLLERFAN)
++    PIN_SAY(CONTROLLERFAN_PIN);
+   #endif
+-  #if PIN_EXISTS(Y_MS1)
+-    PIN_SAY(Y_MS1_PIN);
++  #if PIN_EXISTS(DAC_DISABLE)
++    PIN_SAY(DAC_DISABLE_PIN);
+   #endif
+-  #if PIN_EXISTS(Y_MS2)
+-    PIN_SAY(Y_MS2_PIN);
++  #if defined(DAC_STEPPER_GAIN) && DAC_STEPPER_GAIN >= 0
++    PIN_SAY(DAC_STEPPER_GAIN);
+   #endif
+-  #if PIN_EXISTS(Y2_STEP)
+-    PIN_SAY(Y2_STEP_PIN);
++  #if defined(DAC_STEPPER_VREF) && DAC_STEPPER_VREF >= 0
++    PIN_SAY(DAC_STEPPER_VREF);
+   #endif
+-  #if PIN_EXISTS(Y2_DIR)
+-    PIN_SAY(Y2_DIR_PIN);
++  #if PIN_EXISTS(DEBUG)
++    PIN_SAY(DEBUG_PIN);
+   #endif
+-  #if PIN_EXISTS(Y2_ENABLE)
+-    PIN_SAY(Y2_ENABLE_PIN);
++  #if PIN_EXISTS(DIGIPOTSS)
++    PIN_SAY(DIGIPOTSS_PIN);
+   #endif
+-  #if PIN_EXISTS(Z_STEP)
+-    PIN_SAY(Z_STEP_PIN);
++  #if defined(DOGLCD_A0) && DOGLCD_A0 >= 0
++    PIN_SAY(DOGLCD_A0);
+   #endif
+-  #if PIN_EXISTS(Z_DIR)
+-    PIN_SAY(Z_DIR_PIN);
++  #if defined(DOGLCD_CS) && DOGLCD_CS >= 0
++    PIN_SAY(DOGLCD_CS);
+   #endif
+-  #if PIN_EXISTS(Z_ENABLE)
+-    PIN_SAY(Z_ENABLE_PIN);
++  #if defined(DOGLCD_MOSI) && DOGLCD_MOSI >= 0
++    PIN_SAY(DOGLCD_MOSI);
+   #endif
+-  #if PIN_EXISTS(Z_MS1)
+-    PIN_SAY(Z_MS1_PIN);
++  #if defined(DOGLCD_SCK) && DOGLCD_SCK >= 0
++    PIN_SAY(DOGLCD_SCK);
+   #endif
+-  #if PIN_EXISTS(Z_MS2)
+-    PIN_SAY(Z_MS2_PIN);
++  #if PIN_EXISTS(E0_ATT)
++    PIN_SAY(E0_ATT_PIN);
+   #endif
+-  #if PIN_EXISTS(Z2_STEP)
+-    PIN_SAY(Z2_STEP_PIN);
++  #if PIN_EXISTS(E0_AUTO_FAN)
++    PIN_SAY(E0_AUTO_FAN_PIN);
+   #endif
+-  #if PIN_EXISTS(Z2_DIR)
+-    PIN_SAY(Z2_DIR_PIN);
++  #if PIN_EXISTS(E1_AUTO_FAN)
++    PIN_SAY(E1_AUTO_FAN_PIN);
+   #endif
+-  #if PIN_EXISTS(Z2_ENABLE)
+-    PIN_SAY(Z2_ENABLE_PIN);
++  #if PIN_EXISTS(E2_AUTO_FAN)
++    PIN_SAY(E2_AUTO_FAN_PIN);
+   #endif
+-
+-  #if PIN_EXISTS(E0_STEP)
+-    PIN_SAY(E0_STEP_PIN);
++  #if PIN_EXISTS(E3_AUTO_FAN)
++    PIN_SAY(E3_AUTO_FAN_PIN);
+   #endif
+   #if PIN_EXISTS(E0_DIR)
+     PIN_SAY(E0_DIR_PIN);
+@@ -179,8 +182,8 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(E0_MS2)
+     PIN_SAY(E0_MS2_PIN);
+   #endif
+-  #if PIN_EXISTS(E1_STEP)
+-    PIN_SAY(E1_STEP_PIN);
++  #if PIN_EXISTS(E0_STEP)
++    PIN_SAY(E0_STEP_PIN);
+   #endif
+   #if PIN_EXISTS(E1_DIR)
+     PIN_SAY(E1_DIR_PIN);
+@@ -194,8 +197,8 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(E1_MS2)
+     PIN_SAY(E1_MS2_PIN);
+   #endif
+-  #if PIN_EXISTS(E2_STEP)
+-    PIN_SAY(E2_STEP_PIN);
++  #if PIN_EXISTS(E1_STEP)
++    PIN_SAY(E1_STEP_PIN);
+   #endif
+   #if PIN_EXISTS(E2_DIR)
+     PIN_SAY(E2_DIR_PIN);
+@@ -203,8 +206,8 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(E2_ENABLE)
+     PIN_SAY(E2_ENABLE_PIN);
+   #endif
+-  #if PIN_EXISTS(E3_STEP)
+-    PIN_SAY(E3_STEP_PIN);
++  #if PIN_EXISTS(E2_STEP)
++    PIN_SAY(E2_STEP_PIN);
+   #endif
+   #if PIN_EXISTS(E3_DIR)
+     PIN_SAY(E3_DIR_PIN);
+@@ -212,8 +215,8 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(E3_ENABLE)
+     PIN_SAY(E3_ENABLE_PIN);
+   #endif
+-  #if PIN_EXISTS(E4_STEP)
+-    PIN_SAY(E4_STEP_PIN);
++  #if PIN_EXISTS(E3_STEP)
++    PIN_SAY(E3_STEP_PIN);
+   #endif
+   #if PIN_EXISTS(E4_DIR)
+     PIN_SAY(E4_DIR_PIN);
+@@ -221,6 +224,57 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(E4_ENABLE)
+     PIN_SAY(E4_ENABLE_PIN);
+   #endif
++  #if PIN_EXISTS(E4_STEP)
++    PIN_SAY(E4_STEP_PIN);
++  #endif
++  #if defined(encrot1) && encrot1 >= 0
++    PIN_SAY(encrot1);
++  #endif
++  #if defined(encrot2) && encrot2 >= 0
++    PIN_SAY(encrot2);
++  #endif
++  #if defined(encrot3) && encrot3 >= 0
++    PIN_SAY(encrot3);
++  #endif
++  #if defined(EXT_AUX_A0_IO) && EXT_AUX_A0_IO >= 0
++    PIN_SAY(EXT_AUX_A0_IO);
++  #endif
++  #if defined(EXT_AUX_A1) && EXT_AUX_A1 >= 0
++    PIN_SAY(EXT_AUX_A1);
++  #endif
++  #if defined(EXT_AUX_A1_IO) && EXT_AUX_A1_IO >= 0
++    PIN_SAY(EXT_AUX_A1_IO);
++  #endif
++  #if defined(EXT_AUX_A2) && EXT_AUX_A2 >= 0
++    PIN_SAY(EXT_AUX_A2);
++  #endif
++  #if defined(EXT_AUX_A2_IO) && EXT_AUX_A2_IO >= 0
++    PIN_SAY(EXT_AUX_A2_IO);
++  #endif
++  #if defined(EXT_AUX_A3) && EXT_AUX_A3 >= 0
++    PIN_SAY(EXT_AUX_A3);
++  #endif
++  #if defined(EXT_AUX_A3_IO) && EXT_AUX_A3_IO >= 0
++    PIN_SAY(EXT_AUX_A3_IO);
++  #endif
++  #if defined(EXT_AUX_A4) && EXT_AUX_A4 >= 0
++    PIN_SAY(EXT_AUX_A4);
++  #endif
++  #if defined(EXT_AUX_A4_IO) && EXT_AUX_A4_IO >= 0
++    PIN_SAY(EXT_AUX_A4_IO);
++  #endif
++  #if defined(EXT_AUX_PWM_D24) && EXT_AUX_PWM_D24 >= 0
++    PIN_SAY(EXT_AUX_PWM_D24);
++  #endif
++  #if defined(EXT_AUX_RX1_D2) && EXT_AUX_RX1_D2 >= 0
++    PIN_SAY(EXT_AUX_RX1_D2);
++  #endif
++  #if defined(EXT_AUX_SDA_D1) && EXT_AUX_SDA_D1 >= 0
++    PIN_SAY(EXT_AUX_SDA_D1);
++  #endif
++  #if defined(EXT_AUX_TX1_D3) && EXT_AUX_TX1_D3 >= 0
++    PIN_SAY(EXT_AUX_TX1_D3);
++  #endif
+ 
+   #if PIN_EXISTS(FAN)
+     PIN_SAY(FAN_PIN);
+@@ -231,20 +285,14 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(FAN2)
+     PIN_SAY(FAN2_PIN);
+   #endif
+-  #if PIN_EXISTS(CONTROLLERFAN)
+-    PIN_SAY(CONTROLLERFAN_PIN);
+-  #endif
+-  #if PIN_EXISTS(E0_AUTO_FAN)
+-    PIN_SAY(E0_AUTO_FAN_PIN);
+-  #endif
+-  #if PIN_EXISTS(E1_AUTO_FAN)
+-    PIN_SAY(E1_AUTO_FAN_PIN);
++  #if PIN_EXISTS(FIL_RUNOUT)
++    PIN_SAY(FIL_RUNOUT_PIN);
+   #endif
+-  #if PIN_EXISTS(E2_AUTO_FAN)
+-    PIN_SAY(E2_AUTO_FAN_PIN);
++  #if PIN_EXISTS(FILWIDTH)
++    ANALOG_PIN_SAY(FILWIDTH_PIN);
+   #endif
+-  #if PIN_EXISTS(E3_AUTO_FAN)
+-    PIN_SAY(E3_AUTO_FAN_PIN);
++  #if defined(GEN7_VERSION) && GEN7_VERSION >= 0
++    PIN_SAY(GEN7_VERSION);
+   #endif
+   #if PIN_EXISTS(HEATER_0)
+     PIN_SAY(HEATER_0_PIN);
+@@ -258,178 +306,594 @@ static bool report_pin_name(int8_t pin) {
+   #if PIN_EXISTS(HEATER_3)
+     PIN_SAY(HEATER_3_PIN);
+   #endif
++  #if PIN_EXISTS(HEATER_4)
++    PIN_SAY(HEATER_4_PIN);
++  #endif
++  #if PIN_EXISTS(HEATER_5)
++    PIN_SAY(HEATER_5_PIN);
++  #endif
++  #if PIN_EXISTS(HEATER_6)
++    PIN_SAY(HEATER_6_PIN);
++  #endif
++  #if PIN_EXISTS(HEATER_7)
++    PIN_SAY(HEATER_7_PIN);
++  #endif
+   #if PIN_EXISTS(HEATER_BED)
+     PIN_SAY(HEATER_BED_PIN);
+   #endif
+-
+-  #if PIN_EXISTS(X_ATT)
+-    PIN_SAY(X_ATT_PIN);
+-  #endif
+-  #if PIN_EXISTS(Y_ATT)
+-    PIN_SAY(Y_ATT_PIN);
++  #if defined(I2C_SCL) && I2C_SCL >= 0
++    PIN_SAY(I2C_SCL);
+   #endif
+-  #if PIN_EXISTS(Z_ATT)
+-    PIN_SAY(Z_ATT_PIN);
++  #if defined(I2C_SDA) && I2C_SDA >= 0
++    PIN_SAY(I2C_SDA);
+   #endif
+-  #if PIN_EXISTS(E0_ATT)
+-    PIN_SAY(E0_ATT_PIN);
++  #if PIN_EXISTS(KILL)
++    PIN_SAY(KILL_PIN);
+   #endif
+-
+-  #if PIN_EXISTS(TEMP_0)
+-    ANALOG_PIN_SAY(TEMP_0_PIN);
++  #if PIN_EXISTS(LCD_BACKLIGHT)
++    PIN_SAY(LCD_BACKLIGHT_PIN);
+   #endif
+-  #if PIN_EXISTS(TEMP_1)
+-    ANALOG_PIN_SAY(TEMP_1_PIN);
++  #if defined(LCD_CONTRAST) && LCD_CONTRAST >= 0
++    PIN_SAY(LCD_CONTRAST);
+   #endif
+-  #if PIN_EXISTS(TEMP_2)
+-    ANALOG_PIN_SAY(TEMP_2_PIN);
++  #if defined(LCD_PINS_D4) && LCD_PINS_D4 >= 0
++    PIN_SAY(LCD_PINS_D4);
+   #endif
+-  #if PIN_EXISTS(TEMP_3)
+-    ANALOG_PIN_SAY(TEMP_3_PIN);
++  #if defined(LCD_PINS_D5) && LCD_PINS_D5 >= 0
++    PIN_SAY(LCD_PINS_D5);
+   #endif
+-  #if PIN_EXISTS(TEMP_BED)
+-    ANALOG_PIN_SAY(TEMP_BED_PIN);
++  #if defined(LCD_PINS_D6) && LCD_PINS_D6 >= 0
++    PIN_SAY(LCD_PINS_D6);
+   #endif
+-  #if PIN_EXISTS(FILWIDTH)
+-    ANALOG_PIN_SAY(FILWIDTH_PIN);
++  #if defined(LCD_PINS_D7) && LCD_PINS_D7 >= 0
++    PIN_SAY(LCD_PINS_D7);
+   #endif
+-
+-  #if PIN_EXISTS(BEEPER)
+-    PIN_SAY(BEEPER_PIN);
++  #if defined(LCD_PINS_ENABLE) && LCD_PINS_ENABLE >= 0
++    PIN_SAY(LCD_PINS_ENABLE);
+   #endif
+-  #if PIN_EXISTS(SLED)
+-    PIN_SAY(SLED_PIN);
++  #if defined(LCD_PINS_RS) && LCD_PINS_RS >= 0
++    PIN_SAY(LCD_PINS_RS);
+   #endif
+-  #if PIN_EXISTS(FIL_RUNOUT)
+-    PIN_SAY(FIL_RUNOUT_PIN);
++  #if defined(LCD_SDSS) && LCD_SDSS >= 0
++    PIN_SAY(LCD_SDSS);
+   #endif
+-
+   #if PIN_EXISTS(LED)
+     PIN_SAY(LED_PIN);
+   #endif
+-  // #if defined(DEBUG_LED) && DEBUG_LED > -1
+-  //   PIN_SAY(DEBUG_LED);
+-  // #endif
+-  #if PIN_EXISTS(STAT_LED_RED)
+-    PIN_SAY(STAT_LED_RED_PIN);
+-  #endif
+-  #if PIN_EXISTS(STAT_LED_BLUE)
+-    PIN_SAY(STAT_LED_BLUE_PIN);
+-  #endif
+-
+-  #if PIN_EXISTS(DIGIPOTSS)
+-    PIN_SAY(DIGIPOTSS_PIN);
++  #if PIN_EXISTS(MAIN_VOLTAGE_MEASURE)
++    PIN_SAY(MAIN_VOLTAGE_MEASURE_PIN);
+   #endif
+-
+-  #if PIN_EXISTS(SCK)
+-    PIN_SAY(SCK_PIN);
++  #if defined(MAX6675_SS) && MAX6675_SS >= 0
++    PIN_SAY(MAX6675_SS);
+   #endif
+   #if PIN_EXISTS(MISO)
+     PIN_SAY(MISO_PIN);
+   #endif
++  #if PIN_EXISTS(MOSFET_D)
++    PIN_SAY(MOSFET_D_PIN);
++  #endif
+   #if PIN_EXISTS(MOSI)
+     PIN_SAY(MOSI_PIN);
+   #endif
+-  #if PIN_EXISTS(SS)
+-    PIN_SAY(SS_PIN);
++  #if PIN_EXISTS(MOTOR_CURRENT_PWM_E)
++    PIN_SAY(MOTOR_CURRENT_PWM_E_PIN);
++  #endif
++  #if PIN_EXISTS(MOTOR_CURRENT_PWM_XY)
++    PIN_SAY(MOTOR_CURRENT_PWM_XY_PIN);
++  #endif
++  #if PIN_EXISTS(MOTOR_CURRENT_PWM_Z)
++    PIN_SAY(MOTOR_CURRENT_PWM_Z_PIN);
++  #endif
++  #if defined(NUM_TLCS) && NUM_TLCS >= 0
++    PIN_SAY(NUM_TLCS);
++  #endif
++  #if PIN_EXISTS(PHOTOGRAPH)
++    PIN_SAY(PHOTOGRAPH_PIN);
++  #endif
++  #if PIN_EXISTS(PS_ON)
++    PIN_SAY(PS_ON_PIN);
++  #endif
++  #if PIN_EXISTS(RAMPS_D10)
++    PIN_SAY(RAMPS_D10_PIN);
++  #endif
++  #if PIN_EXISTS(RAMPS_D8)
++    PIN_SAY(RAMPS_D8_PIN);
++  #endif
++  #if PIN_EXISTS(RAMPS_D9)
++    PIN_SAY(RAMPS_D9_PIN);
++  #endif
++  #if PIN_EXISTS(RX_ENABLE)
++    PIN_SAY(RX_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(SAFETY_TRIGGERED)
++    PIN_SAY(SAFETY_TRIGGERED_PIN);
++  #endif
++  #if PIN_EXISTS(SCK)
++    PIN_SAY(SCK_PIN);
++  #endif
++  #if defined(SCL) && SCL >= 0
++    PIN_SAY(SCL);
+   #endif
+-
+   #if PIN_EXISTS(SD_DETECT)
+     PIN_SAY(SD_DETECT_PIN);
+   #endif
+-
+-  #if defined(SDPOWER) && SDPOWER > -1
++  #if defined(SDA) && SDA >= 0
++    PIN_SAY(SDA);
++  #endif
++  #if defined(SDPOWER) && SDPOWER >= 0
+     PIN_SAY(SDPOWER);
+   #endif
+-  #if defined(SDSS) && SDSS > -1
++  #if defined(SDSS) && SDSS >= 0
+     PIN_SAY(SDSS);
+   #endif
+-  #if defined(I2C_SCL) && I2C_SCL > -1
+-    PIN_SAY(I2C_SCL);
++  #if PIN_EXISTS(SERVO0)
++    PIN_SAY(SERVO0_PIN);
+   #endif
+-  #if defined(I2C_SDA) && I2C_SDA > -1
+-    PIN_SAY(I2C_SDA);
++  #if PIN_EXISTS(SERVO1)
++    PIN_SAY(SERVO1_PIN);
+   #endif
+-  #if defined(SCL) && SCL > -1
+-    PIN_SAY(SCL);
++  #if PIN_EXISTS(SERVO2)
++    PIN_SAY(SERVO2_PIN);
+   #endif
+-  #if defined(SDA) && SDA > -1
+-    PIN_SAY(SDA);
++  #if PIN_EXISTS(SERVO3)
++    PIN_SAY(SERVO3_PIN);
+   #endif
+-
+-  #if PIN_EXISTS(PS_ON)
+-    PIN_SAY(PS_ON_PIN);
++  #if defined(SHIFT_CLK) && SHIFT_CLK >= 0
++    PIN_SAY(SHIFT_CLK);
+   #endif
+-  #if PIN_EXISTS(KILL)
+-    PIN_SAY(KILL_PIN);
++  #if defined(SHIFT_EN) && SHIFT_EN >= 0
++    PIN_SAY(SHIFT_EN);
++  #endif
++  #if defined(SHIFT_LD) && SHIFT_LD >= 0
++    PIN_SAY(SHIFT_LD);
++  #endif
++  #if defined(SHIFT_OUT) && SHIFT_OUT >= 0
++    PIN_SAY(SHIFT_OUT);
++  #endif
++  #if PIN_EXISTS(SLED)
++    PIN_SAY(SLED_PIN);
++  #endif
++  #if PIN_EXISTS(SLEEP_WAKE)
++    PIN_SAY(SLEEP_WAKE_PIN);
++  #endif
++  #if PIN_EXISTS(SOL1)
++    PIN_SAY(SOL1_PIN);
++  #endif
++  #if PIN_EXISTS(SOL2)
++    PIN_SAY(SOL2_PIN);
++  #endif
++  #if PIN_EXISTS(SPINDLE_ENABLE)
++    PIN_SAY(SPINDLE_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(SPINDLE_SPEED)
++    PIN_SAY(SPINDLE_SPEED_PIN);
++  #endif
++  #if PIN_EXISTS(SS)
++    PIN_SAY(SS_PIN);
++  #endif
++  #if PIN_EXISTS(STAT_LED_BLUE)
++    PIN_SAY(STAT_LED_BLUE_PIN);
++  #endif
++  #if PIN_EXISTS(STAT_LED_RED)
++    PIN_SAY(STAT_LED_RED_PIN);
++  #endif
++  #if PIN_EXISTS(STEPPER_RESET)
++    PIN_SAY(STEPPER_RESET_PIN);
+   #endif
+   #if PIN_EXISTS(SUICIDE)
+     PIN_SAY(SUICIDE_PIN);
+   #endif
+-  #if PIN_EXISTS(DEBUG)
+-    PIN_SAY(DEBUG_PIN);
++  #if defined(TC1) && TC1 >= 0
++    ANALOG_PIN_SAY(TC1);
+   #endif
+-  #if PIN_EXISTS(PHOTOGRAPH)
+-    PIN_SAY(PHOTOGRAPH_PIN);
++  #if defined(TC2) && TC2 >= 0
++    ANALOG_PIN_SAY(TC2);
+   #endif
+-
+-  #if PIN_EXISTS(BEEPER)
+-    PIN_SAY(BEEPER_PIN);
++  #if PIN_EXISTS(TEMP_0)
++    ANALOG_PIN_SAY(TEMP_0_PIN);
+   #endif
+-  #if defined(BTN_EN1) && BTN_EN1 > -1
+-    PIN_SAY(BTN_EN1);
++  #if PIN_EXISTS(TEMP_1)
++    ANALOG_PIN_SAY(TEMP_1_PIN);
+   #endif
+-  #if defined(BTN_EN2) && BTN_EN2 > -1
+-    PIN_SAY(BTN_EN2);
++  #if PIN_EXISTS(TEMP_2)
++    ANALOG_PIN_SAY(TEMP_2_PIN);
+   #endif
+-  #if defined(BTN_ENC) && BTN_ENC > -1
+-    PIN_SAY(BTN_ENC);
++  #if PIN_EXISTS(TEMP_3)
++    ANALOG_PIN_SAY(TEMP_3_PIN);
+   #endif
+-  #if defined(LCD_PINS_RS) && LCD_PINS_RS > -1
+-    PIN_SAY(LCD_PINS_RS);
++  #if PIN_EXISTS(TEMP_4)
++    ANALOG_PIN_SAY(TEMP_4_PIN);
+   #endif
+-  #if defined(LCD_PINS_ENABLE) && LCD_PINS_ENABLE > -1
+-    PIN_SAY(LCD_PINS_ENABLE);
++  #if PIN_EXISTS(TEMP_BED)
++    ANALOG_PIN_SAY(TEMP_BED_PIN);
+   #endif
+-  #if defined(LCD_PINS_D4) && LCD_PINS_D4 > -1
+-    PIN_SAY(LCD_PINS_D4);
++  #if PIN_EXISTS(TEMP_X)
++    ANALOG_PIN_SAY(TEMP_X_PIN);
+   #endif
+-  #if defined(LCD_PINS_D5) && LCD_PINS_D5 > -1
+-    PIN_SAY(LCD_PINS_D5);
++  #if defined(TLC_BLANK_BIT) && TLC_BLANK_BIT >= 0
++    PIN_SAY(TLC_BLANK_BIT);
+   #endif
+-  #if defined(LCD_PINS_D6) && LCD_PINS_D6 > -1
+-    PIN_SAY(LCD_PINS_D6);
++  #if PIN_EXISTS(TLC_BLANK)
++    PIN_SAY(TLC_BLANK_PIN);
+   #endif
+-  #if defined(LCD_PINS_D7) && LCD_PINS_D7 > -1
+-    PIN_SAY(LCD_PINS_D7);
++  #if defined(TLC_CLOCK_BIT) && TLC_CLOCK_BIT >= 0
++    PIN_SAY(TLC_CLOCK_BIT);
+   #endif
+-
+-  #if PIN_EXISTS(RAMPS_D8)
+-    PIN_SAY(RAMPS_D8_PIN);
++  #if PIN_EXISTS(TLC_CLOCK)
++    PIN_SAY(TLC_CLOCK_PIN);
+   #endif
+-  #if PIN_EXISTS(RAMPS_D9)
+-    PIN_SAY(RAMPS_D9_PIN);
++  #if defined(TLC_DATA_BIT) && TLC_DATA_BIT >= 0
++    PIN_SAY(TLC_DATA_BIT);
+   #endif
+-  #if PIN_EXISTS(RAMPS_D10)
+-    PIN_SAY(RAMPS_D10_PIN);
++  #if PIN_EXISTS(TLC_DATA)
++    PIN_SAY(TLC_DATA_PIN);
+   #endif
+-  #if PIN_EXISTS(MOSFET_D)
+-    PIN_SAY(MOSFET_D_PIN);
++  #if PIN_EXISTS(TLC_XLAT)
++    PIN_SAY(TLC_XLAT_PIN);
+   #endif
+-
+   #if PIN_EXISTS(TX_ENABLE)
+     PIN_SAY(TX_ENABLE_PIN);
+   #endif
+-  #if PIN_EXISTS(RX_ENABLE)
+-    PIN_SAY(RX_ENABLE_PIN);
++  #if defined(UNUSED_PWM) && UNUSED_PWM >= 0
++    PIN_SAY(UNUSED_PWM);
++  #endif
++  #if PIN_EXISTS(X_ATT)
++    PIN_SAY(X_ATT_PIN);
++  #endif
++  #if PIN_EXISTS(X_DIR)
++    PIN_SAY(X_DIR_PIN);
+   #endif
++  #if PIN_EXISTS(X_ENABLE)
++    PIN_SAY(X_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(X_MAX)
++    PIN_SAY(X_MAX_PIN);
++  #endif
++  #if PIN_EXISTS(X_MIN)
++    PIN_SAY(X_MIN_PIN);
++  #endif
++  #if PIN_EXISTS(X_MS1)
++    PIN_SAY(X_MS1_PIN);
++  #endif
++  #if PIN_EXISTS(X_MS2)
++    PIN_SAY(X_MS2_PIN);
++  #endif
++  #if PIN_EXISTS(X_STEP)
++    PIN_SAY(X_STEP_PIN);
++  #endif
++  #if PIN_EXISTS(X_STOP)
++    PIN_SAY(X_STOP_PIN);
++  #endif
++  #if PIN_EXISTS(X2_DIR)
++    PIN_SAY(X2_DIR_PIN);
++  #endif
++  #if PIN_EXISTS(X2_ENABLE)
++    PIN_SAY(X2_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(X2_STEP)
++    PIN_SAY(X2_STEP_PIN);
++  #endif
++  #if PIN_EXISTS(Y_ATT)
++    PIN_SAY(Y_ATT_PIN);
++  #endif
++  #if PIN_EXISTS(Y_DIR)
++    PIN_SAY(Y_DIR_PIN);
++  #endif
++  #if PIN_EXISTS(Y_ENABLE)
++    PIN_SAY(Y_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(Y_MAX)
++    PIN_SAY(Y_MAX_PIN);
++  #endif
++  #if PIN_EXISTS(Y_MIN)
++    PIN_SAY(Y_MIN_PIN);
++  #endif
++  #if PIN_EXISTS(Y_MS1)
++    PIN_SAY(Y_MS1_PIN);
++  #endif
++  #if PIN_EXISTS(Y_MS2)
++    PIN_SAY(Y_MS2_PIN);
++  #endif
++  #if PIN_EXISTS(Y_STEP)
++    PIN_SAY(Y_STEP_PIN);
++  #endif
++  #if PIN_EXISTS(Y_STOP)
++    PIN_SAY(Y_STOP_PIN);
++  #endif
++  #if PIN_EXISTS(Y2_DIR)
++    PIN_SAY(Y2_DIR_PIN);
++  #endif
++  #if PIN_EXISTS(Y2_ENABLE)
++    PIN_SAY(Y2_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(Y2_STEP)
++    PIN_SAY(Y2_STEP_PIN);
++  #endif
++  #if PIN_EXISTS(Z_ATT)
++    PIN_SAY(Z_ATT_PIN);
++  #endif
++  #if PIN_EXISTS(Z_DIR)
++    PIN_SAY(Z_DIR_PIN);
++  #endif
++  #if PIN_EXISTS(Z_ENABLE)
++    PIN_SAY(Z_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(Z_MAX)
++    PIN_SAY(Z_MAX_PIN);
++  #endif
++  #if PIN_EXISTS(Z_MIN)
++    PIN_SAY(Z_MIN_PIN);
++  #endif
++  #if PIN_EXISTS(Z_MIN_PROBE)
++    PIN_SAY(Z_MIN_PROBE_PIN);
++  #endif
++  #if PIN_EXISTS(Z_MS1)
++    PIN_SAY(Z_MS1_PIN);
++  #endif
++  #if PIN_EXISTS(Z_MS2)
++    PIN_SAY(Z_MS2_PIN);
++  #endif
++  #if PIN_EXISTS(Z_STEP)
++    PIN_SAY(Z_STEP_PIN);
++  #endif
++  #if PIN_EXISTS(Z_STOP)
++    PIN_SAY(Z_STOP_PIN);
++  #endif
++  #if PIN_EXISTS(Z2_DIR)
++    PIN_SAY(Z2_DIR_PIN);
++  #endif
++  #if PIN_EXISTS(Z2_ENABLE)
++    PIN_SAY(Z2_ENABLE_PIN);
++  #endif
++  #if PIN_EXISTS(Z2_STEP)
++    PIN_SAY(Z2_STEP_PIN);
++  #endif
++
++  sprintf(buffer, NAME_FORMAT, "<unused> ");
++  SERIAL_ECHO(buffer);
+ 
+-  SERIAL_ECHOPGM("<unused>");
+   return false;
++} // report_pin_name
++
++#define PWM_PRINT(V) do{ sprintf(buffer, "PWM:  %4d", V); SERIAL_ECHO(buffer); }while(0)
++#define PWM_CASE(N) \
++  case TIMER##N: \
++    if (TCCR##N & (_BV(COM## N ##1) | _BV(COM## N ##0))) { \
++      PWM_PRINT(OCR##N); \
++      return true; \
++    } else return false
++
++/**
++ * Print a pin's PWM status.
++ * Return true if it's currently a PWM pin.
++ */
++static bool PWM_status(uint8_t pin) {
++  char buffer[20];   // for the sprintf statements
++
++  switch(digitalPinToTimer(pin)) {
++
++    #if defined(TCCR0A) && defined(COM0A1)
++      PWM_CASE(0A);
++      PWM_CASE(0B);
++    #endif
++
++    #if defined(TCCR1A) && defined(COM1A1)
++      PWM_CASE(1A);
++      PWM_CASE(1B);
++      PWM_CASE(1C);
++    #endif
++
++    #if defined(TCCR2A) && defined(COM2A1)
++      PWM_CASE(2A);
++      PWM_CASE(2B);
++    #endif
++
++    #if defined(TCCR3A) && defined(COM3A1)
++      PWM_CASE(3A);
++      PWM_CASE(3B);
++      PWM_CASE(3C);
++    #endif
++
++    #ifdef TCCR4A
++      PWM_CASE(4A);
++      PWM_CASE(4B);
++      PWM_CASE(4C);
++    #endif
++
++    #if defined(TCCR5A) && defined(COM5A1)
++      PWM_CASE(5A);
++      PWM_CASE(5B);
++      PWM_CASE(5C);
++    #endif
++
++    case NOT_ON_TIMER:
++    default:
++      return false;
++  }
++  SERIAL_PROTOCOLPGM("  ");
++}  //PWM_status
++
++#define WGM_MAKE3(N) ((TEST(TCCR##N##B, WGM##N##2) >> 1) | (TCCR##N##A & (_BV(WGM##N##0) | _BV(WGM##N##1))))
++#define WGM_MAKE4(N) (WGM_MAKE3(N) | (TEST(TCCR##N##B, WGM##N##3) >> 1))
++#define TIMER_PREFIX(T,L,N) do{ \
++    WGM = WGM_MAKE##N(T); \
++    SERIAL_PROTOCOLPGM("    TIMER"); \
++    SERIAL_PROTOCOLPGM(STRINGIFY(T) STRINGIFY(L)); \
++    SERIAL_PROTOCOLPAIR("    WGM: ", WGM); \
++    SERIAL_PROTOCOLPAIR("    TIMSK" STRINGIFY(T) ": ", TIMSK##T); \
++  }while(0)
++
++#define WGM_TEST1 (WGM == 0 || WGM == 2 || WGM == 4 || WGM == 6)
++#define WGM_TEST2 (WGM == 0 || WGM == 4 || WGM == 12 || WGM == 13)
++
++static void err_is_counter() {
++  SERIAL_PROTOCOLPGM("   Can't ");
++  SERIAL_PROTOCOLPGM("be used as a PWM because ");
++  SERIAL_PROTOCOLPGM("of counter mode");
++}
++static void err_is_interrupt() {
++  SERIAL_PROTOCOLPGM("   Can't ");
++  SERIAL_PROTOCOLPGM("be used as a PWM because ");
++  SERIAL_PROTOCOLPGM("it's ");
++  SERIAL_PROTOCOLPGM("being used as an interrupt");
+ }
++static void err_prob_interrupt() {
++  SERIAL_PROTOCOLPGM("   Probably can't ");
++  SERIAL_PROTOCOLPGM("be used as a PWM because ");
++  SERIAL_PROTOCOLPGM("counter/timer is ");
++  SERIAL_PROTOCOLPGM("being used as an interrupt");
++}
++static void can_be_used() { SERIAL_PROTOCOLPGM("   can be used as PWM   "); }
++
++static void PWM_details(uint8_t pin) {
++
++  uint8_t WGM;
++
++  switch(digitalPinToTimer(pin)) {
++
++  	#if defined(TCCR0A) && defined(COM0A1)
++      case TIMER0A:
++        TIMER_PREFIX(0,A,3);
++        if (WGM_TEST1) err_is_counter();
++        else if (TEST(TIMSK0, OCIE0A)) err_is_interrupt();
++        else if (TEST(TIMSK0, TOIE0)) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER0B:
++        TIMER_PREFIX(0,B,3);
++        if (WGM_TEST1) err_is_counter();
++        else if (TEST(TIMSK0, OCIE0B)) err_is_interrupt();
++        else if (TEST(TIMSK0, TOIE0)) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++    #if defined(TCCR1A) && defined(COM1A1)
++      case TIMER1A:
++        TIMER_PREFIX(1,A,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK1, OCIE1A)) err_is_interrupt();
++        else if (TIMSK1 & (_BV(TOIE1) | _BV(ICIE1))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER1B:
++        TIMER_PREFIX(1,B,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK1, OCIE1B)) err_is_interrupt();
++        else if (TIMSK1 & (_BV(TOIE1) | _BV(ICIE1))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER1C:
++        TIMER_PREFIX(1,C,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK1, OCIE1C)) err_is_interrupt();
++        else if (TIMSK1 & (_BV(TOIE1) | _BV(ICIE1))) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++    #if defined(TCCR2A) && defined(COM2A1)
++      case TIMER2A:
++        TIMER_PREFIX(2,A,3);
++        if (WGM_TEST1) err_is_counter();
++        else if (TIMSK2 & (_BV(TOIE2) | _BV(OCIE2A))) err_is_interrupt();
++        else if (TEST(TIMSK2, TOIE2)) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER2B:
++        TIMER_PREFIX(2,B,3);
++        if (WGM_TEST1) err_is_counter();
++        else if (TEST(TIMSK2, OCIE2B)) err_is_interrupt();
++        else if (TEST(TIMSK2, TOIE2)) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++    #if defined(TCCR3A) && defined(COM3A1)
++      case TIMER3A:
++        TIMER_PREFIX(3,A,3);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK3, OCIE3A)) err_is_interrupt();
++        else if (TIMSK3 & (_BV(TOIE3) | _BV(ICIE3))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER3B:
++        TIMER_PREFIX(3,B,3);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK3, OCIE3B)) err_is_interrupt();
++        else if (TIMSK3 & (_BV(TOIE3) | _BV(ICIE3))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER3C:
++        TIMER_PREFIX(3,C,3);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK3, OCIE3C)) err_is_interrupt();
++        else if (TIMSK3 & (_BV(TOIE3) | _BV(ICIE3))) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++    #ifdef TCCR4A
++      case TIMER4A:
++        TIMER_PREFIX(4,A,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK4, OCIE4A)) err_is_interrupt();
++        else if (TIMSK4 & (_BV(TOIE4) | _BV(ICIE4))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER4B:
++        TIMER_PREFIX(4,B,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK4, OCIE4B)) err_is_interrupt();
++        else if (TIMSK4 & (_BV(TOIE4) | _BV(ICIE4))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER4C:
++        TIMER_PREFIX(4,C,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK4, OCIE4C)) err_is_interrupt();
++        else if (TIMSK4 & (_BV(TOIE4) | _BV(ICIE4))) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++    #if defined(TCCR5A) && defined(COM5A1)
++      case TIMER5A:
++        TIMER_PREFIX(5,A,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK5, OCIE5A)) err_is_interrupt();
++        else if (TIMSK5 & (_BV(TOIE5) | _BV(ICIE5))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER5B:
++        TIMER_PREFIX(5,B,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK5, OCIE5B)) err_is_interrupt();
++        else if (TIMSK5 & (_BV(TOIE5) | _BV(ICIE5))) err_prob_interrupt();
++        else can_be_used();
++        break;
++      case TIMER5C:
++        TIMER_PREFIX(5,C,4);
++        if (WGM_TEST2) err_is_counter();
++        else if (TEST(TIMSK5, OCIE5C)) err_is_interrupt();
++        else if (TIMSK5 & (_BV(TOIE5) | _BV(ICIE5))) err_prob_interrupt();
++        else can_be_used();
++        break;
++    #endif
++
++  	case NOT_ON_TIMER: break;
++
++	}
++  SERIAL_PROTOCOLPGM("  ");
++}  // PWM_details
++
++
+ 
+ inline void report_pin_state(int8_t pin) {
+-  if (report_pin_name(pin)) {
++  SERIAL_ECHO((int)pin);
++  SERIAL_CHAR(' ');
++  bool dummy;
++  if (report_pin_name(pin, dummy)) {
+     if (pin_is_protected(pin))
+       SERIAL_ECHOPGM(" (protected)");
+     else {
+@@ -445,3 +909,44 @@ inline void report_pin_state(int8_t pin) {
+   }
+   SERIAL_EOL;
+ }
++
++bool get_pinMode(int8_t pin) { return *portModeRegister(digitalPinToPort(pin)) & digitalPinToBitMask(pin); }
++
++// pretty report with PWM info
++inline void report_pin_state_extended(int8_t pin, bool ignore) {
++
++  char buffer[30];   // for the sprintf statements
++
++  // report pin number
++  sprintf(buffer, "PIN:% 3d ", pin);
++  SERIAL_ECHO(buffer);
++
++  // report pin name
++  bool analog_pin;
++  report_pin_name(pin, analog_pin);
++
++  // report pin state
++  if (pin_is_protected(pin) && !ignore)
++    SERIAL_ECHOPGM("protected ");
++  else {
++    if (analog_pin) {
++      sprintf(buffer, "Analog in =% 5d", analogRead(pin - analogInputToDigitalPin(0)));
++      SERIAL_ECHO(buffer);
++    }
++    else {
++      if (!get_pinMode(pin)) {
++        pinMode(pin, INPUT_PULLUP);  // make sure input isn't floating
++        SERIAL_PROTOCOLPAIR("Input  = ", digitalRead_mod(pin));
++      }
++      else if (PWM_status(pin)) {
++        // do nothing
++      }
++      else SERIAL_PROTOCOLPAIR("Output = ", digitalRead_mod(pin));
++    }
++  }
++
++  // report PWM capabilities
++  PWM_details(pin);
++  SERIAL_EOL;
++}
++
+diff --git a/Marlin/pins_A4JP.h b/Marlin/pins_A4JP.h
+index 7e9acd4..bc0fc84 100644
+--- a/Marlin/pins_A4JP.h
++++ b/Marlin/pins_A4JP.h
+@@ -115,8 +115,8 @@
+ #define HEATER_BED_PIN       3
+ 
+ #define FAN_PIN              8
+-#define FAN0_PIN             6
+-#define FAN1_PIN             2
++#define FAN1_PIN             6
++#define FAN2_PIN             2
+ 
+ //
+ // Misc. Functions
+diff --git a/Marlin/temperature.cpp b/Marlin/temperature.cpp
+index b1f97eb..61b6eb4 100644
+--- a/Marlin/temperature.cpp
++++ b/Marlin/temperature.cpp
+@@ -462,12 +462,12 @@ int Temperature::getHeaterPower(int heater) {
+       AUTO_3_IS_0 ? 0 : AUTO_3_IS_1 ? 1 : AUTO_3_IS_2 ? 2 : 3
+     };
+     uint8_t fanState = 0;
+- 
++
+     HOTEND_LOOP() {
+       if (current_temperature[e] > EXTRUDER_AUTO_FAN_TEMPERATURE)
+         SBI(fanState, fanBit[e]);
+     }
+- 
++
+     uint8_t fanDone = 0;
+     for (uint8_t f = 0; f < COUNT(fanPin); f++) {
+       int8_t pin = fanPin[f];
+@@ -1393,6 +1393,87 @@ void Temperature::set_current_temp_raw() {
+   temp_meas_ready = true;
+ }
+ 
++#if ENABLED(PINS_DEBUGGING)
++  /**
++   * monitors endstops & Z probe for changes
++   *
++   * If a change is detected then the LED is toggled and
++   * a message is sent out the serial port
++   *
++   * Yes, we could miss a rapid back & forth change but
++   * that won't matter because this is all manual.
++   *
++   */
++  void endstop_monitor() {
++    static uint16_t old_endstop_bits_local = 0;
++    static uint8_t local_LED_status = 0;
++    uint16_t current_endstop_bits_local = 0;
++    #if HAS_X_MIN
++      if (READ(X_MIN_PIN)) SBI(current_endstop_bits_local, X_MIN);
++    #endif
++    #if HAS_X_MAX
++      if (READ(X_MAX_PIN)) SBI(current_endstop_bits_local, X_MAX);
++    #endif
++    #if HAS_Y_MIN
++      if (READ(Y_MIN_PIN)) SBI(current_endstop_bits_local, Y_MIN);
++    #endif
++    #if HAS_Y_MAX
++      if (READ(Y_MAX_PIN)) SBI(current_endstop_bits_local, Y_MAX);
++    #endif
++    #if HAS_Z_MIN
++      if (READ(Z_MIN_PIN)) SBI(current_endstop_bits_local, Z_MIN);
++    #endif
++    #if HAS_Z_MAX
++      if (READ(Z_MAX_PIN)) SBI(current_endstop_bits_local, Z_MAX);
++    #endif
++    #if HAS_Z_MIN_PROBE_PIN
++      if (READ(Z_MIN_PROBE_PIN)) SBI(current_endstop_bits_local, Z_MIN_PROBE);
++    #endif
++    #if HAS_Z2_MIN
++      if (READ(Z2_MIN_PIN)) SBI(current_endstop_bits_local, Z2_MIN);
++    #endif
++    #if HAS_Z2_MAX
++      if (READ(Z2_MAX_PIN)) SBI(current_endstop_bits_local, Z2_MAX);
++    #endif
++
++    uint16_t endstop_change = current_endstop_bits_local ^ old_endstop_bits_local;
++
++    if (endstop_change) {
++      #if HAS_X_MIN
++        if (TEST(endstop_change, X_MIN)) SERIAL_PROTOCOLPAIR("X_MIN:", !!TEST(current_endstop_bits_local, X_MIN));
++      #endif
++      #if HAS_X_MAX
++        if (TEST(endstop_change, X_MAX)) SERIAL_PROTOCOLPAIR("  X_MAX:", !!TEST(current_endstop_bits_local, X_MAX));
++      #endif
++      #if HAS_Y_MIN
++        if (TEST(endstop_change, Y_MIN)) SERIAL_PROTOCOLPAIR("  Y_MIN:", !!TEST(current_endstop_bits_local, Y_MIN));
++      #endif
++      #if HAS_Y_MAX
++        if (TEST(endstop_change, Y_MAX)) SERIAL_PROTOCOLPAIR("  Y_MAX:", !!TEST(current_endstop_bits_local, Y_MAX));
++      #endif
++      #if HAS_Z_MIN
++        if (TEST(endstop_change, Z_MIN)) SERIAL_PROTOCOLPAIR("  Z_MIN:", !!TEST(current_endstop_bits_local, Z_MIN));
++      #endif
++      #if HAS_Z_MAX
++        if (TEST(endstop_change, Z_MAX)) SERIAL_PROTOCOLPAIR("  Z_MAX:", !!TEST(current_endstop_bits_local, Z_MAX));
++      #endif
++      #if HAS_Z_MIN_PROBE_PIN
++        if (TEST(endstop_change, Z_MIN_PROBE)) SERIAL_PROTOCOLPAIR("  PROBE:", !!TEST(current_endstop_bits_local, Z_MIN_PROBE));
++      #endif
++      #if HAS_Z2_MIN
++        if (TEST(endstop_change, Z2_MIN)) SERIAL_PROTOCOLPAIR("  Z2_MIN:", !!TEST(current_endstop_bits_local, Z2_MIN));
++      #endif
++      #if HAS_Z2_MAX
++        if (TEST(endstop_change, Z2_MAX)) SERIAL_PROTOCOLPAIR("  Z2_MAX:", !!TEST(current_endstop_bits_local, Z2_MAX));
++      #endif
++      SERIAL_PROTOCOLPGM("\n\n");
++      analogWrite(LED_PIN, local_LED_status);
++      local_LED_status ^= 255;
++      old_endstop_bits_local = current_endstop_bits_local;
++    }
++  }
++#endif // PINS_DEBUGGING
++
+ /**
+  * Timer 0 is shared with millies so don't change the prescaler.
+  *
+@@ -1848,4 +1929,15 @@ void Temperature::isr() {
+       }
+     }
+   #endif //BABYSTEPPING
++
++  #if ENABLED(PINS_DEBUGGING)
++    extern bool endstop_monitor_flag;
++    // run the endstop monitor at 15Hz
++    static uint8_t endstop_monitor_count = 16;  // offset this check from the others
++    if (endstop_monitor_flag) {
++      endstop_monitor_count += _BV(1);  //  15 Hz
++      endstop_monitor_count &= 0x7F;
++      if (!endstop_monitor_count) endstop_monitor();  // report changes in endstop status
++    }
++  #endif
+ }
+
+commit fa6bf1269784f64cff5cb22c62e141b5da0660df (from 85e307dcd8fb889e08c56130a3513d4abd466336)
+Merge: 3a107e2 85e307d
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Mon Oct 31 08:29:53 2016 -0500
+
+    Merge pull request #5118 from thinkyhead/rc_expanded_M43
+    
+    Enhancements to M43 pins debugging
+
+diff --git a/Marlin/boards.h b/Marlin/boards.h
+index bf7be0e..285bfb7 100644
+--- a/Marlin/boards.h
++++ b/Marlin/boards.h
+@@ -33,6 +33,7 @@
+ #define BOARD_CNCONTROLS_12     112  // Cartesio CN Controls V12
+ #define BOARD_CHEAPTRONIC       2    // Cheaptronic v1.0
+ #define BOARD_SETHI             20   // Sethi 3D_1
++#define BOARD_MIGHTYBOARD_REVE  200  // Makerbot Mightyboard Revision E
+ #define BOARD_RAMPS_OLD         3    // MEGA/RAMPS up to 1.2
+ #define BOARD_RAMPS_13_EFB      33   // RAMPS 1.3 (Power outputs: Hotend, Fan, Bed)
+ #define BOARD_RAMPS_13_EEB      34   // RAMPS 1.3 (Power outputs: Hotend0, Hotend1, Bed)
+diff --git a/Marlin/endstops.cpp b/Marlin/endstops.cpp
+index 7c0c9db..53e8b20 100644
+--- a/Marlin/endstops.cpp
++++ b/Marlin/endstops.cpp
+@@ -201,6 +201,10 @@ void Endstops::M119() {
+     SERIAL_PROTOCOLPGM(MSG_Z_MIN);
+     SERIAL_PROTOCOLLN(((READ(Z_MIN_PIN)^Z_MIN_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
+   #endif
++  #if HAS_Z2_MIN
++    SERIAL_PROTOCOLPGM(MSG_Z2_MIN);
++    SERIAL_PROTOCOLLN(((READ(Z2_MIN_PIN)^Z2_MIN_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
++  #endif
+   #if HAS_Z_MAX
+     SERIAL_PROTOCOLPGM(MSG_Z_MAX);
+     SERIAL_PROTOCOLLN(((READ(Z_MAX_PIN)^Z_MAX_ENDSTOP_INVERTING) ? MSG_ENDSTOP_HIT : MSG_ENDSTOP_OPEN));
+@@ -218,7 +222,7 @@ void Endstops::M119() {
+ #if ENABLED(Z_DUAL_ENDSTOPS)
+ 
+   // Pass the result of the endstop test
+-  void Endstops::test_dual_z_endstops(EndstopEnum es1, EndstopEnum es2) {
++  void Endstops::test_dual_z_endstops(const EndstopEnum es1, const EndstopEnum es2) {
+     byte z_test = TEST_ENDSTOP(es1) | (TEST_ENDSTOP(es2) << 1); // bit 0 for Z, bit 1 for Z2
+     if (z_test && stepper.current_block->steps[Z_AXIS] > 0) {
+       SBI(endstop_hit_bits, Z_MIN);
+diff --git a/Marlin/endstops.h b/Marlin/endstops.h
+index 22c2468..4f2ce9e 100644
+--- a/Marlin/endstops.h
++++ b/Marlin/endstops.h
+@@ -86,7 +86,7 @@ class Endstops {
+   private:
+ 
+     #if ENABLED(Z_DUAL_ENDSTOPS)
+-      static void test_dual_z_endstops(EndstopEnum es1, EndstopEnum es2);
++      static void test_dual_z_endstops(const EndstopEnum es1, const EndstopEnum es2);
+     #endif
+ };
+ 
+diff --git a/Marlin/fastio.h b/Marlin/fastio.h
+index 9872423..fff057a 100644
+--- a/Marlin/fastio.h
++++ b/Marlin/fastio.h
+@@ -1835,18 +1835,6 @@
+   #define PG5_WPORT   PORTG
+   #define PG5_DDR     DDRG
+   #define PG5_PWM     &OCR0B
+-  #undef PG6
+-  #define PG6_PIN     PING6
+-  #define PG6_RPORT   PING
+-  #define PG6_WPORT   PORTG
+-  #define PG6_DDR     DDRG
+-  #define PG6_PWM     NULL
+-  #undef PG7
+-  #define PG7_PIN     PING7
+-  #define PG7_RPORT   PING
+-  #define PG7_WPORT   PORTG
+-  #define PG7_DDR     DDRG
+-  #define PG7_PWM     NULL
+ 
+   #undef PH0
+   #define PH0_PIN     PINH0
+diff --git a/Marlin/language.h b/Marlin/language.h
+index 0a97764..96de163 100644
+--- a/Marlin/language.h
++++ b/Marlin/language.h
+@@ -145,6 +145,7 @@
+ #define MSG_Y_MAX                           "y_max: "
+ #define MSG_Z_MIN                           "z_min: "
+ #define MSG_Z_MAX                           "z_max: "
++#define MSG_Z2_MIN                          "z2_min: "
+ #define MSG_Z2_MAX                          "z2_max: "
+ #define MSG_Z_PROBE                         "z_probe: "
+ #define MSG_ERR_MATERIAL_INDEX              "M145 S<index> out of range (0-1)"
+diff --git a/Marlin/pins.h b/Marlin/pins.h
+index b2701ae..472133c 100644
+--- a/Marlin/pins.h
++++ b/Marlin/pins.h
+@@ -39,6 +39,8 @@
+   #include "pins_CHEAPTRONIC.h"
+ #elif MB(SETHI)
+   #include "pins_SETHI.h"
++#elif MB(MIGHTYBOARD_REVE)
++  #include "pins_MIGHTYBOARD_REVE.h"
+ #elif MB(RAMPS_OLD)
+   #include "pins_RAMPS_OLD.h"
+ #elif MB(RAMPS_13_EFB)
+diff --git a/Marlin/pins_MIGHTYBOARD_REVE.h b/Marlin/pins_MIGHTYBOARD_REVE.h
+new file mode 100644
+index 0000000..cb85534
+--- /dev/null
++++ b/Marlin/pins_MIGHTYBOARD_REVE.h
+@@ -0,0 +1,222 @@
++/**
++ * Marlin 3D Printer Firmware
++ * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
++ *
++ * Based on Sprinter and grbl.
++ * Copyright (C) 2011 Camiel Gubbels / Erik van der Zalm
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++/**
++ * Mightyboard Rev.E pin assignments
++ */
++
++/**
++ *
++ * This is a starting-point to support the Makerbot Replicator series of 3D printers.
++ * It's not functional because Marlin has limited support for some features.
++ * Marlin will need the following augmentations before it will be supportable:
++ *
++ *   - Support for two or more MAX6675 thermocouples
++ *   - Support for multiple i2c buses to control the MCP4018 digital pots
++ *   - Support for one additional unidirectional SPI bus, to read the thermocouples
++ *   - Support for an RGB LED that may work differently from BLINKM
++ *
++ * The MCP4018 requires separate I2C buses because it has a fixed address (0x2F << 1 = 0x5E)
++ * The thermocouples share the same SCK and DO pins, with their own CS pins.
++ * The controller interface port connects to a 3-wire shift-register display controller
++ *
++ */
++
++#if !defined(__AVR_ATmega1280__) && !defined(__AVR_ATmega2560__)
++  #error "Oops! Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu."
++#endif
++
++#define DEFAULT_MACHINE_NAME    "MB Replicator"
++#define BOARD_NAME              "Mightyboard"
++
++#define LARGE_FLASH true
++
++//
++// Servos
++//
++#define SERVO0_PIN         36 // C1 (1280-EX1)
++#define SERVO1_PIN         37 // C0 (1280-EX2)
++#define SERVO2_PIN         40 // G1 (1280-EX3)
++#define SERVO3_PIN         41 // G0 (1280-EX4)
++
++//
++// Limit Switches
++//
++#define X_MIN_PIN          49 // L0
++#define X_MAX_PIN          48 // L1
++#define Y_MIN_PIN          47 // L2
++#define Y_MAX_PIN          46 // L3
++#define Z_MIN_PIN          43 // L6
++#define Z_MAX_PIN          42 // L7
++
++//
++// Z Probe (when not Z_MIN_PIN)
++//
++#ifndef Z_MIN_PROBE_PIN
++  #define Z_MIN_PROBE_PIN  42
++#endif
++
++//
++// Steppers
++//
++#define X_STEP_PIN         55 // F1
++#define X_DIR_PIN          54 // F0
++#define X_ENABLE_PIN       56 // F2
++
++#define Y_STEP_PIN         59 // F5
++#define Y_DIR_PIN          58 // F4
++#define Y_ENABLE_PIN       60 // F6
++
++#define Z_STEP_PIN         63 // K1
++#define Z_DIR_PIN          62 // K0
++#define Z_ENABLE_PIN       64 // K2
++
++#define E0_STEP_PIN        25 // A3
++#define E0_DIR_PIN         24 // A2
++#define E0_ENABLE_PIN      26 // A4
++
++#define E1_STEP_PIN        29 // A7
++#define E1_DIR_PIN         28 // A6
++#define E1_ENABLE_PIN      39 // G2
++
++//
++// I2C Digipots - MCP4018
++// Address 5E (2F << 1)
++// Set from 0 - 127 with stop bit.
++// (Ex. 3F << 1 | 1)
++//
++#define DIGIPOTS_I2C_SCL    76 // J5
++#define DIGIPOTS_I2C_SDA_X  57 // F3
++#define DIGIPOTS_I2C_SDA_Y  61 // F7
++#define DIGIPOTS_I2C_SDA_Z  65 // K3
++#define DIGIPOTS_I2C_SDA_E0 27 // A5
++#define DIGIPOTS_I2C_SDA_E1 77 // J6
++
++//
++// Temperature Sensors
++//
++#define TEMP_BED_PIN       69 // K7
++
++// SPI for Max6675 or Max31855 Thermocouple
++// Uses a separate SPI bus
++//
++//  3 E5 DO (SO)
++//  5 E3 CS1
++//  2 E4 CS2
++// 78 E2 SCK
++//
++#define THERMO_SCK_PIN     78 // E2
++#define THERMO_DO_PIN       3 // E5
++#define THERMO_CS1          5 // E3
++#define THERMO_CS2          2 // E4
++
++//
++// Augmentation for auto-assigning plugs
++//
++// Two thermocouple connectors allows for either
++// 2 extruders or 1 extruder and a heated bed.
++// With no heated bed, an additional 24V fan is possible.
++//
++#define MOSFET_A_PIN     6 // H3
++#define MOSFET_B_PIN     9 // B5
++#define MOSFET_C_PIN    45 // L4
++#define MOSFET_D_PIN    44 // L5
++
++#if HOTENDS > 1
++  #if TEMP_SENSOR_BED
++    #define IS_EEB
++  #else
++    #define IS_EEF
++  #endif
++#elif TEMP_SENSOR_BED
++  #define IS_EFB
++#else
++  #define IS_EFF
++#endif
++
++//
++// Heaters / Fans (24V)
++//
++#define HEATER_0_PIN     MOSFET_A_PIN
++
++#if ENABLED(IS_EFB)                            // Hotend, Fan, Bed
++  #define FAN_PIN        MOSFET_B_PIN
++  #define HEATER_BED_PIN MOSFET_C_PIN
++#elif ENABLED(IS_EEF)                          // Hotend, Hotend, Fan
++  #define HEATER_1_PIN   MOSFET_B_PIN
++  #define FAN_PIN        MOSFET_C_PIN
++#elif ENABLED(IS_EEB)                          // Hotend, Hotend, Bed
++  #define HEATER_1_PIN   MOSFET_B_PIN
++  #define HEATER_BED_PIN MOSFET_C_PIN
++#elif ENABLED(IS_EFF)                          // Hotend, Fan, Fan
++  #define FAN_PIN        MOSFET_B_PIN
++  #define FAN1_PIN       MOSFET_C_PIN
++#elif ENABLED(IS_SF)                           // Spindle, Fan
++  #define FAN_PIN        MOSFET_C_PIN
++#endif
++
++#ifndef FAN_PIN
++  #define FAN_PIN MOSFET_D_PIN
++#endif
++
++//
++// Extruder Auto Fan Pins
++//
++#define EXTRUDER_0_AUTO_FAN  7 // H4
++#define EXTRUDER_1_AUTO_FAN 12 // B6
++
++//
++// Misc. Functions
++//
++#define LED_PIN             13 // B7
++#define CUTOFF_RESET_PIN    16 // H1
++#define CUTOFF_TEST_PIN     17 // H0
++
++//
++// LCD / Controller
++//
++// Replicator uses a 3-wire SR controller with HD44780
++// For now, pretend it's the SAV
++//
++#define SAV_3DLCD
++#define SR_DATA_PIN         34 // C3
++#define SR_CLK_PIN          35 // C2
++#define SR_STROBE_PIN       33 // C4
++
++#define BTN_UP              75 // J4
++#define BTN_DOWN            73 // J3
++#define BTN_LEFT            72 // J2
++#define BTN_RIGHT           14 // J1
++#define BTN_CENTER          15 // J0
++#define BTN_ENC             BTN_CENTER
++
++#define BEEPER_PIN           4 // G5
++
++#define STAT_LED_RED        32 // C5
++#define STAT_LED_BLUE       31 // C6 (Actually green)
++
++//
++// SD Card
++//
++#define SDSS                53 // B0
++#define SD_DETECT_PIN       30 // C7
++
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 89b2dcf..073179c 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -180,7 +180,7 @@ void Planner::calculate_trapezoid_for_block(block_t* const block, const float &e
+   // block->decelerate_after = accelerate_steps+plateau_steps;
+ 
+   CRITICAL_SECTION_START;  // Fill variables used by the stepper in a critical section
+-  if (!block->busy) { // Don't update variables if block is busy.
++  if (!TEST(block->flag, BLOCK_BIT_BUSY)) { // Don't update variables if block is busy.
+     block->accelerate_until = accelerate_steps;
+     block->decelerate_after = accelerate_steps + plateau_steps;
+     block->initial_rate = initial_rate;
+@@ -212,10 +212,10 @@ void Planner::reverse_pass_kernel(block_t* const current, const block_t *next) {
+   if (current->entry_speed != max_entry_speed) {
+     // If nominal length true, max junction speed is guaranteed to be reached. Only compute
+     // for max allowable speed if block is decelerating and nominal length is false.
+-    current->entry_speed = ((current->flag & BLOCK_FLAG_NOMINAL_LENGTH) || max_entry_speed <= next->entry_speed)
++    current->entry_speed = (TEST(current->flag, BLOCK_BIT_NOMINAL_LENGTH) || max_entry_speed <= next->entry_speed)
+       ? max_entry_speed
+       : min(max_entry_speed, max_allowable_speed(-current->acceleration, next->entry_speed, current->millimeters));
+-    current->flag |= BLOCK_FLAG_RECALCULATE;
++    SBI(current->flag, BLOCK_BIT_RECALCULATE);
+   }
+ }
+ 
+@@ -237,7 +237,7 @@ void Planner::reverse_pass() {
+ 
+     uint8_t b = BLOCK_MOD(block_buffer_head - 3);
+     while (b != tail) {
+-      if (block[0] && (block[0]->flag & BLOCK_FLAG_START_FROM_FULL_HALT)) break;
++      if (block[0] && TEST(block[0]->flag, BLOCK_BIT_START_FROM_FULL_HALT)) break;
+       b = prev_block_index(b);
+       block[2] = block[1];
+       block[1] = block[0];
+@@ -255,14 +255,14 @@ void Planner::forward_pass_kernel(const block_t* previous, block_t* const curren
+   // full speed change within the block, we need to adjust the entry speed accordingly. Entry
+   // speeds have already been reset, maximized, and reverse planned by reverse planner.
+   // If nominal length is true, max junction speed is guaranteed to be reached. No need to recheck.
+-  if (!(previous->flag & BLOCK_FLAG_NOMINAL_LENGTH)) {
++  if (!TEST(previous->flag, BLOCK_BIT_NOMINAL_LENGTH)) {
+     if (previous->entry_speed < current->entry_speed) {
+       float entry_speed = min(current->entry_speed,
+                                max_allowable_speed(-previous->acceleration, previous->entry_speed, previous->millimeters));
+       // Check for junction speed change
+       if (current->entry_speed != entry_speed) {
+         current->entry_speed = entry_speed;
+-        current->flag |= BLOCK_FLAG_RECALCULATE;
++        SBI(current->flag, BLOCK_BIT_RECALCULATE);
+       }
+     }
+   }
+@@ -298,11 +298,11 @@ void Planner::recalculate_trapezoids() {
+     next = &block_buffer[block_index];
+     if (current) {
+       // Recalculate if current block entry or exit junction speed has changed.
+-      if ((current->flag & BLOCK_FLAG_RECALCULATE) || (next->flag & BLOCK_FLAG_RECALCULATE)) {
++      if (TEST(current->flag, BLOCK_BIT_RECALCULATE) || TEST(next->flag, BLOCK_BIT_RECALCULATE)) {
+         // NOTE: Entry and exit factors always > 0 by all previous logic operations.
+         float nom = current->nominal_speed;
+         calculate_trapezoid_for_block(current, current->entry_speed / nom, next->entry_speed / nom);
+-        current->flag &= ~BLOCK_FLAG_RECALCULATE; // Reset current only to ensure next trapezoid is computed
++        CBI(current->flag, BLOCK_BIT_RECALCULATE); // Reset current only to ensure next trapezoid is computed
+       }
+     }
+     block_index = next_block_index(block_index);
+@@ -311,7 +311,7 @@ void Planner::recalculate_trapezoids() {
+   if (next) {
+     float nom = next->nominal_speed;
+     calculate_trapezoid_for_block(next, next->entry_speed / nom, (MINIMUM_PLANNER_SPEED) / nom);
+-    next->flag &= ~BLOCK_FLAG_RECALCULATE;
++    CBI(next->flag, BLOCK_BIT_RECALCULATE);
+   }
+ }
+ 
+@@ -594,12 +594,6 @@ void Planner::check_axes_activity() {
+  *  extruder    - target extruder
+  */
+ void Planner::_buffer_line(const float &a, const float &b, const float &c, const float &e, float fr_mm_s, const uint8_t extruder) {
+-  // Calculate the buffer head after we push this byte
+-  int next_buffer_head = next_block_index(block_buffer_head);
+-
+-  // If the buffer is full: good! That means we are well ahead of the robot.
+-  // Rest here until there is room in the buffer.
+-  while (block_buffer_tail == next_buffer_head) idle();
+ 
+   // The target position of the tool in absolute steps
+   // Calculate target position in absolute steps
+@@ -662,11 +656,50 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     }
+   #endif
+ 
++  // Compute direction bit-mask for this block
++  uint8_t dm = 0;
++  #if ENABLED(COREXY)
++    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
++    if (db < 0) SBI(dm, Y_HEAD); // ...and Y
++    if (dc < 0) SBI(dm, Z_AXIS);
++    if (da + db < 0) SBI(dm, A_AXIS); // Motor A direction
++    if (da - db < 0) SBI(dm, B_AXIS); // Motor B direction
++  #elif ENABLED(COREXZ)
++    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
++    if (db < 0) SBI(dm, Y_AXIS);
++    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
++    if (da + dc < 0) SBI(dm, A_AXIS); // Motor A direction
++    if (da - dc < 0) SBI(dm, C_AXIS); // Motor C direction
++  #elif ENABLED(COREYZ)
++    if (da < 0) SBI(dm, X_AXIS);
++    if (db < 0) SBI(dm, Y_HEAD); // Save the real Extruder (head) direction in Y Axis
++    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
++    if (db + dc < 0) SBI(dm, B_AXIS); // Motor B direction
++    if (db - dc < 0) SBI(dm, C_AXIS); // Motor C direction
++  #else
++    if (da < 0) SBI(dm, X_AXIS);
++    if (db < 0) SBI(dm, Y_AXIS);
++    if (dc < 0) SBI(dm, Z_AXIS);
++  #endif
++  if (de < 0) SBI(dm, E_AXIS);
++
++  int32_t esteps = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
++
++  // Calculate the buffer head after we push this byte
++  int next_buffer_head = next_block_index(block_buffer_head);
++
++  // If the buffer is full: good! That means we are well ahead of the robot.
++  // Rest here until there is room in the buffer.
++  while (block_buffer_tail == next_buffer_head) idle();
++
+   // Prepare to set up new block
+   block_t* block = &block_buffer[block_buffer_head];
+ 
+-  // Mark block as not busy (Not executed by the stepper interrupt)
+-  block->busy = false;
++  // Clear all flags, including the "busy" bit
++  block->flag = 0;
++
++  // Set direction bits
++  block->direction_bits = dm;
+ 
+   // Number of steps for each axis
+   #if ENABLED(COREXY)
+@@ -692,15 +725,12 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     block->steps[Z_AXIS] = labs(dc);
+   #endif
+ 
+-  block->steps[E_AXIS] = labs(de) * volumetric_multiplier[extruder] * flow_percentage[extruder] * 0.01 + 0.5;
+-  block->step_event_count = MAX4(block->steps[X_AXIS], block->steps[Y_AXIS], block->steps[Z_AXIS], block->steps[E_AXIS]);
++  block->steps[E_AXIS] = esteps;
++  block->step_event_count = MAX4(block->steps[X_AXIS], block->steps[Y_AXIS], block->steps[Z_AXIS], esteps);
+ 
+   // Bail if this is a zero-length block
+   if (block->step_event_count < MIN_STEPS_PER_SEGMENT) return;
+ 
+-  // Clear the block flags
+-  block->flag = 0;
+-
+   // For a mixing extruder, get a magnified step_event_count for each
+   #if ENABLED(MIXING_EXTRUDER)
+     for (uint8_t i = 0; i < MIXING_STEPPERS; i++)
+@@ -716,34 +746,6 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     block->e_to_p_pressure = baricuda_e_to_p_pressure;
+   #endif
+ 
+-  // Compute direction bit-mask for this block
+-  uint8_t dm = 0;
+-  #if ENABLED(COREXY)
+-    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
+-    if (db < 0) SBI(dm, Y_HEAD); // ...and Y
+-    if (dc < 0) SBI(dm, Z_AXIS);
+-    if (da + db < 0) SBI(dm, A_AXIS); // Motor A direction
+-    if (da - db < 0) SBI(dm, B_AXIS); // Motor B direction
+-  #elif ENABLED(COREXZ)
+-    if (da < 0) SBI(dm, X_HEAD); // Save the real Extruder (head) direction in X Axis
+-    if (db < 0) SBI(dm, Y_AXIS);
+-    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
+-    if (da + dc < 0) SBI(dm, A_AXIS); // Motor A direction
+-    if (da - dc < 0) SBI(dm, C_AXIS); // Motor C direction
+-  #elif ENABLED(COREYZ)
+-    if (da < 0) SBI(dm, X_AXIS);
+-    if (db < 0) SBI(dm, Y_HEAD); // Save the real Extruder (head) direction in Y Axis
+-    if (dc < 0) SBI(dm, Z_HEAD); // ...and Z
+-    if (db + dc < 0) SBI(dm, B_AXIS); // Motor B direction
+-    if (db - dc < 0) SBI(dm, C_AXIS); // Motor C direction
+-  #else
+-    if (da < 0) SBI(dm, X_AXIS);
+-    if (db < 0) SBI(dm, Y_AXIS);
+-    if (dc < 0) SBI(dm, Z_AXIS);
+-  #endif
+-  if (de < 0) SBI(dm, E_AXIS);
+-  block->direction_bits = dm;
+-
+   block->active_extruder = extruder;
+ 
+   //enable active axes
+@@ -761,6 +763,12 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+       enable_z();
+     }
+     if (block->steps[Y_AXIS]) enable_y();
++  #elif ENABLED(COREYZ)
++    if (block->steps[B_AXIS] || block->steps[C_AXIS]) {
++      enable_y();
++      enable_z();
++    }
++    if (block->steps[X_AXIS]) enable_x();
+   #else
+     if (block->steps[X_AXIS]) enable_x();
+     if (block->steps[Y_AXIS]) enable_y();
+@@ -770,7 +778,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+   #endif
+ 
+   // Enable extruder(s)
+-  if (block->steps[E_AXIS]) {
++  if (esteps) {
+ 
+     #if ENABLED(DISABLE_INACTIVE_EXTRUDER) // Enable only the selected extruder
+ 
+@@ -839,7 +847,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     #endif
+   }
+ 
+-  if (block->steps[E_AXIS])
++  if (esteps)
+     NOLESS(fr_mm_s, min_feedrate_mm_s);
+   else
+     NOLESS(fr_mm_s, min_travel_feedrate_mm_s);
+@@ -1037,7 +1045,7 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     }while(0)
+ 
+     // Start with print or travel acceleration
+-    accel = ceil((block->steps[E_AXIS] ? acceleration : travel_acceleration) * steps_per_mm);
++    accel = ceil((esteps ? acceleration : travel_acceleration) * steps_per_mm);
+ 
+     // Limit acceleration per axis
+     if (block->step_event_count <= cutoff_long){
+@@ -1186,12 +1194,12 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     if (previous_safe_speed > vmax_junction_threshold && safe_speed > vmax_junction_threshold) {
+       // Not coasting. The machine will stop and start the movements anyway,
+       // better to start the segment from start.
+-      block->flag |= BLOCK_FLAG_START_FROM_FULL_HALT;
++      SBI(block->flag, BLOCK_BIT_START_FROM_FULL_HALT);
+       vmax_junction = safe_speed;
+     }
+   }
+   else {
+-    block->flag |= BLOCK_FLAG_START_FROM_FULL_HALT;
++    SBI(block->flag, BLOCK_BIT_START_FROM_FULL_HALT);
+     vmax_junction = safe_speed;
+   }
+ 
+@@ -1224,18 +1232,18 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+     // This leads to an enormous number of advance steps due to a huge e_acceleration.
+     // The math is correct, but you don't want a retract move done with advance!
+     // So this situation is filtered out here.
+-    if (!block->steps[E_AXIS] || (!block->steps[X_AXIS] && !block->steps[Y_AXIS]) || stepper.get_advance_k() == 0 || (uint32_t) block->steps[E_AXIS] == block->step_event_count) {
++    if (!esteps || (!block->steps[X_AXIS] && !block->steps[Y_AXIS]) || stepper.get_advance_k() == 0 || (uint32_t)esteps == block->step_event_count) {
+       block->use_advance_lead = false;
+     }
+     else {
+       block->use_advance_lead = true;
+-      block->e_speed_multiplier8 = (block->steps[E_AXIS] << 8) / block->step_event_count;
++      block->e_speed_multiplier8 = (esteps << 8) / block->step_event_count;
+     }
+ 
+   #elif ENABLED(ADVANCE)
+ 
+     // Calculate advance rate
+-    if (!block->steps[E_AXIS] || (!block->steps[X_AXIS] && !block->steps[Y_AXIS] && !block->steps[Z_AXIS])) {
++    if (!esteps || (!block->steps[X_AXIS] && !block->steps[Y_AXIS] && !block->steps[Z_AXIS])) {
+       block->advance_rate = 0;
+       block->advance = 0;
+     }
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 78f5076..0d97107 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -40,17 +40,27 @@
+   #include "vector_3.h"
+ #endif
+ 
+-enum BlockFlag {
+-    // Recalculate trapezoids on entry junction. For optimization.
+-    BLOCK_FLAG_RECALCULATE          = _BV(0),
++enum BlockFlagBit {
++  // Recalculate trapezoids on entry junction. For optimization.
++  BLOCK_BIT_RECALCULATE,
++
++  // Nominal speed always reached.
++  // i.e., The segment is long enough, so the nominal speed is reachable if accelerating
++  // from a safe speed (in consideration of jerking from zero speed).
++  BLOCK_BIT_NOMINAL_LENGTH,
+ 
+-    // Nominal speed always reached.
+-    // i.e., The segment is long enough, so the nominal speed is reachable if accelerating
+-    // from a safe speed (in consideration of jerking from zero speed).
+-    BLOCK_FLAG_NOMINAL_LENGTH       = _BV(1),
++  // Start from a halt at the start of this block, respecting the maximum allowed jerk.
++  BLOCK_BIT_START_FROM_FULL_HALT,
+ 
+-    // Start from a halt at the start of this block, respecting the maximum allowed jerk.
+-    BLOCK_FLAG_START_FROM_FULL_HALT = _BV(2)
++  // The block is busy
++  BLOCK_BIT_BUSY
++};
++
++enum BlockFlag {
++  BLOCK_FLAG_RECALCULATE          = _BV(BLOCK_BIT_RECALCULATE),
++  BLOCK_FLAG_NOMINAL_LENGTH       = _BV(BLOCK_BIT_NOMINAL_LENGTH),
++  BLOCK_FLAG_START_FROM_FULL_HALT = _BV(BLOCK_BIT_START_FROM_FULL_HALT),
++  BLOCK_FLAG_BUSY                 = _BV(BLOCK_BIT_BUSY)
+ };
+ 
+ /**
+@@ -64,57 +74,56 @@ enum BlockFlag {
+  */
+ typedef struct {
+ 
++  uint8_t flag;                             // Block flags (See BlockFlag enum above)
++
+   unsigned char active_extruder;            // The extruder to move (if E move)
+ 
+-  // Fields used by the bresenham algorithm for tracing the line
+-  long steps[NUM_AXIS];                     // Step count along each axis
+-  unsigned long step_event_count;           // The number of step events required to complete this block
++  // Fields used by the Bresenham algorithm for tracing the line
++  int32_t steps[NUM_AXIS];                  // Step count along each axis
++  uint32_t step_event_count;                // The number of step events required to complete this block
+ 
+   #if ENABLED(MIXING_EXTRUDER)
+-    unsigned long mix_event_count[MIXING_STEPPERS]; // Scaled step_event_count for the mixing steppers
++    uint32_t mix_event_count[MIXING_STEPPERS]; // Scaled step_event_count for the mixing steppers
+   #endif
+ 
+-  long accelerate_until,                    // The index of the step event on which to stop acceleration
+-       decelerate_after,                    // The index of the step event on which to start decelerating
+-       acceleration_rate;                   // The acceleration rate used for acceleration calculation
++  int32_t accelerate_until,                 // The index of the step event on which to stop acceleration
++          decelerate_after,                 // The index of the step event on which to start decelerating
++          acceleration_rate;                // The acceleration rate used for acceleration calculation
+ 
+-  unsigned char direction_bits;             // The direction bit set for this block (refers to *_DIRECTION_BIT in config.h)
++  uint8_t direction_bits;                   // The direction bit set for this block (refers to *_DIRECTION_BIT in config.h)
+ 
+   // Advance extrusion
+   #if ENABLED(LIN_ADVANCE)
+     bool use_advance_lead;
+-    int e_speed_multiplier8; // Factorised by 2^8 to avoid float
++    int16_t e_speed_multiplier8; // Factorised by 2^8 to avoid float
+   #elif ENABLED(ADVANCE)
+-    long advance_rate;
+-    volatile long initial_advance;
+-    volatile long final_advance;
++    int32_t advance_rate;
++    volatile int32_t initial_advance;
++    volatile int32_t final_advance;
+     float advance;
+   #endif
+ 
+   // Fields used by the motion planner to manage acceleration
+-  float nominal_speed,                          // The nominal speed for this block in mm/sec
+-        entry_speed,                            // Entry speed at previous-current junction in mm/sec
+-        max_entry_speed,                        // Maximum allowable junction entry speed in mm/sec
+-        millimeters,                            // The total travel of this block in mm
+-        acceleration;                           // acceleration mm/sec^2
+-  uint8_t flag;                                 // Block flags (See BlockFlag enum above)
++  float nominal_speed,                      // The nominal speed for this block in mm/sec
++        entry_speed,                        // Entry speed at previous-current junction in mm/sec
++        max_entry_speed,                    // Maximum allowable junction entry speed in mm/sec
++        millimeters,                        // The total travel of this block in mm
++        acceleration;                       // acceleration mm/sec^2
+ 
+   // Settings for the trapezoid generator
+-  uint32_t nominal_rate,                        // The nominal step rate for this block in step_events/sec
+-           initial_rate,                        // The jerk-adjusted step rate at start of block
+-           final_rate,                          // The minimal rate at exit
+-           acceleration_steps_per_s2;           // acceleration steps/sec^2
++  uint32_t nominal_rate,                    // The nominal step rate for this block in step_events/sec
++           initial_rate,                    // The jerk-adjusted step rate at start of block
++           final_rate,                      // The minimal rate at exit
++           acceleration_steps_per_s2;       // acceleration steps/sec^2
+ 
+   #if FAN_COUNT > 0
+-    unsigned long fan_speed[FAN_COUNT];
++    uint32_t fan_speed[FAN_COUNT];
+   #endif
+ 
+   #if ENABLED(BARICUDA)
+-    unsigned long valve_pressure, e_to_p_pressure;
++    uint32_t valve_pressure, e_to_p_pressure;
+   #endif
+ 
+-  volatile char busy;
+-
+ } block_t;
+ 
+ #define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
+@@ -341,7 +350,7 @@ class Planner {
+     static block_t* get_current_block() {
+       if (blocks_queued()) {
+         block_t* block = &block_buffer[block_buffer_tail];
+-        block->busy = true;
++        SBI(block->flag, BLOCK_BIT_BUSY);
+         return block;
+       }
+       else
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index bacf224..5b910a3 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -162,14 +162,14 @@ volatile long Stepper::endstops_trigsteps[XYZ];
+   #if ENABLED(Z_DUAL_ENDSTOPS)
+     #define Z_APPLY_STEP(v,Q) \
+     if (performing_homing) { \
+-      if (Z_HOME_DIR > 0) {\
+-        if (!(TEST(endstops.old_endstop_bits, Z_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z_motor) Z_STEP_WRITE(v); \
+-        if (!(TEST(endstops.old_endstop_bits, Z2_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z2_motor) Z2_STEP_WRITE(v); \
+-      } \
+-      else { \
++      if (Z_HOME_DIR < 0) { \
+         if (!(TEST(endstops.old_endstop_bits, Z_MIN) && (count_direction[Z_AXIS] < 0)) && !locked_z_motor) Z_STEP_WRITE(v); \
+         if (!(TEST(endstops.old_endstop_bits, Z2_MIN) && (count_direction[Z_AXIS] < 0)) && !locked_z2_motor) Z2_STEP_WRITE(v); \
+       } \
++      else { \
++        if (!(TEST(endstops.old_endstop_bits, Z_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z_motor) Z_STEP_WRITE(v); \
++        if (!(TEST(endstops.old_endstop_bits, Z2_MAX) && (count_direction[Z_AXIS] > 0)) && !locked_z2_motor) Z2_STEP_WRITE(v); \
++      } \
+     } \
+     else { \
+       Z_STEP_WRITE(v); \
+@@ -344,7 +344,7 @@ void Stepper::isr() {
+     // Anything in the buffer?
+     current_block = planner.get_current_block();
+     if (current_block) {
+-      current_block->busy = true;
++      SBI(current_block->flag, BLOCK_BIT_BUSY);
+       trapezoid_generator_reset();
+ 
+       // Initialize Bresenham counters to 1/2 the ceiling
+diff --git a/Marlin/ultralcd_impl_HD44780.h b/Marlin/ultralcd_impl_HD44780.h
+index d43f88e..b60deec 100644
+--- a/Marlin/ultralcd_impl_HD44780.h
++++ b/Marlin/ultralcd_impl_HD44780.h
+@@ -161,7 +161,11 @@ extern volatile uint8_t buttons;  //an extended version of the last checked butt
+   #include <LCD.h>
+   #include <LiquidCrystal_SR.h>
+   #define LCD_CLASS LiquidCrystal_SR
+-  LCD_CLASS lcd(SR_DATA_PIN, SR_CLK_PIN);
++  #if defined(SR_STROBE_PIN)
++    LCD_CLASS lcd(SR_DATA_PIN, SR_CLK_PIN, SR_STROBE_PIN);
++  #else
++    LCD_CLASS lcd(SR_DATA_PIN, SR_CLK_PIN);
++  #endif
+ #elif ENABLED(LCM1602)
+   #include <Wire.h>
+   #include <LCD.h>
+

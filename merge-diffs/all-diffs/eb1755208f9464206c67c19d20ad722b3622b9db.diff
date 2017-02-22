@@ -1,0 +1,615 @@
+commit eb1755208f9464206c67c19d20ad722b3622b9db (from 9caa8941e293bcb62952fd71274bcb09a8252881)
+Merge: 9caa894 10da7ac
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 26 15:30:08 2016 -0700
+
+    Merge pull request #4153 from thinkyhead/rc_probe_raise_options
+    
+    Combine Z raise before/after options
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index c1db34c..f88b41d 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -796,6 +796,14 @@
+         #define XY_PROBE_SPEED 4000
+       #endif
+     #endif
++    #ifndef Z_RAISE_PROBE_DEPLOY_STOW
++      #if defined(Z_RAISE_BEFORE_PROBING) && defined(Z_RAISE_AFTER_PROBING)
++        #define Z_RAISE_PROBE_DEPLOY_STOW (max(Z_RAISE_BEFORE_PROBING, Z_RAISE_AFTER_PROBING))
++      #else
++        #error "You must set Z_RAISE_PROBE_DEPLOY_STOW in your configuration."
++      #endif
++    #endif
++    #define _Z_RAISE_PROBE_DEPLOY_STOW (max(Z_RAISE_PROBE_DEPLOY_STOW, Z_RAISE_BETWEEN_PROBINGS))
+   #endif
+ 
+   /**
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index ce046ca..01c1053 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -509,12 +509,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 953a88f..132dc21 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1767,8 +1767,8 @@ static void clean_up_after_endstop_or_probe_move() {
+     float oldXpos = current_position[X_AXIS]; // save x position
+     float old_feedrate = feedrate;
+     if (dock) {
+-      #if Z_RAISE_AFTER_PROBING > 0
+-        do_probe_raise(Z_RAISE_AFTER_PROBING);
++      #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
++        do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+       #endif
+       // Dock sled a bit closer to ensure proper capturing
+       feedrate = XY_PROBE_FEEDRATE;
+@@ -1778,7 +1778,7 @@ static void clean_up_after_endstop_or_probe_move() {
+     else {
+       feedrate = XY_PROBE_FEEDRATE;
+       float z_loc = current_position[Z_AXIS];
+-      if (z_loc < Z_RAISE_BEFORE_PROBING + 5) z_loc = Z_RAISE_BEFORE_PROBING;
++      if (z_loc < _Z_RAISE_PROBE_DEPLOY_STOW + 5) z_loc = _Z_RAISE_PROBE_DEPLOY_STOW;
+       do_blocking_move_to(X_MAX_POS + SLED_DOCKING_OFFSET + offset, current_position[Y_AXIS], z_loc); // this also updates current_position
+       digitalWrite(SLED_PIN, HIGH); // turn on magnet
+     }
+@@ -1800,8 +1800,8 @@ static void clean_up_after_endstop_or_probe_move() {
+     if (endstops.z_probe_enabled) return;
+ 
+     // Make room for probe
+-    #if Z_RAISE_BEFORE_PROBING > 0
+-      do_probe_raise(Z_RAISE_BEFORE_PROBING);
++    #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
++      do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+     #endif
+ 
+     #if ENABLED(Z_PROBE_SLED)
+@@ -1904,8 +1904,8 @@ static void clean_up_after_endstop_or_probe_move() {
+     if (!endstops.z_probe_enabled) return;
+ 
+     // Make more room for the servo
+-    #if Z_RAISE_AFTER_PROBING > 0
+-      do_probe_raise(Z_RAISE_AFTER_PROBING);
++    #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
++      do_probe_raise(_Z_RAISE_PROBE_DEPLOY_STOW);
+     #endif
+ 
+     #if ENABLED(Z_PROBE_SLED)
+@@ -1924,8 +1924,8 @@ static void clean_up_after_endstop_or_probe_move() {
+       // Move up for safety
+       feedrate = Z_PROBE_ALLEN_KEY_STOW_1_FEEDRATE;
+ 
+-      #if Z_RAISE_AFTER_PROBING > 0
+-        destination[Z_AXIS] = current_position[Z_AXIS] + Z_RAISE_AFTER_PROBING;
++      #if _Z_RAISE_PROBE_DEPLOY_STOW > 0
++        destination[Z_AXIS] = current_position[Z_AXIS] + _Z_RAISE_PROBE_DEPLOY_STOW;
+         prepare_move_to_destination_raw(); // this will also set_current_to_destination
+       #endif
+ 
+@@ -3598,7 +3598,7 @@ inline void gcode_G28() {
+ 
+     #endif // !AUTO_BED_LEVELING_GRID
+ 
+-    // Raise to Z_RAISE_AFTER_PROBING. Stow the probe.
++    // Raise to _Z_RAISE_PROBE_DEPLOY_STOW. Stow the probe.
+     stow_z_probe();
+ 
+     // Restore state after probing
+diff --git a/Marlin/example_configurations/Cartesio/Configuration.h b/Marlin/example_configurations/Cartesio/Configuration.h
+index 69997fb..915be5b 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration.h
++++ b/Marlin/example_configurations/Cartesio/Configuration.h
+@@ -508,12 +508,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/Felix/Configuration.h b/Marlin/example_configurations/Felix/Configuration.h
+index 9acb21c..62aa357 100644
+--- a/Marlin/example_configurations/Felix/Configuration.h
++++ b/Marlin/example_configurations/Felix/Configuration.h
+@@ -491,12 +491,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/Felix/DUAL/Configuration.h b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+index 9431c20..e20fa12 100644
+--- a/Marlin/example_configurations/Felix/DUAL/Configuration.h
++++ b/Marlin/example_configurations/Felix/DUAL/Configuration.h
+@@ -489,12 +489,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos/Configuration.h b/Marlin/example_configurations/Hephestos/Configuration.h
+index fd98445..a1995b3 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration.h
++++ b/Marlin/example_configurations/Hephestos/Configuration.h
+@@ -501,12 +501,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration.h b/Marlin/example_configurations/Hephestos_2/Configuration.h
+index 78ec36f..f15ad7a 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration.h
+@@ -503,12 +503,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 5    // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 5     // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW  5 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 2  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/K8200/Configuration.h b/Marlin/example_configurations/K8200/Configuration.h
+index 115e69d..54362c2 100644
+--- a/Marlin/example_configurations/K8200/Configuration.h
++++ b/Marlin/example_configurations/K8200/Configuration.h
+@@ -526,12 +526,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+index a044564..356c706 100644
+--- a/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
++++ b/Marlin/example_configurations/RepRapWorld/Megatronics/Configuration.h
+@@ -509,12 +509,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/RigidBot/Configuration.h b/Marlin/example_configurations/RigidBot/Configuration.h
+index 5f069ba..91e5dba 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration.h
++++ b/Marlin/example_configurations/RigidBot/Configuration.h
+@@ -503,12 +503,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/SCARA/Configuration.h b/Marlin/example_configurations/SCARA/Configuration.h
+index ee7a0e0..cc10ca7 100644
+--- a/Marlin/example_configurations/SCARA/Configuration.h
++++ b/Marlin/example_configurations/SCARA/Configuration.h
+@@ -517,12 +517,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/TAZ4/Configuration.h b/Marlin/example_configurations/TAZ4/Configuration.h
+index 043ebb3..77a5b1d 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration.h
++++ b/Marlin/example_configurations/TAZ4/Configuration.h
+@@ -530,12 +530,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/WITBOX/Configuration.h b/Marlin/example_configurations/WITBOX/Configuration.h
+index a15f582..b560808 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration.h
++++ b/Marlin/example_configurations/WITBOX/Configuration.h
+@@ -501,12 +501,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/adafruit/ST7565/Configuration.h b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+index e56c6b3..5039f64 100644
+--- a/Marlin/example_configurations/adafruit/ST7565/Configuration.h
++++ b/Marlin/example_configurations/adafruit/ST7565/Configuration.h
+@@ -509,12 +509,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration.h b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+index f4147a0..aca16d0 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration.h
+@@ -588,12 +588,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 50    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 50 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/generic/Configuration.h b/Marlin/example_configurations/delta/generic/Configuration.h
+index f84451d..5e2afed 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration.h
++++ b/Marlin/example_configurations/delta/generic/Configuration.h
+@@ -582,12 +582,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 50    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration.h b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+index d6b6405..f27d377 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration.h
+@@ -585,12 +585,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 50    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 50 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration.h b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+index d6572bb..36fbd8e 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration.h
+@@ -579,12 +579,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 100  // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 100 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration.h b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+index 49dc554..48cc54f 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration.h
+@@ -580,12 +580,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 20   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 20    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 20 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 10 // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/makibox/Configuration.h b/Marlin/example_configurations/makibox/Configuration.h
+index 444c46e..f1b0c81 100644
+--- a/Marlin/example_configurations/makibox/Configuration.h
++++ b/Marlin/example_configurations/makibox/Configuration.h
+@@ -512,12 +512,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the l
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration.h b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+index 5d46e05..b693cb2 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration.h
+@@ -499,12 +499,9 @@ const bool Z_MIN_PROBE_ENDSTOP_INVERTING = true; // set to true to invert the lo
+ //#define Z_MIN_PROBE_REPEATABILITY_TEST
+ 
+ //
+-// Probe Raise options provide clearance for the probe to deploy and stow.
++// Probe Raise options provide clearance for the probe to deploy, stow, and travel.
+ //
+-// For G28 these apply when the probe deploys and stows.
+-// For G29 these apply before and after the full procedure.
+-#define Z_RAISE_BEFORE_PROBING 15   // Raise before probe deploy (e.g., the first probe).
+-#define Z_RAISE_AFTER_PROBING 15    // Raise before probe stow (e.g., the last probe).
++#define Z_RAISE_PROBE_DEPLOY_STOW 15 // Raise to make room for the probe to deploy / stow
+ #define Z_RAISE_BETWEEN_PROBINGS 5  // Raise between probing points.
+ 
+ //
+
+commit eb1755208f9464206c67c19d20ad722b3622b9db (from 10da7ac86c30321880e9ac8f2028b7e9035bc208)
+Merge: 9caa894 10da7ac
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 26 15:30:08 2016 -0700
+
+    Merge pull request #4153 from thinkyhead/rc_probe_raise_options
+    
+    Combine Z raise before/after options
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index b41065b..132dc21 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2104,7 +2104,10 @@ static void clean_up_after_endstop_or_probe_move() {
+ 
+     float old_feedrate = feedrate;
+ 
+-    // Raise by z_raise, then move the Z probe to the given XY
++    // Ensure a minimum height before moving the probe
++    do_probe_raise(Z_RAISE_BETWEEN_PROBINGS);
++
++    // Move to the XY where we shall probe
+     #if ENABLED(DEBUG_LEVELING_FEATURE)
+       if (DEBUGGING(LEVELING)) {
+         SERIAL_ECHOPAIR("> do_blocking_move_to_xy(", x - (X_PROBE_OFFSET_FROM_EXTRUDER));
+@@ -2112,7 +2115,6 @@ static void clean_up_after_endstop_or_probe_move() {
+         SERIAL_ECHOLNPGM(")");
+       }
+     #endif
+-
+     feedrate = XY_PROBE_FEEDRATE;
+     do_blocking_move_to_xy(x - (X_PROBE_OFFSET_FROM_EXTRUDER), y - (Y_PROBE_OFFSET_FROM_EXTRUDER));
+ 
+diff --git a/Marlin/ultralcd_st7920_u8glib_rrd.h b/Marlin/ultralcd_st7920_u8glib_rrd.h
+index cc88b52..a87c19e 100644
+--- a/Marlin/ultralcd_st7920_u8glib_rrd.h
++++ b/Marlin/ultralcd_st7920_u8glib_rrd.h
+@@ -27,9 +27,6 @@
+ 
+ #if ENABLED(U8GLIB_ST7920)
+ 
+-//set optimization so ARDUINO optimizes this file
+-#pragma GCC optimize (3)
+-
+ #define ST7920_CLK_PIN  LCD_PINS_D4
+ #define ST7920_DAT_PIN  LCD_PINS_ENABLE
+ #define ST7920_CS_PIN   LCD_PINS_RS
+@@ -43,20 +40,70 @@
+ 
+ #include <U8glib.h>
+ 
++//set optimization so ARDUINO optimizes this file
++#pragma GCC optimize (3)
++
++#define DELAY_0_NOP  NOOP
++#define DELAY_1_NOP  __asm__("nop\n\t")
++#define DELAY_2_NOP  __asm__("nop\n\t" "nop\n\t")
++#define DELAY_3_NOP  __asm__("nop\n\t" "nop\n\t" "nop\n\t")
++#define DELAY_4_NOP  __asm__("nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t")
++
++
++// If you want you can define your own set of delays in Configuration.h
++//#define ST7920_DELAY_1 DELAY_0_NOP
++//#define ST7920_DELAY_2 DELAY_0_NOP
++//#define ST7920_DELAY_3 DELAY_0_NOP
++
++#if F_CPU >= 20000000
++  #define CPU_ST7920_DELAY_1 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_2 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_3 DELAY_1_NOP
++#elif (MOTHERBOARD == BOARD_3DRAG) || (MOTHERBOARD == BOARD_K8200)
++  #define CPU_ST7920_DELAY_1 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_2 DELAY_3_NOP
++  #define CPU_ST7920_DELAY_3 DELAY_0_NOP
++#elif (MOTHERBOARD == BOARD_MINIRAMBO)
++  #define CPU_ST7920_DELAY_1 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_2 DELAY_4_NOP
++  #define CPU_ST7920_DELAY_3 DELAY_0_NOP
++#elif (MOTHERBOARD == BOARD_RAMBO)
++  #define CPU_ST7920_DELAY_1 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_2 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_3 DELAY_0_NOP
++#elif F_CPU == 16000000
++  #define CPU_ST7920_DELAY_1 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_2 DELAY_0_NOP
++  #define CPU_ST7920_DELAY_3 DELAY_1_NOP
++#else
++  #error "No valid condition for delays in 'ultralcd_st7920_u8glib_rrd.h'"
++#endif
++
++#ifndef ST7920_DELAY_1
++  #define ST7920_DELAY_1 CPU_ST7920_DELAY_1
++#endif
++#ifndef ST7920_DELAY_2
++  #define ST7920_DELAY_2 CPU_ST7920_DELAY_2
++#endif
++#ifndef ST7920_DELAY_3
++  #define ST7920_DELAY_3 CPU_ST7920_DELAY_3
++#endif
++
++#define ST7920_SND_BIT \
++  WRITE(ST7920_CLK_PIN, LOW);        ST7920_DELAY_1; \
++  WRITE(ST7920_DAT_PIN, val & 0x80); ST7920_DELAY_2; \
++  WRITE(ST7920_CLK_PIN, HIGH);       ST7920_DELAY_3; \
++  val <<= 1
++
+ static void ST7920_SWSPI_SND_8BIT(uint8_t val) {
+-  uint8_t i;
+-  for (i = 0; i < 8; i++) {
+-    WRITE(ST7920_CLK_PIN,0);
+-    #if F_CPU == 20000000
+-      __asm__("nop\n\t");
+-    #endif
+-    WRITE(ST7920_DAT_PIN,val&0x80);
+-    val<<=1;
+-    WRITE(ST7920_CLK_PIN,1);
+-    #if F_CPU == 20000000
+-      __asm__("nop\n\t""nop\n\t");
+-    #endif
+-  }
++  ST7920_SND_BIT; // 1
++  ST7920_SND_BIT; // 2
++  ST7920_SND_BIT; // 3
++  ST7920_SND_BIT; // 4
++  ST7920_SND_BIT; // 5
++  ST7920_SND_BIT; // 6
++  ST7920_SND_BIT; // 7
++  ST7920_SND_BIT; // 8
+ }
+ 
+ #define ST7920_CS()              {WRITE(ST7920_CS_PIN,1);u8g_10MicroDelay();}
+@@ -138,6 +185,7 @@ class U8GLIB_ST7920_128X64_RRD : public U8GLIB {
+   U8GLIB_ST7920_128X64_RRD(uint8_t dummy) : U8GLIB(&u8g_dev_st7920_128x64_rrd_sw_spi) { UNUSED(dummy); }
+ };
+ 
++#pragma GCC reset_options
+ 
+ #endif //U8GLIB_ST7920
+ #endif //ULCDST7920_H
+

@@ -1,0 +1,190 @@
+commit 09c6323b68567bccd44ee0a89a8f3084cc0efca9 (from 5905ec5ba8fb4d39fc8584eff241e6fe311c8814)
+Merge: 5905ec5 ed622ac
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Apr 17 17:20:13 2016 -0700
+
+    Merge pull request #3543 from thinkyhead/rc_better_bootscreen
+    
+    Better splash screen consolidation
+
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 96870c9..6acfdd0 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -445,7 +445,7 @@ unsigned lcd_print(char c) { return charset_mapper(c); }
+     }
+   }
+ 
+-  inline void logo_lines(const char *extra) {
++  static void logo_lines(const char *extra) {
+     int indent = (LCD_WIDTH - 8 - lcd_strlen_P(extra)) / 2;
+     lcd.setCursor(indent, 0); lcd.print('\x00'); lcd_printPGM(PSTR( "------" ));  lcd.print('\x01');
+     lcd.setCursor(indent, 1);                    lcd_printPGM(PSTR("|Marlin|"));  lcd_printPGM(extra);
+@@ -503,38 +503,64 @@ unsigned lcd_print(char c) { return charset_mapper(c); }
+ 
+     #define LCD_EXTRA_SPACE (LCD_WIDTH-8)
+ 
++    #define CENTER_OR_SCROLL(STRING,DELAY) \
++      lcd_erase_line(3); \
++      if (strlen(STRING) <= LCD_WIDTH) { \
++        lcd.setCursor((LCD_WIDTH - lcd_strlen_P(PSTR(STRING))) / 2, 3); \
++        lcd_printPGM(PSTR(STRING)); \
++        delay(DELAY); \
++      } \
++      else { \
++        lcd_scroll(0, 3, PSTR(STRING), LCD_WIDTH, DELAY); \
++      }
++
+     #ifdef STRING_SPLASH_LINE1
+-      // Combine into a single splash screen if possible
++      //
++      // Show the Marlin logo with splash line 1
++      //
+       if (LCD_EXTRA_SPACE >= strlen(STRING_SPLASH_LINE1) + 1) {
++        //
++        // Show the Marlin logo, splash line1, and splash line 2
++        //
+         logo_lines(PSTR(" " STRING_SPLASH_LINE1));
+         #ifdef STRING_SPLASH_LINE2
+-          lcd_erase_line(3);
+-          lcd_scroll(0, 3, PSTR(STRING_SPLASH_LINE2), LCD_WIDTH, 2000);
++          CENTER_OR_SCROLL(STRING_SPLASH_LINE2, 2000);
+         #else
+           delay(2000);
+         #endif
+       }
+       else {
++        //
++        // Show the Marlin logo with splash line 1
++        // After a delay show splash line 2, if it exists
++        //
++        #ifdef STRING_SPLASH_LINE2
++          #define _SPLASH_WAIT_1 1500
++        #else
++          #define _SPLASH_WAIT_1 2000
++        #endif
+         logo_lines(PSTR(""));
+-        lcd_erase_line(3);
+-        lcd_scroll(0, 3, PSTR(STRING_SPLASH_LINE1), LCD_WIDTH, 1500);
++        CENTER_OR_SCROLL(STRING_SPLASH_LINE1, _SPLASH_WAIT_1);
+         #ifdef STRING_SPLASH_LINE2
+-          lcd_erase_line(3);
+-          lcd_scroll(0, 3, PSTR(STRING_SPLASH_LINE2), LCD_WIDTH, 1500);
++          CENTER_OR_SCROLL(STRING_SPLASH_LINE2, 1500);
+         #endif
+       }
+     #elif defined(STRING_SPLASH_LINE2)
+-      // Combine into a single splash screen if possible
++      //
++      // Show splash line 2 only, alongside the logo if possible
++      //
+       if (LCD_EXTRA_SPACE >= strlen(STRING_SPLASH_LINE2) + 1) {
+         logo_lines(PSTR(" " STRING_SPLASH_LINE2));
+         delay(2000);
+       }
+       else {
+         logo_lines(PSTR(""));
+-        lcd_erase_line(3);
+-        lcd_scroll(0, 3, PSTR(STRING_SPLASH_LINE2), LCD_WIDTH, 2000);
++        CENTER_OR_SCROLL(STRING_SPLASH_LINE2, 2000);
+       }
+     #else
++      //
++      // Show only the Marlin logo
++      //
+       logo_lines(PSTR(""));
+       delay(2000);
+     #endif
+
+commit 09c6323b68567bccd44ee0a89a8f3084cc0efca9 (from ed622ac79676f968d0d62c13688c72460c18b0a9)
+Merge: 5905ec5 ed622ac
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Apr 17 17:20:13 2016 -0700
+
+    Merge pull request #3543 from thinkyhead/rc_better_bootscreen
+    
+    Better splash screen consolidation
+
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index ab0a24e..0714072 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -2951,7 +2951,11 @@ inline void gcode_G28() {
+         }
+         else {
+           // One last "return to the bed" (as originally coded) at completion
+-          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
++            #if MIN_Z_HEIGHT_FOR_HOMING > 0
++              + MIN_Z_HEIGHT_FOR_HOMING
++            #endif
++          ;
+           line_to_current_position();
+           st_synchronize();
+ 
+@@ -3598,13 +3602,14 @@ inline void gcode_G92() {
+ 
+       current_position[i] = v;
+ 
+-      position_shift[i] += v - p; // Offset the coordinate space
+-      update_software_endstops((AxisEnum)i);
+-
+       if (i == E_AXIS)
+         plan_set_e_position(v);
+-      else
++      else {
++        position_shift[i] += v - p; // Offset the coordinate space
++        update_software_endstops((AxisEnum)i);
++		  
+         didXYZ = true;
++	  }
+     }
+   }
+   if (didXYZ) {
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 9e6fd77..4b52eda 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -298,13 +298,13 @@ void checkHitEndstops() {
+       #define _SET_STOP_CHAR(A,C) ;
+     #endif
+ 
+-    #define _ENDSTOP_HIT(A,C) do{ \
++    #define _ENDSTOP_HIT_ECHO(A,C) do{ \
+       SERIAL_ECHOPAIR(" " STRINGIFY(A) ":", endstops_trigsteps[A ##_AXIS] / axis_steps_per_unit[A ##_AXIS]); \
+       _SET_STOP_CHAR(A,C); }while(0)
+ 
+     #define _ENDSTOP_HIT_TEST(A,C) \
+       if (TEST(endstop_hit_bits, A ##_MIN) || TEST(endstop_hit_bits, A ##_MAX)) \
+-        _ENDSTOP_HIT(A,C)
++        _ENDSTOP_HIT_ECHO(A,C)
+ 
+     SERIAL_ECHO_START;
+     SERIAL_ECHOPGM(MSG_ENDSTOPS_HIT);
+@@ -314,7 +314,7 @@ void checkHitEndstops() {
+ 
+     #if ENABLED(Z_MIN_PROBE_ENDSTOP)
+       #define P_AXIS Z_AXIS
+-      if (TEST(endstop_hit_bits, Z_MIN_PROBE)) _ENDSTOP_HIT(P, 'P');
++      if (TEST(endstop_hit_bits, Z_MIN_PROBE)) _ENDSTOP_HIT_ECHO(P, 'P');
+     #endif
+     SERIAL_EOL;
+ 
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 31d5d31..c1a5538 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -960,7 +960,11 @@ void lcd_cooldown() {
+             buzz(200, 659);
+             buzz(200, 698);
+           #endif
+-          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z;
++          current_position[Z_AXIS] = MESH_HOME_SEARCH_Z
++            #if MIN_Z_HEIGHT_FOR_HOMING > 0
++              + MIN_Z_HEIGHT_FOR_HOMING
++            #endif
++          ;
+           line_to_current(Z_AXIS);
+           st_synchronize();
+           mbl.active = true;
+

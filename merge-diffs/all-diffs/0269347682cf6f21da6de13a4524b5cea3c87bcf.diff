@@ -1,0 +1,727 @@
+commit 0269347682cf6f21da6de13a4524b5cea3c87bcf (from e92e2b2446729b1eb3e208d407acb2e8e2e22424)
+Merge: e92e2b2 12167bc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Nov 3 23:30:43 2016 -0500
+
+    Merge pull request #5141 from thinkyhead/rc_old_slowdown_what
+    
+    OLD_SLOWDOWN does nothing, so remove it
+
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 8ec6dde..426b7d5 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -929,24 +929,18 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+   int moves_queued = movesplanned();
+ 
+   // Slow down when the buffer starts to empty, rather than wait at the corner for a buffer refill
+-  #if ENABLED(OLD_SLOWDOWN) || ENABLED(SLOWDOWN)
+-    bool mq = moves_queued > 1 && moves_queued < (BLOCK_BUFFER_SIZE) / 2;
+-    #if ENABLED(OLD_SLOWDOWN)
+-      if (mq) fr_mm_s *= 2.0 * moves_queued / (BLOCK_BUFFER_SIZE);
+-    #endif
+-    #if ENABLED(SLOWDOWN)
+-      //  segment time im micro seconds
+-      unsigned long segment_time = lround(1000000.0/inverse_mm_s);
+-      if (mq) {
+-        if (segment_time < min_segment_time) {
+-          // buffer is draining, add extra time.  The amount of time added increases if the buffer is still emptied more.
+-          inverse_mm_s = 1000000.0 / (segment_time + lround(2 * (min_segment_time - segment_time) / moves_queued));
+-          #ifdef XY_FREQUENCY_LIMIT
+-            segment_time = lround(1000000.0 / inverse_mm_s);
+-          #endif
+-        }
++  #if ENABLED(SLOWDOWN)
++    // Segment time im micro seconds
++    unsigned long segment_time = lround(1000000.0 / inverse_mm_s);
++    if (moves_queued > 1 && moves_queued < (BLOCK_BUFFER_SIZE) / 2) {
++      if (segment_time < min_segment_time) {
++        // buffer is draining, add extra time.  The amount of time added increases if the buffer is still emptied more.
++        inverse_mm_s = 1000000.0 / (segment_time + lround(2 * (min_segment_time - segment_time) / moves_queued));
++        #ifdef XY_FREQUENCY_LIMIT
++          segment_time = lround(1000000.0 / inverse_mm_s);
++        #endif
+       }
+-    #endif
++    }
+   #endif
+ 
+   block->nominal_speed = block->millimeters * inverse_mm_s; // (mm/sec) Always > 0
+
+commit 0269347682cf6f21da6de13a4524b5cea3c87bcf (from 12167bc8f35d231a726801890a097de7094470f7)
+Merge: e92e2b2 12167bc
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Thu Nov 3 23:30:43 2016 -0500
+
+    Merge pull request #5141 from thinkyhead/rc_old_slowdown_what
+    
+    OLD_SLOWDOWN does nothing, so remove it
+
+diff --git a/Marlin/Configuration_adv.h b/Marlin/Configuration_adv.h
+index 95eb0c4..abde757 100644
+--- a/Marlin/Configuration_adv.h
++++ b/Marlin/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 011f546..eba4f83 100755
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -220,6 +220,7 @@
+  * M302 - Allow cold extrudes, or set the minimum extrude S<temperature>. (Requires PREVENT_COLD_EXTRUSION)
+  * M303 - PID relay autotune S<temperature> sets the target temperature. Default 150C. (Requires PIDTEMP)
+  * M304 - Set bed PID parameters P I and D. (Requires PIDTEMPBED)
++ * M355 - Turn the Case Light on/off and set its brightness. (Requires CASE_LIGHT_PIN)
+  * M380 - Activate solenoid on active extruder. (Requires EXT_SOLENOID)
+  * M381 - Disable all solenoids. (Requires EXT_SOLENOID)
+  * M400 - Finish all moves.
+@@ -1302,11 +1303,7 @@ bool get_target_extruder_from_command(int code) {
+ 
+ #if ENABLED(DUAL_X_CARRIAGE)
+ 
+-  #define DXC_FULL_CONTROL_MODE 0
+-  #define DXC_AUTO_PARK_MODE    1
+-  #define DXC_DUPLICATION_MODE  2
+-
+-  static int dual_x_carriage_mode = DEFAULT_DUAL_X_CARRIAGE_MODE;
++  static DualXMode dual_x_carriage_mode = DEFAULT_DUAL_X_CARRIAGE_MODE;
+ 
+   static float x_home_pos(int extruder) {
+     if (extruder == 0)
+@@ -1448,7 +1445,7 @@ static void set_axis_is_at_home(AxisEnum axis) {
+     if (axis == X_AXIS || axis == Y_AXIS) {
+ 
+       float homeposition[XYZ];
+-      LOOP_XYZ(i) homeposition[i] = LOGICAL_POSITION(base_home_pos(i), i);
++      LOOP_XYZ(i) homeposition[i] = LOGICAL_POSITION(base_home_pos((AxisEnum)i), i);
+ 
+       // SERIAL_ECHOPAIR("homeposition X:", homeposition[X_AXIS]);
+       // SERIAL_ECHOLNPAIR(" Y:", homeposition[Y_AXIS]);
+@@ -4282,7 +4279,7 @@ inline void gcode_G28() {
+     float retract_mm[XYZ];
+     LOOP_XYZ(i) {
+       float dist = destination[i] - current_position[i];
+-      retract_mm[i] = fabs(dist) < G38_MINIMUM_MOVE ? 0 : home_bump_mm(i) * (dist > 0 ? -1 : 1);
++      retract_mm[i] = fabs(dist) < G38_MINIMUM_MOVE ? 0 : home_bump_mm((AxisEnum)i) * (dist > 0 ? -1 : 1);
+     }
+ 
+     stepper.synchronize();  // wait until the machine is idle
+@@ -6665,7 +6662,7 @@ inline void gcode_M428() {
+   bool err = false;
+   LOOP_XYZ(i) {
+     if (axis_homed[i]) {
+-      float base = (current_position[i] > (soft_endstop_min[i] + soft_endstop_max[i]) * 0.5) ? base_home_pos(i) : 0,
++      float base = (current_position[i] > (soft_endstop_min[i] + soft_endstop_max[i]) * 0.5) ? base_home_pos((AxisEnum)i) : 0,
+             diff = current_position[i] - LOGICAL_POSITION(base, i);
+       if (diff > -20 && diff < 20) {
+         set_home_offset((AxisEnum)i, home_offset[i] - diff);
+@@ -6949,8 +6946,11 @@ inline void gcode_M503() {
+    */
+   inline void gcode_M605() {
+     stepper.synchronize();
+-    if (code_seen('S')) dual_x_carriage_mode = code_value_byte();
++    if (code_seen('S')) dual_x_carriage_mode = (DualXMode)code_value_byte();
+     switch (dual_x_carriage_mode) {
++      case DXC_FULL_CONTROL_MODE:
++      case DXC_AUTO_PARK_MODE:
++        break;
+       case DXC_DUPLICATION_MODE:
+         if (code_seen('X')) duplicate_extruder_x_offset = max(code_value_axis_units(X_AXIS), X2_MIN_POS - x_home_pos(0));
+         if (code_seen('R')) duplicate_extruder_temp_offset = code_value_temp_diff();
+@@ -6965,9 +6965,6 @@ inline void gcode_M503() {
+         SERIAL_CHAR(',');
+         SERIAL_ECHOLN(hotend_offset[Y_AXIS][1]);
+         break;
+-      case DXC_FULL_CONTROL_MODE:
+-      case DXC_AUTO_PARK_MODE:
+-        break;
+       default:
+         dual_x_carriage_mode = DEFAULT_DUAL_X_CARRIAGE_MODE;
+         break;
+@@ -7257,9 +7254,9 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+             if (DEBUGGING(LEVELING)) {
+               SERIAL_ECHOPGM("Dual X Carriage Mode ");
+               switch (dual_x_carriage_mode) {
+-                case DXC_DUPLICATION_MODE: SERIAL_ECHOLNPGM("DXC_DUPLICATION_MODE"); break;
+-                case DXC_AUTO_PARK_MODE: SERIAL_ECHOLNPGM("DXC_AUTO_PARK_MODE"); break;
+                 case DXC_FULL_CONTROL_MODE: SERIAL_ECHOLNPGM("DXC_FULL_CONTROL_MODE"); break;
++                case DXC_AUTO_PARK_MODE: SERIAL_ECHOLNPGM("DXC_AUTO_PARK_MODE"); break;
++                case DXC_DUPLICATION_MODE: SERIAL_ECHOLNPGM("DXC_DUPLICATION_MODE"); break;
+               }
+             }
+           #endif
+@@ -7304,6 +7301,16 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+               current_position[X_AXIS] = LOGICAL_X_POSITION(inactive_extruder_x_pos);
+               inactive_extruder_x_pos = RAW_X_POSITION(destination[X_AXIS]);
+               break;
++            case DXC_AUTO_PARK_MODE:
++              // record raised toolhead position for use by unpark
++              memcpy(raised_parked_position, current_position, sizeof(raised_parked_position));
++              raised_parked_position[Z_AXIS] += TOOLCHANGE_UNPARK_ZLIFT;
++              #if ENABLED(max_software_endstops)
++                NOMORE(raised_parked_position[Z_AXIS], soft_endstop_max[Z_AXIS]);
++              #endif
++              active_extruder_parked = true;
++              delayed_move_time = 0;
++              break;
+             case DXC_DUPLICATION_MODE:
+               active_extruder_parked = (active_extruder == 0); // this triggers the second extruder to move into the duplication position
+               if (active_extruder_parked)
+@@ -7313,13 +7320,6 @@ void tool_change(const uint8_t tmp_extruder, const float fr_mm_s/*=0.0*/, bool n
+               inactive_extruder_x_pos = RAW_X_POSITION(destination[X_AXIS]);
+               extruder_duplication_enabled = false;
+               break;
+-            default:
+-              // record raised toolhead position for use by unpark
+-              memcpy(raised_parked_position, current_position, sizeof(raised_parked_position));
+-              raised_parked_position[Z_AXIS] += TOOLCHANGE_UNPARK_ZLIFT;
+-              active_extruder_parked = true;
+-              delayed_move_time = 0;
+-              break;
+           }
+ 
+           #if ENABLED(DEBUG_LEVELING_FEATURE)
+@@ -8662,7 +8662,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+ 
+     #define MBL_SEGMENT_END(A) (current_position[A ##_AXIS] + (destination[A ##_AXIS] - current_position[A ##_AXIS]) * normalized_dist)
+ 
+-    float normalized_dist, end[NUM_AXIS];
++    float normalized_dist, end[XYZE];
+ 
+     // Split at the left/front border of the right/top square
+     int8_t gcx = max(cx1, cx2), gcy = max(cy1, cy2);
+@@ -8698,7 +8698,70 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+     mesh_line_to_destination(fr_mm_s, x_splits, y_splits);
+   }
+ 
+-#endif // MESH_BED_LEVELING
++#elif ENABLED(AUTO_BED_LEVELING_BILINEAR) && !IS_KINEMATIC
++
++  #define CELL_INDEX(A,V) ((RAW_##A##_POSITION(V) - bilinear_start[A##_AXIS]) / bilinear_grid_spacing[A##_AXIS])
++
++  /**
++   * Prepare a bilinear-leveled linear move on Cartesian,
++   * splitting the move where it crosses grid borders.
++   */
++  void bilinear_line_to_destination(float fr_mm_s, uint16_t x_splits = 0xFFFF, uint16_t y_splits = 0xFFFF) {
++    int cx1 = CELL_INDEX(X, current_position[X_AXIS]),
++        cy1 = CELL_INDEX(Y, current_position[Y_AXIS]),
++        cx2 = CELL_INDEX(X, destination[X_AXIS]),
++        cy2 = CELL_INDEX(Y, destination[Y_AXIS]);
++    cx1 = constrain(cx1, 0, ABL_GRID_POINTS_X - 2);
++    cy1 = constrain(cy1, 0, ABL_GRID_POINTS_Y - 2);
++    cx2 = constrain(cx2, 0, ABL_GRID_POINTS_X - 2);
++    cy2 = constrain(cy2, 0, ABL_GRID_POINTS_Y - 2);
++
++    if (cx1 == cx2 && cy1 == cy2) {
++      // Start and end on same mesh square
++      line_to_destination(fr_mm_s);
++      set_current_to_destination();
++      return;
++    }
++
++    #define LINE_SEGMENT_END(A) (current_position[A ##_AXIS] + (destination[A ##_AXIS] - current_position[A ##_AXIS]) * normalized_dist)
++
++    float normalized_dist, end[XYZE];
++
++    // Split at the left/front border of the right/top square
++    int8_t gcx = max(cx1, cx2), gcy = max(cy1, cy2);
++    if (cx2 != cx1 && TEST(x_splits, gcx)) {
++      memcpy(end, destination, sizeof(end));
++      destination[X_AXIS] = LOGICAL_X_POSITION(bilinear_start[X_AXIS] + bilinear_grid_spacing[X_AXIS] * gcx);
++      normalized_dist = (destination[X_AXIS] - current_position[X_AXIS]) / (end[X_AXIS] - current_position[X_AXIS]);
++      destination[Y_AXIS] = LINE_SEGMENT_END(Y);
++      CBI(x_splits, gcx);
++    }
++    else if (cy2 != cy1 && TEST(y_splits, gcy)) {
++      memcpy(end, destination, sizeof(end));
++      destination[Y_AXIS] = LOGICAL_Y_POSITION(bilinear_start[Y_AXIS] + bilinear_grid_spacing[Y_AXIS] * gcy);
++      normalized_dist = (destination[Y_AXIS] - current_position[Y_AXIS]) / (end[Y_AXIS] - current_position[Y_AXIS]);
++      destination[X_AXIS] = LINE_SEGMENT_END(X);
++      CBI(y_splits, gcy);
++    }
++    else {
++      // Already split on a border
++      line_to_destination(fr_mm_s);
++      set_current_to_destination();
++      return;
++    }
++
++    destination[Z_AXIS] = LINE_SEGMENT_END(Z);
++    destination[E_AXIS] = LINE_SEGMENT_END(E);
++
++    // Do the split and look for more borders
++    bilinear_line_to_destination(fr_mm_s, x_splits, y_splits);
++
++    // Restore destination from stack
++    memcpy(destination, end, sizeof(end));
++    bilinear_line_to_destination(fr_mm_s, x_splits, y_splits);
++  }
++
++#endif // AUTO_BED_LEVELING_BILINEAR
+ 
+ #if IS_KINEMATIC
+ 
+@@ -8874,7 +8937,7 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+     return true;
+   }
+ 
+-#else
++#else // !IS_KINEMATIC
+ 
+   /**
+    * Prepare a linear move in a Cartesian setup.
+@@ -8892,6 +8955,12 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+           return false;
+         }
+         else
++      #elif ENABLED(AUTO_BED_LEVELING_BILINEAR)
++        if (planner.abl_enabled) {
++          bilinear_line_to_destination(MMS_SCALED(feedrate_mm_s));
++          return false;
++        }
++        else
+       #endif
+           line_to_destination(MMS_SCALED(feedrate_mm_s));
+     }
+@@ -8907,39 +8976,45 @@ void set_current_from_steppers_for_axis(const AxisEnum axis) {
+    */
+   inline bool prepare_move_to_destination_dualx() {
+     if (active_extruder_parked) {
+-      if (dual_x_carriage_mode == DXC_DUPLICATION_MODE && active_extruder == 0) {
+-        // move duplicate extruder into correct duplication position.
+-        planner.set_position_mm(
+-          LOGICAL_X_POSITION(inactive_extruder_x_pos),
+-          current_position[Y_AXIS],
+-          current_position[Z_AXIS],
+-          current_position[E_AXIS]
+-        );
+-        planner.buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset,
+-                         current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[X_AXIS], 1);
+-        SYNC_PLAN_POSITION_KINEMATIC();
+-        stepper.synchronize();
+-        extruder_duplication_enabled = true;
+-        active_extruder_parked = false;
+-      }
+-      else if (dual_x_carriage_mode == DXC_AUTO_PARK_MODE) { // handle unparking of head
+-        if (current_position[E_AXIS] == destination[E_AXIS]) {
+-          // This is a travel move (with no extrusion)
+-          // Skip it, but keep track of the current position
+-          // (so it can be used as the start of the next non-travel move)
+-          if (delayed_move_time != 0xFFFFFFFFUL) {
+-            set_current_to_destination();
+-            NOLESS(raised_parked_position[Z_AXIS], destination[Z_AXIS]);
+-            delayed_move_time = millis();
+-            return false;
++      switch (dual_x_carriage_mode) {
++        case DXC_FULL_CONTROL_MODE:
++          break;
++        case DXC_DUPLICATION_MODE:
++          if (active_extruder == 0) {
++            // move duplicate extruder into correct duplication position.
++            planner.set_position_mm(
++              LOGICAL_X_POSITION(inactive_extruder_x_pos),
++              current_position[Y_AXIS],
++              current_position[Z_AXIS],
++              current_position[E_AXIS]
++            );
++            planner.buffer_line(current_position[X_AXIS] + duplicate_extruder_x_offset,
++                             current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[X_AXIS], 1);
++            SYNC_PLAN_POSITION_KINEMATIC();
++            stepper.synchronize();
++            extruder_duplication_enabled = true;
++            active_extruder_parked = false;
+           }
+-        }
+-        delayed_move_time = 0;
+-        // unpark extruder: 1) raise, 2) move into starting XY position, 3) lower
+-        planner.buffer_line(raised_parked_position[X_AXIS], raised_parked_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], PLANNER_XY_FEEDRATE(), active_extruder);
+-        planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
+-        active_extruder_parked = false;
++          break;
++        case DXC_AUTO_PARK_MODE:
++          if (current_position[E_AXIS] == destination[E_AXIS]) {
++            // This is a travel move (with no extrusion)
++            // Skip it, but keep track of the current position
++            // (so it can be used as the start of the next non-travel move)
++            if (delayed_move_time != 0xFFFFFFFFUL) {
++              set_current_to_destination();
++              NOLESS(raised_parked_position[Z_AXIS], destination[Z_AXIS]);
++              delayed_move_time = millis();
++              return false;
++            }
++          }
++          delayed_move_time = 0;
++          // unpark extruder: 1) raise, 2) move into starting XY position, 3) lower
++          planner.buffer_line(raised_parked_position[X_AXIS], raised_parked_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
++          planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], raised_parked_position[Z_AXIS], current_position[E_AXIS], PLANNER_XY_FEEDRATE(), active_extruder);
++          planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], planner.max_feedrate_mm_s[Z_AXIS], active_extruder);
++          active_extruder_parked = false;
++          break;
+       }
+     }
+     return true;
+diff --git a/Marlin/enum.h b/Marlin/enum.h
+index 713f3b6..d7042e2 100644
+--- a/Marlin/enum.h
++++ b/Marlin/enum.h
+@@ -194,4 +194,12 @@ enum LCDViewAction {
+   LCDVIEW_CALL_NO_REDRAW
+ };
+ 
++#if ENABLED(DUAL_X_CARRIAGE)
++  enum DualXMode {
++    DXC_FULL_CONTROL_MODE,
++    DXC_AUTO_PARK_MODE,
++    DXC_DUPLICATION_MODE
++  };
++#endif
++
+ #endif // __ENUM_H__
+diff --git a/Marlin/example_configurations/Cartesio/Configuration_adv.h b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+index dc8b782..c7aa0e8 100644
+--- a/Marlin/example_configurations/Cartesio/Configuration_adv.h
++++ b/Marlin/example_configurations/Cartesio/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/Felix/Configuration_adv.h b/Marlin/example_configurations/Felix/Configuration_adv.h
+index c3d2486..0b76b4c 100644
+--- a/Marlin/example_configurations/Felix/Configuration_adv.h
++++ b/Marlin/example_configurations/Felix/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/Hephestos/Configuration_adv.h b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+index e86bcbe..5f56e84 100644
+--- a/Marlin/example_configurations/Hephestos/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+index 4ab583e..769e58d 100644
+--- a/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
++++ b/Marlin/example_configurations/Hephestos_2/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/K8200/Configuration_adv.h b/Marlin/example_configurations/K8200/Configuration_adv.h
+index 8bc63b8..174bf82 100644
+--- a/Marlin/example_configurations/K8200/Configuration_adv.h
++++ b/Marlin/example_configurations/K8200/Configuration_adv.h
+@@ -319,7 +319,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/K8400/Configuration_adv.h b/Marlin/example_configurations/K8400/Configuration_adv.h
+index 1061930..7866134 100644
+--- a/Marlin/example_configurations/K8400/Configuration_adv.h
++++ b/Marlin/example_configurations/K8400/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/RigidBot/Configuration_adv.h b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+index e77c60c..92c25eb 100644
+--- a/Marlin/example_configurations/RigidBot/Configuration_adv.h
++++ b/Marlin/example_configurations/RigidBot/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/SCARA/Configuration_adv.h b/Marlin/example_configurations/SCARA/Configuration_adv.h
+index f4ebfb3..43ba636 100644
+--- a/Marlin/example_configurations/SCARA/Configuration_adv.h
++++ b/Marlin/example_configurations/SCARA/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/TAZ4/Configuration_adv.h b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+index f3e15eb..4e580a0 100644
+--- a/Marlin/example_configurations/TAZ4/Configuration_adv.h
++++ b/Marlin/example_configurations/TAZ4/Configuration_adv.h
+@@ -321,7 +321,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/WITBOX/Configuration_adv.h b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+index e86bcbe..5f56e84 100644
+--- a/Marlin/example_configurations/WITBOX/Configuration_adv.h
++++ b/Marlin/example_configurations/WITBOX/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+index 3932d59..7d952de 100644
+--- a/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/biv2.5/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/delta/generic/Configuration_adv.h b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+index 873d634..c41d39f 100644
+--- a/Marlin/example_configurations/delta/generic/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/generic/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+index 873d634..c41d39f 100644
+--- a/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_mini/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+index 06a3c97..ef88802 100644
+--- a/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_pro/Configuration_adv.h
+@@ -318,7 +318,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+index 17b07b5..7631571 100644
+--- a/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
++++ b/Marlin/example_configurations/delta/kossel_xl/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/makibox/Configuration_adv.h b/Marlin/example_configurations/makibox/Configuration_adv.h
+index bb6afc9..0e6059a 100644
+--- a/Marlin/example_configurations/makibox/Configuration_adv.h
++++ b/Marlin/example_configurations/makibox/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+index 2e57f8c..ed951b3 100644
+--- a/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
++++ b/Marlin/example_configurations/tvrrug/Round2/Configuration_adv.h
+@@ -313,7 +313,7 @@
+   //                           once. (2nd extruder x offset and temp offset are set using: M605 S2 [Xnnn] [Rmmm])
+ 
+   // This is the default power-up mode which can be later using M605.
+-  #define DEFAULT_DUAL_X_CARRIAGE_MODE 0
++  #define DEFAULT_DUAL_X_CARRIAGE_MODE DXC_FULL_CONTROL_MODE
+ 
+   // Default settings in "Auto-park Mode"
+   #define TOOLCHANGE_PARK_ZLIFT   0.2      // the distance to raise Z axis when parking an extruder
+diff --git a/Marlin/planner.cpp b/Marlin/planner.cpp
+index 4ee21af..426b7d5 100644
+--- a/Marlin/planner.cpp
++++ b/Marlin/planner.cpp
+@@ -1237,12 +1237,16 @@ void Planner::_buffer_line(const float &a, const float &b, const float &c, const
+ 
+   #if ENABLED(LIN_ADVANCE)
+ 
++    // Don't use LIN_ADVANCE for blocks if:
++    // !block->steps[E_AXIS]: We don't have E steps todo (Travel move)
++    // !block->steps[X_AXIS] && !block->steps[Y_AXIS]: We don't have a movement in XY direction (Retract / Prime moves)
++    // extruder_advance_k == 0.0: There is no advance factor set
+     // block->steps[E_AXIS] == block->step_event_count: A problem occurs when there's a very tiny move before a retract.
+     // In this case, the retract and the move will be executed together.
+     // This leads to an enormous number of advance steps due to a huge e_acceleration.
+     // The math is correct, but you don't want a retract move done with advance!
+-    // So this situation is filtered out here.
+-    if (!esteps || (!block->steps[X_AXIS] && !block->steps[Y_AXIS]) || extruder_advance_k == 0.0 || (uint32_t)esteps == block->step_event_count) {
++    // de_float <= 0.0: Extruder is running in reverse direction (for example during "Wipe while retracting" (Slic3r) or "Combing" (Cura) movements)
++    if (!esteps || (!block->steps[X_AXIS] && !block->steps[Y_AXIS]) || extruder_advance_k == 0.0 || (uint32_t)esteps == block->step_event_count || de_float <= 0.0) {
+       block->use_advance_lead = false;
+     }
+     else {
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 8be85aa..98bcda3 100755
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -416,7 +416,7 @@ uint8_t lcdDrawUpdate = LCDVIEW_CLEAR_CALL_REDRAW; // Set when the LCD needs to
+     }
+   }
+ 
+-  static void lcd_goto_previous_menu(bool feedback=false) {
++  static void lcd_goto_previous_menu() {
+     if (screen_history_depth > 0) {
+       --screen_history_depth;
+       lcd_goto_screen(
+@@ -648,7 +648,7 @@ void kill_screen(const char* lcd_msg) {
+     long babysteps_done = 0;
+ 
+     static void _lcd_babystep(const AxisEnum axis, const char* msg) {
+-      if (lcd_clicked) { defer_return_to_status = false; return lcd_goto_previous_menu(true); }
++      if (lcd_clicked) { defer_return_to_status = false; return lcd_goto_previous_menu(); }
+       ENCODER_DIRECTION_NORMAL();
+       if (encoderPosition) {
+         int babystep_increment = (int32_t)encoderPosition * BABYSTEP_MULTIPLICATOR;
+@@ -1357,7 +1357,7 @@ void kill_screen(const char* lcd_msg) {
+    */
+ 
+   static void _lcd_move_xyz(const char* name, AxisEnum axis) {
+-    if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++    if (lcd_clicked) { return lcd_goto_previous_menu(); }
+     ENCODER_DIRECTION_NORMAL();
+     if (encoderPosition) {
+       refresh_cmd_timeout();
+@@ -1397,7 +1397,7 @@ void kill_screen(const char* lcd_msg) {
+       int8_t eindex=-1
+     #endif
+   ) {
+-    if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++    if (lcd_clicked) { return lcd_goto_previous_menu(); }
+     ENCODER_DIRECTION_NORMAL();
+     if (encoderPosition) {
+       current_position[E_AXIS] += float((int32_t)encoderPosition) * move_menu_scale;
+@@ -1884,7 +1884,7 @@ void kill_screen(const char* lcd_msg) {
+    */
+   #if HAS_LCD_CONTRAST
+     static void lcd_set_contrast() {
+-      if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++      if (lcd_clicked) { return lcd_goto_previous_menu(); }
+       ENCODER_DIRECTION_NORMAL();
+       if (encoderPosition) {
+         set_lcd_contrast(lcd_contrast + encoderPosition);
+@@ -1997,7 +1997,7 @@ void kill_screen(const char* lcd_msg) {
+        *
+        */
+       static void lcd_info_stats_menu() {
+-        if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++        if (lcd_clicked) { return lcd_goto_previous_menu(); }
+ 
+         char buffer[21];
+         printStatistics stats = print_job_timer.getStats();
+@@ -2031,7 +2031,7 @@ void kill_screen(const char* lcd_msg) {
+      *
+      */
+     static void lcd_info_thermistors_menu() {
+-      if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++      if (lcd_clicked) { return lcd_goto_previous_menu(); }
+       START_SCREEN();
+       #define THERMISTOR_ID TEMP_SENSOR_0
+       #include "thermistornames.h"
+@@ -2083,7 +2083,7 @@ void kill_screen(const char* lcd_msg) {
+      *
+      */
+     static void lcd_info_board_menu() {
+-      if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++      if (lcd_clicked) { return lcd_goto_previous_menu(); }
+       START_SCREEN();
+       STATIC_ITEM(BOARD_NAME, true, true);                           // MyPrinterController
+       STATIC_ITEM(MSG_INFO_BAUDRATE ": " STRINGIFY(BAUDRATE), true); // Baud: 250000
+@@ -2104,7 +2104,7 @@ void kill_screen(const char* lcd_msg) {
+      *
+      */
+     static void lcd_info_printer_menu() {
+-      if (lcd_clicked) { return lcd_goto_previous_menu(true); }
++      if (lcd_clicked) { return lcd_goto_previous_menu(); }
+       START_SCREEN();
+       STATIC_ITEM(MSG_MARLIN, true, true);                             // Marlin
+       STATIC_ITEM(SHORT_BUILD_VERSION, true);                          // x.x.x-Branch
+@@ -2300,7 +2300,7 @@ void kill_screen(const char* lcd_msg) {
+         lcd_implementation_drawedit(editLabel, _strFunc(((_type)((int32_t)encoderPosition + minEditValue)) / scale)); \
+       if (lcd_clicked) { \
+         *((_type*)editValue) = ((_type)((int32_t)encoderPosition + minEditValue)) / scale; \
+-        lcd_goto_previous_menu(true); \
++        lcd_goto_previous_menu(); \
+       } \
+       return lcd_clicked; \
+     } \
+

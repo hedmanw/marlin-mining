@@ -1,0 +1,234 @@
+commit dcde09fdffbc793a73e431d3296db6a1b08af907 (from 7f22464353edc686d121be63842ccc297f6f2959)
+Merge: 7f22464 2ca099d
+Author: Scott Lahteine <sourcetree@thinkyhead.com>
+Date:   Thu Apr 9 03:21:36 2015 -0700
+
+    Merge remote-tracking branch 'upstream/Development' into Development
+    Latest upstream commits
+
+diff --git a/Marlin/Conditionals.h b/Marlin/Conditionals.h
+index c0095ca..fa57408 100644
+--- a/Marlin/Conditionals.h
++++ b/Marlin/Conditionals.h
+@@ -143,16 +143,45 @@
+     #endif
+   #else //no panel but just LCD
+     #ifdef ULTRA_LCD
+-    #ifdef DOGLCD // Change number of lines to match the 128x64 graphics display
+-      #define LCD_WIDTH 22
+-      #define LCD_HEIGHT 5
+-    #else
+-      #define LCD_WIDTH 16
+-      #define LCD_HEIGHT 2
+-    #endif
++      #ifdef DOGLCD // Change number of lines to match the 128x64 graphics display
++        #define LCD_WIDTH 22
++        #define LCD_HEIGHT 5
++      #else
++        #define LCD_WIDTH 16
++        #define LCD_HEIGHT 2
++      #endif
+     #endif
+   #endif
+ 
++  #ifdef DOGLCD
++    /* Custom characters defined in font font_6x10_marlin_symbols */
++    // \x00 intentionally skipped to avoid problems in strings
++    #define LCD_STR_REFRESH     "\x01"
++    #define LCD_STR_FOLDER      "\x02"
++    #define LCD_STR_ARROW_RIGHT "\x03"
++    #define LCD_STR_UPLEVEL     "\x04"
++    #define LCD_STR_CLOCK       "\x05"
++    #define LCD_STR_FEEDRATE    "\x06"
++    #define LCD_STR_BEDTEMP     "\x07"
++    #define LCD_STR_THERMOMETER "\x08"
++    #define LCD_STR_DEGREE      "\x09"
++
++    #define LCD_STR_SPECIAL_MAX '\x09'
++    // Maximum here is 0x1f because 0x20 is ' ' (space) and the normal charsets begin.
++    // Better stay below 0x10 because DISPLAY_CHARSET_HD44780_WESTERN begins here.
++  #else
++    /* Custom characters defined in the first 8 characters of the LCD */
++    #define LCD_STR_BEDTEMP     "\x00"  // this will have 'unexpected' results when used in a string!
++    #define LCD_STR_DEGREE      "\x01"
++    #define LCD_STR_THERMOMETER "\x02"
++    #define LCD_STR_UPLEVEL     "\x03"
++    #define LCD_STR_REFRESH     "\x04"
++    #define LCD_STR_FOLDER      "\x05"
++    #define LCD_STR_FEEDRATE    "\x06"
++    #define LCD_STR_CLOCK       "\x07"
++    #define LCD_STR_ARROW_RIGHT ">"  /* from the default character set */
++  #endif
++
+   /**
+    * Default LCD contrast for dogm-like LCD displays
+    */
+diff --git a/Marlin/Configuration.h b/Marlin/Configuration.h
+index b0d97f1..b99d4f4 100644
+--- a/Marlin/Configuration.h
++++ b/Marlin/Configuration.h
+@@ -420,7 +420,7 @@ const bool Z_PROBE_ENDSTOP_INVERTING = false; // set to true to invert the logic
+ //#define ENDSTOPPULLUP_FIL_RUNOUT // Uncomment to use internal pullup for filament runout pins if the sensor is defined.
+ 
+ //===========================================================================
+-//============================ Manual Bed Leveling ==========================
++//============================ Mesh Bed Leveling ============================
+ //===========================================================================
+ 
+ // #define MANUAL_BED_LEVELING  // Add display menu option for bed leveling
+diff --git a/Marlin/ConfigurationStore.cpp b/Marlin/ConfigurationStore.cpp
+index 56de816..0154691 100644
+--- a/Marlin/ConfigurationStore.cpp
++++ b/Marlin/ConfigurationStore.cpp
+@@ -669,7 +669,7 @@ void Config_PrintSettings(bool forReplay) {
+   #ifdef DELTA
+     SERIAL_ECHO_START;
+     if (!forReplay) {
+-      SERIAL_ECHOLNPGM("Endstop adjustement (mm):");
++      SERIAL_ECHOLNPGM("Endstop adjustment (mm):");
+       SERIAL_ECHO_START;
+     }
+     SERIAL_ECHOPAIR("  M666 X", endstop_adj[X_AXIS] );
+@@ -686,7 +686,7 @@ void Config_PrintSettings(bool forReplay) {
+   #elif defined(Z_DUAL_ENDSTOPS)
+     SERIAL_ECHO_START;
+     if (!forReplay) {
+-      SERIAL_ECHOLNPGM("Z2 Endstop adjustement (mm):");
++      SERIAL_ECHOLNPGM("Z2 Endstop adjustment (mm):");
+       SERIAL_ECHO_START;
+     }
+     SERIAL_ECHOPAIR("  M666 Z", z_endstop_adj );
+diff --git a/Marlin/Marlin_main.cpp b/Marlin/Marlin_main.cpp
+index 45c3adb..2c36461 100644
+--- a/Marlin/Marlin_main.cpp
++++ b/Marlin/Marlin_main.cpp
+@@ -1369,7 +1369,7 @@ inline void set_destination_to_current() { memcpy(destination, current_position,
+     #endif
+ 
+     if (verbose_level > 2) {
+-      SERIAL_PROTOCOLPGM(MSG_BED);
++      SERIAL_PROTOCOLPGM("Bed");
+       SERIAL_PROTOCOLPGM(" X: ");
+       SERIAL_PROTOCOL_F(x, 3);
+       SERIAL_PROTOCOLPGM(" Y: ");
+@@ -2518,7 +2518,7 @@ inline void gcode_G28() {
+       feedrate = homing_feedrate[Z_AXIS];
+ 
+       run_z_probe();
+-      SERIAL_PROTOCOLPGM(MSG_BED);
++      SERIAL_PROTOCOLPGM("Bed");
+       SERIAL_PROTOCOLPGM(" X: ");
+       SERIAL_PROTOCOL(current_position[X_AXIS] + 0.0001);
+       SERIAL_PROTOCOLPGM(" Y: ");
+@@ -2856,8 +2856,8 @@ inline void gcode_M42() {
+   inline void gcode_M48() {
+ 
+     double sum = 0.0, mean = 0.0, sigma = 0.0, sample_set[50];
+-    int verbose_level = 1, n_samples = 10, n_legs = 0;
+-    
++    uint8_t verbose_level = 1, n_samples = 10, n_legs = 0;
++
+     if (code_seen('V') || code_seen('v')) {
+       verbose_level = code_value_short();
+       if (verbose_level < 0 || verbose_level > 4 ) {
+@@ -2964,7 +2964,7 @@ inline void gcode_M42() {
+ 
+     if (deploy_probe_for_each_reading) stow_z_probe();
+ 
+-    for (uint16_t n=0; n < n_samples; n++) {
++    for (uint8_t n=0; n < n_samples; n++) {
+ 
+       do_blocking_move_to(X_probe_location, Y_probe_location, Z_start_location); // Make sure we are at the probe location
+ 
+@@ -2979,7 +2979,7 @@ inline void gcode_M42() {
+         //SERIAL_ECHOPAIR("   direction: ",dir);
+         //SERIAL_EOL;
+ 
+-        for (int l = 0; l < n_legs - 1; l++) {
++        for (uint8_t l = 0; l < n_legs - 1; l++) {
+           ms = millis();
+           theta += RADIANS(dir * (ms % 20L));
+           radius += (ms % 10L) - 5L;
+@@ -3018,7 +3018,7 @@ inline void gcode_M42() {
+       // Get the current mean for the data points we have so far
+       //
+       sum = 0.0;
+-      for (int j = 0; j <= n; j++) sum += sample_set[j];
++      for (uint8_t j = 0; j <= n; j++) sum += sample_set[j];
+       mean = sum / (n + 1);
+ 
+       //
+@@ -3026,7 +3026,7 @@ inline void gcode_M42() {
+       // data points we have so far
+       //
+       sum = 0.0;
+-      for (int j = 0; j <= n; j++) {
++      for (uint8_t j = 0; j <= n; j++) {
+         float ss = sample_set[j] - mean;
+         sum += ss * ss;
+       }
+diff --git a/Marlin/SanityCheck.h b/Marlin/SanityCheck.h
+index d1be770..7aeaa81 100644
+--- a/Marlin/SanityCheck.h
++++ b/Marlin/SanityCheck.h
+@@ -101,6 +101,9 @@
+     #ifdef ENABLE_AUTO_BED_LEVELING
+       #error Select ENABLE_AUTO_BED_LEVELING or MESH_BED_LEVELING, not both
+     #endif
++    #if MESH_NUM_X_POINTS > 7 || MESH_NUM_Y_POINTS > 7
++      #error MESH_NUM_X_POINTS and MESH_NUM_Y_POINTS need to be less than 8
++    #endif
+   #endif
+ 
+   /**
+diff --git a/Marlin/dogm_lcd_implementation.h b/Marlin/dogm_lcd_implementation.h
+index 2a6d229..fd52d64 100644
+--- a/Marlin/dogm_lcd_implementation.h
++++ b/Marlin/dogm_lcd_implementation.h
+@@ -108,22 +108,6 @@
+ 
+ #define START_ROW              0
+ 
+-/* Custom characters defined in font font_6x10_marlin_symbols */
+-// \x00 intentionally skipped to avoid problems in strings
+-#define LCD_STR_REFRESH     "\x01"
+-#define LCD_STR_FOLDER      "\x02"
+-#define LCD_STR_ARROW_RIGHT "\x03"
+-#define LCD_STR_UPLEVEL     "\x04"
+-#define LCD_STR_CLOCK       "\x05"
+-#define LCD_STR_FEEDRATE    "\x06"
+-#define LCD_STR_BEDTEMP     "\x07"
+-#define LCD_STR_THERMOMETER "\x08"
+-#define LCD_STR_DEGREE      "\x09"
+-
+-#define LCD_STR_SPECIAL_MAX '\x09'
+-// Maximum here is 0x1f because 0x20 is ' ' (space) and the normal charsets begin.
+-// Better stay below 0x10 because DISPLAY_CHARSET_HD44780_WESTERN begins here.
+-
+ // LCD selection
+ #ifdef U8GLIB_ST7920
+   //U8GLIB_ST7920_128X64_RRD u8g(0,0,0);
+diff --git a/Marlin/ultralcd_implementation_hitachi_HD44780.h b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+index 5698fd9..aa34801 100644
+--- a/Marlin/ultralcd_implementation_hitachi_HD44780.h
++++ b/Marlin/ultralcd_implementation_hitachi_HD44780.h
+@@ -201,18 +201,6 @@
+   #define LCD_STR_PROGRESS  "\x03\x04\x05"
+ #endif
+ 
+-/* Custom characters defined in the first 8 characters of the LCD */
+-#define LCD_STR_BEDTEMP     "\x00"  // this will have 'unexpected' results when used in a string!
+-#define LCD_STR_DEGREE      "\x01"
+-#define LCD_STR_THERMOMETER "\x02"
+-#define LCD_STR_UPLEVEL     "\x03"
+-#define LCD_STR_REFRESH     "\x04"
+-#define LCD_STR_FOLDER      "\x05"
+-#define LCD_STR_FEEDRATE    "\x06"
+-#define LCD_STR_CLOCK       "\x07"
+-//#define LCD_STR_ARROW_RIGHT "\x7E"  /* from the default character set. Only available on DISPLAY_CHARSET_HD44780_JAPAN - at this place!*/
+-#define LCD_STR_ARROW_RIGHT ">"  /* from the default character set */
+-
+ static void lcd_set_custom_characters(
+   #ifdef LCD_PROGRESS_BAR
+     bool progress_bar_set=true
+

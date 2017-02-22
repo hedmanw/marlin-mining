@@ -1,0 +1,190 @@
+commit 5e6fdbb4cb09f03ef23594b26a1e4f7b5902fef2 (from 4b3d5aec7acc3253c2fdd7b289a8fa40579f6c03)
+Merge: 4b3d5ae e2a8961
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 5 02:46:06 2016 -0700
+
+    Merge pull request #3963 from thinkyhead/rc_advance_steppers
+    
+    Use e_steps[EXTRUDERS] instead of e_steps[4]
+
+diff --git a/Marlin/stepper.cpp b/Marlin/stepper.cpp
+index 3df97cd..7695e3c 100644
+--- a/Marlin/stepper.cpp
++++ b/Marlin/stepper.cpp
+@@ -93,7 +93,7 @@ volatile unsigned long Stepper::step_events_completed = 0; // The number of step
+   unsigned char Stepper::old_OCR0A;
+   long  Stepper::final_advance = 0,
+         Stepper::old_advance = 0,
+-        Stepper::e_steps[4],
++        Stepper::e_steps[EXTRUDERS],
+         Stepper::advance_rate,
+         Stepper::advance;
+ #endif
+@@ -661,7 +661,7 @@ void Stepper::init() {
+       CBI(TCCR0A, WGM01);
+       CBI(TCCR0A, WGM00);
+     #endif
+-    e_steps[0] = e_steps[1] = e_steps[2] = e_steps[3] = 0;
++    for (uint8_t i = 0; i < EXTRUDERS; i++) e_steps[i] = 0;
+     SBI(TIMSK0, OCIE0A);
+   #endif //ADVANCE
+ 
+diff --git a/Marlin/stepper.h b/Marlin/stepper.h
+index ce4c1c1..13c753f 100644
+--- a/Marlin/stepper.h
++++ b/Marlin/stepper.h
+@@ -91,7 +91,7 @@ class Stepper {
+     #endif
+ 
+     #if ENABLED(ADVANCE)
+-      static long e_steps[4];
++      static long e_steps[EXTRUDERS];
+     #endif
+ 
+   private:
+
+commit 5e6fdbb4cb09f03ef23594b26a1e4f7b5902fef2 (from e2a89616351ea288191b1798045c202765b29af1)
+Merge: 4b3d5ae e2a8961
+Author: Scott Lahteine <thinkyhead@users.noreply.github.com>
+Date:   Sun Jun 5 02:46:06 2016 -0700
+
+    Merge pull request #3963 from thinkyhead/rc_advance_steppers
+    
+    Use e_steps[EXTRUDERS] instead of e_steps[4]
+
+diff --git a/Marlin/Marlin.h b/Marlin/Marlin.h
+index ab85ab5..1268308 100644
+--- a/Marlin/Marlin.h
++++ b/Marlin/Marlin.h
+@@ -213,7 +213,7 @@ void manage_inactivity(bool ignore_stepper_queue = false);
+  * A_AXIS and B_AXIS are used by COREXY printers
+  * X_HEAD and Y_HEAD is used for systems that don't have a 1:1 relationship between X_AXIS and X Head movement, like CoreXY bots.
+  */
+-enum AxisEnum {X_AXIS = 0, A_AXIS = 0, Y_AXIS = 1, B_AXIS = 1, Z_AXIS = 2, C_AXIS = 2, E_AXIS = 3, X_HEAD = 4, Y_HEAD = 5, Z_HEAD = 5};
++enum AxisEnum {NO_AXIS = -1, X_AXIS = 0, A_AXIS = 0, Y_AXIS = 1, B_AXIS = 1, Z_AXIS = 2, C_AXIS = 2, E_AXIS = 3, X_HEAD = 4, Y_HEAD = 5, Z_HEAD = 5};
+ 
+ #define _AXIS(AXIS) AXIS ##_AXIS
+ 
+diff --git a/Marlin/planner.h b/Marlin/planner.h
+index 96e580d..7a9f96e 100644
+--- a/Marlin/planner.h
++++ b/Marlin/planner.h
+@@ -189,6 +189,8 @@ class Planner {
+      */
+     static uint8_t movesplanned() { return BLOCK_MOD(block_buffer_head - block_buffer_tail + BLOCK_BUFFER_SIZE); }
+ 
++    static bool is_full() { return (block_buffer_tail == BLOCK_MOD(block_buffer_head + 1)); }
++
+     #if ENABLED(AUTO_BED_LEVELING_FEATURE) || ENABLED(MESH_BED_LEVELING)
+ 
+       #if ENABLED(AUTO_BED_LEVELING_FEATURE)
+diff --git a/Marlin/ultralcd.cpp b/Marlin/ultralcd.cpp
+index 63fe56b..cf9c9ac 100644
+--- a/Marlin/ultralcd.cpp
++++ b/Marlin/ultralcd.cpp
+@@ -50,6 +50,9 @@
+ 
+ int8_t encoderDiff; // updated from interrupt context and added to encoderPosition every LCD update
+ 
++int8_t manual_move_axis = (int8_t)NO_AXIS;
++millis_t manual_move_start_time = 0;
++
+ bool encoderRateMultiplierEnabled;
+ int32_t lastEncoderMovementMillis;
+ 
+@@ -938,7 +941,7 @@ void lcd_cooldown() {
+     ENCODER_DIRECTION_NORMAL();
+ 
+     // Encoder wheel adjusts the Z position
+-    if (encoderPosition && planner.movesplanned() <= 3) {
++    if (encoderPosition) {
+       refresh_cmd_timeout();
+       current_position[Z_AXIS] += float((int32_t)encoderPosition) * (MBL_Z_STEP);
+       NOLESS(current_position[Z_AXIS], 0);
+@@ -951,8 +954,8 @@ void lcd_cooldown() {
+           LCDVIEW_REDRAW_NOW
+         #endif
+       ;
++      encoderPosition = 0;
+     }
+-    encoderPosition = 0;
+ 
+     static bool debounce_click = false;
+     if (LCD_CLICKED) {
+@@ -1191,6 +1194,31 @@ static void lcd_prepare_menu() {
+ #endif // DELTA_CALIBRATION_MENU
+ 
+ /**
++ * If the most recent manual move hasn't been fed to the planner yet,
++ * and the planner can accept one, send immediately
++ */
++inline void manage_manual_move() {
++  if (manual_move_axis != (int8_t)NO_AXIS && millis() >= manual_move_start_time && !planner.is_full()) {
++    #if ENABLED(DELTA)
++      calculate_delta(current_position);
++      planner.buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, active_extruder);
++    #else
++      planner.buffer_line(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS], manual_feedrate[manual_move_axis]/60, active_extruder);
++    #endif
++    manual_move_axis = (int8_t)NO_AXIS;
++  }
++}
++
++/**
++ * Set a flag that lcd_update() should start a move
++ * to "current_position" after a short delay.
++ */
++inline void manual_move_to_current(AxisEnum axis) {
++  manual_move_start_time = millis() + 500UL; // 1/2 second delay
++  manual_move_axis = (int8_t)axis;
++}
++
++/**
+  *
+  * "Prepare" > "Move Axis" submenu
+  *
+@@ -1200,15 +1228,15 @@ float move_menu_scale;
+ 
+ static void _lcd_move(const char* name, AxisEnum axis, float min, float max) {
+   ENCODER_DIRECTION_NORMAL();
+-  if (encoderPosition && planner.movesplanned() <= 3) {
++  if (encoderPosition) {
+     refresh_cmd_timeout();
+     current_position[axis] += float((int32_t)encoderPosition) * move_menu_scale;
+     if (min_software_endstops) NOLESS(current_position[axis], min);
+     if (max_software_endstops) NOMORE(current_position[axis], max);
+-    line_to_current(axis);
++    encoderPosition = 0;
++    manual_move_to_current(axis);
+     lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+   }
+-  encoderPosition = 0;
+   if (lcdDrawUpdate) lcd_implementation_drawedit(name, ftostr31(current_position[axis]));
+   if (LCD_CLICKED) lcd_goto_previous_menu(true);
+ }
+@@ -1232,12 +1260,12 @@ static void lcd_move_e(
+     unsigned short original_active_extruder = active_extruder;
+     active_extruder = e;
+   #endif
+-  if (encoderPosition && planner.movesplanned() <= 3) {
++  if (encoderPosition) {
+     current_position[E_AXIS] += float((int32_t)encoderPosition) * move_menu_scale;
+-    line_to_current(E_AXIS);
++    encoderPosition = 0;
++    manual_move_to_current(E_AXIS);
+     lcdDrawUpdate = LCDVIEW_REDRAW_NOW;
+   }
+-  encoderPosition = 0;
+   if (lcdDrawUpdate) {
+     PGM_P pos_label;
+     #if EXTRUDERS == 1
+@@ -2149,6 +2177,8 @@ void lcd_update() {
+     static millis_t return_to_status_ms = 0;
+   #endif
+ 
++  manage_manual_move();
++
+   lcd_buttons_update();
+ 
+   #if ENABLED(SDSUPPORT) && PIN_EXISTS(SD_DETECT)
+
