@@ -55,17 +55,3 @@ x  plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current
 ```
 
 * 1 x Exclusive blocks (with two sub-blocks)
-
-Some notes: How would we distinguish between *block_1* and *block_2* from the formalization of the Exclusive intention inside MPS? Below is the workflow I actually would use inside MPS:
-```cpp
-#ifndef FORK // Change PC to DELTA
-+  calculate_delta(current_position);
-+  plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
-#else
-+  plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
-#endif /* !defined(FORK) */
-```
-
-* 2 x Keep block
-* 0 x Remove block
-* 1 x Change PC
