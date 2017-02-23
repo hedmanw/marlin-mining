@@ -4,6 +4,10 @@
 
 
 ## Task
-The task is to merge the `fork` files into the `mainline` files. The files have been stripped from whitespaces at the end of lines, in order to not cause unintentional differences.
+The task is to merge the `fork` files into the `mainline` files. The general rule is to accept `fork` changes as evolution.
+Some parts of `fork` changes should however be considered as features, and should be handled as given below:
 
-TODO: Define what strategy to employ.
+For `Marlin_main.cpp`:
+* Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES) && MB(ALLIGATOR)` should be integrated under the feature `ESENPAJ`.
+* There are a nubmer of changes where a function name is in lowercase in the `mainline` and in uppercase in the `fork` (ex: `floor` -> `FLOOR`). These changes should be integrated under the feature `ESENPAJ`, and `NOT ESENPAJ`, respectively.
+
