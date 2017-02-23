@@ -117,8 +117,8 @@ class Workspace:
             for file_conflict in file_conflicts:
                 all_conflicts.append(Conflict(file_name, file_conflict, 0, 0))
 
-        print "  Storing snapshots of the merge (merge) in {}/".format(self.content_dir)
-        self.copy_example_files(None, "merge", all_conflicts)
+        # print "  Storing snapshots of the merge (merge) in {}/".format(self.content_dir)
+        # self.copy_example_files(None, "merge", all_conflicts)
         self.abort_merge()
 
         return all_conflicts
@@ -129,10 +129,12 @@ class Workspace:
             source_file = conflict.filename
             qualified_source_name = source_file[source_file.index('/') + 1:]
             makedir(self.excerpts_dir)
-            with open("{}/{}_{}".format(self.excerpts_dir, qualified_source_name, counter), 'w') as f:
-                f.write("// EXCERPT FROM MERGE  {}\n\n".format(source_file))
-                f.write("<<<<<<<" + conflict.content + "\n")
-            counter += 1
+            file_name = "{}/{}_{}".format(self.excerpts_dir, qualified_source_name, counter)
+            if os.path.exists(file_name):
+                with open(file_name, 'w') as f:
+                    f.write("// EXCERPT FROM MERGE  {}\n\n".format(source_file))
+                    f.write("<<<<<<<" + conflict.content + "\n")
+                counter += 1
 
     def store_commit_contents(self, merge):
         print "  Storing files in first parent (base) #{}".format(merge.base_commit.hash)
@@ -143,16 +145,18 @@ class Workspace:
         self.copy_example_files(merge.result, "result", merge.conflicts)
 
     def copy_example_files(self, commit, prefix, conflicts):
-        makedir(self.content_dir)
+        destination_dir = os.path.join(self.content_dir, prefix)
+        # makedir(destination_dir)
         if commit:
             self.checkout(commit)
-        for conflict in conflicts:
-            source_file = conflict.filename
-            qualified_source_name = source_file[source_file.index('/') + 1:]
-            dir_source_file = self.workspace_dir + "/" + source_file
-            dir_target_file = self.content_dir + "/" + prefix + "_" + qualified_source_name
-            #print "Copying {} to {}.".format(dir_source_file, dir_target_file)
-            copyfile(dir_source_file, dir_target_file)
+        copytree(os.path.join(self.workspace_dir, "Marlin"), destination_dir)
+        # for conflict in conflicts:
+        #     source_file = conflict.filename
+        #     qualified_source_name = source_file[source_file.index('/') + 1:]
+        #     dir_source_file = self.workspace_dir + "/" + source_file
+        #     dir_target_file = self.content_dir + "/" + prefix + "_" + qualified_source_name
+        #     #print "Copying {} to {}.".format(dir_source_file, dir_target_file)
+        #     copyfile(dir_source_file, dir_target_file)
 
     def awk(self, file_path):
         awk_process = Popen(["awk", "/<<<<<<< HEAD/,/>>>>>>>/", file_path], cwd=self.workspace_dir, stdout=PIPE, stderr=PIPE)
@@ -172,7 +176,7 @@ class Workspace:
     def format_conflicts(merge_text):
         merge_lines = merge_text.splitlines()
         only_conflict_lines = lambda x: x.startswith("CONFLICT (content):")
-        relevant_files = lambda x: not ("README.md" in x or ".gitignore" in x or "travis.yml" in x)
+        relevant_files = lambda x: not ("README" in x or ".gitignore" in x or "travis.yml" in x)
         only_filenames = lambda x: x[len("CONFLICT (content): Merge conflict in "):]
         return map(only_filenames, filter(relevant_files, filter(only_conflict_lines, merge_lines)))
 
@@ -197,11 +201,19 @@ if __name__ == '__main__':
 
     commits = read_commits_file("merge-diffs/new-conflict-merges.txt")
 
-    for i, conflict_merge in enumerate(commits[21:]):
+    blacklist = ["00b162a993d1beceb246d8cb6b3b2b60e13bb91e",
+                 "20f909567adb71a6720dc9b8ee1cac66fb937448",
+                 "c89b8368ee678b693362b0833b1f425caab4af53",
+                 "cba5692673c19f1e66190ed5f0573a8a932fed03"
+                 ]
+
+    filtered_commits = [x for x in commits if x not in blacklist]
+
+    for i, conflict_merge in enumerate(filtered_commits):
         merge_commit = conflict_merge[0]
         first_parent = conflict_merge[1]
         second_parent = conflict_merge[2]
-        print "{}/{} - {}".format(i+1, len(commits), merge_commit)
+        print "{}/{} - {}".format(i+1, len(filtered_commits), merge_commit)
 
         base = Commit(base_repo, first_parent)
         result = Commit(base_repo, merge_commit)
