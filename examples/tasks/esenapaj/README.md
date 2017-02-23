@@ -11,13 +11,13 @@ The general rule is to accept `fork` changes as evolution.
 Some parts of `fork` changes should however be considered as features, and should be handled as given below:
 
 For all files:
-* Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES) && MB(ALLIGATOR)` should be integrated under the (_additional_) feature `ESENPAJ`.
-* There are a nubmer of changes where a function name is in lowercase in the `mainline` and in uppercase in the `fork` (ex: `floor` -> `FLOOR`). These changes should be integrated under the feature `ESENPAJ`, and `NOT ESENPAJ`, respectively.
+* Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES) && MB(ALLIGATOR)` should be integrated under the (_additional_) feature `ESENAPAJ`.
+* There are a nubmer of changes where a function name is in lowercase in the `mainline` and in uppercase in the `fork` (ex: `floor` -> `FLOOR`). These changes should be integrated under the feature `ESENAPAJ`, and `NOT ESENAPAJ`, respectively.
 
 For `stepper.cpp` only:
-* Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES) && (STEPPER_DIRECTION_DELAY > 0)` should _instead_ be integrated under the feature `ESENPAJ`.
-* Any added changes under the presence condition `defined(USE_HAL) && STEP_PULSE_CYCLES > CYCLES_EATEN_BY_CODE` should _instead_ be integrated under the feature `ESENPAJ`.
-* Any added changes under the presence condition `defined(USE_HAL) && (STEP_PULSE_CYCLES > CYCLES_EATEN_BY_E)` should _instead_ be integrated under the feature `ESENPAJ`.
+* Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES) && (STEPPER_DIRECTION_DELAY > 0)` should _instead_ be integrated under the feature `ESENAPAJ`.
+* Any added changes under the presence condition `defined(USE_HAL) && STEP_PULSE_CYCLES > CYCLES_EATEN_BY_CODE` should _instead_ be integrated under the feature `ESENAPAJ`.
+* Any added changes under the presence condition `defined(USE_HAL) && (STEP_PULSE_CYCLES > CYCLES_EATEN_BY_E)` should _instead_ be integrated under the feature `ESENAPAJ`.
 
 For `ultralcd.cpp` only:
 * Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES)` should be accepted and lifted from their presence condition.
