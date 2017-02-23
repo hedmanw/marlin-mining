@@ -469,9 +469,9 @@ static void lcd_control_temperature_menu()
 //TODO, I and D should have a PID_dT multiplier (Ki = PID_I * PID_dT, Kd = PID_D / PID_dT)
     MENU_ITEM_EDIT(float52, MSG_PID_I, &Ki, 1, 9990);
     MENU_ITEM_EDIT(float52, MSG_PID_D, &Kd, 1, 9990);
-# ifdef PID_ADD_EXTRUSION_RATE
+#ifdef PID_ADD_EXTRUSION_RATE
     MENU_ITEM_EDIT(float3, MSG_PID_C, &Kc, 1, 9990);
-# endif//PID_ADD_EXTRUSION_RATE
+#endif//PID_ADD_EXTRUSION_RATE
 #endif//PIDTEMP
     MENU_ITEM(submenu, MSG_PREHEAT_PLA_SETTINGS, lcd_control_temperature_preheat_pla_settings_menu);
     MENU_ITEM(submenu, MSG_PREHEAT_ABS_SETTINGS, lcd_control_temperature_preheat_abs_settings_menu);
