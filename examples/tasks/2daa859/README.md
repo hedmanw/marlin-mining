@@ -10,8 +10,8 @@ This task contains two files to merge: `Marlin_main.cpp` and `ultralcd.cpp`.
 In general, the remote should be integrated as evolution. There are some exceptions to this in `Marlin_main.cpp` and `ultralcd.cpp`.
 
 `Marlin_main.cpp`, context `process_commands()`:
-* From `base`, the new content for `case 80:` should be kept.
-* From `base`, the new content for `case 81:` should be kept.
+* From `base`, the new content for `case 80:` should be accepted.
+* From `base`, the new content for `case 81:` should be accepted.
 
 `ultralcd.cpp`, context `lcd_prepare_menu()`:
-* From `base`, the new content `if (powersupply) [...]` should be kept.
+* From `base`, the new content `if (powersupply) [...]` should be accepted.

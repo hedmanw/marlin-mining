@@ -8,7 +8,7 @@ Merge _base_ with _remote_.
 This task contains one file to merge: `temperature.h`.
 
 In general, the remote should be integrated as evolution. There are some exceptions to this.
-The following declarations should be kept as is in `temperature.h`, and the remote changes to them discarded.
+The following declarations should be accepted as is in `base`, and the equivalent `remote` changes discarded.
 * `inline float degTargetBed`
 * `inline void setTargetBed`
 * `inline bool isHeatingBed`
