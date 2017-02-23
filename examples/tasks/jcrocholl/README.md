@@ -4,5 +4,5 @@
 
 ## Task
 The task is to merge the `fork` files into the `mainline` files.
-The task contains one file to merge: `Marlin_main_cleaned.cpp`.
+The task contains one file to merge: `Marlin_main.cpp`.
 The general rule is to accept `fork` changes as evolution, and to accept `mainline` changes that are not in the `fork`.

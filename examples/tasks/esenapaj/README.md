@@ -5,7 +5,7 @@
 
 ## Task
 The task is to merge the `fork` files into the `mainline` files.
-The task contains XX files to merge: `Marlin_main_cleaned.cpp`, `stepper.cpp`.
+The task contains 3 files to merge: `Marlin_main.cpp`, `stepper.cpp`, `ultralcd.cpp`.
 
 The general rule is to accept `fork` changes as evolution.
 Some parts of `fork` changes should however be considered as features, and should be handled as given below:
@@ -21,4 +21,4 @@ For `stepper.cpp` only:
 
 For `ultralcd.cpp` only:
 * Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES)` should be accepted and lifted from their presence condition.
-Added changes under the inverse presence condition should be discarded.
+Any added changes under the inverse presence condition should be discarded. (Any original code from `mainline` should be discarded.)
