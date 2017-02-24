@@ -19,7 +19,7 @@ Recording actions in the AUT:
 1. Ensure that the AUT is running through RCPTT, as above.
 2. In the RCPTT instance, open your test case. In the upper left, there is a "Record" button. Press it to start recording.
 3. The RCPTT instance will minimize, and action in the AUT is recorded.
-4. To stop recording, press the red circle in the RCPTT instance.
+4. To stop recording, press the red square in the RCPTT instance.
 
 Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/how-do-i-compare-two-files-using-eclipse-is-there-any-option-provided-by-eclips):
 
