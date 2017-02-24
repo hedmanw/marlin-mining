@@ -5,11 +5,11 @@
 
 ## Task
 Merge _base_ with _remote_.
-This task contains one file to merge: `Marlin_main.cpp`.
+This task contains one file to merge: `Marlin_main_cleaned.cpp`.
 
 The functionality for movement is different in the `remote` than in the `base`, therefore these `remote` changes should be part of a `DELTA` feature.
 
-The `base` evolutions should in general be accepted. There are significant whitespace differences.
+The `base` evolutions should in general be accepted.
 
 * In `case 28:`, accept the `remote` changes adding `current_position[n] = destination[n]`.
 * In `case 28:`, the differences for `plan_set_position` between `base` and `remote` should be part of a `DELTA` feature.
