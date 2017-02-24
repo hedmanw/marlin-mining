@@ -1951,7 +1951,7 @@ ISR(TIMER0_COMPB_vect)
 
   /* No bed MINTEMP error? */
 #if defined(BED_MAXTEMP) && (TEMP_SENSOR_BED != 0)
-# if HEATER_BED_RAW_LO_TEMP > HEATER_BED_RAW_HI_TEMP
+#if HEATER_BED_RAW_LO_TEMP > HEATER_BED_RAW_HI_TEMP
     if(current_temperature_bed_raw <= bed_maxttemp_raw) {
 #else
     if(current_temperature_bed_raw >= bed_maxttemp_raw) {

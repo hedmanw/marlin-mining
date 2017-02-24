@@ -27,8 +27,10 @@ Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/ho
 2. Select the mainline file and the clone file you want to merge.
 3. Right click and select Compare With -> Each other.
 4. A two-way diff view is opened. The files can be swapped from left to right if they are on the opposite side.
-5. Perform the editing as instructed, and save the result file so we can compare the outcome.
+4. As soon as you start with the task, please also manually record the time required to complete the task.
+5. Perform the editing as instructed, and save the result file so we can compare the outcome. (Somewhere outside the AUT, since it will be lost otherwise.)
 6. Stop recording and save the script so we can analyze the edit operations.
+7. Save the contents of the resulting merged file 
 
 ## MPS
 

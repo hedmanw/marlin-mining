@@ -510,7 +510,7 @@ static void lcd_implementation_status_screen()
     lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
     if (tTarget < 10)
         lcd.print(' ');
-# endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
 #endif//LCD_WIDTH > 19
 
 #if LCD_HEIGHT > 2
@@ -539,14 +539,14 @@ static void lcd_implementation_status_screen()
     lcd_printPGM(PSTR(LCD_STR_DEGREE " "));
     if (tTarget < 10)
         lcd.print(' ');
-#  else
+#else
     lcd.setCursor(0,1);
     lcd.print('X');
     lcd.print(ftostr3(current_position[X_AXIS]));
     lcd_printPGM(PSTR(" Y"));
     lcd.print(ftostr3(current_position[Y_AXIS]));
-#  endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
-# endif//LCD_WIDTH > 19
+#endif//EXTRUDERS > 1 || TEMP_SENSOR_BED != 0
+#endif//LCD_WIDTH > 19
     lcd.setCursor(LCD_WIDTH - 8, 1);
     lcd.print('Z');
     lcd.print(ftostr32sp(current_position[Z_AXIS] + 0.00001));

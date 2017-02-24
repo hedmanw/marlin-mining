@@ -5,11 +5,11 @@
 
 ## Task
 Merge _base_ with _remote_.
-This task contains two files to merge: `Marlin_main.cpp` and `ultralcd.cpp`.
+This task contains two files to merge: `Marlin_main_cleaned.cpp` and `ultralcd.cpp`.
 
 In general, the remote should be integrated as evolution. There are some exceptions to this in `Marlin_main.cpp` and `ultralcd.cpp`.
 
-`Marlin_main.cpp`, context `process_commands()`:
+`Marlin_main_cleaned.cpp`, context `process_commands()`:
 * From `base`, the new content for `case 80:` should be accepted.
 * From `base`, the new content for `case 81:` should be accepted.
 

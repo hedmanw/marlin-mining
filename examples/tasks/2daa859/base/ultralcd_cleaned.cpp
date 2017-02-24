@@ -202,13 +202,13 @@ static void lcd_main_menu()
             MENU_ITEM(submenu, MSG_CARD_MENU, lcd_sdcard_menu);
 #if SDCARDDETECT < 1
 			MENU_ITEM(gcode, MSG_CNG_SDCARD, PSTR("M21"));	// SD-card changed by user
-#endif			
+#endif
         }
     }else{
         MENU_ITEM(submenu, MSG_NO_CARD, lcd_sdcard_menu);
-#if SDCARDDETECT < 1		
+#if SDCARDDETECT < 1
 		MENU_ITEM(gcode, MSG_INIT_SDCARD, PSTR("M21"));	// Manually initialize the SD-card via user interface
-#endif		
+#endif
     }
 #endif
     END_MENU();
@@ -528,7 +528,7 @@ static void lcd_control_motion_menu()
     MENU_ITEM_EDIT(float52, MSG_XSTEPS, &axis_steps_per_unit[X_AXIS], 5, 9999);
     MENU_ITEM_EDIT(float52, MSG_YSTEPS, &axis_steps_per_unit[Y_AXIS], 5, 9999);
     MENU_ITEM_EDIT(float51, MSG_ZSTEPS, &axis_steps_per_unit[Z_AXIS], 5, 9999);
-    MENU_ITEM_EDIT(float51, MSG_ESTEPS, &axis_steps_per_unit[E_AXIS], 5, 9999);    
+    MENU_ITEM_EDIT(float51, MSG_ESTEPS, &axis_steps_per_unit[E_AXIS], 5, 9999);
 #ifdef ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED
     MENU_ITEM_EDIT(bool, "Endstop abort", &abort_on_endstop_hit);
 #endif
@@ -577,7 +577,7 @@ void lcd_sdcard_menu()
     }else{
         MENU_ITEM(function, LCD_STR_FOLDER "..", lcd_sd_updir);
     }
-    
+
     for(uint16_t i=0;i<fileCnt;i++)
     {
         if (_menuItemNr == _lineNr)
@@ -692,8 +692,8 @@ void lcd_init()
 
 #ifdef NEWPANEL
     pinMode(BTN_EN1,INPUT);
-    pinMode(BTN_EN2,INPUT); 
-    pinMode(BTN_ENC,INPUT); 
+    pinMode(BTN_EN2,INPUT);
+    pinMode(BTN_ENC,INPUT);
     pinMode(SDCARDDETECT,INPUT);
     WRITE(BTN_EN1,HIGH);
     WRITE(BTN_EN2,HIGH);
@@ -704,7 +704,7 @@ void lcd_init()
     pinMode(SHIFT_EN,OUTPUT);
     pinMode(SHIFT_OUT,INPUT);
     WRITE(SHIFT_OUT,HIGH);
-    WRITE(SHIFT_LD,HIGH); 
+    WRITE(SHIFT_LD,HIGH);
     WRITE(SHIFT_EN,LOW);
 #endif//!NEWPANEL
 #if (SDCARDDETECT > -1)
@@ -718,16 +718,16 @@ void lcd_init()
 void lcd_update()
 {
     static unsigned long timeoutToStatus = 0;
-    
+
     lcd_buttons_update();
-    
+
     #if (SDCARDDETECT > -1)
     if((IS_SD_INSERTED != lcd_oldcardstatus))
     {
         lcdDrawUpdate = 2;
         lcd_oldcardstatus = IS_SD_INSERTED;
         lcd_implementation_init(); // to maybe revive the lcd if static electricty killed it.
-        
+
         if(lcd_oldcardstatus)
         {
             card.initsd();
@@ -740,7 +740,7 @@ void lcd_update()
         }
     }
     #endif//CARDINSERTED
-    
+
     if (lcd_next_update_millis < millis())
     {
 #ifdef ULTIPANEL
@@ -754,7 +754,7 @@ void lcd_update()
         if (LCD_CLICKED)
             timeoutToStatus = millis() + LCD_TIMEOUT_TO_STATUS;
 #endif//ULTIPANEL
-        
+
         (*currentMenu)();
 #ifdef ULTIPANEL
         if(timeoutToStatus < millis() && currentMenu != lcd_status_screen)
@@ -815,7 +815,7 @@ void lcd_buttons_update()
     WRITE(SHIFT_LD,HIGH);
     unsigned char tmp_buttons=0;
     for(int8_t i=0;i<8;i++)
-    { 
+    {
         newbutton = newbutton>>1;
         if(READ(SHIFT_OUT))
             newbutton|=(1<<7);
