@@ -3,6 +3,7 @@
 ## Manual unstructured merging
 I use the Eclipse C IDE to launch inside RCPTT, this will be referred to as the AUT (application under test), since RCPTT is really a testing tool.
 The setup instructions are shown [here](https://www.youtube.com/watch?v=prXLW38mk8g) if you prefer a video. Point 6 is not included in the video though.
+
 1. Download Eclipse [RCPTT](http://www.eclipse.org/rcptt/download/).
 2. Launch RCPTT
 3. Select a workspace for RCPTT
@@ -14,12 +15,14 @@ The setup instructions are shown [here](https://www.youtube.com/watch?v=prXLW38m
 9. This new application will be added to the same panel. Right click it, and select "Run". Save any changes to files. The AUT will be launched.
 
 Recording actions in the AUT:
+
 1. Ensure that the AUT is running through RCPTT, as above.
 2. In the RCPTT instance, open your test case. In the upper left, there is a "Record" button. Press it to start recording.
 3. The RCPTT instance will minimize, and action in the AUT is recorded.
 4. To stop recording, press the red circle in the RCPTT instance.
 
 Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/how-do-i-compare-two-files-using-eclipse-is-there-any-option-provided-by-eclips):
+
 1. Start recording as above.
 2. Select the mainline file and the clone file you want to merge.
 3. Right click and select Compare With -> Each other.
@@ -28,5 +31,6 @@ Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/ho
 6. Stop recording and save the script so we can analyze the edit operations.
 
 ## MPS
+
 1. Import into ppmerge
 2. Open in MPS
