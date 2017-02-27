@@ -85,10 +85,8 @@
 //============================= public variables ============================
 //===========================================================================
 
-#if defined(FORK) || defined(K1)
 #define K2 ( 1.0 - K1 )
 
-#endif
 
 // Sampling period of the temperature routine
 #if defined(PID_dT)
@@ -159,13 +157,7 @@ static volatile bool temp_meas_ready = false;
 	static unsigned long  previous_millis_bed_heater;
 #endif
   static unsigned char soft_pwm[EXTRUDERS];
-#if HAS_AUTO_FAN
-#if defined(FORK)
-    (defined(EXTRUDER_1_AUTO_FAN_PIN) && EXTRUDER_1_AUTO_FAN_PIN > -1) || \
-    (defined(EXTRUDER_2_AUTO_FAN_PIN) && EXTRUDER_2_AUTO_FAN_PIN > -1)
-#endif
   static unsigned long extruder_autofan_last_check;
-#endif
 
 
 #if defined(PIDTEMP)
@@ -275,17 +267,11 @@ void PID_autotune(float temp, int extruder, int ncycles)
       max = max(max, input);
       min = min(min, input);
 
-#if defined(FORK) || HAS_AUTO_FAN
+#if HAS_AUTO_FAN
         if (ms > extruder_autofan_last_check + 2500) {
           checkExtruderAutoFans();
           extruder_autofan_last_check = ms;
         }
-#endif
-#if defined(FORK)
-      if(heating == true && input > temp) {
-        if(millis() - t2 > 5000) { 
-          heating=false;
-          if (extruder<0)
 #endif
 
       if (heating == true && input > temp) {
@@ -395,7 +381,7 @@ void updatePID() {
       temp_iState_max[e] = PID_INTEGRAL_DRIVE_MAX / PID_PARAM(Ki,e);
     }
 #endif
-#if defined(PIDTEMPBED)
+#if PIDTEMPBED
     temp_iState_max_bed = PID_INTEGRAL_DRIVE_MAX / bedKi;
 #endif
 }
@@ -426,14 +412,11 @@ void checkExtruderAutoFans()
 //
 // Error checking and Write Routines
 //
-#if !defined(FORK)
 #if !HAS_HEATER_
   ////#error HEATER_0_PIN not defined for this board
 #endif
-#endif
 #define WRITE_HEATER_0P(v) WRITE ( HEATER_0_PIN , v )
 
-#if !defined(FORK)
 #if EXTRUDERS > 1 || defined(HEATERS_PARALLEL)
 #if !HAS_HEATER_1
     ////#error HEATER_1_PIN not defined for this board
@@ -455,7 +438,6 @@ void checkExtruderAutoFans()
 #endif
 #endif
 #endif
-#endif
 #if defined(HEATERS_PARALLEL)
 #define WRITE_HEATER_0(v) { WRITE_HEATER_0P ( v ) ; WRITE_HEATER_1 ( v ) ; }
 
@@ -463,7 +445,6 @@ void checkExtruderAutoFans()
 #define WRITE_HEATER_0(v) WRITE_HEATER_0P ( v )
 
 #endif
-#if !defined(FORK)
 #if HAS_HEATER_BED
 #define WRITE_HEATER_BED(v) WRITE ( HEATER_BED_PIN , v )
 
@@ -504,11 +485,9 @@ void bed_max_temp_error(void) {
 }
 
 float get_pid_output(int e) {
-#endif
   float pid_output;
 #if defined(PIDTEMP)
-#if defined(FORK) || !defined(PID_OPENLOOP)
-#if !defined(FORK)
+#if PID_OPENLOOP
       pid_error[e] = target_temperature[e] - current_temperature[e];
       if (pid_error[e] > PID_FUNCTIONAL_RANGE) {
         pid_output = BANG_MAX;
@@ -527,9 +506,7 @@ float get_pid_output(int e) {
         temp_iState[e] += pid_error[e];
         temp_iState[e] = constrain(temp_iState[e], temp_iState_min[e], temp_iState_max[e]);
         iTerm[e] = PID_PARAM(Ki,e) * temp_iState[e];
-#endif
 
-#if !defined(FORK)
         dTerm[e] = K2 * PID_PARAM(Kd,e) * (current_temperature[e] - temp_dState[e]) + K1 * dTerm[e];
         pid_output = pTerm[e] + iTerm[e] - dTerm[e];
         if (pid_output > PID_MAX) {
@@ -542,13 +519,9 @@ float get_pid_output(int e) {
         }
       }
       temp_dState[e] = current_temperature[e];
-#endif
 #else
-#if !defined(FORK)
       pid_output = constrain(target_temperature[e], 0, PID_MAX);
 #endif
-#endif
-#if !defined(FORK)
 
 #if defined(PID_DEBUG)
       SERIAL_ECHO_START;
@@ -566,22 +539,16 @@ float get_pid_output(int e) {
       SERIAL_ECHOLN(dTerm[e]);
 #endif
 
-#endif
 #else
-#if !defined(FORK)
     pid_output = (current_temperature[e] < target_temperature[e]) ? PID_MAX : 0;
-#endif
 #endif
 
   return pid_output;
 }
 #if defined(PIDTEMPBED)
-#if !defined(FORK)
   float get_pid_output_bed() {
     float pid_output;
-#endif
-#if defined(FORK) || !defined(PID_OPENLOOP)
-#if !defined(FORK)
+#if PID_OPENLOOP
       pid_error_bed = target_temperature_bed - current_temperature_bed;
       pTerm_bed = bedKp * pid_error_bed;
       temp_iState_bed += pid_error_bed;
@@ -600,17 +567,12 @@ float get_pid_output(int e) {
         if (pid_error_bed < 0) temp_iState_bed -= pid_error_bed; // conditional un-integration
         pid_output = 0;
       }
-#endif
 #else
-#if !defined(FORK)
       pid_output = constrain(target_temperature_bed, 0, MAX_BED_POWER);
 #endif
-#endif
-#if !defined(FORK)
 
     return pid_output;
   }
-#endif
 #endif
 
 void manage_heater() {
@@ -698,9 +660,7 @@ void manage_heater() {
       float pid_output = get_pid_output_bed();
 
       soft_pwm_bed = current_temperature_bed > BED_MINTEMP && current_temperature_bed < BED_MAXTEMP ? (int)pid_output >> 1 : 0;
-#if !defined(FORK) || !defined(PID_OPENLOOP)
 
-#endif
 #else
       if (current_temperature_bed > BED_MINTEMP && current_temperature_bed < BED_MAXTEMP) {
         if (current_temperature_bed >= target_temperature_bed + BED_HYSTERESIS)
@@ -712,9 +672,7 @@ void manage_heater() {
 #endif
 #endif
 
-#if !defined(FORK)
   // Control the extruder rate based on the width sensor
-#endif
 #if defined(FILAMENT_SENSOR)
     if (filament_sensor) {
       meas_shift_index = delay_index1 - meas_delay_cm;
@@ -734,12 +692,10 @@ void manage_heater() {
 // Derived from RepRap FiveD extruder::getTemperature()
 // For hot end temperature measurement.
 static float analog2temp(int raw, uint8_t e) {
-#if !defined(FORK)
 #if defined(TEMP_SENSOR_)
   if (e > EXTRUDERS)
 #else
   if (e >= EXTRUDERS)
-#endif
 #endif
   {
       SERIAL_ERROR_START;
@@ -812,19 +768,15 @@ static float analog2tempBed(int raw) {
 /* Called to get the raw values into the the actual temperatures. The raw values are created in interrupt context,
     and this function is called from normal context as it is too slow to run in interrupts and will block the stepper routine otherwise */
 static void updateTemperaturesFromRawValues() {
-#if !defined(FORK)
 #if defined(HEATER_)
     current_temperature_raw[0] = read_max6675();
-#endif
 #endif
   for(uint8_t e = 0; e < EXTRUDERS; e++) {
     current_temperature[e] = analog2temp(current_temperature_raw[e], e);
   }
   current_temperature_bed = analog2tempBed(current_temperature_bed_raw);
-#if !defined(FORK)
 #if defined(TEMP_SENSOR_)
     redundant_temperature = analog2temp(redundant_temperature_raw, 1);
-#endif
 #endif
 #if HAS_FILAMENT_SENSOR
     filament_width_meas = analog2widthFil();
@@ -861,12 +813,10 @@ static void updateTemperaturesFromRawValues() {
 
 void tp_init()
 {
-#if !defined(FORK)
 #if MB
     //disable RUMBA JTAG in case the thermocouple extension is plugged on top of JTAG connector
     MCUCR=BIT(JTD);
     MCUCR=BIT(JTD);
-#endif
 #endif
 
   // Finish init of mult extruder arrays 
@@ -1297,7 +1247,7 @@ ISR(TIMER0_COMPB_vect) {
 
       // EXTRUDER 0
       if (state_timer_heater_0 > 0) state_timer_heater_0--; 
-#if defined(FORK) || !defined(SLOW_PWM_HEATERS)
+#if NOT_SLOW_PWM_HEATERS
     /**
      * standard PWM modulation
      */
@@ -1386,7 +1336,7 @@ ISR(TIMER0_COMPB_vect) {
 #if HAS_HEATER_BED
       PWM_OFF_ROUTINE(BED); // BED
 #endif
-#if defined(FORK) || defined(FAN_SOFT_PWM)
+#if FAN_SOFT_PWM
       if (pwm_count == 0) {
         soft_pwm_fan = fanSpeedSoftPwm / 2;
         WRITE_FAN(soft_pwm_fan > 0 ? 1 : 0);
@@ -1411,7 +1361,6 @@ ISR(TIMER0_COMPB_vect) {
 
 #define SET_ADMUX_ADCSRA(pin) ADMUX = BIT ( REFS0 ) | ( pin & 0x07 ) ; ADCSRA |= BIT ( ADSC )
 
-#if !defined(FORK)
 #if defined(MUX)
 #define START_ADC(pin) if ( pin > 7 ) ADCSRB = BIT ( MUX5 ) ; else ADCSRB = 0 ; SET_ADMUX_ADCSRA ( pin )
 
@@ -1419,14 +1368,11 @@ ISR(TIMER0_COMPB_vect) {
 #define START_ADC(pin) ADCSRB = 0 ; SET_ADMUX_ADCSRA ( pin )
 
 #endif
-#endif
 
   switch(temp_state) {
     case PrepareTemp_0:
-#if !defined(FORK)
 #if HAS_TEMP_
         START_ADC(TEMP_0_PIN);
-#endif
 #endif
       temp_state = MeasureTemp_0;
       break;
@@ -1578,15 +1524,13 @@ ISR(TIMER0_COMPB_vect) {
   }
     /* No bed MINTEMP error? */
 #if defined(BED_MAXTEMP)
-#if !defined(FORK)
       if (current_temperature_bed_raw MAXTEST bed_maxttemp_raw) {
           target_temperature_bed = 0;
           bed_max_temp_error();
         }
 #endif
-#endif
   } // temp_count >= OVERSAMPLENR
-#if defined(FORK) || defined(BABYSTEPPING)
+#if BABYSTEPPING
     for (uint8_t axis=X_AXIS; axis<=Z_AXIS; axis++) {
       int curTodo=babystepsTodo[axis]; //get rid of volatile for performance
 
