@@ -43,6 +43,9 @@
 ////#include "Servo.h"
 #endif
 
+#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > 1
+////#include <SPI.h>
+#endif
 
 #define VERSION_STRING "1.0.0"
 
@@ -102,12 +105,10 @@
 // M115 - Capabilities string
 // M117 - display message
 // M119 - Output Endstop status to serial port
-#if !defined(FORK)
 // M126 - Solenoid Air Valve Open (BariCUDA support by jmil)
 // M127 - Solenoid Air Valve Closed (BariCUDA vent to atmospheric pressure by jmil)
 // M128 - EtoP Open (BariCUDA EtoP = electricity to air pressure transducer by jmil)
 // M129 - EtoP Closed (BariCUDA EtoP = electricity to air pressure transducer by jmil)
-#endif
 // M140 - Set bed target temp
 // M190 - Wait for bed current temp to reach target temp.
 // M200 - Set filament diameter
@@ -124,10 +125,8 @@
 // M220 S<factor in percent>- set speed factor override percentage
 // M221 S<factor in percent>- set extrude factor override percentage
 // M240 - Trigger a camera to take a photograph
-#if !defined(FORK)
 // M280 - set servo position absolute. P: servo index, S: angle or microseconds
 // M300 - Play beepsound S<frequency Hz> P<duration ms>
-#endif
 // M301 - Set PID parameters P I and D
 // M302 - Allow cold extrudes, or set the minimum extrude S<temperature>.
 // M303 - PID relay autotune S<temperature> sets the target temperature. (default target temperature = 150C)
@@ -137,10 +136,8 @@
 // M501 - reads parameters from EEPROM (if you need reset them after you changed them temporarily).
 // M502 - reverts to the default "factory settings".  You still need to store them in EEPROM afterwards if you want to.
 // M503 - print the current settings (from memory not from eeprom)
-#if !defined(FORK)
 // M540 - Use S[0|1] to enable or disable the stop SD card print on endstop hit (requires ABORT_ON_ENDSTOP_HIT_FEATURE_ENABLED)
 // M600 - Pause for filament change X[pos] Y[pos] Z[relative lift] E[initial retract] L[later retract distance for removal]
-#endif
 // M907 - Set digital trimpot motor current using axis codes.
 // M908 - Control digital trimpot directly.
 // M350 - Set microstepping mode.
@@ -308,15 +305,24 @@ void enquecommand_P(const char *cmd)
 
 void setup_killpin()
 {
+#if defined(KILL_PIN) && KILL_PIN > 1
+    pinMode(KILL_PIN,INPUT);
+    WRITE(KILL_PIN,HIGH);
+#endif
 }
 
 void setup_photpin()
 {
+#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > 1
+#if PHOTOGRAPH_PIN > -1
+    SET_OUTPUT(PHOTOGRAPH_PIN);
+    WRITE(PHOTOGRAPH_PIN, LOW);
+#endif
+#endif
 }
 
 void setup_powerhold()
 {
-#if !defined(FORK)
 #if defined(SUICIDE_PIN) && SUICIDE_PIN > 1
     SET_OUTPUT(SUICIDE_PIN);
     WRITE(SUICIDE_PIN, HIGH);
@@ -325,37 +331,32 @@ void setup_powerhold()
     SET_OUTPUT(PS_ON_PIN);
     WRITE(PS_ON_PIN, PS_ON_AWAKE);
 #endif
-#endif
 }
 
 void suicide()
 {
-#if !defined(FORK)
-#if defined(SUICIDE_PIN) && SUICIDE_PIN > 1
+#if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
     SET_OUTPUT(SUICIDE_PIN);
     WRITE(SUICIDE_PIN, LOW);
-#endif
 #endif
 }
 
 void servo_init()
 {
-#if !defined(FORK)
-#if NUM_SERVOS > 1
+#if (NUM_SERVOS >= 1) && defined(SERVO0_PIN) && (SERVO0_PIN > -1)
     servos[0].attach(SERVO0_PIN);
 #endif
-#if NUM_SERVOS > 2
+#if (NUM_SERVOS >= 2) && defined(SERVO1_PIN) && (SERVO1_PIN > -1)
     servos[1].attach(SERVO1_PIN);
 #endif
-#if NUM_SERVOS > 3
+#if (NUM_SERVOS >= 3) && defined(SERVO2_PIN) && (SERVO2_PIN > -1)
     servos[2].attach(SERVO2_PIN);
 #endif
-#if NUM_SERVOS > 4
+#if (NUM_SERVOS >= 4) && defined(SERVO3_PIN) && (SERVO3_PIN > -1)
     servos[3].attach(SERVO3_PIN);
 #endif
-#if NUM_SERVOS > 5
+#if NUM_SERVOS >= 5
     ////#error "TODO: enter initalisation code for more servos"
-#endif
 #endif
 
   // Set position of Servo Endstops that are defined
@@ -442,16 +443,23 @@ void loop()
 #if defined(SDSUPPORT)
       if(card.saving)
       {
-	if(strstr_P(cmdbuffer[bufindr], PSTR("M29")) == NULL)
-	{
-	  card.write_command(cmdbuffer[bufindr]);
-	  SERIAL_PROTOCOLLNPGM(MSG_OK);
-	}
-	else
-	{
-	  card.closefile();
-	  SERIAL_PROTOCOLLNPGM(MSG_FILE_SAVED);
-	}
+        if(strstr_P(cmdbuffer[bufindr], PSTR("M29")) == NULL)
+        {
+          card.write_command(cmdbuffer[bufindr]);
+          if(card.logging)
+          {
+            process_commands();
+          }
+          else
+          {
+            SERIAL_PROTOCOLLNPGM(MSG_OK);
+          }
+        }
+        else
+        {
+          card.closefile();
+          SERIAL_PROTOCOLLNPGM(MSG_FILE_SAVED);
+        }
       }
       else
       {
@@ -684,7 +692,7 @@ static void homeaxis(int axis) {
 
     current_position[axis] = 0;
     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
-    destination[axis] = 1.5 * max_length(axis) * home_dir(axis);
+    destination[axis] = 3 * Z_MAX_LENGTH;
     feedrate = homing_feedrate[axis];
     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
     st_synchronize();
@@ -704,12 +712,10 @@ static void homeaxis(int axis) {
     destination[axis] = current_position[axis];
     feedrate = 0.0;
     endstops_hit_on_purpose();
-#if !defined(FORK)
 
     // Retract Servo endstop if enabled
 #if defined(SERVO_ENDSTOPS)
       servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2 + 1]);
-#endif
 #endif
   }
 }
@@ -803,7 +809,8 @@ void process_commands()
         destination[i] = current_position[i];
       }
       feedrate = 0.0;
-      home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])));
+      home_all_axis = !((code_seen(axis_codes[0])) || (code_seen(axis_codes[1])) || (code_seen(axis_codes[2])))
+                    || ((code_seen(axis_codes[0])) && (code_seen(axis_codes[1])) && (code_seen(axis_codes[2])));
 
 #if Z_HOME_DIR > 0
       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
@@ -814,8 +821,14 @@ void process_commands()
 #if defined(QUICK_HOME)
       if (home_all_axis)  // Move all carriages up together until the first endstop is hit.
       {
-        current_position[X_AXIS] = 0;current_position[Y_AXIS] = 0;
+        current_position[X_AXIS] = 0;
+        current_position[Y_AXIS] = 0;
+        current_position[Z_AXIS] = 0;
         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
+        destination[X_AXIS] = 1.5 * X_MAX_LENGTH * X_HOME_DIR;destination[Y_AXIS] = 1.5 * Y_MAX_LENGTH * Y_HOME_DIR;
+        feedrate = homing_feedrate[X_AXIS];
+        if(homing_feedrate[Y_AXIS]<feedrate)
+          feedrate =homing_feedrate[Y_AXIS];
 
         destination[X_AXIS] = 3 * Z_MAX_LENGTH;
         destination[Y_AXIS] = 3 * Z_MAX_LENGTH;
@@ -848,9 +861,11 @@ void process_commands()
       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
         HOMEAXIS(Y);
       }
+#if 0 > Z_HOME_DIR
       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
         HOMEAXIS(Z);
       }
+#endif
 
       if(code_seen(axis_codes[X_AXIS]))
       {
@@ -870,6 +885,7 @@ void process_commands()
           current_position[Z_AXIS]=code_value()+add_homeing[2];
         }
       }
+      plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
 
 #if defined(ENDSTOPS_ONLY_FOR_HOMING)
         enable_endstops(false);
@@ -999,17 +1015,6 @@ void process_commands()
       //card,saving = false;
       break;
     case 30: //M30 <filename> Delete File
-      if (card.cardOK){
-        card.closefile();
-        starpos = (strchr(strchr_pointer + 4,'*'));
-        if(starpos != NULL){
-          char* npos = strchr(cmdbuffer[bufindr], 'N');
-          strchr_pointer = strchr(npos,' ') + 1;
-          *(starpos-1) = '\0';
-        }
-        card.removeFile(strchr_pointer + 4);
-      }
-      break;
     case 928: //M928 - Start SD write
       starpos = (strchr(strchr_pointer + 5,'*'));
       if(starpos != NULL){
@@ -1019,6 +1024,17 @@ void process_commands()
       }
       card.openLogFile(strchr_pointer+5);
       break;
+	if (card.cardOK){
+		card.closefile();
+		starpos = (strchr(strchr_pointer + 4,'*'));
+                if(starpos != NULL){
+                char* npos = strchr(cmdbuffer[bufindr], 'N');
+                strchr_pointer = strchr(npos,' ') + 1;
+                *(starpos-1) = '\0';
+         }
+	 card.removeFile(strchr_pointer + 4);
+	}
+	break;
 
 #endif
 
@@ -1052,7 +1068,7 @@ void process_commands()
             break;
           }
         }
-#if defined(FAN_PIN) && FAN_PIN > -1
+#if defined(FAN_PIN) && FAN_PIN > 1
         if (pin_number == FAN_PIN)
           fanSpeed = pin_status;
 #endif
@@ -1077,21 +1093,21 @@ void process_commands()
     case 105 : // M105
       if(setTargetedHotend(105)){
         break;
-        }
-#if (defined(FORK) || defined(TEMP_0_PIN) && TEMP_0_PIN > -1) && (!defined(FORK) || TEMP_0_PIN > -1)
-#else
-        SERIAL_ERROR_START;
-        SERIAL_ERRORLNPGM(MSG_ERR_NO_THERMISTORS);
-#endif
+      }
+#if defined(TEMP_0_PIN) && TEMP_0_PIN > -1
         SERIAL_PROTOCOLPGM("ok T:");
         SERIAL_PROTOCOL_F(degHotend(tmp_extruder),1);
         SERIAL_PROTOCOLPGM(" /");
         SERIAL_PROTOCOL_F(degTargetHotend(tmp_extruder),1);
-#if (defined(FORK) || defined(TEMP_0_PIN) && TEMP_0_PIN > -1) && (!defined(FORK) || TEMP_0_PIN > -1)
+#if TEMP_BED_PIN > 1
           SERIAL_PROTOCOLPGM(" B:");
           SERIAL_PROTOCOL_F(degBed(),1);
           SERIAL_PROTOCOLPGM(" /");
           SERIAL_PROTOCOL_F(degTargetBed(),1);
+#endif
+#else
+        SERIAL_ERROR_START;
+        SERIAL_ERRORLNPGM(MSG_ERR_NO_THERMISTORS);
 #endif
 
         SERIAL_PROTOCOLPGM(" @:");
@@ -1180,11 +1196,47 @@ void process_commands()
       }
       break;
     case 190: // M190 - Wait for bed heater to reach target.
+#if TEMP_BED_PIN > 1
+        LCD_MESSAGEPGM(MSG_BED_HEATING);
+        if (code_seen('S')) setTargetBed(code_value());
+        codenum = millis();
+        while(isHeatingBed())
+        {
+          if(( millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
+          {
+            float tt=degHotend(active_extruder);
+            SERIAL_PROTOCOLPGM("T:");
+            SERIAL_PROTOCOL(tt);
+            SERIAL_PROTOCOLPGM(" E:");
+            SERIAL_PROTOCOL((int)active_extruder);
+            SERIAL_PROTOCOLPGM(" B:");
+            SERIAL_PROTOCOL_F(degBed(),1);
+            SERIAL_PROTOCOLLN("");
+            codenum = millis();
+          }
+          manage_heater();
+          manage_inactivity();
+          lcd_update();
+        }
+        LCD_MESSAGEPGM(MSG_BED_DONE);
+        previous_millis_cmd = millis();
+#endif
         break;
-#if defined(FORK) || defined(BARICUDA)
+#if FAN_PIN > 1
+      case 106: //M106 Fan On
+        if (code_seen('S')){
+           fanSpeed=constrain(code_value(),0,255);
+        }
+        else {
+          fanSpeed=255;
+        }
+        break;
+      case 107: //M107 Fan Off
+        fanSpeed = 0;
+        break;
+#endif
       // PWM for HEATER_1_PIN
-#if !defined(FORK)
-#if defined(HEATER_)
+#if defined(HEATER_1_PIN) && HEATER_1_PIN > -1
         case 126: //M126 valve open
           if (code_seen('S')){
              ValvePressure=constrain(code_value(),0,255);
@@ -1197,12 +1249,10 @@ void process_commands()
           ValvePressure = 0;
           break;
 #endif
-#endif
-#endif
 
-#if defined(FORK) || defined(BARICUDA)
+#if defined(BARICUDA)
       // PWM for HEATER_2_PIN
-#if defined(HEATER_2_PIN) && HEATER_2_PIN > -1
+#if defined(HEATER_)
         case 128: //M128 valve open
           if (code_seen('S')){
              EtoPPressure=constrain(code_value(),0,255);
@@ -1217,9 +1267,9 @@ void process_commands()
 #endif
 #endif
 
+#if PS_ON_PIN > 1
       case 80: // M80 - ATX Power On
         SET_OUTPUT(PS_ON_PIN); //GND
-#if (defined(FORK) || defined(PS_ON_PIN) && PS_ON_PIN > -1) && (!defined(FORK) || PS_ON_PIN > -1)
         WRITE(PS_ON_PIN, LOW);
         break;
 #endif
@@ -1327,6 +1377,30 @@ void process_commands()
       enable_endstops(true) ;
       break;
     case 119: // M119
+#if X_MAX_PIN > 1
+        SERIAL_PROTOCOLPGM(MSG_X_MIN);
+        SERIAL_PROTOCOLLN(((READ(X_MIN_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
+#if Y_MIN_PIN > 1
+        SERIAL_PROTOCOLPGM(MSG_X_MAX);
+        SERIAL_PROTOCOLLN(((READ(X_MAX_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
+#if Y_MAX_PIN > 1
+        SERIAL_PROTOCOLPGM(MSG_Y_MIN);
+        SERIAL_PROTOCOLLN(((READ(Y_MIN_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
+#if Z_MIN_PIN > 1
+        SERIAL_PROTOCOLPGM(MSG_Y_MAX);
+        SERIAL_PROTOCOLLN(((READ(Y_MAX_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
+#if Z_MAX_PIN > 1
+        SERIAL_PROTOCOLPGM(MSG_Z_MIN);
+        SERIAL_PROTOCOLLN(((READ(Z_MIN_PIN)^Z_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
+#if defined(Z_MAX_PIN) && Z_MAX_PIN > -1
+        SERIAL_PROTOCOLPGM(MSG_Z_MAX);
+        SERIAL_PROTOCOLLN(((READ(Z_MAX_PIN)^Z_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
+#endif
       break;
       //TODO: update for all axis, use for loop
     case 201: // M201
@@ -1515,47 +1589,23 @@ void process_commands()
     case 301: // M301
       {
         if(code_seen('P')) Kp = code_value();
-#if !defined(FORK)
-        if(code_seen('I')) Ki = scalePID_i(code_value());
-        if(code_seen('D')) Kd = scalePID_d(code_value());
-#else
         if(code_seen('I')) Ki = code_value()*PID_dT;
         if(code_seen('D')) Kd = code_value()/PID_dT;
-#endif
 #if defined(PID_ADD_EXTRUSION_RATE)
         if(code_seen('C')) Kc = code_value();
 #endif
-#if !defined(FORK)
 
-#endif
         updatePID();
         SERIAL_PROTOCOL(MSG_OK);
-#if !defined(FORK)
-        SERIAL_PROTOCOL(" p:");
-#else
 		SERIAL_PROTOCOL(" p:");
-#endif
         SERIAL_PROTOCOL(Kp);
         SERIAL_PROTOCOL(" i:");
-#if !defined(FORK)
-        SERIAL_PROTOCOL(unscalePID_i(Ki));
-#else
         SERIAL_PROTOCOL(Ki/PID_dT);
-#endif
         SERIAL_PROTOCOL(" d:");
-#if !defined(FORK)
-        SERIAL_PROTOCOL(unscalePID_d(Kd));
-#else
         SERIAL_PROTOCOL(Kd*PID_dT);
-#endif
 #if defined(PID_ADD_EXTRUSION_RATE)
         SERIAL_PROTOCOL(" c:");
-#if !defined(FORK)
-        //Kc does not have scaling applied above, or in resetting defaults
-        SERIAL_PROTOCOL(Kc);
-#else
         SERIAL_PROTOCOL(Kc*PID_dT);
-#endif
 #endif
         SERIAL_PROTOCOLLN("");
       }
@@ -1565,33 +1615,16 @@ void process_commands()
     case 304: // M304
       {
         if(code_seen('P')) bedKp = code_value();
-#if !defined(FORK)
-        if(code_seen('I')) bedKi = scalePID_i(code_value());
-        if(code_seen('D')) bedKd = scalePID_d(code_value());
-#else
         if(code_seen('I')) bedKi = code_value()*PID_dT;
         if(code_seen('D')) bedKd = code_value()/PID_dT;
-#endif
         updatePID();
         SERIAL_PROTOCOL(MSG_OK);
-#if !defined(FORK)
-        SERIAL_PROTOCOL(" p:");
-#else
 		SERIAL_PROTOCOL(" p:");
-#endif
         SERIAL_PROTOCOL(bedKp);
         SERIAL_PROTOCOL(" i:");
-#if !defined(FORK)
-        SERIAL_PROTOCOL(unscalePID_i(bedKi));
-#else
         SERIAL_PROTOCOL(bedKi/PID_dT);
-#endif
         SERIAL_PROTOCOL(" d:");
-#if !defined(FORK)
-        SERIAL_PROTOCOL(unscalePID_d(bedKd));
-#else
         SERIAL_PROTOCOL(bedKd*PID_dT);
-#endif
         SERIAL_PROTOCOLLN("");
       }
       break;
@@ -1616,18 +1649,12 @@ void process_commands()
 #endif
      }
     break;
-#if defined(FORK) || defined(PREVENT_DANGEROUS_EXTRUDE)
-    case 302: // allow cold extrudes, or set the minimum extrude temperature
+
+    case 302: // allow cold extrudes
     {
-	  float temp = .0;
-	  if (code_seen('S')) temp=code_value();
-      set_extrude_min_temp(temp);
     }
     break;
-#endif
-#if defined(FORK)
       allow_cold_extrudes(true);
-#endif
     case 303: // M303 PID autotune
     {
       float temp = 150.0;
@@ -1800,21 +1827,27 @@ void process_commands()
 #endif
     case 907: // M907 Set digital trimpot motor current using axis codes.
     {
-#if (defined(FORK) || defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1) && (!defined(FORK) || DIGIPOTSS_PIN > -1)
+#if DIGIPOTSS_PIN > 1
         for(int i=0;i<=NUM_AXIS;i++) if(code_seen(axis_codes[i])) digipot_current(i,code_value());
-#endif
         if(code_seen('B')) digipot_current(4,code_value());
         if(code_seen('S')) for(int i=0;i<=4;i++) digipot_current(i,code_value());
+#endif
     }
     break;
     case 908: // M908 Control digital trimpot directly.
     {
+#if DIGIPOTSS_PIN > 1
+        uint8_t channel,current;
+        if(code_seen('P')) channel=code_value();
+        if(code_seen('S')) current=code_value();
+        digitalPotWrite(channel, current);
+#endif
     }
     break;
     case 350: // M350 Set microstepping mode. Warning: Steps per unit remains unchanged. S code sets stepping mode for all drivers.
     {
+#if defined(X_MS1_PIN && X_MS1_PIN > -1
         if(code_seen('S')) for(int i=0;i<=4;i++) microstep_mode(i,code_value());
-#if (defined(FORK) || defined(X_MS1_PIN) && X_MS1_PIN > -1) && (!defined(FORK) || X_MS1_PIN > -1)
         for(int i=0;i<=NUM_AXIS;i++) if(code_seen(axis_codes[i])) microstep_mode(i,(uint8_t)code_value());
         if(code_seen('B')) microstep_mode(4,code_value());
         microstep_readings();
@@ -1822,7 +1855,7 @@ void process_commands()
     }
     break;
     case 351: // M351 Toggle MS1 MS2 pins directly, S# determines MS1 or MS2, X# sets the pin high/low.
-#if defined(X_MS1_PIN) && X_MS1_PIN > -1
+#if defined(X_MS)
       if(code_seen('S')) switch((int)code_value())
       {
         case 1:
@@ -1857,34 +1890,7 @@ void process_commands()
       SERIAL_ECHOLN(MSG_INVALID_EXTRUDER);
     }
     else {
-      boolean make_move = false;
-      if(code_seen('F')) {
-        make_move = true;
-        next_feedrate = code_value();
-        if(next_feedrate > 0.0) {
-          feedrate = next_feedrate;
-        }
-      }
-#if EXTRUDERS > 1
-      if(tmp_extruder != active_extruder) {
-        // Save current position to return to after applying extruder offset
-        memcpy(destination, current_position, sizeof(destination));
-        // Offset extruder (only by XY)
-        int i;
-        for(i = 0; i < 2; i++) {
-           current_position[i] = current_position[i] -
-                                 extruder_offset[i][active_extruder] +
-                                 extruder_offset[i][tmp_extruder];
-        }
-        // Set the new active extruder and position
-        active_extruder = tmp_extruder;
-        plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
-        // Move to the old position if 'F' was in the parameters
-        if(make_move && Stopped == false) {
-           prepare_move();
-        }
-      }
-#endif
+      active_extruder = tmp_extruder;
       SERIAL_ECHO_START;
       SERIAL_ECHO(MSG_ACTIVE_EXTRUDER);
       SERIAL_PROTOCOLLN((int)active_extruder);
