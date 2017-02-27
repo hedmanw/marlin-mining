@@ -32,4 +32,9 @@ _No diffs._
 * _Integration_ Feature AT90USB missing: 638
 * _Tech_ If-block moved: 339
 * _Tech_ Block from inside if moved out above it: 656
-* _Tech_ Block moved below where it should be: 1104
+* _Tech_ Block moved: 1104
+
+### Sums
+
+* Integration: 2 + 12
+* Tech: 1 + 3 + 1 (elif)
