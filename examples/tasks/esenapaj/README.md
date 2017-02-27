@@ -29,7 +29,7 @@ Numbers indicate the line numbers of the MPS result, when diffed with the Eclips
 Cross-referenced with parents and task description to derive what went wrong.
 
 `Marlin_main.cpp`
-* _Diff_ Inverted order of blocks in an exclusive: all
+* _Integration_ Inverted order of blocks in an exclusive: all
 * _Diff_ Correctly inserted exclusive intention that was missing in Eclipse: 2929, 7876, 7964
 * _Tech/Integration_ Block completely missing: 8158 (exists in both parents!)
 * _Tech_ Else-branch contents moved up to before if-statement: 760, 3310, 4629, 4751
@@ -46,6 +46,6 @@ Cross-referenced with parents and task description to derive what went wrong.
 
 `ultralcd.cpp`
 * _Diff_ Correcltly integrated macro that was missing in Eclipse: 255
-* _Diff_ inserted exclusive intention that was not in Eclipse: 1486
+* _Diff_ Inserted exclusive intention that was not in Eclipse: 1486
 * _Tech_ If-block moved below else-block: 864, 1005, 1027, 2088
 * _Tech_ If-block moved inside switch-statement in the else-branch: 1527

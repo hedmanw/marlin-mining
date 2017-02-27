@@ -29,7 +29,7 @@ _No diffs._
 
 `stepper.cpp`
 * _Integration_ Fork artifact still present: 138, 239, 380, 399, 412, 438, 640, 828, 848, 866, 1087
-* _Diff_ Feature AT90USB missing: 638
+* _Integration_ Feature AT90USB missing: 638
 * _Tech_ If-block moved: 339
 * _Tech_ Block from inside if moved out above it: 656
 * _Tech_ Block moved below where it should be: 1104
