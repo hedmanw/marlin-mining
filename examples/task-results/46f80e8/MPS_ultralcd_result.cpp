@@ -16,19 +16,6 @@
 
   ////#include <LiquidCrystal.h>
   extern LiquidCrystal lcd;
-
-
-
-    //atomatic, do not change
-
-
-
-
-
-
-
-
-
 #if defined(NEWPANEL)
 #define EN_C ( 1 << BLEN_C )
 
@@ -47,6 +34,7 @@
 #define B_DW ( 1 << BL_DW )
 #define B_RI ( 1 << BL_RI )
 #define B_ST ( 1 << BL_ST )
+
 #define EN_B ( 1 << BLEN_B )
 #define EN_A ( 1 << BLEN_A )
 #define CLICKED ( ( buttons & B_MI ) || ( buttons & B_ST ) )
@@ -107,9 +95,7 @@
 
 #endif
 
-#if !defined(FORK)
 void lcd_statuspgm(const char* message);
-#endif
 
 #if defined(FORK)
 

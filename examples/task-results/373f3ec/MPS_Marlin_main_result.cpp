@@ -39,11 +39,13 @@
 ////#include "ConfigurationStore.h"
 ////#include "language.h"
 ////#include "pins_arduino.h"
-#if NUM_SERVOS > 0/
+#if NUM_SERVOS > 0
 ////#include "Servo.h"
 #endif
 
+#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
 ////#include <SPI.h>
+#endif
 
 #define VERSION_STRING "1.0.0"
 
@@ -166,7 +168,7 @@ float add_homeing[3]={0,0,0};
 float min_pos[3] = { X_MIN_POS, Y_MIN_POS, Z_MIN_POS };
 float max_pos[3] = { X_MAX_POS, Y_MAX_POS, Z_MAX_POS };
 // Extruder offset, only in XY plane
-#if EXTRUDERS > 1f
+#if EXTRUDERS > 1
 float extruder_offset[2][EXTRUDERS] = {
 #if defined(EXTRUDER_OFFSET_X) && defined(EXTRUDER_OFFSET_Y)
   EXTRUDER_OFFSET_X, EXTRUDER_OFFSET_Y
@@ -196,9 +198,6 @@ int EtoPPressure=0;
 //===========================================================================
 const char axis_codes[NUM_AXIS] = {'X', 'Y', 'Z', 'E'};
 static float destination[NUM_AXIS] = {  0.0, 0.0, 0.0, 0.0};
-#if DELTA
-static float delta[3] = {0.0, 0.0, 0.0};
-#endif
 static float offset[3] = {0.0, 0.0, 0.0};
 static bool home_all_axis = true;
 static float feedrate = 1500.0, next_feedrate, saved_feedrate;
@@ -305,7 +304,7 @@ void enquecommand_P(const char *cmd)
 
 void setup_killpin()
 {
-#if defined(KILL_PIN) && KILL_PIN > 1
+#if defined(KILL_PIN) && KILL_PIN > -1
     pinMode(KILL_PIN,INPUT);
     WRITE(KILL_PIN,HIGH);
 #endif
@@ -313,7 +312,7 @@ void setup_killpin()
 
 void setup_photpin()
 {
-#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > 1
+#if defined(PHOTOGRAPH_PIN) && PHOTOGRAPH_PIN > -1
     SET_OUTPUT(PHOTOGRAPH_PIN);
 #if PHOTOGRAPH_PIN > -1
     SET_OUTPUT(PHOTOGRAPH_PIN);
@@ -337,7 +336,7 @@ void setup_powerhold()
 
 void suicide()
 {
-#if defined(SUICIDE_PIN) && SUICIDE_PIN > 1
+#if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
     SET_OUTPUT(SUICIDE_PIN);
     WRITE(SUICIDE_PIN, LOW);
 #endif
@@ -345,19 +344,19 @@ void suicide()
 
 void servo_init()
 {
-#if NUM_SERVOS > 1
+#if (NUM_SERVOS >= 1) && defined(SERVO0_PIN) && (SERVO0_PIN > -1)
     servos[0].attach(SERVO0_PIN);
 #endif
-#if NUM_SERVOS > 2
+#if (NUM_SERVOS >= 2) && defined(SERVO1_PIN) && (SERVO1_PIN > -1)
     servos[1].attach(SERVO1_PIN);
 #endif
-#if NUM_SERVOS > 3
+#if (NUM_SERVOS >= 3) && defined(SERVO2_PIN) && (SERVO2_PIN > -1)
     servos[2].attach(SERVO2_PIN);
 #endif
-#if NUM_SERVOS > 4
+#if (NUM_SERVOS >= 4) && defined(SERVO3_PIN) && (SERVO3_PIN > -1)
     servos[3].attach(SERVO3_PIN);
 #endif
-#if NUM_SERVOS > 5
+#if NUM_SERVOS >= 5
     ////#error "TODO: enter initalisation code for more servos"
 #endif
 
@@ -656,8 +655,10 @@ bool code_seen(char code)
 
 DEFINE_PGM_READ_ANY(float,       float);
 DEFINE_PGM_READ_ANY(signed char, byte);
-#define XYZ_CONSTS_FROM_CONFIG(type, array, CONFIG) \
+#define XYZ_CONSTS_FROM_CONFIG(type, array, CONFIG) 
+
 static const PROGMEM type array ## _P [ 3 ] = { X_ ## CONFIG , Y_ ## CONFIG , Z_ ## CONFIG } ; \
+
 static inline type array ( int axis ) { return pgm_read_any ( & array ## _P [ axis ] ) ; }
 
 
@@ -676,7 +677,6 @@ static void axis_is_at_home(int axis) {
 
 static void homeaxis(int axis) {
 #define HOMEAXIS_DO(LETTER) ( ( LETTER ## _MIN_PIN > - 1 && LETTER ## _HOME_DIR == - 1 ) || ( LETTER ## _MAX_PIN > - 1 && LETTER ## _HOME_DIR == 1 ) )
-
 
   if (axis==X_AXIS ? HOMEAXIS_DO(X) :
       axis==Y_AXIS ? HOMEAXIS_DO(Y) :
@@ -818,9 +818,7 @@ void process_commands()
 #if defined(QUICK_HOME)
       if((home_all_axis)||( code_seen(axis_codes[X_AXIS]) && code_seen(axis_codes[Y_AXIS])) )  //first diagonal move
       {
-        current_position[X_AXIS] = 0;
-        current_position[Y_AXIS] = 0;
-        current_position[Z_AXIS] = 0;
+        current_position[X_AXIS] = 0;current_position[Y_AXIS] = 0;
         plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
         destination[X_AXIS] = 1.5 * X_MAX_LENGTH * X_HOME_DIR;destination[Y_AXIS] = 1.5 * Y_MAX_LENGTH * Y_HOME_DIR;
         feedrate = homing_feedrate[X_AXIS];
@@ -838,10 +836,18 @@ void process_commands()
         feedrate = 0.0;
         st_synchronize();
         endstops_hit_on_purpose();
+#if delta
 
+#endif
+#if delta
         current_position[X_AXIS] = destination[X_AXIS];
+#endif
+#if delta
         current_position[Y_AXIS] = destination[Y_AXIS];
+#endif
+#if delta
         current_position[Z_AXIS] = destination[Z_AXIS];
+#endif
       }
 #endif
 
@@ -853,9 +859,11 @@ void process_commands()
       if((home_all_axis) || (code_seen(axis_codes[Y_AXIS]))) {
         HOMEAXIS(Y);
       }
+#if 0 > Z_HOME_DIR
       if((home_all_axis) || (code_seen(axis_codes[Z_AXIS]))) {
         HOMEAXIS(Z);
       }
+#endif
 
       if(code_seen(axis_codes[X_AXIS]))
       {
@@ -875,17 +883,17 @@ void process_commands()
           current_position[Z_AXIS]=code_value()+add_homeing[2];
         }
       }
-#if NOT_DELTA
+#if !defined(delta)
       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
 #endif
 
 #if defined(ENDSTOPS_ONLY_FOR_HOMING)
         enable_endstops(false);
 #endif
-#if DELTA
+#if delta
       calculate_delta(current_position);
 #endif
-#if DELTA
+#if delta
       plan_set_position(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS], current_position[E_AXIS]);
 #endif
 
@@ -1090,15 +1098,12 @@ void process_commands()
       if(setTargetedHotend(105)){
         break;
         }
-#else
-      }
-#endif
-#if defined(TEMP_0_PIN) && TEMP_0_PIN > -1)
+#if defined(TEMP_ && 0 && _PIN) && TEMP_ > 0 && _PIN && -1
         SERIAL_PROTOCOLPGM("ok T:");
         SERIAL_PROTOCOL_F(degHotend(tmp_extruder),1);
         SERIAL_PROTOCOLPGM(" /");
         SERIAL_PROTOCOL_F(degTargetHotend(tmp_extruder),1);
-#if TEMP_BED_PIN > 1
+#if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
           SERIAL_PROTOCOLPGM(" B:");
           SERIAL_PROTOCOL_F(degBed(),1);
           SERIAL_PROTOCOLPGM(" /");
@@ -1195,7 +1200,7 @@ void process_commands()
       }
       break;
     case 190: // M190 - Wait for bed heater to reach target.
-#if defined(TEMP_BED_PIN) && TEMP_BED_PIN > 1
+#if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
         LCD_MESSAGEPGM(MSG_BED_HEATING);
         if (code_seen('S')) setTargetBed(code_value());
         codenum = millis();
@@ -1221,7 +1226,7 @@ void process_commands()
         previous_millis_cmd = millis();
 #endif
         break;
-#if defined(FAN_PIN) && FAN_PIN > 1
+#if defined(FAN_PIN) && FAN_PIN > -1
       case 106: //M106 Fan On
         if (code_seen('S')){
            fanSpeed=constrain(code_value(),0,255);
@@ -1266,7 +1271,7 @@ void process_commands()
 #endif
 #endif
 
-#if defined(PS_ON_PIN) && PS_ON_PIN > 1
+#if defined(PS_ON_PIN) && PS_ON_PIN > -1
       case 80: // M80 - ATX Power On
         SET_OUTPUT(PS_ON_PIN); //GND
         WRITE(PS_ON_PIN, PS_ON_AWAKE);
@@ -1274,7 +1279,7 @@ void process_commands()
 #endif
 
       case 81: // M81 - ATX Power Off
-#if defined(SUICIDE_PIN) && SUICIDE_PIN > 1
+#if defined(SUICIDE_PIN) && SUICIDE_PIN > -1
         st_synchronize();
         suicide();
 #endif
@@ -1378,23 +1383,23 @@ void process_commands()
       enable_endstops(true) ;
       break;
     case 119: // M119
-#if defined(X_MIN_PIN) && X_MIN_PIN > 1
+#if defined(X_MIN_PIN) && X_MIN_PIN > -1
         SERIAL_PROTOCOLPGM(MSG_X_MIN);
         SERIAL_PROTOCOLLN(((READ(X_MIN_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
 #endif
-#if defined(X_MAX_PIN) && X_MAX_PIN > 1
+#if defined(X_MAX_PIN) && X_MAX_PIN > -1
         SERIAL_PROTOCOLPGM(MSG_X_MAX);
         SERIAL_PROTOCOLLN(((READ(X_MAX_PIN)^X_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
 #endif
-#if defined(Y_MIN_PIN) && Y_MIN_PIN > 1
+#if defined(Y_MIN_PIN) && Y_MIN_PIN > -1
         SERIAL_PROTOCOLPGM(MSG_Y_MIN);
         SERIAL_PROTOCOLLN(((READ(Y_MIN_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
 #endif
-#if defined(Y_MAX_PIN) && Y_MAX_PIN > 1
+#if defined(Y_MAX_PIN) && Y_MAX_PIN > -1
         SERIAL_PROTOCOLPGM(MSG_Y_MAX);
         SERIAL_PROTOCOLLN(((READ(Y_MAX_PIN)^Y_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
 #endif
-#if defined(Z_MIN_PIN) && Z_MIN_PIN > 1
+#if defined(Z_MIN_PIN) && Z_MIN_PIN > -1
         SERIAL_PROTOCOLPGM(MSG_Z_MIN);
         SERIAL_PROTOCOLLN(((READ(Z_MIN_PIN)^Z_ENDSTOPS_INVERTING)?MSG_ENDSTOP_HIT:MSG_ENDSTOP_OPEN));
 #endif
@@ -1410,9 +1415,6 @@ void process_commands()
         if(code_seen(axis_codes[i]))
         {
           max_acceleration_units_per_sq_second[i] = code_value();
-#if DELTA
-          axis_steps_per_sqr_second[i] = code_value() * axis_steps_per_unit[i];
-#endif
         }
       }
       // steps per sq second need to be updated to agree with the units per sq second (as they are what is used in the planner)
@@ -1479,7 +1481,6 @@ void process_commands()
         retract_recover_feedrate = code_value() ;
       }
     }break;
-
     case 209: // M209 - S<1=true/0=false> enable automatic retract detect if the slicer did not support G10/11: every normal extrude-only move will be classified as retract depending on the direction.
     {
       if(code_seen('S'))
@@ -1572,7 +1573,7 @@ void process_commands()
       break;
 #endif
 
-#if LARGE_FLASH && BEEPER > 0 || defined(ULTRALCD)
+#if LARGE_FLASH == true && ( BEEPER > 0 || defined(ULTRALCD) )
     case 300: // M300
     {
       int beepS = 400;
@@ -1662,7 +1663,6 @@ void process_commands()
     }
     break;
 #endif
-      allow_cold_extrudes(true);
     case 303: // M303 PID autotune
     {
       float temp = 150.0;
@@ -1835,7 +1835,7 @@ void process_commands()
 #endif
     case 907: // M907 Set digital trimpot motor current using axis codes.
     {
-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > 1
+#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
         for(int i=0;i<NUM_AXIS;i++) if(code_seen(axis_codes[i])) digipot_current(i,code_value());
         if(code_seen('B')) digipot_current(4,code_value());
         if(code_seen('S')) for(int i=0;i<=4;i++) digipot_current(i,code_value());
@@ -1844,7 +1844,7 @@ void process_commands()
     break;
     case 908: // M908 Control digital trimpot directly.
     {
-#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > 1
+#if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
         uint8_t channel,current;
         if(code_seen('P')) channel=code_value();
         if(code_seen('S')) current=code_value();
@@ -1854,7 +1854,7 @@ void process_commands()
     break;
     case 350: // M350 Set microstepping mode. Warning: Steps per unit remains unchanged. S code sets stepping mode for all drivers.
     {
-#if X_MS1_PIN
+#if defined(X_MS && 1 && _PIN) && X_MS > 1 && _PIN && -1
         if(code_seen('S')) for(int i=0;i<=4;i++) microstep_mode(i,code_value());
         for(int i=0;i<NUM_AXIS;i++) if(code_seen(axis_codes[i])) microstep_mode(i,(uint8_t)code_value());
         if(code_seen('B')) microstep_mode(4,code_value());
@@ -2054,122 +2054,75 @@ void clamp_to_software_endstops(float target[3])
     if (target[Z_AXIS] > max_pos[Z_AXIS]) target[Z_AXIS] = max_pos[Z_AXIS];
   }
 }
-void calculate_delta(float cartesian[3])
-{
-  delta[X_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
-                       - sq(DELTA_TOWER1_X-cartesian[X_AXIS])
-                       - sq(DELTA_TOWER1_Y-cartesian[Y_AXIS])
-                       ) + cartesian[Z_AXIS];
-  delta[Y_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
-                       - sq(DELTA_TOWER2_X-cartesian[X_AXIS])
-                       - sq(DELTA_TOWER2_Y-cartesian[Y_AXIS])
-                       ) + cartesian[Z_AXIS];
-  delta[Z_AXIS] = sqrt(sq(DELTA_DIAGONAL_ROD)
-                       - sq(DELTA_TOWER3_X-cartesian[X_AXIS])
-                       - sq(DELTA_TOWER3_Y-cartesian[Y_AXIS])
-                       ) + cartesian[Z_AXIS];
-  /*
-  SERIAL_ECHOPGM("cartesian x="); SERIAL_ECHO(cartesian[X_AXIS]);
-  SERIAL_ECHOPGM(" y="); SERIAL_ECHO(cartesian[Y_AXIS]);
-  SERIAL_ECHOPGM(" z="); SERIAL_ECHOLN(cartesian[Z_AXIS]);
-
-  SERIAL_ECHOPGM("delta x="); SERIAL_ECHO(delta[X_AXIS]);
-  SERIAL_ECHOPGM(" y="); SERIAL_ECHO(delta[Y_AXIS]);
-  SERIAL_ECHOPGM(" z="); SERIAL_ECHOLN(delta[Z_AXIS]);
-  */
-}
 void prepare_move()
 {
   clamp_to_software_endstops(destination);
 
   previous_millis_cmd = millis();
-#if DELTA
-
-#endif
-#if DELTA
-  float difference[NUM_AXIS];
-#endif
-#if DELTA
-  for (int8_t i=0; i < NUM_AXIS; i++) {
-#endif
-#if DELTA
-    difference[i] = destination[i] - current_position[i];
-#endif
-#if NOT_DELTA
   // Do not use feedmultiply for E or Z only moves
-#endif
-#if NOT_DELTA
   if( (current_position[X_AXIS] == destination [X_AXIS]) && (current_position[Y_AXIS] == destination [Y_AXIS])) {
-#endif
-#if NOT_DELTA
       plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
-#endif
   }
-#if DELTA
+#if delta
   float cartesian_mm = sqrt(sq(difference[X_AXIS]) +
 #endif
-#if DELTA
+#if delta
                             sq(difference[Y_AXIS]) +
 #endif
-#if DELTA
+#if delta
                             sq(difference[Z_AXIS]));
 #endif
-#if DELTA
+#if delta
   if (cartesian_mm < 0.000001) { cartesian_mm = abs(difference[E_AXIS]); }
 #endif
-#if DELTA
+#if delta
   if (cartesian_mm < 0.000001) { return; }
 #endif
-#if DELTA
+#if delta
   float seconds = 6000 * cartesian_mm / feedrate / feedmultiply;
 #endif
-#if DELTA
+#if delta
   int steps = max(1, int(DELTA_SEGMENTS_PER_SECOND * seconds));
 #endif
-#if DELTA
+#if delta
   // SERIAL_ECHOPGM("mm="); SERIAL_ECHO(cartesian_mm);
 #endif
-#if DELTA
+#if delta
   // SERIAL_ECHOPGM(" seconds="); SERIAL_ECHO(seconds);
 #endif
-#if DELTA
+#if delta
   // SERIAL_ECHOPGM(" steps="); SERIAL_ECHOLN(steps);
 #endif
-#if DELTA
+#if delta
   for (int s = 1; s <= steps; s++) {
 #endif
-#if DELTA
+#if delta
     float fraction = float(s) / float(steps);
 #endif
-#if DELTA
+#if delta
     for(int8_t i=0; i < NUM_AXIS; i++) {
 #endif
-#if DELTA
+#if delta
       destination[i] = current_position[i] + difference[i] * fraction;
 #endif
-#if DELTA
+#if delta
     }
 #endif
-#if DELTA
+#if delta
     calculate_delta(destination);
 #endif
-#if DELTA
+#if delta
     plan_buffer_line(delta[X_AXIS], delta[Y_AXIS], delta[Z_AXIS],
 #endif
-#if DELTA
+#if delta
                      destination[E_AXIS], feedrate*feedmultiply/60/100.0,
 #endif
-#if DELTA
+#if delta
                      active_extruder);
 #endif
-#if NOT_DELTA
   else {
-#endif
-#if NOT_DELTA
     plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate*feedmultiply/60/100.0, active_extruder);
-#endif
   }
-
   for(int8_t i=0; i < NUM_AXIS; i++) {
     current_position[i] = destination[i];
   }
@@ -2188,7 +2141,7 @@ void prepare_arc_move(char isclockwise) {
   }
   previous_millis_cmd = millis();
 }
-#if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1#
+#if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
 
 #if defined(FAN_PIN)
 #if CONTROLLERFAN_PIN == FAN_PIN
