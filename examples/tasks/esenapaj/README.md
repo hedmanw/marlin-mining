@@ -22,3 +22,30 @@ For `stepper.cpp` only:
 For `ultralcd.cpp` only:
 * Any added changes under the presence condition `defined(ADDITIONAL_EXPERIMENTAL_FEATURES)` should be accepted and lifted from their presence condition.
 Any added changes under the inverse presence condition should be discarded. (Any original code from `mainline` should be discarded.)
+
+
+## Results
+Numbers indicate the line numbers of the MPS result, when diffed with the Eclipse result.
+Cross-referenced with parents and task description to derive what went wrong.
+
+`Marlin_main.cpp`
+* _Diff_ Inverted order of blocks in an exclusive: all
+* _Diff_ Correctly inserted exclusive intention that was missing in Eclipse: 2929, 7876, 7964
+* _Tech/Integration_ Block completely missing: 8158 (exists in both parents!)
+* _Tech_ Else-branch contents moved up to before if-statement: 760, 3310, 4629, 4751
+* _Tech_ Elif-branch appears partially: 1752, 2019, 2477, 3186, 3357, 6142, 6152, 8158
+* _Tech_ If-block moved inside switch-statement in the else-branch: 9030, 9077
+
+`stepper.cpp`
+* _Integration_ Variable declared twice, integrated both parents: 95
+* _Tech_ Else-branch contents moved up to before if-statement: 187
+* _Tech_ Elif-content appears partially: 407, 584, 632
+* _Tech_ Content moved from inside if-block to after it: 457
+* _Tech_ KeepAsFeature on block kills the presence conditions inside the block: 501, 739
+* _Tech_ Else-branch content moved inside branch: 1006
+
+`ultralcd.cpp`
+* _Diff_ Correcltly integrated macro that was missing in Eclipse: 255
+* _Diff_ inserted exclusive intention that was not in Eclipse: 1486
+* _Tech_ If-block moved below else-block: 864, 1005, 1027, 2088
+* _Tech_ If-block moved inside switch-statement in the else-branch: 1527
