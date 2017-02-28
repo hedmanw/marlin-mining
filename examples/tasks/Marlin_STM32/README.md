@@ -20,21 +20,22 @@ Numbers indicate the line numbers of the MPS result, when diffed with the Eclips
 Cross-referenced with parents and task description to derive what went wrong.
 
 `Marlin_main.cpp`
-* _Integration_ Illegal syntax, incorrectly integrated: 403
-* _Integration_ Incorrectly integrated, missing block: 589
-* _Tech_ * Else/elif-branch appears partially: 1421
+* _Integration_ Fork artifact still present: 575, 584
+* _Diff_ Missing wrapping in ARDUINO_ARCH_STM32 feature: 1448
+* _Tech_ Block missing: 1513
 
 `planner.cpp`
 _No diffs._
 
 `stepper.cpp`
-* _Integration_ Fork artifact still present: 138, 239, 380, 399, 412, 438, 640, 828, 848, 866, 1087
-* _Integration_ Feature AT90USB missing: 638
-* _Tech_ If-block moved: 339
-* _Tech_ Block from inside if moved out above it: 656
-* _Tech_ Block moved: 1104
+* _Integration_ Fork artifact still present: 476
+* _Integration_ Presence condition ARDUINO_ARCH_STM32 missing: 160, 202, 243, 277, 613, 646, 664, 679
+* _Integration_ Feature ARDUINO_ARCH_STM32 wrapped in ARDUINO_ARCH_STM32: 893
+* _Tech_ Blocks missing: 557, 572, 582
+* _Tech_ Block moved: 935, 1190
 
 ### Sums
 
-* Integration: 2 + 12
-* Tech: 1 + 3 + 1 (elif)
+* Integration: 2 + 10
+* Diff: 1
+* Tech: 1 + 1 + 1 (elif)
