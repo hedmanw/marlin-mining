@@ -6,6 +6,8 @@ Expected outcome: Integrate Delta-specific changes from fork as features, and ma
 This is facilitated by the fact that PPMerge has already turned these blocks into mutually exclusive on the pc `!defined(FORK)`.
 In order to make them mutually exclusive under the feature `DELTA`, we simply need to change the presence condition.
 
+See also the equivalent case `Exclusive: Case I`.
+
 **Integrated view**
 ```cpp
 #if !defined(FORK)
@@ -72,3 +74,55 @@ C #if !defined(FORK) // Change to !defined(DELTA)
 #endif
 ```
 
+## Case II: PC evolution
+Code taken from a slightly altered version of XXXXX.
+
+The presence conditions have been changed between the mainline and the fork. Expected outcome: accept the fork PC as evolution.
+
+**Integrated view**
+```cpp
+#if (defined(FORK) || (PS_ON_PIN > -1)) && (!defined(FORK) || (defined(PS_ON_PIN) && PS_ON_PIN > -1))
+  case 80: // M80 - Turn on Power Supply
+  SET_OUTPUT(PS_ON_PIN); //GND
+  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+#endif
+```
+
+**Mainline view:**
+```cpp
+#if PS_ON_PIN > -1
+  case 80: // M80 - Turn on Power Supply
+  SET_OUTPUT(PS_ON_PIN); //GND
+  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+#endif
+```
+
+**Clone view:**
+```cpp
+#if defined(PS_ON_PIN) && PS_ON_PIN > -1
+  case 80: // M80 - Turn on Power Supply
+  SET_OUTPUT(PS_ON_PIN); //GND
+  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+#endif
+```
+
+### Resolution:
+In order to keep the PC from the clone, we need to apply `ChangePC`, denoted by `C`, with the new presence condition `defined(PS_ON_PIN) && PS_ON_PIN > -1`.
+
+**ChangePC on Integrated view:**
+```cpp
+C #if (defined(FORK) || (PS_ON_PIN > -1)) && (!defined(FORK) || (defined(PS_ON_PIN) && PS_ON_PIN > -1))
+  case 80: // M80 - Turn on Power Supply
+  SET_OUTPUT(PS_ON_PIN); //GND
+  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+#endif
+```
+
+**Outcome:**
+```cpp
+#if defined(PS_ON_PIN) && PS_ON_PIN > -1
+  case 80: // M80 - Turn on Power Supply
+  SET_OUTPUT(PS_ON_PIN); //GND
+  WRITE(PS_ON_PIN, PS_ON_AWAKE);
+#endif
+```

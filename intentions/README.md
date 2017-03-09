@@ -9,5 +9,5 @@ K Keep
 R Remove
 C(pc) ChangePC(pc)
 F(pc) KeepAsFeature(pc)
-X(pc) Exclusive(pc)
+Xn(pc) Exclusive(X1, X2, pc) [n={1,2}]
 ```
