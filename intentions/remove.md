@@ -25,7 +25,7 @@ if (temp_meas_ready == true) {
 ```
 
 **Clone view:**
-```
+```cpp
 if (temp_meas_ready == true) {
   // stuff
 }
