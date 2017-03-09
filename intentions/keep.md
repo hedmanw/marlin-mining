@@ -87,7 +87,7 @@ To reach the expected outcome, we can apply the `Remove` intention in either the
 **Integrated view:**
 ```cpp
 #if !defined(FORK)
-K  int cycles = 0; // All nodes in this block get Keep because we apply the remove intention below!
+K  int cycles = 0; // All nodes in this block get Keep because we apply the Remove intention below!
 #else
 R  int cycles=0; // Apply Remove to all nodes in this block - prompt user for Keep on all nodes in if-block.
 #endif

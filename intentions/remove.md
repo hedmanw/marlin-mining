@@ -92,9 +92,9 @@ To reach the expected outcome, we can apply the `Keep` intention in either the i
 **Integrated view:**
 ```cpp
 #if !defined(FORK)
-K  SERIAL_ECHOLN(MSG_PID_AUTOTUNE_START);
+K  SERIAL_ECHOLN(MSG_PID_AUTOTUNE_START); // Apply Keep to all nodes in this block - prompt user for Remove on all nodes in else-block.
 #else
-R  SERIAL_ECHOLN("PID Autotune start");
+R  SERIAL_ECHOLN("PID Autotune start"); // All nodes in this block get Remove because we apply the Keep intention above!
 #endif
 ```
 

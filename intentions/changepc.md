@@ -23,18 +23,18 @@ In order to make them mutually exclusive under the feature `DELTA`, we simply ne
 
 **Mainline view:**
 ```cpp
-  float difference[NUM_AXIS];
-  for (int8_t i=0; i < NUM_AXIS; i++) {
-    difference[i] = destination[i] - current_position[i];
-  }
+float difference[NUM_AXIS];
+for (int8_t i=0; i < NUM_AXIS; i++) {
+  difference[i] = destination[i] - current_position[i];
+}
 ```
 
 **Clone view:**
 ```cpp
-  // Do not use feedmultiply for E or Z only moves
-  if( (current_position[X_AXIS] == destination [X_AXIS]) && (current_position[Y_AXIS] == destination [Y_AXIS])) {
-    plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
-  }
+// Do not use feedmultiply for E or Z only moves
+if( (current_position[X_AXIS] == destination [X_AXIS]) && (current_position[Y_AXIS] == destination [Y_AXIS])) {
+  plan_buffer_line(destination[X_AXIS], destination[Y_AXIS], destination[Z_AXIS], destination[E_AXIS], feedrate/60, active_extruder);
+}
 ```
 
 ### Resolution:
@@ -71,3 +71,4 @@ C #if !defined(FORK) // Change to !defined(DELTA)
   }
 #endif
 ```
+
