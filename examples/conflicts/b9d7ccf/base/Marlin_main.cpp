@@ -426,10 +426,10 @@ void setup()
 
   lcd_init();
   _delay_ms(1000);	// wait 1sec to display the splash screen
-  
+
   #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
     SET_OUTPUT(CONTROLLERFAN_PIN); //Set pin used for driver cooling fan
-  #endif 
+  #endif
 }
 
 
@@ -697,7 +697,7 @@ static void homeaxis(int axis) {
         servos[servo_endstops[axis]].write(servo_endstop_angles[axis * 2]);
       }
     #endif
-      
+
     current_position[axis] = 0;
     plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
     destination[axis] = 1.5 * max_length(axis) * home_dir(axis);
@@ -831,7 +831,7 @@ void process_commands()
           current_position[X_AXIS] = 0;
           current_position[Y_AXIS] = 0;
           current_position[Z_AXIS] = 0;
-          plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]); 
+          plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
 
           destination[X_AXIS] = 3 * Z_MAX_LENGTH;
           destination[Y_AXIS] = 3 * Z_MAX_LENGTH;
@@ -844,7 +844,7 @@ void process_commands()
           current_position[X_AXIS] = destination[X_AXIS];
           current_position[Y_AXIS] = destination[Y_AXIS];
           current_position[Z_AXIS] = destination[Z_AXIS];
-          
+
           // take care of back off and rehome now we are all at the top
           HOMEAXIS(X);
           HOMEAXIS(Y);
@@ -927,7 +927,7 @@ void process_commands()
       }
       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
 #endif // DELTA
-          
+
       #ifdef ENDSTOPS_ONLY_FOR_HOMING
         enable_endstops(false);
       #endif
@@ -1181,7 +1181,7 @@ void process_commands()
       #ifdef AUTOTEMP
         autotemp_enabled=false;
       #endif
-      if (code_seen('S')) { 
+      if (code_seen('S')) {
         setTargetHotend(code_value(), tmp_extruder);
         CooldownNoWait = true;
       } else if (code_seen('R')) {
@@ -1258,7 +1258,7 @@ void process_commands()
     case 190: // M190 - Wait for bed heater to reach target.
     #if defined(TEMP_BED_PIN) && TEMP_BED_PIN > -1
         LCD_MESSAGEPGM(MSG_BED_HEATING);
-        if (code_seen('S')) { 
+        if (code_seen('S')) {
           setTargetBed(code_value());
           CooldownNoWait = true;
         } else if (code_seen('R')) {
@@ -1266,9 +1266,9 @@ void process_commands()
           CooldownNoWait = false;
         }
         codenum = millis();
-        
+
         target_direction = isHeatingBed(); // true if heating, false if cooling
-        
+
         while ( target_direction ? (isHeatingBed()) : (isCoolingBed()&&(CooldownNoWait==false)) )
         {
           if(( millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
@@ -1613,7 +1613,7 @@ void process_commands()
       }
     }
     break;
-    
+
     #if NUM_SERVOS > 0
     case 280: // M280 - set servo position absolute. P: servo index, S: angle or microseconds
       {
@@ -1901,7 +1901,7 @@ void process_commands()
             delay(3);
             WRITE(BEEPER,LOW);
             delay(3);
-          #else 
+          #else
             lcd_buzz(1000/6,100);
           #endif
           }
@@ -2239,10 +2239,10 @@ void prepare_arc_move(char isclockwise) {
 #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
 
 #if defined(FAN_PIN)
-  #if CONTROLLERFAN_PIN == FAN_PIN 
+  #if CONTROLLERFAN_PIN == FAN_PIN
     #error "You cannot set CONTROLLERFAN_PIN equal to FAN_PIN"
   #endif
-#endif  
+#endif
 
 unsigned long lastMotor = 0; //Save the time for when a motor was turned on last
 unsigned long lastMotorCheck = 0;
@@ -2264,17 +2264,17 @@ void controllerFan()
     {
       lastMotor = millis(); //... set time to NOW so the fan will turn on
     }
-    
-    if ((millis() - lastMotor) >= (CONTROLLERFAN_SECS*1000UL) || lastMotor == 0) //If the last time any driver was enabled, is longer since than CONTROLLERSEC...   
+
+    if ((millis() - lastMotor) >= (CONTROLLERFAN_SECS*1000UL) || lastMotor == 0) //If the last time any driver was enabled, is longer since than CONTROLLERSEC...
     {
-        digitalWrite(CONTROLLERFAN_PIN, 0); 
-        analogWrite(CONTROLLERFAN_PIN, 0); 
+        digitalWrite(CONTROLLERFAN_PIN, 0);
+        analogWrite(CONTROLLERFAN_PIN, 0);
     }
     else
     {
         // allows digital or PWM fan output to be used (see M42 handling)
         digitalWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED);
-        analogWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED); 
+        analogWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED);
     }
   }
 }
@@ -2341,7 +2341,7 @@ void kill()
 
 #if defined(PS_ON_PIN) && PS_ON_PIN > -1
   pinMode(PS_ON_PIN,INPUT);
-#endif  
+#endif
   SERIAL_ERROR_START;
   SERIAL_ERRORLNPGM(MSG_ERR_KILLED);
   LCD_ALERTMESSAGEPGM(MSG_KILLED);

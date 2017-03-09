@@ -3,7 +3,7 @@
 
 // NOTE: IF YOU CHANGE THIS FILE / MERGE THIS FILE WITH CHANGES
 //
-//   ==&gt; ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRALCD" / "SDSUPPORT" #define IN "Configuration.h" 
+//   ==&gt; ALWAYS TRY TO COMPILE MARLIN WITH/WITHOUT "ULTIPANEL" / "ULTRALCD" / "SDSUPPORT" #define IN "Configuration.h"
 //   ==&gt; ALSO TRY ALL AVAILABLE "LANGUAGE_CHOICE" OPTIONS
 
 // Languages
@@ -119,7 +119,7 @@
 	#define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
 	#define MSG_AUTORETRACT "AutoRetr."
 	#define MSG_FILAMENTCHANGE "Change filament"
-	#define MSG_INIT_SDCARD "Init. SD-Card"	
+	#define MSG_INIT_SDCARD "Init. SD-Card"
 	#define MSG_CNG_SDCARD "Change SD-Card"
 
 // Serial Console Messages
@@ -516,7 +516,7 @@
 #define MSG_ENDSTOPS_HIT "Fin de course atteint: "
 #define MSG_ERR_COLD_EXTRUDE_STOP " Extrusion a froid evitee"
 #define MSG_ERR_LONG_EXTRUDE_STOP " Extrusion longue evitee"
-	
+
 #endif
 
 
@@ -592,7 +592,7 @@
 	#define MSG_STOP_PRINT       "Druck stoppen"
 	#define MSG_CARD_MENU        "SDKarten Menü"
 	#define MSG_NO_CARD          "Keine SDKarte"
-	#define MSG_DWELL            "Warten..."		
+	#define MSG_DWELL            "Warten..."
 	#define MSG_USERWAIT         "Warte auf Nutzer..."
     #define MSG_RESUMING         "Druck fortsetzung"
 	#define MSG_NO_MOVE          "Kein Zug."
@@ -607,7 +607,7 @@
     #define MSG_CONTROL_RETRACT_RECOVERF "UnRet  F"
     #define MSG_AUTORETRACT      "AutoRetr."
     #define MSG_FILAMENTCHANGE "Filament wechseln"
-	
+
 // Serial Console Messages
 
 	#define MSG_Enqueing "enqueing \""
@@ -818,7 +818,7 @@
 #define MSG_ENDSTOP_HIT "PULSADO"
 #define MSG_ENDSTOP_OPEN "abierto"
 #define MSG_HOTEND_OFFSET "Despl. Hotend:"
-        
+
 #define MSG_SD_CANT_OPEN_SUBDIR "No se pudo abrir la subcarpeta."
 #define MSG_SD_INIT_FAIL "Fallo al iniciar la SD"
 #define MSG_SD_VOL_INIT_FAIL "Fallo al montar el volumen"

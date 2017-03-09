@@ -46,11 +46,11 @@ block_t *current_block;  // A pointer to the block currently being traced
 
 // Variables used by The Stepper Driver Interrupt
 static unsigned char out_bits;        // The next stepping-bits to be output
-static unsigned int cleaning_buffer_counter;  
+static unsigned int cleaning_buffer_counter;
 
 #ifdef Z_DUAL_ENDSTOPS
-  static bool performing_homing = false, 
-              locked_z_motor = false, 
+  static bool performing_homing = false,
+              locked_z_motor = false,
               locked_z2_motor = false;
 #endif
 
@@ -397,7 +397,7 @@ ISR(TIMER1_COMPA_vect) {
     OCR1A = 200;
     return;
   }
-  
+
   // If there is no current block, attempt to pop one from the buffer
   if (!current_block) {
     // Anything in the buffer?
@@ -472,7 +472,7 @@ ISR(TIMER1_COMPA_vect) {
             #ifdef DUAL_X_CARRIAGE
               // with 2 x-carriages, endstops are only checked in the homing direction for the active extruder
               if ((current_block->active_extruder == 0 && X_HOME_DIR == -1) || (current_block->active_extruder != 0 && X2_HOME_DIR == -1))
-            #endif          
+            #endif
               {
                 #if defined(X_MIN_PIN) && X_MIN_PIN >= 0
                   UPDATE_ENDSTOP(x, X, min, MIN);
@@ -873,7 +873,7 @@ void st_init() {
   #ifdef HAVE_L6470DRIVER
     L6470_init();
   #endif
-  
+
   // Initialize Dir Pins
   #if defined(X_DIR_PIN) && X_DIR_PIN >= 0
     X_DIR_INIT;
@@ -919,7 +919,7 @@ void st_init() {
   #if defined(Y_ENABLE_PIN) && Y_ENABLE_PIN >= 0
     Y_ENABLE_INIT;
     if (!Y_ENABLE_ON) Y_ENABLE_WRITE(HIGH);
-	
+
 	#if defined(Y_DUAL_STEPPER_DRIVERS) && defined(Y2_ENABLE_PIN) && Y2_ENABLE_PIN >= 0
 	  Y2_ENABLE_INIT;
 	  if (!Y_ENABLE_ON) Y2_ENABLE_WRITE(HIGH);
@@ -1000,8 +1000,8 @@ void st_init() {
     #ifdef ENDSTOPPULLUP_ZMAX
       WRITE(Z2_MAX_PIN,HIGH);
     #endif
-  #endif  
-  
+  #endif
+
 #if defined(Z_PROBE_PIN) && Z_PROBE_PIN >= 0
   SET_INPUT(Z_PROBE_PIN);
   #ifdef ENDSTOPPULLUP_ZPROBE
@@ -1173,7 +1173,7 @@ void quickStop() {
       case Y_AXIS:
         BABYSTEP_AXIS(y, Y, false);
         break;
-     
+
       case Z_AXIS: {
 
         #ifndef DELTA
@@ -1194,13 +1194,13 @@ void quickStop() {
           X_DIR_WRITE(INVERT_X_DIR^z_direction);
           Y_DIR_WRITE(INVERT_Y_DIR^z_direction);
           Z_DIR_WRITE(INVERT_Z_DIR^z_direction);
-          //perform step 
+          //perform step
           X_STEP_WRITE(!INVERT_X_STEP_PIN);
           Y_STEP_WRITE(!INVERT_Y_STEP_PIN);
           Z_STEP_WRITE(!INVERT_Z_STEP_PIN);
           _delay_us(1U);
-          X_STEP_WRITE(INVERT_X_STEP_PIN); 
-          Y_STEP_WRITE(INVERT_Y_STEP_PIN); 
+          X_STEP_WRITE(INVERT_X_STEP_PIN);
+          Y_STEP_WRITE(INVERT_Y_STEP_PIN);
           Z_STEP_WRITE(INVERT_Z_STEP_PIN);
           //get old pin state back.
           X_DIR_WRITE(old_x_dir_pin);
@@ -1210,7 +1210,7 @@ void quickStop() {
         #endif
 
       } break;
-     
+
       default: break;
     }
   }
@@ -1269,12 +1269,12 @@ void digipot_current(uint8_t driver, int current) {
 void microstep_init() {
   #if defined(E1_MS1_PIN) && E1_MS1_PIN >= 0
     pinMode(E1_MS1_PIN,OUTPUT);
-    pinMode(E1_MS2_PIN,OUTPUT); 
+    pinMode(E1_MS2_PIN,OUTPUT);
   #endif
 
   #if defined(X_MS1_PIN) && X_MS1_PIN >= 0
     pinMode(X_MS1_PIN,OUTPUT);
-    pinMode(X_MS2_PIN,OUTPUT);  
+    pinMode(X_MS2_PIN,OUTPUT);
     pinMode(Y_MS1_PIN,OUTPUT);
     pinMode(Y_MS2_PIN,OUTPUT);
     pinMode(Z_MS1_PIN,OUTPUT);

@@ -1107,7 +1107,7 @@ void refresh_cmd_timeout(void)
       current_position[Z_AXIS]+=retract_zlift;
       plan_set_position(current_position[X_AXIS], current_position[Y_AXIS], current_position[Z_AXIS], current_position[E_AXIS]);
       //prepare_move();
-      current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
+      current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder];
       plan_set_e_position(current_position[E_AXIS]);
       float oldFeedrate = feedrate;
       feedrate=retract_recover_feedrate;

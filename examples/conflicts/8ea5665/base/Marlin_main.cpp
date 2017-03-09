@@ -253,15 +253,15 @@ int EtoPPressure=0;
   // these are the default values, can be overriden with M665
   float delta_radius= DELTA_RADIUS;
   float delta_tower1_x= -SIN_60*delta_radius; // front left tower
-  float delta_tower1_y= -COS_60*delta_radius;	   
+  float delta_tower1_y= -COS_60*delta_radius;
   float delta_tower2_x=  SIN_60*delta_radius; // front right tower
-  float delta_tower2_y= -COS_60*delta_radius;	   
+  float delta_tower2_y= -COS_60*delta_radius;
   float delta_tower3_x= 0.0;                  // back middle tower
   float delta_tower3_y= delta_radius;
   float delta_diagonal_rod= DELTA_DIAGONAL_ROD;
   float delta_diagonal_rod_2= sq(delta_diagonal_rod);
   float delta_segments_per_second= DELTA_SEGMENTS_PER_SECOND;
-#endif					
+#endif
 
 //===========================================================================
 //=============================private variables=============================
@@ -1172,7 +1172,7 @@ void process_commands()
         destination[Z_AXIS]=current_position[Z_AXIS];
         current_position[Z_AXIS]+=retract_zlift;
         destination[E_AXIS]=current_position[E_AXIS];
-        current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder]; 
+        current_position[E_AXIS]-=(retract_length+retract_recover_length)/volumetric_multiplier[active_extruder];
         plan_set_e_position(current_position[E_AXIS]);
         float oldFeedrate = feedrate;
         feedrate=retract_recover_feedrate;
@@ -2290,7 +2290,7 @@ void process_commands()
 		if(code_seen('S')) {
 			delta_segments_per_second= code_value();
 		}
-		
+
 		recalc_delta_settings(delta_radius, delta_diagonal_rod);
 		break;
     case 666: // M666 set delta endstop adjustemnt
@@ -3130,9 +3130,9 @@ void clamp_to_software_endstops(float target[3])
 void recalc_delta_settings(float radius, float diagonal_rod)
 {
 	 delta_tower1_x= -SIN_60*radius; // front left tower
-	 delta_tower1_y= -COS_60*radius;	   
+	 delta_tower1_y= -COS_60*radius;
 	 delta_tower2_x=  SIN_60*radius; // front right tower
-	 delta_tower2_y= -COS_60*radius;	   
+	 delta_tower2_y= -COS_60*radius;
 	 delta_tower3_x= 0.0;                  // back middle tower
 	 delta_tower3_y= radius;
 	 delta_diagonal_rod_2= sq(diagonal_rod);

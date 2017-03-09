@@ -248,14 +248,14 @@
     #define E0_STEP_PIN      28
     #define E0_DIR_PIN       27
     #define E0_ENABLE_PIN    24
-    
+
     #define TEMP_0_PIN      2
     #define TEMP_1_PIN      -1
     #define TEMP_2_PIN      -1
     #define TEMP_BED_PIN        1   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!! (pin 34 bed)
-     
+
     #define HEATER_0_PIN    4
-    #define HEATER_1_PIN    -1   
+    #define HEATER_1_PIN    -1
     #define HEATER_2_PIN    -1
     #define HEATER_BED_PIN      3  // (bed)
 
@@ -272,25 +272,25 @@
     //our RS485 pins
     //#define TX_ENABLE_PIN       12
     //#define RX_ENABLE_PIN       13
-    
-    #define BEEPER -1	
-	#define SDCARDDETECT -1 		
+
+    #define BEEPER -1
+	#define SDCARDDETECT -1
     #define SUICIDE_PIN -1						//has to be defined; otherwise Power_off doesn't work
-	
+
     #define KILL_PIN -1
-	//Pins for 4bit LCD Support 
-    #define LCD_PINS_RS 18 
+	//Pins for 4bit LCD Support
+    #define LCD_PINS_RS 18
     #define LCD_PINS_ENABLE 17
     #define LCD_PINS_D4 16
-    #define LCD_PINS_D5 15 
+    #define LCD_PINS_D5 15
     #define LCD_PINS_D6 13
     #define LCD_PINS_D7 14
-    
+
      //buttons are directly attached
     #define BTN_EN1 11
     #define BTN_EN2 10
     #define BTN_ENC 12  //the click
-    
+
     #define BLEN_C 2
     #define BLEN_B 1
     #define BLEN_A 0
@@ -381,7 +381,7 @@
 #else
 #define HEATER_1_PIN       9    // EXTRUDER 2 (FAN On Sprinter)
 #endif
-#define HEATER_2_PIN       -1   
+#define HEATER_2_PIN       -1
 #define TEMP_0_PIN         13   // ANALOG NUMBERING
 #define TEMP_1_PIN         15   // ANALOG NUMBERING
 #define TEMP_2_PIN         -1   // ANALOG NUMBERING
@@ -405,13 +405,13 @@
     #define BLEN_B 1
     #define BLEN_C 2
 
-    #define LCD_PINS_RS 16 
+    #define LCD_PINS_RS 16
     #define LCD_PINS_ENABLE 17
     #define LCD_PINS_D4 23
-    #define LCD_PINS_D5 25 
+    #define LCD_PINS_D5 25
     #define LCD_PINS_D6 27
     #define LCD_PINS_D7 29
-    
+
     #ifdef REPRAP_DISCOUNT_SMART_CONTROLLER
       #define BEEPER 37
 
@@ -446,21 +446,21 @@
     //#define SHIFT_LD 42
     //#define SHIFT_OUT 40
     //#define SHIFT_EN 17
-    
-    #define LCD_PINS_RS 16 
+
+    #define LCD_PINS_RS 16
     #define LCD_PINS_ENABLE 17
     #define LCD_PINS_D4 23
-    #define LCD_PINS_D5 25 
+    #define LCD_PINS_D5 25
     #define LCD_PINS_D6 27
     #define LCD_PINS_D7 29
-    
+
     //encoder rotation values
     #define encrot0 0
     #define encrot1 2
     #define encrot2 3
     #define encrot3 1
 
-    
+
     //bits in the shift register that carry the buttons for:
     // left up center down right red
     #define BL_LE 7
@@ -472,7 +472,7 @@
 
     #define BLEN_B 1
     #define BLEN_A 0
-  #endif 
+  #endif
 #endif //ULTRA_LCD
 
 #else // RAMPS_V_1_1 or RAMPS_V_1_2 as default (MOTHERBOARD == 3)
@@ -517,15 +517,15 @@
 #define HEATER_1_PIN        -1
 #define HEATER_2_PIN        -1
 #define TEMP_0_PIN          2    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
-#define TEMP_1_PIN          -1   
-#define TEMP_2_PIN          -1   
+#define TEMP_1_PIN          -1
+#define TEMP_2_PIN          -1
 #define TEMP_BED_PIN        1    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
 #endif// MOTHERBOARD == 33 || MOTHERBOARD == 34 || MOTHERBOARD == 35
 
-// SPI for Max6675 Thermocouple 
+// SPI for Max6675 Thermocouple
 
 #ifndef SDSUPPORT
-// these pins are defined in the SD library if building with SD support  
+// these pins are defined in the SD library if building with SD support
   #define MAX_SCK_PIN          52
   #define MAX_MISO_PIN         50
   #define MAX_MOSI_PIN         51
@@ -577,8 +577,8 @@
 #define HEATER_1_PIN        -1
 #define HEATER_2_PIN        -1
 #define TEMP_0_PIN          0    // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
-#define TEMP_1_PIN          -1    
-#define TEMP_2_PIN          -1    
+#define TEMP_1_PIN          -1
+#define TEMP_2_PIN          -1
 #define HEATER_BED_PIN      -1
 #define TEMP_BED_PIN        -1
 
@@ -641,14 +641,14 @@
     #define PS_ON_PIN       -1    //changed @ rkoeppl 20110410
     #define KILL_PIN        -1    //changed @ drakelive 20120830
     //our pin for debugging.
-    
+
     #define DEBUG_PIN        0
-    
+
     //our RS485 pins
     #define TX_ENABLE_PIN	12
     #define RX_ENABLE_PIN	13
 
-    
+
 #endif
 
 /****************************************************************************************
@@ -661,7 +661,7 @@
 #if MOTHERBOARD == 62 || MOTHERBOARD == 63
 #undef MOTHERBOARD
 #define MOTHERBOARD 6
-#define SANGUINOLOLU_V_1_2 
+#define SANGUINOLOLU_V_1_2
 #endif
 #if MOTHERBOARD == 6
 #define KNOWN_BOARD 1
@@ -688,7 +688,7 @@
 
 #define LED_PIN            -1
 
-#define FAN_PIN            -1 
+#define FAN_PIN            -1
 #if FAN_PIN == 12 || FAN_PIN ==13
 #define FAN_SOFT_PWM
 #endif
@@ -744,28 +744,28 @@
      #define LCD_PINS_D5        29
      #define LCD_PINS_D6        28
      #define LCD_PINS_D7        27
-     
+
      //The encoder and click button
      #define BTN_EN1 11  //must be a hardware interrupt pin
      #define BTN_EN2 10 //must be hardware interrupt pin
      #define BTN_ENC 16  //the switch
      //not connected to a pin
      #define SDCARDDETECT -1
-     
+
      //from the same bit in the RAMPS Newpanel define
      //encoder rotation values
      #define encrot0 0
      #define encrot1 2
      #define encrot2 3
      #define encrot3 1
-     
+
      #define BLEN_C 2
      #define BLEN_B 1
      #define BLEN_A 0
-     
+
    #endif //Newpanel
  #endif //Ultipanel
- 
+
 #endif
 
 
@@ -793,17 +793,17 @@
 #define Y_MAX_PIN 28
 #define Y_ENABLE_PIN 29
 
-#define Z_STEP_PIN 37 
+#define Z_STEP_PIN 37
 #define Z_DIR_PIN 39
 #define Z_MIN_PIN 30
 #define Z_MAX_PIN 32
 #define Z_ENABLE_PIN 35
 
-#define HEATER_BED_PIN 4 
-#define TEMP_BED_PIN 10  
+#define HEATER_BED_PIN 4
+#define TEMP_BED_PIN 10
 
 #define HEATER_0_PIN  2
-#define TEMP_0_PIN 8   
+#define TEMP_0_PIN 8
 
 #define HEATER_1_PIN 3
 #define TEMP_1_PIN 9
@@ -833,24 +833,24 @@
   //arduino pin witch triggers an piezzo beeper
     #define BEEPER 18
 
-    #define LCD_PINS_RS 20 
+    #define LCD_PINS_RS 20
     #define LCD_PINS_ENABLE 17
     #define LCD_PINS_D4 16
-    #define LCD_PINS_D5 21 
+    #define LCD_PINS_D5 21
     #define LCD_PINS_D6 5
     #define LCD_PINS_D7 6
-    
+
     //buttons are directly attached
     #define BTN_EN1 40
     #define BTN_EN2 42
     #define BTN_ENC 19  //the click
-    
+
     #define BLEN_C 2
     #define BLEN_B 1
     #define BLEN_A 0
-    
+
     #define SDCARDDETECT 38
-    
+
       //encoder rotation values
     #define encrot0 0
     #define encrot1 2
@@ -865,14 +865,14 @@
     #define SHIFT_LD 42
     #define SHIFT_OUT 40
     #define SHIFT_EN 17
-    
-    #define LCD_PINS_RS 16 
+
+    #define LCD_PINS_RS 16
     #define LCD_PINS_ENABLE 5
     #define LCD_PINS_D4 6
-    #define LCD_PINS_D5 21 
+    #define LCD_PINS_D5 21
     #define LCD_PINS_D6 20
     #define LCD_PINS_D7 19
-    
+
     //encoder rotation values
     #ifndef ULTIMAKERCONTROLLER
      #define encrot0 0
@@ -899,7 +899,7 @@
 
     #define BLEN_B 1
     #define BLEN_A 0
-  #endif 
+  #endif
 #endif //ULTRA_LCD
 
 #endif
@@ -928,17 +928,17 @@
 #define Y_MAX_PIN 16
 #define Y_ENABLE_PIN 29
 
-#define Z_STEP_PIN 37 
+#define Z_STEP_PIN 37
 #define Z_DIR_PIN 39
 #define Z_MIN_PIN 19
 #define Z_MAX_PIN 18
 #define Z_ENABLE_PIN 35
 
-#define HEATER_BED_PIN -1 
-#define TEMP_BED_PIN -1  
+#define HEATER_BED_PIN -1
+#define TEMP_BED_PIN -1
 
 #define HEATER_0_PIN  2
-#define TEMP_0_PIN 8   
+#define TEMP_0_PIN 8
 
 #define HEATER_1_PIN 1
 #define TEMP_1_PIN 1
@@ -962,10 +962,10 @@
 #define KILL_PIN           -1
 #define SUICIDE_PIN        -1  //PIN that has to be turned on right after start, to keep power flowing.
 
-#define LCD_PINS_RS 24 
+#define LCD_PINS_RS 24
 #define LCD_PINS_ENABLE 22
 #define LCD_PINS_D4 36
-#define LCD_PINS_D5 34 
+#define LCD_PINS_D5 34
 #define LCD_PINS_D6 32
 #define LCD_PINS_D7 30
 
@@ -1135,7 +1135,7 @@
 
 #define LED_PIN            -1
 
-#define FAN_PIN            -1 
+#define FAN_PIN            -1
 
 #define PS_ON_PIN         14
 #define KILL_PIN           -1
@@ -1174,7 +1174,7 @@
 *       MISO (D 6) PB6  7|        |34  PA6 (AI 6 / D25)
 *        SCK (D 7) PB7  8|        |33  PA7 (AI 7 / D24)
 *                  RST  9|        |32  AREF
-*                  VCC 10|        |31  GND 
+*                  VCC 10|        |31  GND
 *                  GND 11|        |30  AVCC
 *                XTAL2 12|        |29  PC7 (D 23)
 *                XTAL1 13|        |28  PC6 (D 22)
@@ -1231,7 +1231,7 @@
 #define KILL_PIN           -1
 
 #define HEATER_0_PIN       4
-#define HEATER_1_PIN       -1 // 12 
+#define HEATER_1_PIN       -1 // 12
 #define HEATER_2_PIN       -1 // 13
 #define TEMP_0_PIN          0 //D27   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
 #define TEMP_1_PIN         -1 // 1
@@ -1293,11 +1293,11 @@
 #define KILL_PIN           -1
 
 #define HEATER_0_PIN        3 /*DONE PWM on RIGHT connector */
-#define HEATER_1_PIN       -1 
+#define HEATER_1_PIN       -1
 #define HEATER_2_PIN       -1
-#define HEATER_1_PIN       -1 
+#define HEATER_1_PIN       -1
 #define HEATER_2_PIN       -1
-#define TEMP_0_PIN          0 // ANALOG INPUT NUMBERING 
+#define TEMP_0_PIN          0 // ANALOG INPUT NUMBERING
 #define TEMP_1_PIN          1 // ANALOG
 #define TEMP_2_PIN         -1 // 2
 #define HEATER_BED_PIN      4
@@ -1343,7 +1343,7 @@
 #define Z_MS2_PIN 67
 
 #define HEATER_BED_PIN 3
-#define TEMP_BED_PIN 2 
+#define TEMP_BED_PIN 2
 
 #define HEATER_0_PIN  9
 #define TEMP_0_PIN 0
@@ -1432,9 +1432,9 @@
 
 #define HEATER_0_PIN       9    // EXTRUDER 1
 #define HEATER_1_PIN       8    // EXTRUDER 2 (FAN On Sprinter)
-#define HEATER_2_PIN       -1  
+#define HEATER_2_PIN       -1
 
-#if TEMP_SENSOR_0 == -1 
+#if TEMP_SENSOR_0 == -1
 #define TEMP_0_PIN         8   // ANALOG NUMBERING
 #else
 #define TEMP_0_PIN         13   // ANALOG NUMBERING
@@ -1453,25 +1453,25 @@
 
   #ifdef NEWPANEL
   //arduino pin which triggers an piezzo beeper
-    
-    #define LCD_PINS_RS 16 
+
+    #define LCD_PINS_RS 16
     #define LCD_PINS_ENABLE 17
     #define LCD_PINS_D4 23
-    #define LCD_PINS_D5 25 
+    #define LCD_PINS_D5 25
     #define LCD_PINS_D6 27
     #define LCD_PINS_D7 29
-    
+
     //buttons are directly attached using AUX-2
     #define BTN_EN1 59
     #define BTN_EN2 64
     #define BTN_ENC 43  //the click
-    
+
     #define BLEN_C 2
     #define BLEN_B 1
     #define BLEN_A 0
-    
+
     #define SDCARDDETECT -1		// Ramps does not use this port
-    
+
       //encoder rotation values
     #define encrot0 0
     #define encrot1 2
@@ -1487,7 +1487,7 @@
 #endif
 
 //List of pins which to ignore when asked to change by gcode, 0 and 1 are RX and TX, do not mess with those!
-#define _E0_PINS E0_STEP_PIN, E0_DIR_PIN, E0_ENABLE_PIN, HEATER_0_PIN, 
+#define _E0_PINS E0_STEP_PIN, E0_DIR_PIN, E0_ENABLE_PIN, HEATER_0_PIN,
 #if EXTRUDERS > 1
   #define _E1_PINS E1_STEP_PIN, E1_DIR_PIN, E1_ENABLE_PIN, HEATER_1_PIN,
 #else

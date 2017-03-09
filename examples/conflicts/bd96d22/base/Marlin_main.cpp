@@ -1507,7 +1507,7 @@ void process_commands()
       }
     }
     break;
-    
+
     #if NUM_SERVOS > 0
     case 280: // M280 - set servo position absolute. P: servo index, S: angle or microseconds
       {
@@ -1783,7 +1783,7 @@ void process_commands()
             delay(3);
             WRITE(BEEPER,LOW);
             delay(3);
-          #else 
+          #else
             lcd_buzz(1000/6,100);
           #endif
           }
@@ -2067,10 +2067,10 @@ void prepare_arc_move(char isclockwise) {
 #if defined(CONTROLLERFAN_PIN) && CONTROLLERFAN_PIN > -1
 
 #if defined(FAN_PIN)
-  #if CONTROLLERFAN_PIN == FAN_PIN 
+  #if CONTROLLERFAN_PIN == FAN_PIN
     #error "You cannot set CONTROLLERFAN_PIN equal to FAN_PIN"
   #endif
-#endif  
+#endif
 
 unsigned long lastMotor = 0; //Save the time for when a motor was turned on last
 unsigned long lastMotorCheck = 0;
@@ -2092,17 +2092,17 @@ void controllerFan()
     {
       lastMotor = millis(); //... set time to NOW so the fan will turn on
     }
-    
-    if ((millis() - lastMotor) >= (CONTROLLERFAN_SECS*1000UL) || lastMotor == 0) //If the last time any driver was enabled, is longer since than CONTROLLERSEC...   
+
+    if ((millis() - lastMotor) >= (CONTROLLERFAN_SECS*1000UL) || lastMotor == 0) //If the last time any driver was enabled, is longer since than CONTROLLERSEC...
     {
-        digitalWrite(CONTROLLERFAN_PIN, 0); 
-        analogWrite(CONTROLLERFAN_PIN, 0); 
+        digitalWrite(CONTROLLERFAN_PIN, 0);
+        analogWrite(CONTROLLERFAN_PIN, 0);
     }
     else
     {
         // allows digital or PWM fan output to be used (see M42 handling)
         digitalWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED);
-        analogWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED); 
+        analogWrite(CONTROLLERFAN_PIN, CONTROLLERFAN_SPEED);
     }
   }
 }
@@ -2169,7 +2169,7 @@ void kill()
 
 #if defined(PS_ON_PIN) && PS_ON_PIN > -1
   pinMode(PS_ON_PIN,INPUT);
-#endif  
+#endif
   SERIAL_ERROR_START;
   SERIAL_ERRORLNPGM(MSG_ERR_KILLED);
   LCD_ALERTMESSAGEPGM(MSG_KILLED);
