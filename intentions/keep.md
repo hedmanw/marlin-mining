@@ -1,7 +1,7 @@
 # Keep
 Code taken from `temperature_47c1ea7_integrated.cpp`.
 
-See also
+See also `Remove`.
 
 ## Case I: Explicit keep
 Expected outcome: accept change as evolution.
@@ -29,8 +29,8 @@ Expected outcome: accept change as evolution.
 ```
 
 ### Resolutions:
-In order to achieve the expected outcome of integrating this change as evolution, there are two possible actions, both involving `Keep`, but on two different views.
-Let `K` denote that the `Keep` intention is applied to the node.
+In order to achieve the expected outcome of integrating this change as evolution, there are two possible actions, both involving `Keep`, but applied on two different views.
+Let `K` denote that the `Keep` intention is applied to the node. Only one of a) and b) below are required, but they are equal.
 
 **a) Keep on Integrated view**
 ```cpp
