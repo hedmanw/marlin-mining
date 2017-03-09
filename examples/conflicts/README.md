@@ -1,9 +1,11 @@
-## Structure and conventions
-Each subdirectory contains a `README.txt`, with links to the involved commits for traceability.
-Directories:
-- `merge_excerpts`: Contains conflict excerpts of the working tree _during_ the merge.
-- `whole_files`: Contains copies of the involved files in the working tree at four points:
-    1. First parent (prefix `base`)
-    2. Second parent (prefix `remote`)
-    3. Snapshot of working tree _during_ the merge (prefix `merge`)
-    4. Merge commit or "outcome" (prefix `result`)
+## Structure
+Each subdirectory represents a merge with conflicts from the Marlin mainline.
+The directory is named after the merge commit sha.
+Each directory contains a `README.md`, with links to the involved commits and pull requests for traceability,
+along with three directories: `base`, `remote`, and `result`.
+These three directories contain the state of all files that had conflicts, in those commits.
+
+## Where do these come from?
+```
+TODO
+```
