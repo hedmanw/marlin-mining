@@ -46,7 +46,7 @@ def build_link_navigation(links_header):
 
 
 def write_csv_heading():
-    with open('busybox-forks.csv', 'w') as csv_file:
+    with open('data.csv', 'w') as csv_file:
         csv.writer(csv_file).writerow([
             "full name",
             "url",
@@ -62,7 +62,7 @@ def write_csv_heading():
 
 
 def append_json_to_csv(json):
-    with open('busybox-forks.csv', 'a') as csv_file:
+    with open('data.csv', 'a') as csv_file:
         csv_writer = csv.writer(csv_file)
         for repo in json:
             desc = repo["description"]

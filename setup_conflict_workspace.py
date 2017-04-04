@@ -52,12 +52,12 @@ class Git:
             print "Found repository {} in {}, will not clone again.".format(self.repo.repo_name, temp_dir)
 
     def get_log(self, commit):
-        _, stdout, stderr = self.git_process(["show", commit])
+        _, stdout, stderr = self.git_process(["log", "--format=%B", "-n", "1", commit])
         return stdout
 
     def get_conflicts(self, commit):
         log_output = self.get_log(commit).splitlines()
-        conflicts_marker = "    Conflicts:"
+        conflicts_marker = "Conflicts:"
         if conflicts_marker in log_output:
             conflicts_index = log_output.index(conflicts_marker)
             conflicting_files = map(lambda x: x.strip(), log_output[conflicts_index+1: -1])
@@ -129,8 +129,8 @@ class Workspace:
     def copy_all_source_code(self, sha, category):
         self.git.checkout(sha)
 
-        cpp_files = glob.glob(os.path.join(temp_dir, self.git.repo.repo_name, "Marlin", "*.cpp"))
-        header_files = glob.glob(os.path.join(temp_dir, self.git.repo.repo_name, "Marlin", "*.h"))
+        cpp_files = glob.glob(os.path.join(temp_dir, self.git.repo.repo_name, "src", "*.cpp"))
+        header_files = glob.glob(os.path.join(temp_dir, self.git.repo.repo_name, "src", "*.h"))
         self.checkout_and_copy_conflicts(sha, category, cpp_files + header_files)
 
     def create(self):
@@ -141,11 +141,14 @@ class Workspace:
         return len(parent_shas) == 2, Commit(self.conflict_merge, parent_shas[0], parent_shas[1])
 
     def calculate_conflict_files(self, commit_sha):
-        def only_marlin_files(file_path):
-            return file_path.startswith("Marlin")
-        # def  x: not ("README" in x or ".gitignore" in x or "travis.yml" in x)
+        def only_source_dir(file_path):
+            return file_path.startswith("src")
+
+        def only_source_files(file_path):
+            return file_path.endswith(".c") or file_path.endswith(".h")
+
         conflicting_files = self.git.get_conflicts(commit_sha)
-        return filter(only_marlin_files, conflicting_files)
+        return filter(only_source_files, filter(only_source_dir, conflicting_files))
 
 
 
@@ -159,9 +162,9 @@ def writeline(file, line):
 
 
 if __name__ == '__main__':
-    marlin = Repo("MarlinFirmware", "Marlin")
+    marlin = Repo("h-east", "vim")
     # Text file with one commit sha per line.
-    sp = SubjectParser("merge-diffs/variability-conflict-merges.txt")
+    sp = SubjectParser("/home/wilhelm/develop/marlin-mining/merge-diffs/vim-conflicts.txt")
     conflict_merges = sp.get_commits()
 
     git = Git(marlin)
