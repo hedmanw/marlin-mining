@@ -30,7 +30,7 @@ Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/ho
 
 ## MPS
 1. Launch MPS from the VM desktop.
-2. Open the integrated .
+2. Open the integrated files in Examples/Examples/Imported2/.
 
 
 # Creating environments in INCLINE VM
