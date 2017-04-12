@@ -1,5 +1,5 @@
 # Performing tasks in INCLINE VM
-This section describes the actions to run the test environments and 
+This section describes the actions to run the test environments and perform some rudimentary actions in the editors.
 
 ## Manual unstructured merging in RCPTT/ECLIPSE CDT
 We use [Eclipse CDT](http://www.eclipse.org/cdt/) to launch inside RCPTT, this will be referred to as the AUT (application under test), since RCPTT is really a testing tool.
@@ -31,10 +31,14 @@ Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/ho
 ## MPS
 1. Launch MPS from the VM desktop.
 2. Open the integrated files in Examples/Examples/Imported2/.
-
+3. To open the four quadrants of views, use the menu Tools > Arrange Views (Ctrl + Alt + Shift + V)
+4. To navigate between chunks inside the views, use the menu Tools > Next chunk (Ctrl + Alt + Shift + Left Arrow) / Previous chunk (Ctrl + Alt + Shift + Right Arrow)
+5. To apply intentions, select nodes in a view (using Shift + Arrow Up/Down), use menu Tools to find the intention you want.
+6. Execute intentions: Tools > Commit intentions
+7. Export result: Tools > Export C++ File
 
 # Creating environments in INCLINE VM
-This section describes how to setup the test environments in the VM - uninteresting if you're just evaluating the VM :).
+This section describes how to setup the test environments in the VM -- uninteresting if you're just evaluating the VM :).
 
 ## Eclipse
 The setup instructions are shown [here](https://www.youtube.com/watch?v=prXLW38mk8g) if you prefer a video. Point 6 is not included in the video though.
