@@ -26,6 +26,7 @@ clpum_compl_clear();    /* clear stuff for clpum */
 
 #endif /* defined(FEAT_CMDL_COMPL) */
 switch (c) {
+case K_UP:
 #ifdef FEAT_CMDL_COMPL
 if (clpum_visible())
 showmode();
