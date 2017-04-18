@@ -56,5 +56,5 @@ The setup instructions are shown [here](https://www.youtube.com/watch?v=prXLW38m
 ## MPS
 1. Build the jar in ppmerge:astmerge using `mvn compile assembly:single`
 2. Run the jar on two input variants `java -jar astmerge-1.0-SNAPSHOT-jar-with-dependencies.jar MAINLINE_SOURCE VARIANT_SOURCE OUTPUT_INTEGRATED`
-3. scp the output onto the vm `scp -p 3022 OUTPUT_INTEGRATED incline@127.0.0.1:`
+3. scp the output onto the vm `scp -P 3022 OUTPUT_INTEGRATED incline@127.0.0.1:`
 4. Import in into MPS with Tools > Import CPP
