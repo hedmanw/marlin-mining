@@ -15,9 +15,6 @@ int addmntent (FILE *stream, const struct mntent *mnt);
 char *hasmntopt (const struct mntent *mnt, const char *opt);
 #endif /* defined(FORK) */
 #endif /* defined(ANDROID) || defined(__ANDROID__) */
-#ifdef HAVE_MNTENT_H
-#include <mntent.h>
-#endif /* defined(HAVE_MNTENT_H) */
 // TODO: @CHUNK END
 
 // TODO: @CHUNK BEGIN libbb.h
