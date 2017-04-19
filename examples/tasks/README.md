@@ -40,6 +40,8 @@ Example merging [Taken from here.](http://stackoverflow.com/questions/4623564/ho
 # Creating environments in INCLINE VM
 This section describes how to setup the test environments in the VM -- uninteresting if you're just evaluating the VM :).
 
+ssh to the vm using `ssh -p 3022 incline@127.0.0.1`
+
 ## Eclipse
 The setup instructions are shown [here](https://www.youtube.com/watch?v=prXLW38mk8g) if you prefer a video. Point 6 is not included in the video though.
 
