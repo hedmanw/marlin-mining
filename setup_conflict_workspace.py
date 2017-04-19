@@ -95,8 +95,8 @@ class Workspace:
             self.create()
             conflicts = self.calculate_conflict_files(commit_ref.sha)
             self.checkout_and_copy_conflicts(commit_ref.sha, "result", conflicts)
-            self.checkout_and_copy_conflicts(commit_ref.first_parent_sha, "base", conflicts)
-            self.checkout_and_copy_conflicts(commit_ref.second_parent_sha, "remote", conflicts)
+            self.checkout_and_copy_conflicts(commit_ref.first_parent_sha, "head", conflicts)
+            self.checkout_and_copy_conflicts(commit_ref.second_parent_sha, "merge-head", conflicts)
             self.log_commit(commit_ref, conflicts)
         else:
             print "-- Commit {} was invalid.".format(self.conflict_merge)
@@ -111,8 +111,8 @@ class Workspace:
                 writeline(x, line)
             write("# {}".format(self.workspace_dir))
             write("- Result commit: [{}]({})".format(commit_ref.sha, link_to_commit(commit_ref.sha)))
-            write("- First parent (base): [{}]({})".format(commit_ref.first_parent_sha, link_to_commit(commit_ref.first_parent_sha)))
-            write("- Second parent (remote): [{}]({})".format(commit_ref.second_parent_sha, link_to_commit(commit_ref.second_parent_sha)))
+            write("- First parent (head): [{}]({})".format(commit_ref.first_parent_sha, link_to_commit(commit_ref.first_parent_sha)))
+            write("- Second parent (merge head): [{}]({})".format(commit_ref.second_parent_sha, link_to_commit(commit_ref.second_parent_sha)))
             write("")
             write("Conflicts:")
             for conflict_file in conflict_files:
@@ -126,6 +126,7 @@ class Workspace:
         for file_path in files_to_copy:
             copyfile(os.path.join(temp_dir, self.git.repo.repo_name, file_path), os.path.join(category_directory, os.path.basename(file_path)))
 
+    # This can be used insead of checkout_and_copy_conflicts to get the full (well...) working tree
     def copy_all_source_code(self, sha, category):
         self.git.checkout(sha)
 
@@ -162,9 +163,10 @@ def writeline(file, line):
 
 
 if __name__ == '__main__':
-    marlin = Repo("h-east", "vim")
+    # Repo to clone from Github
+    marlin = Repo("MarlinFirmware", "Marlin")
     # Text file with one commit sha per line.
-    sp = SubjectParser("/home/wilhelm/develop/marlin-mining/merge-diffs/vim-conflicts.txt")
+    sp = SubjectParser("merge-diffs/vim-conflicts.txt")
     conflict_merges = sp.get_commits()
 
     git = Git(marlin)
