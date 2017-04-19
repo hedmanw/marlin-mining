@@ -36,9 +36,8 @@ class Git:
         self.repo = repo
 
     def get_commit_parent(self, commit):
-        process, stdout, stderr = self.git_process(["show", "--pretty=%P", commit])
-        split_output = stdout.splitlines()
-        return split_output[0]
+        process, stdout, stderr = self.git_process(["log", "-n", "1", "--pretty=%P", commit])
+        return stdout
 
     def checkout(self, commit):
         process, stdout, stderr = self.git_process(["checkout", commit])
@@ -90,22 +89,25 @@ class Workspace:
         self.git = git
 
     def populate(self):
-        (valid, commit_ref) = self.get_parents()
-        if valid:
-            self.create()
+        (parents_count, commit_ref) = self.get_parents()
+        if parents_count == 2:
             conflicts = self.calculate_conflict_files(commit_ref.sha)
-            self.checkout_and_copy_conflicts(commit_ref.sha, "result", conflicts)
-            self.checkout_and_copy_conflicts(commit_ref.first_parent_sha, "head", conflicts)
-            self.checkout_and_copy_conflicts(commit_ref.second_parent_sha, "merge-head", conflicts)
-            self.log_commit(commit_ref, conflicts)
+            if conflicts:
+                self.create()
+                self.checkout_and_copy_conflicts(commit_ref.sha, "result", conflicts)
+                self.checkout_and_copy_conflicts(commit_ref.first_parent_sha, "head", conflicts)
+                self.checkout_and_copy_conflicts(commit_ref.second_parent_sha, "merge-head", conflicts)
+                self.log_commit(commit_ref, conflicts)
+            else:
+                print "-- Commit {} was skipped. No conflicts.".format(self.conflict_merge)
         else:
-            print "-- Commit {} was invalid.".format(self.conflict_merge)
+            print "-- Commit {} was skipped. Number of parents was {}, expected 2.".format(self.conflict_merge, parents_count)
 
     def log_commit(self, commit_ref, conflict_files):
         def link_to_commit(commit):
             return "https://github.com/{}/{}/commit/{}".format(git.repo.owner, git.repo.repo_name, commit)
 
-        print "Writing log for {}".format(self.workspace_dir)
+        print "Writing dir for {}".format(self.workspace_dir)
         with open(os.path.join(self.workspace_dir, "README.md"), 'w') as x:
             def write(line):
                 writeline(x, line)
@@ -138,18 +140,26 @@ class Workspace:
         makedir(self.workspace_dir)
 
     def get_parents(self):
-        parent_shas = self.git.get_commit_parent(self.conflict_merge).strip().split(" ")
-        return len(parent_shas) == 2, Commit(self.conflict_merge, parent_shas[0], parent_shas[1])
+        parent_shas_raw = self.git.get_commit_parent(self.conflict_merge).strip()
+        if " " in parent_shas_raw:
+            parent_shas = parent_shas_raw.split(" ")
+            return len(parent_shas), Commit(self.conflict_merge, parent_shas[0], parent_shas[1])
+        else:
+            return 1, None
 
     def calculate_conflict_files(self, commit_sha):
         def only_source_dir(file_path):
-            return file_path.startswith("src")
+            return file_path.startswith("Marlin")
 
         def only_source_files(file_path):
-            return file_path.endswith(".c") or file_path.endswith(".h")
+            return file_path.endswith(".cpp") or file_path.endswith(".h")
 
         conflicting_files = self.git.get_conflicts(commit_sha)
-        return filter(only_source_files, filter(only_source_dir, conflicting_files))
+        if conflicting_files:
+            accepted_files = filter(only_source_files, filter(only_source_dir, conflicting_files))
+            print "Conflict files before filter: {}, after filter: {}".format(len(conflicting_files), len(accepted_files))
+            return accepted_files
+        return None
 
 
 
@@ -166,7 +176,7 @@ if __name__ == '__main__':
     # Repo to clone from Github
     marlin = Repo("MarlinFirmware", "Marlin")
     # Text file with one commit sha per line.
-    sp = SubjectParser("merge-diffs/vim-conflicts.txt")
+    sp = SubjectParser("merge-diffs/all-conflict-merges.txt")
     conflict_merges = sp.get_commits()
 
     git = Git(marlin)
