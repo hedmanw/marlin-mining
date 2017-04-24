@@ -1,4 +1,3 @@
-// TODO: BEGIN fc9e0bb
 static char *(p_bg_values[]) = {"light", "dark", NULL};
 #ifdef FEAT_CMDL_COMPL
 static char *(p_clcot_values[]) = {"menu", "menuone", "longest", "noinsert", "noselect", NULL};
@@ -12,9 +11,7 @@ options[] =
 #else
     (char_u *)"-c",
 #endif
-// TODO: END fc9e0bb
 
-// TODO: BEGIN ca7753f
 /* Don't allow recursive cmdline mode when busy with completion. */
 if (clpum_compl_started || clpum_compl_busy || clpum_visible())
 {
@@ -34,4 +31,3 @@ switch (c) {
 #endif
     beep_flush();
 }
-// TODO: END ca7753f
