@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+
+import sys
 import requests
 import os
 
@@ -7,7 +10,12 @@ url = "http://web.student.chalmers.se/~hedmanw/bananas.php"
 class Uploader:
     def __init__(self, identifier):
         self.identifier = identifier
-        self.files = [".MPS34/system/log/idea.log", "results/incline.c"]
+        self.files = [
+            ".MPS34/system/log/idea.log",
+            "results/incline.c",
+            "rcpttWorkspace/experiment/recording.test",
+            "results/eclipse.c"
+        ]
         self.statuses = {}
 
     def go(self):
@@ -46,6 +54,6 @@ class Uploader:
             print "Reason: {}".format(errors)
 
 if __name__ == '__main__':
-    name = "test"
+    name = sys.argv[1]
     uploader = Uploader(name)
     uploader.go()
