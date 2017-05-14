@@ -15,6 +15,7 @@ def main(file_name):
     typeEndif = 0
     typeAny = 0
     textCorrections = 0
+    selections = 0
 
     with open(file_name) as log_file:
         lines = log_file.readlines()
@@ -56,6 +57,8 @@ def main(file_name):
                 typeAny += 1
                 typed_previous = True
                 reset_type = False
+            elif c("select-range"):
+                selections += 1
 
             if typed_previous and (c("BackSpace") or c("Del")):
                 textCorrections += 1
@@ -65,7 +68,7 @@ def main(file_name):
 
     fn_index = file_name.rfind('/')+1
     identifier = file_name[fn_index:fn_index+5]
-    values = [identifier, copy, paste, undo, deleteKey, backspaceKey, copyChanges, enterKey, tabKey, typeIfDef, typeElse, typeEndif, typeAny, textCorrections]
+    values = [identifier, copy, paste, undo, deleteKey, backspaceKey, copyChanges, enterKey, tabKey, typeIfDef, typeElse, typeEndif, typeAny, textCorrections, selections]
     print ",".join(map(str, values))
 
 
