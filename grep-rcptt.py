@@ -33,7 +33,7 @@ def main(file_name):
                 undo += 1
             elif c("Del"):
                 deleteKey += count_times(line)
-            elif c("BackSpace"):
+            elif c("BackSpace") or c("M2+BS"):
                 backspaceKey += count_times(line)
             elif c("Copy Current"):
                 copyChanges += 1
@@ -69,7 +69,7 @@ def main(file_name):
     fn_index = file_name.rfind('/')+1
     identifier = file_name[fn_index:fn_index+5]
     values = [identifier, copy, paste, undo, deleteKey, backspaceKey, copyChanges, enterKey, tabKey, typeIfDef, typeElse, typeEndif, typeAny, textCorrections, selections]
-    print ",".join(map(str, values))
+    print "\t".join(map(str, values))
 
 
 def count_times(line):
